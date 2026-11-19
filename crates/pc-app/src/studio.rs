@@ -360,15 +360,148 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
     egui::Panel::left("library").resizable(false).exact_size(256.0).frame(frame).show(ui, |ui| {
         let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
         let listed = |index: usize| !hidden.contains(&index);
-        let live_in = show.live().map(|at| at.presentation);
         let song_at = |keys: &[String], key: &str| keys.iter().position(|have| have == key).filter(|index| listed(*index));
 
-        // The library is on top, as operators are used to; the service sits under it and takes
-        // only the room its items need, up to two fifths of the column.
+        // The library is on top, as operators are used to. The service has its own strip fixed
+        // to the bottom of the column, so however many songs there are it is never pushed out
+        // of sight; it takes the room its items need, up to two fifths of the column.
         let items = state.services.front().items.clone();
         let service_height = (items.len().max(1) as f32 * 32.0 + 4.0).min(ui.available_height() * 0.4);
-        // Room kept under the library for the divider, the service's heading and picker, and its list.
-        let below = service_height + 96.0;
+        let mut add = None;
+        let live_in = show.live().map(|at| at.presentation);
+        egui::Panel::bottom("service strip").resizable(false).exact_size(service_height + 96.0).frame(Frame::new()).show(ui, |ui| {
+            ui.add_space(2.0);
+            let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+            ui.painter().rect_filled(line, 0.0, LINE);
+            ui.add_space(10.0);
+            // ---- The service.
+            ui.horizontal(|ui| {
+                caption(ui, "SERVICE");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(egui::RichText::new(state.services.front().items.len().to_string()).size(11.0).color(TEXT_FAINT));
+                });
+            });
+            ui.add_space(2.0);
+            if let Some(name) = state.renaming_service.as_mut() {
+                let field = ui.add(
+                    rename_field(name, FontId::proportional(13.5), TEXT, ACCENT).desired_width(f32::INFINITY),
+                );
+                field.request_focus();
+                let done = ui.input(|input| input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Escape));
+                if done || field.lost_focus() {
+                    if !ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                        state.services.rename(name);
+                    }
+                    state.renaming_service = None;
+                }
+            } else {
+                let name = state.services.front().name.clone();
+                egui::ComboBox::from_id_salt("service picker").selected_text(name.as_str()).width(ui.available_width()).show_ui(
+                    ui,
+                    |ui| {
+                        let names: Vec<String> = state.services.list.iter().map(|service| service.name.clone()).collect();
+                        for (index, other) in names.iter().enumerate() {
+                            if ui.selectable_label(index == state.services.current, other.as_str()).clicked() {
+                                state.services.show(index);
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("New Service").clicked() {
+                            state.services.add_service();
+                            state.renaming_service = Some(state.services.front().name.clone());
+                        }
+                        if ui.button("Rename…").clicked() {
+                            state.renaming_service = Some(name.clone());
+                        }
+                        if ui.add_enabled(names.len() > 1, egui::Button::new("Delete This Service")).clicked() {
+                            state.services.remove_service();
+                        }
+                    },
+                );
+            }
+            ui.add_space(6.0);
+
+            // What a click on a service row asks for, carried out after the list is drawn.
+            enum Ask {
+                Open(usize),
+                Earlier(usize),
+                Later(usize),
+                Remove(usize),
+            }
+            let mut ask = None;
+            egui::ScrollArea::vertical().id_salt("service list").max_height(service_height).auto_shrink([false, true]).show(
+                ui,
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    if items.is_empty() {
+                        ui.label(
+                            egui::RichText::new("Nothing yet. Add songs with + in the library above, and Bible passages with Save to Service.")
+                                .size(12.0)
+                                .color(TEXT_FAINT),
+                        );
+                    }
+                    for (index, item) in items.iter().enumerate() {
+                        let (icon, found) = match item {
+                            Item::Song { key, .. } => (Icon::Document, song_at(&state.song_keys, key)),
+                            Item::Passage(_) => (Icon::Book, None),
+                        };
+                        let missing = matches!(item, Item::Song { .. }) && found.is_none();
+                        let live = found.is_some() && found == live_in;
+                        let chosen = state.services.chosen == Some(index);
+                        let mut response = list_row(ui, icon, item.title(), chosen, live, missing);
+                        if missing {
+                            response = response.on_hover_text("This song is not open in the library");
+                        }
+                        if response.clicked() {
+                            ask = Some(Ask::Open(index));
+                        }
+                        response.context_menu(|ui| {
+                            if ui.add_enabled(index > 0, egui::Button::new("Move Up")).clicked() {
+                                ask = Some(Ask::Earlier(index));
+                                ui.close();
+                            }
+                            if ui.add_enabled(index + 1 < items.len(), egui::Button::new("Move Down")).clicked() {
+                                ask = Some(Ask::Later(index));
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Remove from Service").clicked() {
+                                ask = Some(Ask::Remove(index));
+                                ui.close();
+                            }
+                        });
+                    }
+                },
+            );
+            match ask {
+                Some(Ask::Open(index)) => {
+                    state.services.chosen = Some(index);
+                    match items.get(index) {
+                        Some(Item::Song { key, .. }) => {
+                            if let Some(at) = song_at(&state.song_keys, key) {
+                                commands.push(Command::Select(at));
+                                state.bible_open = false;
+                            }
+                        }
+                        Some(Item::Passage(saved)) => {
+                            state.bible_open = true;
+                            state.bible.open_saved(saved, live_in);
+                        }
+                        None => {}
+                    }
+                }
+                Some(Ask::Earlier(index)) => {
+                    state.services.nudge(index, true);
+                }
+                Some(Ask::Later(index)) => {
+                    state.services.nudge(index, false);
+                }
+                Some(Ask::Remove(index)) => {
+                    state.services.remove(index);
+                }
+                None => {}
+            }
+        });
 
         // ---- The library.
         let total = (0..show.presentations().len()).filter(|index| listed(*index)).count();
@@ -401,9 +534,7 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 .background_color(CARD),
         );
         ui.add_space(8.0);
-        let mut add = None;
-        let library_height = (ui.available_height() - below).max(60.0);
-        egui::ScrollArea::vertical().id_salt("song list").max_height(library_height).auto_shrink([false, false]).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             for index in shown.iter().copied() {
                 let Some(song) = show.presentations().get(index) else { continue };
@@ -439,139 +570,6 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 ui.label(egui::RichText::new("No song matches.").color(TEXT_DIM));
             }
         });
-        ui.add_space(10.0);
-        let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-        ui.painter().rect_filled(line, 0.0, LINE);
-        ui.add_space(10.0);
-
-        // ---- The service.
-        ui.horizontal(|ui| {
-            caption(ui, "SERVICE");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(egui::RichText::new(state.services.front().items.len().to_string()).size(11.0).color(TEXT_FAINT));
-            });
-        });
-        ui.add_space(2.0);
-        if let Some(name) = state.renaming_service.as_mut() {
-            let field = ui.add(
-                rename_field(name, FontId::proportional(13.5), TEXT, ACCENT).desired_width(f32::INFINITY),
-            );
-            field.request_focus();
-            let done = ui.input(|input| input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Escape));
-            if done || field.lost_focus() {
-                if !ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                    state.services.rename(name);
-                }
-                state.renaming_service = None;
-            }
-        } else {
-            let name = state.services.front().name.clone();
-            egui::ComboBox::from_id_salt("service picker").selected_text(name.as_str()).width(ui.available_width()).show_ui(
-                ui,
-                |ui| {
-                    let names: Vec<String> = state.services.list.iter().map(|service| service.name.clone()).collect();
-                    for (index, other) in names.iter().enumerate() {
-                        if ui.selectable_label(index == state.services.current, other.as_str()).clicked() {
-                            state.services.show(index);
-                        }
-                    }
-                    ui.separator();
-                    if ui.button("New Service").clicked() {
-                        state.services.add_service();
-                        state.renaming_service = Some(state.services.front().name.clone());
-                    }
-                    if ui.button("Rename…").clicked() {
-                        state.renaming_service = Some(name.clone());
-                    }
-                    if ui.add_enabled(names.len() > 1, egui::Button::new("Delete This Service")).clicked() {
-                        state.services.remove_service();
-                    }
-                },
-            );
-        }
-        ui.add_space(6.0);
-
-        // What a click on a service row asks for, carried out after the list is drawn.
-        enum Ask {
-            Open(usize),
-            Earlier(usize),
-            Later(usize),
-            Remove(usize),
-        }
-        let mut ask = None;
-        egui::ScrollArea::vertical().id_salt("service list").max_height(service_height).auto_shrink([false, true]).show(
-            ui,
-            |ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                if items.is_empty() {
-                    ui.label(
-                        egui::RichText::new("Nothing yet. Add songs with + in the library above, and Bible passages with Save to Service.")
-                            .size(12.0)
-                            .color(TEXT_FAINT),
-                    );
-                }
-                for (index, item) in items.iter().enumerate() {
-                    let (icon, found) = match item {
-                        Item::Song { key, .. } => (Icon::Document, song_at(&state.song_keys, key)),
-                        Item::Passage(_) => (Icon::Book, None),
-                    };
-                    let missing = matches!(item, Item::Song { .. }) && found.is_none();
-                    let live = found.is_some() && found == live_in;
-                    let chosen = state.services.chosen == Some(index);
-                    let mut response = list_row(ui, icon, item.title(), chosen, live, missing);
-                    if missing {
-                        response = response.on_hover_text("This song is not open in the library");
-                    }
-                    if response.clicked() {
-                        ask = Some(Ask::Open(index));
-                    }
-                    response.context_menu(|ui| {
-                        if ui.add_enabled(index > 0, egui::Button::new("Move Up")).clicked() {
-                            ask = Some(Ask::Earlier(index));
-                            ui.close();
-                        }
-                        if ui.add_enabled(index + 1 < items.len(), egui::Button::new("Move Down")).clicked() {
-                            ask = Some(Ask::Later(index));
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui.button("Remove from Service").clicked() {
-                            ask = Some(Ask::Remove(index));
-                            ui.close();
-                        }
-                    });
-                }
-            },
-        );
-        match ask {
-            Some(Ask::Open(index)) => {
-                state.services.chosen = Some(index);
-                match items.get(index) {
-                    Some(Item::Song { key, .. }) => {
-                        if let Some(at) = song_at(&state.song_keys, key) {
-                            commands.push(Command::Select(at));
-                            state.bible_open = false;
-                        }
-                    }
-                    Some(Item::Passage(saved)) => {
-                        state.bible_open = true;
-                        state.bible.open_saved(saved, live_in);
-                    }
-                    None => {}
-                }
-            }
-            Some(Ask::Earlier(index)) => {
-                state.services.nudge(index, true);
-            }
-            Some(Ask::Later(index)) => {
-                state.services.nudge(index, false);
-            }
-            Some(Ask::Remove(index)) => {
-                state.services.remove(index);
-            }
-            None => {}
-        }
-
         if let Some(index) = add
             && let (Some(key), Some(song)) = (state.song_keys.get(index), show.presentations().get(index))
         {
