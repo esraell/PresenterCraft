@@ -27,8 +27,9 @@ afterthought. PresenterCraft is trying to be:
   instead of pairing chapter and verse numbers blindly.
 - **Fast and light.** Slides are drawn on the GPU, the audience screen never waits on the
   operator's window, and it should run well on a modest laptop.
-- **Familiar.** Volunteers who know ProPresenter should feel at home: the same layout, names
-  and keys where they make sense, with a cleaner look of our own.
+- **Familiar.** Laid out the way people who run church screens expect: libraries and playlists
+  on the left, the slides in the middle, what is on screen on the right and media along the
+  bottom, with a look of our own.
 - **Native on the Mac,** and later on Windows and Linux.
 - **Scriptable later.** The plan is for everything the operator can do to be reachable from
   an API, a command line and AI assistants (MCP).
@@ -47,7 +48,7 @@ ProPresenter.
   once, the stage screens show what comes next in it, and a row of its
   groups shows the one on screen; click one to go to it, right-click to move, repeat or
   remove it, + to add a group.
-- Twenty-two of ProPresenter's 37 transitions, by its names: Cut, Dissolve, Fade, Fade Black,
+- Twenty-two transitions: Cut, Dissolve, Fade, Fade Black,
   Fade Bright, Fade Dark, Fade Gray, Fade White, Push, Move In, Reveal, Fly In, Zoom In, Door,
   Flip, Swap, Wipe, Door Wipe, Square Wipe, Iris, Random Squares and Random Pixels, with their
   direction and time (0 to 5 seconds), from Cut, Dissolve or Advanced. One is chosen for all slides from the bar under the slides; a song
@@ -55,7 +56,7 @@ ProPresenter.
   changing from one picture or video to the next.
 - New Song (Command-N, or + over the song list) asks for the song's title and theme, and takes
   its words pasted in (a line in square brackets starts a group, a blank line a new slide).
-- The left column, as in ProPresenter: **LIBRARY** rows (All Songs and libraries of your own,
+- The left column: **LIBRARY** rows (All Songs and libraries of your own,
   such as Christmas or Youth) and **PLAYLISTS** rows on top, and the songs or items of the one
   chosen below, with a filter at the bottom. + beside each heading makes a new one; double-click
   or right-click a row to rename or delete it; the line under the rows can be dragged. A song
@@ -216,10 +217,8 @@ Among the things PresenterCraft can't do yet:
 - Slide sizes other than 1920 × 1080.
 - A timeline that times slides, media and audio together (a slide can go on by itself after a
   time, and a song can loop).
-- ProPresenter's other 15 transitions, which need effects of their own (Amoeba, Color Burn,
-  Color Push, Color Warp, Cross Hatch, Cube, Dispersion Blur, Film Burn, Kaleidoscope Wipe,
-  Mosaic, Noisy Zoom, Random Squares Flicker, Ripple, Warp Fade, Wave Dissolve), and transitions
-  for props of their own.
+- Transitions that need effects of their own (3D, ripples, burns and the like), and
+  transitions for props of their own.
 - In and out points for media and audio.
 - Clear Groups, and Show Slide on Stage Screens Only.
 - Saved looks to switch between, masks other than covered edges, corner pin, alpha and NDI
