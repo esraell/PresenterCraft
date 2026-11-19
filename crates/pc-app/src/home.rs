@@ -109,6 +109,9 @@ pub struct HomeState {
     pub reflow: Option<(usize, String)>,
     /// Words finished in the Reflow editor, for the app to rebuild the song from.
     pub reflow_done: Option<(usize, String)>,
+    /// The library search pop-up (Command-F), while it is open: what is typed, and the row
+    /// picked out with the arrow keys.
+    pub library_search: Option<(String, usize)>,
     /// A change to the media bin asked for.
     pub media_request: Option<MediaRequest>,
     /// Songs taken out of the library this run, by their place in the show.
@@ -632,6 +635,7 @@ impl Default for HomeState {
             confirm_delete_song: None,
             removed_songs: Vec::new(),
             media_request: None,
+            library_search: None,
             reflow: None,
             reflow_done: None,
             screens: crate::screens::starting(None),
@@ -811,12 +815,17 @@ pub fn home_ui(
     if ui.input(|input| command_key(input, egui::Key::Comma, false)) {
         state.settings_open = !state.settings_open;
     }
+    // Command-F searches the library (on the Mac the menu bar's Find does this).
+    if ui.input(|input| command_key(input, egui::Key::F, false)) {
+        state.library_search = Some((String::new(), 0));
+    }
     // Command-N makes a new song, wherever the keyboard is not in a field.
     if !ui.ctx().text_edit_focused() && ui.input(|input| command_key(input, egui::Key::N, false)) {
         state.new_song = true;
     }
     confirm_delete_theme(ui, state);
     confirm_delete_song(ui, show, state);
+    library_search(ui, show, state, &mut commands);
     if state.editing.is_some() {
         edit_view(ui, show, state, theme, thumb, canvas);
         return commands;
@@ -2128,6 +2137,137 @@ fn reflow_editor(ui: &mut egui::Ui, title: &str, state: &mut HomeState) {
         }
         Some(false) => state.reflow = None,
         None => {}
+    }
+}
+
+/// The songs a library search finds, best first: titles that hold the words, then songs whose
+/// lyrics do, with the line that matched. Songs not listed in the library are left out.
+fn search_songs(show: &Show, listed: impl Fn(usize) -> bool, query: &str) -> Vec<(usize, Option<String>)> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut by_title = Vec::new();
+    let mut by_words = Vec::new();
+    for (index, song) in show.presentations().iter().enumerate().filter(|(index, _)| listed(*index)) {
+        if song.title.to_lowercase().contains(&query) {
+            by_title.push((index, None));
+            continue;
+        }
+        let line = song
+            .slides()
+            .flat_map(|(_, slide)| slide.texts().into_iter().map(|(_, text)| text))
+            .flat_map(|text| text.lines().map(str::to_owned).collect::<Vec<_>>())
+            .find(|line| line.to_lowercase().contains(&query));
+        if let Some(line) = line {
+            by_words.push((index, Some(line)));
+        }
+    }
+    by_title.extend(by_words);
+    by_title
+}
+
+/// The library search pop-up: a field, the songs it finds, and what Return does.
+fn library_search(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
+    let Some((query, picked)) = state.library_search.as_mut() else { return };
+    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+    let removed = state.removed_songs.clone();
+    let found = search_songs(show, |index| !hidden.contains(&index) && !removed.contains(&index), query);
+    *picked = (*picked).min(found.len().saturating_sub(1));
+    let (up, down, enter, command, escape) = ui.input(|input| {
+        (
+            input.key_pressed(egui::Key::ArrowUp),
+            input.key_pressed(egui::Key::ArrowDown),
+            input.key_pressed(egui::Key::Enter),
+            input.modifiers.command,
+            input.key_pressed(egui::Key::Escape),
+        )
+    });
+    if up {
+        *picked = picked.saturating_sub(1);
+    }
+    if down && *picked + 1 < found.len() {
+        *picked += 1;
+    }
+    let mut chosen: Option<(usize, bool)> = None;
+    let screen = ui.ctx().content_rect();
+    egui::Area::new(egui::Id::unique("library search"))
+        .order(egui::Order::Foreground)
+        .fade_in(false)
+        .fixed_pos(pos2(screen.center().x - 260.0, screen.min.y + 90.0))
+        .show(ui.ctx(), |ui| {
+            Frame::popup(ui.style()).inner_margin(12).show(ui, |ui| {
+                ui.set_width(520.0);
+                let field = ui.add(
+                    egui::TextEdit::singleline(query)
+                        .hint_text("Search the library: titles and words")
+                        .desired_width(f32::INFINITY)
+                        .font(FontId::proportional(16.0)),
+                );
+                field.request_focus();
+                ui.add_space(6.0);
+                if found.is_empty() && !query.trim().is_empty() {
+                    ui.label(egui::RichText::new("No song matches.").color(DIM));
+                }
+                for (row, (index, line)) in found.iter().take(12).enumerate() {
+                    let Some(song) = show.presentations().get(*index) else { continue };
+                    let height = if line.is_some() { 40.0 } else { 26.0 };
+                    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+                    if row == *picked || response.hovered() {
+                        ui.painter().rect_filled(
+                            rect,
+                            6.0,
+                            crate::studio::ACCENT.gamma_multiply(if row == *picked { 0.4 } else { 0.2 }),
+                        );
+                    }
+                    ui.painter().text(
+                        pos2(rect.min.x + 10.0, rect.min.y + 13.0),
+                        Align2::LEFT_CENTER,
+                        song.title.as_str(),
+                        FontId::proportional(14.0),
+                        crate::studio::TEXT,
+                    );
+                    ui.painter().text(
+                        pos2(rect.max.x - 10.0, rect.min.y + 13.0),
+                        Align2::RIGHT_CENTER,
+                        "Library",
+                        FontId::proportional(11.5),
+                        crate::studio::TEXT_FAINT,
+                    );
+                    if let Some(line) = line {
+                        ui.painter().with_clip_rect(rect).text(
+                            pos2(rect.min.x + 10.0, rect.min.y + 30.0),
+                            Align2::LEFT_CENTER,
+                            line.as_str(),
+                            FontId::proportional(12.0),
+                            DIM,
+                        );
+                    }
+                    if response.clicked() {
+                        chosen = Some((*index, false));
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("↵ Open    ⌘↵ Add to Service    esc Close").size(11.0).color(DIM));
+            });
+        });
+    if enter && let Some((index, _)) = found.get(*picked) {
+        chosen = Some((*index, command));
+    }
+    if let Some((index, add)) = chosen {
+        if add {
+            if let (Some(key), Some(song)) = (state.song_keys.get(index), show.presentations().get(index)) {
+                state.services.add(crate::service::Item::Song { key: key.clone(), title: song.title.clone() });
+            }
+        } else {
+            commands.push(Command::Select(index));
+            state.editing = None;
+            state.bible_open = false;
+            state.reflow = None;
+        }
+        state.library_search = None;
+    } else if escape {
+        state.library_search = None;
     }
 }
 
@@ -3725,6 +3865,19 @@ mod tests {
         assert_eq!(listed_name(&object), "Lyrics Box");
         let shape = pc_model::Object::shape(pc_model::Shape::Star);
         assert_eq!(listed_name(&shape), "Star");
+    }
+
+    #[test]
+    fn a_library_search_finds_titles_first_then_words() {
+        let show = Show::new(vec![
+            std::sync::Arc::new(pc_model::parse_song_text("Harbour Lights", "When the night is long\n")),
+            std::sync::Arc::new(pc_model::parse_song_text("Steady Ground", "You are the light on the farther side\n")),
+        ]);
+        let found = search_songs(&show, |_| true, "light");
+        assert_eq!(found.iter().map(|(index, _)| *index).collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(found[1].1.as_deref(), Some("You are the light on the farther side"));
+        assert!(search_songs(&show, |_| true, "  ").is_empty());
+        assert!(search_songs(&show, |index| index != 0, "harbour").is_empty(), "a song not listed is left out");
     }
 
     #[test]

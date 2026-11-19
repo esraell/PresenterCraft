@@ -156,6 +156,7 @@ Other options: `--list-displays`, `--output-display N`.
 | B, N, M | jump to Bridge 1, 2, 3 |
 | P, T, I, E, O | Pre-chorus, Tag, Intro, Ending, Outro |
 | Cmd+N | new song |
+| Cmd+F | search the library (titles and words) |
 | Cmd+, or Option+Cmd+1 | Screens |
 | Cmd+1 / Cmd+2 | audience / stage screens on or off |
 | Control+S, E, B, T | Show, Edit, Bible, Themes |

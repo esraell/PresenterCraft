@@ -1444,6 +1444,12 @@ impl App {
                     first.start(Instant::now() - Duration::from_secs(83));
                 }
             }
+            // Testing aid: open the library search with these words typed.
+            if running.frames == GO_LIVE_AT + 2
+                && let Ok(words) = std::env::var("PRESENTERCRAFT_SEARCH")
+            {
+                running.home_state.library_search = Some((words, 0));
+            }
             // Testing aid: open the Reflow editor on the first song.
             if running.frames == GO_LIVE_AT + 2
                 && std::env::var_os("PRESENTERCRAFT_REFLOW").is_some()
@@ -1877,6 +1883,7 @@ impl App {
             A::EditView => state.view_request = Some(1),
             A::BibleView => state.view_request = Some(2),
             A::ThemesView => state.view_request = Some(3),
+            A::Find => state.library_search = Some((String::new(), 0)),
             A::ReflowView => {
                 let song = self.show.selected();
                 if !self.bible_slots.contains(&song)
@@ -2138,8 +2145,10 @@ impl ApplicationHandler<String> for App {
             // Escape clears the screen only when there is nothing else for it to close: a
             // pop-up or the Settings window takes it first.
             let state = &running.home_state;
-            let something_open =
-                state.settings_open || state.bible.options.open || egui::Popup::is_any_open(&running.egui_ctx);
+            let something_open = state.settings_open
+                || state.bible.options.open
+                || state.library_search.is_some()
+                || egui::Popup::is_any_open(&running.egui_ctx);
             let escape = matches!(key.logical_key, Key::Named(NamedKey::Escape));
             if !(escape && something_open) {
                 self.apply(vec![command]);

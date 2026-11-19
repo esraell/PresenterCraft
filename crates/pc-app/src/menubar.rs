@@ -21,6 +21,7 @@ pub enum Action {
     Delete,
     SelectAll,
     DeselectAll,
+    Find,
     Bold,
     Italic,
     Underline,
@@ -165,6 +166,8 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Do(Action::Delete, "Delete", None),
             Do(Action::SelectAll, "Select All", cmd('A')),
             Do(Action::DeselectAll, "Deselect All", shift_cmd('A')),
+            Line,
+            Do(Action::Find, "Find in Library…", cmd('F')),
         ],
     ),
     (
