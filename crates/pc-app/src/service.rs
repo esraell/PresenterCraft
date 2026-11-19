@@ -233,6 +233,48 @@ pub struct Prefs {
     pub service_height: Option<f32>,
     /// True when the stage screens were switched off.
     pub stage_off: bool,
+    /// When a song's copyright line is shown on the audience screens.
+    pub copyright_show: CopyrightShow,
+    /// The church's CCLI licence number, for the copyright line.
+    pub ccli_licence: String,
+    /// True to start with the audience screens off, as ProPresenter does unless its screens are
+    /// set to come on at launch.
+    pub start_audience_off: bool,
+}
+
+/// When a song's copyright line is shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyrightShow {
+    #[default]
+    Never,
+    FirstSlide,
+    LastSlide,
+    EverySlide,
+}
+
+impl CopyrightShow {
+    pub const ALL: [CopyrightShow; 4] =
+        [CopyrightShow::Never, CopyrightShow::FirstSlide, CopyrightShow::LastSlide, CopyrightShow::EverySlide];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CopyrightShow::Never => "Never",
+            CopyrightShow::FirstSlide => "On a song's first slide",
+            CopyrightShow::LastSlide => "On a song's last slide",
+            CopyrightShow::EverySlide => "On every slide of a song",
+        }
+    }
+
+    /// True when the line is shown on the slide at `index` of a song with `count` slides.
+    pub fn shows_on(self, index: usize, count: usize) -> bool {
+        match self {
+            CopyrightShow::Never => false,
+            CopyrightShow::FirstSlide => index == 0,
+            CopyrightShow::LastSlide => index + 1 == count,
+            CopyrightShow::EverySlide => true,
+        }
+    }
 }
 
 impl Default for Prefs {
@@ -247,6 +289,9 @@ impl Default for Prefs {
             ndi_on: false,
             service_height: None,
             stage_off: false,
+            copyright_show: CopyrightShow::Never,
+            ccli_licence: String::new(),
+            start_audience_off: false,
         }
     }
 }

@@ -310,7 +310,7 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // Settings, at the far right.
                 let (gear, response) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
-                let on = state.settings_open;
+                let on = state.preferences_open;
                 ui.painter().rect_filled(gear, RADIUS, if on || response.hovered() { HOVER } else { CARD });
                 icons::paint(
                     ui.painter(),
@@ -318,8 +318,8 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                     Rect::from_center_size(gear.center(), vec2(15.0, 15.0)),
                     TEXT_DIM,
                 );
-                if response.on_hover_text("Screens (Command-comma)").clicked() {
-                    state.settings_open = !state.settings_open;
+                if response.on_hover_text("Settings (Command-comma)").clicked() {
+                    state.preferences_open = !state.preferences_open;
                 }
                 // The audience output: a tally light, its name, and whether it is on.
                 let on = show.output_enabled();

@@ -376,6 +376,49 @@ pub struct Presentation {
     pub id: Uuid,
     pub title: String,
     pub groups: Vec<Group>,
+    /// Who wrote the song and who holds its rights, for the copyright line.
+    #[serde(default, skip_serializing_if = "Copyright::is_empty")]
+    pub copyright: Copyright,
+}
+
+/// A song's copyright details, as a CCLI report asks for them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Copyright {
+    pub artist: String,
+    pub author: String,
+    pub publisher: String,
+    pub year: String,
+    /// The song's number in the CCLI catalogue.
+    pub ccli_song: String,
+}
+
+impl Copyright {
+    pub fn is_empty(&self) -> bool {
+        *self == Copyright::default()
+    }
+
+    /// The copyright line shown on the screens: "Title" by the author, the year and publisher,
+    /// the CCLI song number, and the church's CCLI licence number. Parts not known are left out.
+    pub fn line(&self, title: &str, licence: &str) -> String {
+        let mut parts = vec![format!("\u{201c}{title}\u{201d}")];
+        let writer = if self.author.is_empty() { &self.artist } else { &self.author };
+        if !writer.is_empty() {
+            parts.push(writer.clone());
+        }
+        let held =
+            [self.year.as_str(), self.publisher.as_str()].iter().filter(|p| !p.is_empty()).copied().collect::<Vec<_>>();
+        if !held.is_empty() {
+            parts.push(format!("\u{a9} {}", held.join(" ")));
+        }
+        if !self.ccli_song.is_empty() {
+            parts.push(format!("CCLI Song # {}", self.ccli_song));
+        }
+        if !licence.is_empty() {
+            parts.push(format!("CCLI License # {licence}"));
+        }
+        parts.join("  \u{b7}  ")
+    }
 }
 
 impl Presentation {
@@ -442,7 +485,7 @@ impl Presentation {
                 index += 1;
             }
         }
-        Presentation { id: self.id, title: self.title.clone(), groups }
+        Presentation { id: self.id, title: self.title.clone(), groups, copyright: self.copyright.clone() }
     }
 
     /// A copy with one slide replaced by an edited version of it. Returns `None` if there is no
@@ -600,6 +643,24 @@ mod tests {
     }
 
     #[test]
+    fn the_copyright_line_leaves_out_what_is_not_known() {
+        let full = Copyright {
+            artist: "The Band".to_owned(),
+            author: "A. Writer".to_owned(),
+            publisher: "Songs Ltd".to_owned(),
+            year: "2024".to_owned(),
+            ccli_song: "1234567".to_owned(),
+        };
+        assert_eq!(
+            full.line("Steady Ground", "998877"),
+            "\u{201c}Steady Ground\u{201d}  \u{b7}  A. Writer  \u{b7}  \u{a9} 2024 Songs Ltd  \u{b7}  CCLI Song # 1234567  \u{b7}  CCLI License # 998877"
+        );
+        let little = Copyright { artist: "The Band".to_owned(), ..Copyright::default() };
+        assert_eq!(little.line("Song", ""), "\u{201c}Song\u{201d}  \u{b7}  The Band");
+        assert!(Copyright::default().is_empty());
+    }
+
+    #[test]
     fn slides_are_removed_copied_in_and_start_groups() {
         let song = crate::parse_song_text("Song", "[Verse 1]\nA\n\nB\n\nC\n\n[Chorus]\nD\n");
         let words = |song: &Presentation| {
@@ -639,7 +700,12 @@ mod tests {
             assert_ne!(new.id, old.id);
         }
         // A song with nothing in it gets a first slide with a main box.
-        let empty = Presentation { id: Uuid::new_v4(), title: "Empty".to_owned(), groups: Vec::new() };
+        let empty = Presentation {
+            id: Uuid::new_v4(),
+            title: "Empty".to_owned(),
+            groups: Vec::new(),
+            copyright: Copyright::default(),
+        };
         let (first, at) = empty.with_slide_added();
         assert_eq!((first.slide_count(), at), (1, 0));
         assert_eq!(first.slide(0).unwrap().1.objects[0].role, Some(Role::primary()));

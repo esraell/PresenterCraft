@@ -35,6 +35,8 @@ pub struct Overlay {
     pub timers: Vec<crate::timers::Timer>,
     /// The props on screen, in the order they were put on.
     pub props: Vec<Slide>,
+    /// The copyright line of the song on screen, when it is to be shown.
+    pub copyright: Option<String>,
 }
 
 pub enum OutputMsg {
@@ -370,7 +372,10 @@ impl Output {
             crate::messages::slide(&words)
         });
         // Props and the message share the layer over the slide.
-        let over = crate::props::overlay(&self.overlay.props, message.as_ref()).map(Arc::new);
+        let copyright = self.overlay.copyright.as_deref().map(crate::props::copyright_slide);
+        let mut under: Vec<Slide> = self.overlay.props.clone();
+        under.extend(copyright);
+        let over = crate::props::overlay(&under, message.as_ref()).map(Arc::new);
         (frame.media.clone(), frame.slide.clone(), over, frame.theme.clone())
     }
 

@@ -113,9 +113,14 @@ fn song_templates(theme: &Theme) -> Vec<(Uuid, String)> {
 }
 
 /// Opens the Screens window: a window of its own, drawn with its own interface.
-fn open_panel_window(el: &ActiveEventLoop, running: &mut Running, quiet: bool) -> Result<PanelWindow, String> {
+fn open_panel_window(
+    el: &ActiveEventLoop,
+    running: &mut Running,
+    quiet: bool,
+    kind: Panel,
+) -> Result<PanelWindow, String> {
     let attrs = Window::default_attributes()
-        .with_title("Screens")
+        .with_title(kind.title())
         .with_inner_size(winit::dpi::LogicalSize::new(760.0, 520.0))
         .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 440.0));
     let attrs = if quiet {
@@ -154,7 +159,7 @@ fn open_panel_window(el: &ActiveEventLoop, running: &mut Running, quiet: bool) -
         Some(running.gpu.device.limits().max_texture_dimension_2d as usize),
     );
     let renderer = egui_wgpu::Renderer::new(&running.gpu.device, format, egui_wgpu::RendererOptions::default());
-    Ok(PanelWindow { window, surface, config, ctx, state, renderer, next_repaint: None, frames: 0 })
+    Ok(PanelWindow { kind, window, surface, config, ctx, state, renderer, next_repaint: None, frames: 0 })
 }
 
 /// What a theme calls its templates, in order.
@@ -337,8 +342,46 @@ fn paint_ui(
     (jobs, screen)
 }
 
-/// The Screens window: a window of its own with its own interface.
+/// Which window of its own a panel window is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Panel {
+    Screens,
+    Settings,
+}
+
+impl Panel {
+    const ALL: [Panel; 2] = [Panel::Screens, Panel::Settings];
+
+    fn title(self) -> &'static str {
+        match self {
+            Panel::Screens => "Screens",
+            Panel::Settings => "Settings",
+        }
+    }
+
+    /// True while the window is asked for.
+    fn wanted(self, state: &HomeState) -> bool {
+        match self {
+            Panel::Screens => state.settings_open,
+            Panel::Settings => state.preferences_open,
+        }
+    }
+
+    /// Says the window is no longer wanted, as closing it does.
+    fn close(self, state: &mut HomeState) {
+        match self {
+            Panel::Screens => {
+                state.settings_open = false;
+                state.identify = false;
+            }
+            Panel::Settings => state.preferences_open = false,
+        }
+    }
+}
+
+/// A window of its own with its own interface: Screens, or Settings.
 struct PanelWindow {
+    kind: Panel,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -368,8 +411,8 @@ struct Running {
     /// What the output was last told to show over the slides.
     overlay_sent: Option<output::Overlay>,
     output: Option<OutputHandle>,
-    /// The Screens window, while it is open.
-    screens_window: Option<PanelWindow>,
+    /// The Screens and Settings windows, while they are open.
+    panels: Vec<PanelWindow>,
     gpu: Gpu,
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
@@ -537,7 +580,7 @@ impl App {
             stage_sent: None,
             overlay_sent: None,
             output: Some(output),
-            screens_window: None,
+            panels: Vec::new(),
             gpu,
             egui_ctx,
             egui_state,
@@ -660,11 +703,15 @@ impl App {
             let words = messages::fill_in(&message.text, &state.timers, Instant::now(), timers::seconds_into_day());
             Some(messages::slide(&words))
         });
-        let live_props: Vec<Slide> = state
+        let mut live_props: Vec<Slide> = state
             .props_live
             .iter()
             .filter_map(|(id, _)| state.props.iter().find(|prop| prop.id == *id).map(|prop| prop.slide.clone()))
             .collect();
+        // The copyright line as last worked out; a change to it redraws the preview again.
+        live_props.extend(
+            running.overlay_sent.as_ref().and_then(|sent| sent.copyright.as_deref()).map(props::copyright_slide),
+        );
         let over = props::overlay(&live_props, message.as_ref());
         let layers = Layers {
             media: media.as_ref(),
@@ -723,6 +770,20 @@ impl App {
         {
             running.home_state.notice = Some(problem);
         }
+    }
+
+    /// Gives a song the copyright details typed in its Info pop-over.
+    fn handle_copyright(&mut self) {
+        let Some((index, details)) = self.running.as_mut().and_then(|r| r.home_state.copyright_request.take()) else {
+            return;
+        };
+        let Some(song) = self.show.presentations().get(index).cloned() else { return };
+        let changed = pc_model::Presentation { copyright: details, ..(*song).clone() };
+        self.show.replace_presentation(index, Arc::new(changed));
+        if !self.unsaved.contains(&index) {
+            self.unsaved.push(index);
+        }
+        self.unsaved_since = Some(Instant::now());
     }
 
     /// Rebuilds a song from the words finished in the Reflow editor.
@@ -911,7 +972,12 @@ impl App {
             color: pc_model::group_color("Verse 1"),
             slides: vec![Slide::new(vec![pc_model::Object::text(pc_model::Role::primary(), "")])],
         };
-        let song = pc_model::Presentation { id, title: title.clone(), groups: vec![verse] };
+        let song = pc_model::Presentation {
+            id,
+            title: title.clone(),
+            groups: vec![verse],
+            copyright: pc_model::Copyright::default(),
+        };
         // New songs live in the app's Songs folder, each in a file named by its id, so two
         // songs with one title never collide.
         let path = bible_store::data_dir().map(|dir| dir.join("Songs").join(format!("{id}.pcpres")));
@@ -1320,10 +1386,10 @@ impl App {
                 Placed::Nothing(_) => (screens::describe(place, &displays), false),
             })
             .collect();
-        if home_state.screen_status != status_before
-            && let Some(panel) = &running.screens_window
-        {
-            panel.window.request_redraw();
+        if home_state.screen_status != status_before {
+            for panel in running.panels.iter().filter(|panel| panel.kind == Panel::Screens) {
+                panel.window.request_redraw();
+            }
         }
         // Starting NDI takes a moment on the output thread; look again shortly.
         if starting || ndi_moved {
@@ -1434,6 +1500,10 @@ impl App {
             if running.frames == GO_LIVE_AT {
                 commands.push(Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 2 }));
                 commands.push(Command::ShowMedia(0));
+            }
+            // Testing aid: open the Settings window.
+            if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_PREFERENCES").is_some() {
+                running.home_state.preferences_open = true;
             }
             // Testing aid: open Settings.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_SETTINGS").is_some() {
@@ -1559,45 +1629,49 @@ impl App {
         commands
     }
 
-    /// Opens the Screens window when it is asked for, and closes it when it is not.
-    fn sync_screens_window(&mut self, el: &ActiveEventLoop) {
+    /// Opens the Screens and Settings windows when they are asked for, and closes them when
+    /// they are not.
+    fn sync_panels(&mut self, el: &ActiveEventLoop) {
         let quiet = self.quiet();
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        let wanted = running.home_state.settings_open;
-        if !wanted {
-            running.screens_window = None;
-            return;
-        }
-        if running.screens_window.is_some() {
-            return;
-        }
-        match open_panel_window(el, running, quiet) {
-            Ok(panel) => {
-                panel.window.request_redraw();
-                running.screens_window = Some(panel);
+        let state = &running.home_state;
+        running.panels.retain(|panel| panel.kind.wanted(state));
+        for kind in Panel::ALL {
+            if !kind.wanted(&running.home_state) || running.panels.iter().any(|panel| panel.kind == kind) {
+                continue;
             }
-            Err(problem) => {
-                running.home_state.settings_open = false;
-                running.home_state.notice = Some(problem);
+            match open_panel_window(el, running, quiet, kind) {
+                Ok(panel) => {
+                    panel.window.request_redraw();
+                    running.panels.push(panel);
+                }
+                Err(problem) => {
+                    kind.close(&mut running.home_state);
+                    running.home_state.notice = Some(problem);
+                }
             }
         }
     }
 
-    /// Draws one frame of the Screens window and returns what was asked for in it.
-    fn draw_screens_window(&mut self) -> Vec<Command> {
+    /// Draws one frame of a panel window and returns what was asked for in it.
+    fn draw_panel(&mut self, id: WindowId) -> Vec<Command> {
         let output_on = self.show.output_enabled();
         let Some(running) = self.running.as_mut() else {
             return Vec::new();
         };
-        let Running { screens_window, gpu, home_state, .. } = running;
-        let Some(panel) = screens_window.as_mut() else {
+        let Running { panels, gpu, home_state, .. } = running;
+        let Some(panel) = panels.iter_mut().find(|panel| panel.window.id() == id) else {
             return Vec::new();
         };
         let raw_input = panel.state.take_egui_input(&panel.window);
         let mut commands = Vec::new();
-        let mut full = panel.ctx.run_ui(raw_input, |ui| commands.extend(home::screens_ui(ui, home_state, output_on)));
+        let kind = panel.kind;
+        let mut full = panel.ctx.run_ui(raw_input, |ui| match kind {
+            Panel::Screens => commands.extend(home::screens_ui(ui, home_state, output_on)),
+            Panel::Settings => home::settings_ui(ui, home_state),
+        });
         panel.state.handle_platform_output(&panel.window, std::mem::take(&mut full.platform_output));
         let delay = full.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
         panel.next_repaint = Instant::now().checked_add(delay);
@@ -1607,18 +1681,19 @@ impl App {
             config: &panel.config,
             renderer: &mut panel.renderer,
             ctx: &panel.ctx,
-            label: "screens window",
+            label: "panel window",
         };
         let (jobs, screen) = paint_ui(gpu, target, full);
         panel.frames += 1;
-        // Testing aid: a capture run with Settings asked for also saves this window, every
+        // Testing aid: a capture run with a panel asked for also saves that window, every
         // frame once it has settled, so the last one saved is the latest.
+        let ending = if kind == Panel::Screens { "screens.png" } else { "settings.png" };
         if let Some(path) = &self.options.capture_home
             && panel.frames >= 2
             && let Err(e) =
-                capture(gpu, &panel.renderer, &jobs, &screen, panel.config.format, &path.with_extension("screens.png"))
+                capture(gpu, &panel.renderer, &jobs, &screen, panel.config.format, &path.with_extension(ending))
         {
-            eprintln!("Could not save the Screens window: {e}");
+            eprintln!("Could not save the {} window: {e}", kind.title());
         }
         commands
     }
@@ -1739,6 +1814,17 @@ impl App {
     /// Saves the timers and messages when they change, takes a message off when its time is up,
     /// and tells the output what to show over the slides when that changes.
     fn sync_overlay(&mut self) {
+        // The copyright line of the song on screen, on the slides Settings says.
+        let copyright_line = self.running.as_ref().and_then(|running| {
+            let state = &running.home_state;
+            let at = self.show.live()?;
+            if self.bible_slots.contains(&at.presentation) {
+                return None;
+            }
+            let song = self.show.presentations().get(at.presentation)?;
+            (!song.copyright.is_empty() && state.copyright_show.shows_on(at.slide, song.slide_count()))
+                .then(|| song.copyright.line(&song.title, state.ccli_licence.trim()))
+        });
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -1785,6 +1871,7 @@ impl App {
                 .iter()
                 .filter_map(|(id, _)| state.props.iter().find(|prop| prop.id == *id).map(|prop| prop.slide.clone()))
                 .collect(),
+            copyright: copyright_line,
         };
         // While a timer runs, or a message counts down to leaving, the window shows it each second.
         let ticking = state.timers.iter().any(Timer::running)
@@ -1797,10 +1884,9 @@ impl App {
         if running.overlay_sent.as_ref() == Some(&overlay) {
             return;
         }
-        let message_changed = running
-            .overlay_sent
-            .as_ref()
-            .is_none_or(|sent| sent.message != overlay.message || sent.props != overlay.props);
+        let message_changed = running.overlay_sent.as_ref().is_none_or(|sent| {
+            sent.message != overlay.message || sent.props != overlay.props || sent.copyright != overlay.copyright
+        });
         if let Some(output) = &running.output {
             output.send(OutputMsg::Overlay(overlay.clone()));
         }
@@ -1879,7 +1965,8 @@ impl App {
                 });
             }
             A::Quit => {}
-            A::Settings | A::ConfigureScreens => state.settings_open = true,
+            A::Settings => state.preferences_open = true,
+            A::ConfigureScreens => state.settings_open = true,
             A::NewSong => state.new_song = true,
             A::NewSlide => {
                 let song = match (&state.editing, &state.theme_edit) {
@@ -2027,6 +2114,8 @@ impl ApplicationHandler<String> for App {
                 self.bible_page_saved = running.home_state.bible.choices();
                 let prefs = service::load_prefs();
                 running.home_state.apply_prefs(&prefs);
+                // The audience screens start off when Settings says so.
+                let start_off = prefs.start_audience_off;
                 // The screens, as they were left. The first start after screens could be
                 // listed makes the list from how the output was set up before: one screen
                 // placed automatically, and one sent over NDI if NDI was on.
@@ -2057,6 +2146,9 @@ impl ApplicationHandler<String> for App {
                 }
                 running.home_window.request_redraw();
                 self.running = Some(running);
+                if start_off {
+                    self.apply(vec![Command::SetOutputEnabled(false)]);
+                }
                 self.sync_screens(el);
                 // The menu bar, for a run someone is using.
                 #[cfg(target_os = "macos")]
@@ -2083,8 +2175,8 @@ impl ApplicationHandler<String> for App {
     fn user_event(&mut self, el: &ActiveEventLoop, id: String) {
         if let Some(action) = menubar::action_of(&id) {
             self.menu_action(el, action);
-            self.sync_screens_window(el);
-            if let Some(panel) = self.running.as_ref().and_then(|r| r.screens_window.as_ref()) {
+            self.sync_panels(el);
+            for panel in self.running.iter().flat_map(|r| r.panels.iter()) {
                 panel.window.request_redraw();
             }
         }
@@ -2109,12 +2201,12 @@ impl ApplicationHandler<String> for App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        if let Some(panel) = running.screens_window.as_mut().filter(|panel| panel.window.id() == id) {
+        if let Some(at) = running.panels.iter().position(|panel| panel.window.id() == id) {
+            let panel = &mut running.panels[at];
             match &event {
                 WindowEvent::CloseRequested => {
-                    running.home_state.settings_open = false;
-                    running.home_state.identify = false;
-                    running.screens_window = None;
+                    panel.kind.close(&mut running.home_state);
+                    running.panels.remove(at);
                     running.home_window.request_redraw();
                 }
                 WindowEvent::Resized(size) => {
@@ -2126,7 +2218,7 @@ impl ApplicationHandler<String> for App {
                     panel.window.request_redraw();
                 }
                 WindowEvent::RedrawRequested => {
-                    let commands = self.draw_screens_window();
+                    let commands = self.draw_panel(id);
                     self.apply(commands);
                     self.sync_screens(el);
                 }
@@ -2234,6 +2326,7 @@ impl ApplicationHandler<String> for App {
                     self.apply_edit(at, slide);
                 }
                 self.handle_slide_request();
+                self.handle_copyright();
                 self.handle_reflow();
                 self.handle_media_request();
                 self.handle_song_request();
@@ -2292,7 +2385,7 @@ impl ApplicationHandler<String> for App {
                 }
                 self.update_canvas();
                 self.sync_screens(el);
-                self.sync_screens_window(el);
+                self.sync_panels(el);
                 self.sync_overlay();
                 self.tick_menu();
                 // Leaving the Edit view writes the songs changed there straight away.
@@ -2325,13 +2418,13 @@ impl ApplicationHandler<String> for App {
             running.next_repaint = None;
             running.home_window.request_redraw();
         }
-        let mut panel_at = None;
-        if let Some(panel) = running.screens_window.as_mut() {
+        let mut panel_at: Option<Instant> = None;
+        for panel in &mut running.panels {
             if panel.next_repaint.is_some_and(|at| at <= Instant::now()) {
                 panel.next_repaint = None;
                 panel.window.request_redraw();
             }
-            panel_at = panel.next_repaint;
+            panel_at = [panel_at, panel.next_repaint].into_iter().flatten().min();
         }
         match [running.next_repaint, panel_at, save_at].into_iter().flatten().min() {
             Some(at) => el.set_control_flow(ControlFlow::WaitUntil(at)),
@@ -2406,6 +2499,7 @@ fn main() -> ExitCode {
             id: pc_model::Uuid::new_v4(),
             title: "Bible".to_owned(),
             groups: Vec::new(),
+            copyright: pc_model::Copyright::default(),
         });
         sources.push(None);
     }

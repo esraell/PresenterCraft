@@ -275,6 +275,34 @@ fn items() -> impl Iterator<Item = (Action, Option<Shortcut>)> {
     })
 }
 
+impl Shortcut {
+    /// The shortcut as a Mac menu writes it: "⇧⌘F".
+    pub fn text(self) -> String {
+        let mut out = String::new();
+        for (on, mark) in [(self.control, "⌃"), (self.option, "⌥"), (self.shift, "⇧"), (self.command, "⌘")] {
+            if on {
+                out.push_str(mark);
+            }
+        }
+        out.push(self.key);
+        out
+    }
+}
+
+/// Every menu item that has a shortcut, with its menu, its name and the shortcut, in menu order.
+pub fn shortcuts() -> Vec<(&'static str, &'static str, String)> {
+    MENUS
+        .iter()
+        .flat_map(|(menu, entries)| entries.iter().map(move |entry| (*menu, entry)))
+        .filter_map(|(menu, entry)| match entry {
+            Entry::Do(_, label, Some(shortcut)) | Entry::Check(_, label, Some(shortcut)) => {
+                Some((menu, *label, shortcut.text()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// The id a menu item is known by.
 pub fn id_of(action: Action) -> String {
     format!("{action:?}")

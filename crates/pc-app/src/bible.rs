@@ -263,7 +263,12 @@ pub fn build_passage(
             slides: vec![Slide { template, ..Slide::new(objects) }],
         });
     }
-    Ok(Presentation { id: Uuid::new_v4(), title: lead.bible.label(first, last), groups })
+    Ok(Presentation {
+        id: Uuid::new_v4(),
+        title: lead.bible.label(first, last),
+        groups,
+        copyright: pc_model::Copyright::default(),
+    })
 }
 
 const BLUE: Color32 = Color32::from_rgb(47, 123, 246);

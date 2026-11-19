@@ -103,6 +103,12 @@ ProPresenter.
 
 <img src="docs/images/screens.png" alt="The Screens window" width="620">
 
+**Copyright and settings**
+- Each song's Artist, Author, Publisher, Year and CCLI Song # (Info beside its title), and a
+  copyright line on the screens on a song's first slide, last slide or every slide, with the
+  church's CCLI licence number, chosen in Settings.
+- A Settings window (Cmd+,) with General, Screens, Groups and Key Mappings panes.
+
 **On the Mac**
 - A menu bar with the usual menus and shortcuts (New Song, Undo, Cut/Copy/Paste, the views,
   Clear, Audience and Stage Output on/off with Cmd+1 and Cmd+2, Configure Screens), showing
@@ -159,7 +165,8 @@ Other options: `--list-displays`, `--output-display N`.
 | P, T, I, E, O | Pre-chorus, Tag, Intro, Ending, Outro |
 | Cmd+N | new song |
 | Cmd+F | search the library (titles and words) |
-| Cmd+, or Option+Cmd+1 | Screens |
+| Cmd+, | Settings |
+| Option+Cmd+1 | Screens |
 | Cmd+1 / Cmd+2 | audience / stage screens on or off |
 | Control+S, E, B, T | Show, Edit, Bible, Themes |
 

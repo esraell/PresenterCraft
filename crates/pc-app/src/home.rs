@@ -121,6 +121,16 @@ pub struct HomeState {
     /// A view asked for from the menu bar: 0 Show, 1 Edit, 2 Bible, 3 Themes. The toolbar
     /// takes it as if its tab had been clicked.
     pub view_request: Option<usize>,
+    /// True while the Settings window is open, and which of its panes is showing.
+    pub preferences_open: bool,
+    pub preferences_pane: usize,
+    /// When a song's copyright line is shown, and the church's CCLI licence number.
+    pub copyright_show: crate::service::CopyrightShow,
+    pub ccli_licence: String,
+    /// True to start with the audience screens off.
+    pub start_audience_off: bool,
+    /// New copyright details for a song, from its Info pop-over.
+    pub copyright_request: Option<(usize, pc_model::Copyright)>,
     /// True while the Screens window is open.
     pub settings_open: bool,
     /// The displays connected now, kept up to date by the app.
@@ -635,6 +645,12 @@ impl Default for HomeState {
             settings_open: false,
             displays: Vec::new(),
             view_request: None,
+            preferences_open: false,
+            preferences_pane: 0,
+            copyright_show: crate::service::CopyrightShow::Never,
+            ccli_licence: String::new(),
+            start_audience_off: false,
+            copyright_request: None,
             edit_request: None,
             slide_clip: None,
             slide_request: None,
@@ -702,6 +718,9 @@ impl HomeState {
             }
             .to_owned(),
             service_height: self.service_height.map(f32::round),
+            copyright_show: self.copyright_show,
+            ccli_licence: self.ccli_licence.clone(),
+            start_audience_off: self.start_audience_off,
             stage_off: !self.stage_on,
             ..crate::service::Prefs::default()
         }
@@ -723,6 +742,9 @@ impl HomeState {
             _ => SlideView::Grid,
         };
         self.service_height = prefs.service_height;
+        self.copyright_show = prefs.copyright_show;
+        self.ccli_licence = prefs.ccli_licence.clone();
+        self.start_audience_off = prefs.start_audience_off;
         self.stage_on = !prefs.stage_off;
     }
 
@@ -824,7 +846,7 @@ pub fn home_ui(
     ui.visuals_mut().extreme_bg_color = FIELD;
     crate::studio::toolbar(ui, show, state, &mut commands);
     if ui.input(|input| command_key(input, egui::Key::Comma, false)) {
-        state.settings_open = !state.settings_open;
+        state.preferences_open = true;
     }
     // Command-F searches the library (on the Mac the menu bar's Find does this).
     if ui.input(|input| command_key(input, egui::Key::F, false)) {
@@ -2296,6 +2318,120 @@ const SHAPE_KEYS: [char; 10] = ['O', 'R', 'E', 'G', 'L', 'H', 'P', 'S', 'D', 'A'
 /// Room after a song's title, for the field it turns into when renamed to fit in.
 const TITLE_ROOM: f32 = 12.0;
 
+/// The Settings window's contents: its panes down the left, the chosen one on the right.
+pub fn settings_ui(ui: &mut egui::Ui, state: &mut HomeState) {
+    use crate::studio::{ACCENT, HOVER, PANEL, TEXT, TEXT_DIM};
+    const PANES: [&str; 4] = ["General", "Screens", "Groups", "Key Mappings"];
+    egui::Panel::left("settings panes")
+        .resizable(false)
+        .exact_size(180.0)
+        .frame(Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 10, right: 10, top: 14, bottom: 10 }))
+        .show(ui, |ui| {
+            for (index, name) in PANES.into_iter().enumerate() {
+                let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+                if state.preferences_pane == index {
+                    ui.painter().rect_filled(row, 6.0, ACCENT.gamma_multiply(0.35));
+                } else if response.hovered() {
+                    ui.painter().rect_filled(row, 6.0, HOVER);
+                }
+                ui.painter().text(
+                    row.left_center() + vec2(10.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    name,
+                    FontId::proportional(13.5),
+                    TEXT,
+                );
+                if response.clicked() {
+                    state.preferences_pane = index;
+                }
+            }
+        });
+    egui::CentralPanel::default().frame(Frame::new().fill(crate::studio::BG).inner_margin(20)).show(ui, |ui| {
+        let pane = PANES.get(state.preferences_pane).copied().unwrap_or("General");
+        ui.label(egui::RichText::new(pane).font(crate::studio::semibold(18.0)).color(TEXT));
+        ui.add_space(12.0);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match pane {
+            "General" => {
+                crate::studio::caption(ui, "COPYRIGHT");
+                ui.label("Show a song's copyright line on the audience screens:");
+                for choice in crate::service::CopyrightShow::ALL {
+                    ui.radio_value(&mut state.copyright_show, choice, choice.name());
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("CCLI License Number");
+                    ui.add(egui::TextEdit::singleline(&mut state.ccli_licence).desired_width(160.0));
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "A song's writer, publisher and CCLI song number are set with Info beside its title.",
+                    )
+                    .size(11.5)
+                    .color(TEXT_DIM),
+                );
+            }
+            "Screens" => {
+                if ui.button("Configure Screens…").on_hover_text("Option-Command-1").clicked() {
+                    state.settings_open = true;
+                }
+                ui.add_space(10.0);
+                ui.checkbox(&mut state.start_audience_off, "Start with the audience screens off")
+                    .on_hover_text("When PresenterCraft opens, nothing is shown until Audience is switched on");
+                ui.checkbox(&mut state.stage_on, "Stage screens on");
+            }
+            "Groups" => {
+                ui.label(egui::RichText::new("Each group's colour, and the key that jumps to it.").color(TEXT_DIM));
+                ui.add_space(8.0);
+                egui::Grid::new("groups").num_columns(3).spacing([16.0, 8.0]).show(ui, |ui| {
+                    for (key, names) in pc_model::GROUP_KEYS {
+                        let name =
+                            names.iter().find(|name| name.contains(' ')).or(names.first()).copied().unwrap_or("");
+                        let mut shown = name.to_owned();
+                        if let Some(first) = shown.get_mut(0..1) {
+                            first.make_ascii_uppercase();
+                        }
+                        let (swatch, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                        ui.painter().rect_filled(swatch, 4.0, color32(pc_model::group_color(name)));
+                        ui.label(shown);
+                        ui.label(egui::RichText::new(key.to_ascii_uppercase().to_string()).monospace().color(TEXT_DIM));
+                        ui.end_row();
+                    }
+                });
+            }
+            _ => {
+                ui.label(egui::RichText::new("The keys that run the show, and the menu shortcuts.").color(TEXT_DIM));
+                ui.add_space(8.0);
+                egui::Grid::new("keys").num_columns(3).spacing([16.0, 6.0]).striped(true).show(ui, |ui| {
+                    let show_keys = [
+                        ("Show", "Next slide", "→ or Space"),
+                        ("Show", "Previous slide", "←"),
+                        ("Show", "First / last slide", "Home / End"),
+                        ("Show", "Clear All", "Esc or F1"),
+                        ("Show", "Clear Slide", "F2"),
+                        ("Show", "Clear Media", "F3"),
+                        ("Show", "Clear Props", "F4"),
+                        ("Show", "Clear Messages", "F6"),
+                        ("Show", "Jump to a group", "its letter (see Groups)"),
+                    ];
+                    for (area, command, key) in show_keys {
+                        ui.label(egui::RichText::new(area).color(TEXT_DIM));
+                        ui.label(command);
+                        ui.label(egui::RichText::new(key).monospace());
+                        ui.end_row();
+                    }
+                    for (menu, command, key) in crate::menubar::shortcuts() {
+                        ui.label(egui::RichText::new(menu).color(TEXT_DIM));
+                        ui.label(command.trim_end_matches('…'));
+                        ui.label(egui::RichText::new(key).monospace());
+                        ui.end_row();
+                    }
+                });
+            }
+        });
+    });
+}
+
 /// A switch drawn the way the Mac draws one: a capsule, green with the knob at the right when
 /// on. Returns true when it was clicked.
 fn switch(ui: &mut egui::Ui, on: bool, hint: &str) -> bool {
@@ -3312,6 +3448,37 @@ fn slide_area(
                 let count = if slides == 1 { "1 slide".to_owned() } else { format!("{slides} slides") };
                 ui.label(egui::RichText::new(count).size(12.0).color(crate::studio::TEXT_FAINT));
                 let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&show.selected()));
+                if !from_bible {
+                    let info = ui.small_button("Info").on_hover_text("The song's writer, publisher and CCLI number");
+                    egui::Popup::from_toggle_button_response(&info)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            ui.set_width(320.0);
+                            let mut details = presentation.copyright.clone();
+                            egui::Grid::new("song info").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                                for (label, value) in [
+                                    ("Artist", &mut details.artist),
+                                    ("Author", &mut details.author),
+                                    ("Publisher", &mut details.publisher),
+                                    ("Year", &mut details.year),
+                                    ("CCLI Song #", &mut details.ccli_song),
+                                ] {
+                                    ui.label(egui::RichText::new(label).color(DIM));
+                                    ui.add(egui::TextEdit::singleline(value).desired_width(200.0));
+                                    ui.end_row();
+                                }
+                            });
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("Settings, General says when the copyright line is shown.")
+                                    .size(11.0)
+                                    .color(DIM),
+                            );
+                            if details != presentation.copyright {
+                                state.copyright_request = Some((show.selected(), details));
+                            }
+                        });
+                }
                 if !from_bible
                     && ui.small_button("Reflow").on_hover_text("Edit the song's words as text (Control-R)").clicked()
                 {

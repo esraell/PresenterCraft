@@ -60,6 +60,24 @@ pub fn overlay(props: &[Slide], message: Option<&Slide>) -> Option<Slide> {
     Some(Slide::new(objects))
 }
 
+/// A song's copyright line, small along the bottom of the screen.
+pub fn copyright_slide(line: &str) -> Slide {
+    let builtin = pc_model::Theme::builtin();
+    let mut look = builtin.templates[0].boxes[0].clone();
+    look.size = 24.0;
+    look.min_size = 14.0;
+    look.weight = 500;
+    look.fill = pc_model::Rgba::rgb(220, 220, 220);
+    look.align = pc_model::Align::Left;
+    look.outline_width = 0.0;
+    let mut words = Object::text(Role("copyright".to_owned()), line);
+    words.frame = Some(SlideRect { x: 60.0, y: 1020.0, w: 1800.0, h: 44.0 });
+    if let Some(style) = words.text_style_mut() {
+        *style = TextStyle::all(&look);
+    }
+    Slide::new(vec![words])
+}
+
 fn file() -> Option<std::path::PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("props.json"))
 }
