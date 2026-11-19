@@ -44,12 +44,13 @@ pub fn parse_song_text(title: &str, text: &str) -> Presentation {
 pub fn group_color(name: &str) -> Rgba {
     const PALETTE: [Rgba; 8] = [
         Rgba::rgb(66, 133, 244),
-        Rgba::rgb(219, 68, 85),
+        // Not red: in the app red means "on screen now" and nothing else.
+        Rgba::rgb(204, 78, 180),
         Rgba::rgb(244, 160, 0),
         Rgba::rgb(52, 168, 110),
         Rgba::rgb(155, 89, 182),
         Rgba::rgb(0, 172, 193),
-        Rgba::rgb(240, 98, 146),
+        Rgba::rgb(120, 144, 156),
         Rgba::rgb(141, 110, 99),
     ];
     const KNOWN: [(&str, usize); 8] =

@@ -4,6 +4,8 @@
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, pos2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// The whole set is kept, though parts of the app that use some of them are not built yet.
+#[cfg_attr(not(test), allow(dead_code))]
 pub enum Icon {
     Search,
     Theme,

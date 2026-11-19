@@ -10,6 +10,7 @@ mod inspector;
 mod load;
 mod media;
 mod output;
+mod studio;
 mod theme_store;
 mod thumbs;
 
@@ -114,20 +115,6 @@ fn surface_format(surface: &wgpu::Surface<'_>, adapter: &wgpu::Adapter) -> Resul
         .into_iter()
         .find(|f| matches!(f, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm))
         .ok_or_else(|| "This display does not offer a colour format PresenterCraft can draw to.".to_owned())
-}
-
-/// Adds a wide-coverage system font behind the interface's own, so song titles in any script
-/// show as letters. Without it the interface still works with its built-in font.
-fn add_fallback_font(ctx: &egui::Context) {
-    const CANDIDATES: [&str; 2] =
-        ["/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "C:\\Windows\\Fonts\\arialuni.ttf"];
-    let Some(bytes) = CANDIDATES.iter().find_map(|path| std::fs::read(path).ok()) else { return };
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert("fallback".to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
-    for family in fonts.families.values_mut() {
-        family.push("fallback".to_owned());
-    }
-    ctx.set_fonts(fonts);
 }
 
 /// The connected displays as the window system lists them.
@@ -327,11 +314,7 @@ impl App {
         home_surface.configure(&gpu.device, &home_config);
 
         let egui_ctx = egui::Context::default();
-        add_fallback_font(&egui_ctx);
-        let mut visuals = egui::Visuals::dark();
-        visuals.selection.bg_fill = home::ACCENT.gamma_multiply(0.6);
-        visuals.selection.stroke.color = egui::Color32::WHITE;
-        egui_ctx.set_visuals(visuals);
+        studio::apply_style(&egui_ctx);
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
