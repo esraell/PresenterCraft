@@ -1,5 +1,7 @@
 use parley::{Alignment, AlignmentOptions, FontWeight, Layout, LineHeight, PositionedLayoutItem, StyleProperty};
-use pc_model::{Align, BoxStyle, Object, ObjectKind, Rgba, Role, SLIDE_HEIGHT, SLIDE_WIDTH, Slide, SlideRect, Theme};
+use pc_model::{
+    Align, BoxStyle, Object, ObjectKind, Rgba, Role, SLIDE_HEIGHT, SLIDE_WIDTH, Slide, SlideRect, Theme, VAlign,
+};
 use vello::kurbo::{Affine, Join, Rect, Stroke};
 use vello::peniko::{Color, Fill, Mix};
 use vello::{Glyph, Scene};
@@ -71,6 +73,11 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
                 let whole_slide = Rect::new(0.0, 0.0, f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
                 scene.push_layer(Fill::NonZero, Mix::Normal, object.opacity.clamp(0.0, 1.0), to_target, &whole_slide);
             }
+            if let Some(fill) = object.fill {
+                let (x, y) = (f64::from(rect.x), f64::from(rect.y));
+                let filled = Rect::new(x, y, x + f64::from(rect.w), y + f64::from(rect.h));
+                scene.fill(Fill::NonZero, placed, color(fill), None, &filled);
+            }
             match &object.kind {
                 ObjectKind::Text { text, style } => {
                     // The theme's style for the object's role, with the object's own settings over it.
@@ -109,6 +116,8 @@ fn lay_out(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: f3
     if style.italic {
         builder.push_default(StyleProperty::FontStyle(parley::FontStyle::Italic));
     }
+    builder.push_default(StyleProperty::Underline(style.underline));
+    builder.push_default(StyleProperty::Strikethrough(style.strike));
     builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(1.25)));
     builder.push_default(StyleProperty::FontFamily(style.font_family.as_str().into()));
     let mut layout: Layout<()> = builder.build(text);
@@ -152,14 +161,28 @@ fn draw_text_box(
     style: &BoxStyle,
     rect: SlideRect,
 ) -> bool {
+    let text = &*style.caps.apply(text);
     let (layout, overflow) = fit(fonts, text, style, rect);
-    // Centre the text block vertically in its box (it may spill both ways when it overflows).
-    let top = f64::from(rect.y) + (f64::from(rect.h) - f64::from(layout.height())) / 2.0;
+    // Place the text block in its box (in the middle it may spill both ways when it overflows).
+    let spare = f64::from(rect.h) - f64::from(layout.height());
+    let top = f64::from(rect.y)
+        + match style.valign {
+            VAlign::Top => 0.0,
+            VAlign::Middle => spare / 2.0,
+            VAlign::Bottom => spare,
+        };
     let origin = to_target * Affine::translate((f64::from(rect.x), top));
     let outline_width = f64::from(style.outline_width);
     let outline = Stroke::new(outline_width * 2.0).with_join(Join::Round);
     let fill = color(style.fill);
     let outline_color = color(style.outline_color);
+    let look = style.shadow_look;
+    let fall = f64::from(look.angle).to_radians();
+    // The angle is counted anticlockwise, and the slide's y runs downwards.
+    let shadow_offset = (f64::from(look.offset) * fall.cos(), -f64::from(look.offset) * fall.sin());
+    // Six faint layers add up to the wanted opacity where they all overlap.
+    let layer_alpha = 1.0 - (1.0 - look.opacity.clamp(0.0, 1.0)).powf(1.0 / 6.0);
+    let spread = f64::from(look.blur.max(0.0)) / 3.0;
 
     for pass in [Pass::Shadow, Pass::Outline, Pass::Fill] {
         if (pass == Pass::Shadow && !style.shadow) || (pass == Pass::Outline && outline_width <= 0.0) {
@@ -178,17 +201,17 @@ fn draw_text_box(
                     Pass::Shadow => {
                         // The renderer cannot blur glyphs, so a soft shadow is several faint,
                         // widening strokes, offset down and to the right.
-                        let shadow = origin * Affine::translate((6.0, 8.0));
+                        let shadow = origin * Affine::translate(shadow_offset);
                         for step in 1..=6 {
                             let stroke =
-                                Stroke::new(outline_width * 2.0 + f64::from(step) * 5.0).with_join(Join::Round);
+                                Stroke::new(outline_width * 2.0 + f64::from(step) * spread).with_join(Join::Round);
                             scene
                                 .draw_glyphs(font)
                                 .font_size(size)
                                 .transform(shadow)
                                 .normalized_coords(&coords)
-                                .brush(Color::BLACK)
-                                .brush_alpha(0.10)
+                                .brush(color(look.color))
+                                .brush_alpha(layer_alpha)
                                 .draw(&stroke, glyphs.iter().copied());
                         }
                     }
@@ -206,6 +229,23 @@ fn draw_text_box(
                         .normalized_coords(&coords)
                         .brush(fill)
                         .draw(Fill::NonZero, glyphs.iter().copied()),
+                }
+                // Underline and strike-through are bars across the run, in the text's colour.
+                if pass == Pass::Fill {
+                    let metrics = run.run().font_metrics();
+                    let (left, baseline) = (f64::from(run.offset()), f64::from(run.baseline()));
+                    let right = left + f64::from(run.advance());
+                    let bars = [
+                        (style.underline, metrics.underline_offset, metrics.underline_size),
+                        (style.strike, metrics.strikethrough_offset, metrics.strikethrough_size),
+                    ];
+                    for (wanted, offset, thickness) in bars {
+                        if wanted {
+                            let y = baseline - f64::from(offset);
+                            let bar = Rect::new(left, y, right, y + f64::from(thickness.max(1.0)));
+                            scene.fill(Fill::NonZero, origin, fill, None, &bar);
+                        }
+                    }
                 }
             }
         }
@@ -277,6 +317,23 @@ mod tests {
     fn huge_text_overflows_not_panics() {
         assert!(overflows(&slide(&["A line of words"; 40].join("\n"), Some("перевод"))));
         assert!(overflows(&slide(&"W".repeat(400), None)));
+    }
+
+    #[test]
+    fn every_text_setting_draws() {
+        use pc_model::{Caps, TextStyle};
+        let mut object = Object::text(Role::primary(), "Light rises\nover the hills");
+        object.fill = Some(Rgba { r: 0, g: 0, b: 0, a: 160 });
+        if let ObjectKind::Text { style, .. } = &mut object.kind {
+            *style = TextStyle {
+                valign: Some(VAlign::Bottom),
+                caps: Some(Caps::AllCaps),
+                underline: Some(true),
+                strike: Some(true),
+                ..TextStyle::default()
+            };
+        }
+        assert!(!overflows(&Slide::new(vec![object])));
     }
 
     #[test]

@@ -19,6 +19,73 @@ pub enum Align {
     Right,
 }
 
+/// Where the text sits between the top and bottom of its box.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VAlign {
+    Top,
+    #[default]
+    Middle,
+    Bottom,
+}
+
+/// How the letters of the text are changed when it is drawn. The stored text is untouched.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Caps {
+    #[default]
+    None,
+    AllCaps,
+    Lowercase,
+    TitleCase,
+}
+
+impl Caps {
+    /// The text as it is drawn under this setting.
+    pub fn apply<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        match self {
+            Caps::None => text.into(),
+            Caps::AllCaps => text.to_uppercase().into(),
+            Caps::Lowercase => text.to_lowercase().into(),
+            Caps::TitleCase => {
+                let mut out = String::with_capacity(text.len());
+                let mut start = true;
+                for c in text.chars() {
+                    if start && c.is_alphabetic() {
+                        out.extend(c.to_uppercase());
+                    } else {
+                        out.extend(c.to_lowercase());
+                    }
+                    // An apostrophe is inside a word: "don't" becomes "Don't", not "Don'T".
+                    start = !(c.is_alphanumeric() || c == '\'' || c == '\u{2019}');
+                }
+                out.into()
+            }
+        }
+    }
+}
+
+/// A soft shadow behind text.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Shadow {
+    pub color: Rgba,
+    /// From 0 (invisible) to 1 (solid).
+    pub opacity: f32,
+    /// The direction the shadow falls in, in degrees, counted anticlockwise from the right:
+    /// 315 is down and to the right.
+    pub angle: f32,
+    /// How far the shadow falls, in slide units.
+    pub offset: f32,
+    /// How far the shadow spreads, in slide units.
+    pub blur: f32,
+}
+
+impl Default for Shadow {
+    fn default() -> Shadow {
+        Shadow { color: Rgba::BLACK, opacity: 0.5, angle: 315.0, offset: 10.0, blur: 15.0 }
+    }
+}
+
 /// How the text box with one role is placed and drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BoxStyle {
@@ -36,6 +103,11 @@ pub struct BoxStyle {
     pub outline_width: f32,
     pub outline_color: Rgba,
     pub shadow: bool,
+    pub shadow_look: Shadow,
+    pub valign: VAlign,
+    pub caps: Caps,
+    pub underline: bool,
+    pub strike: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,6 +135,11 @@ impl Theme {
             outline_width: outline,
             outline_color: Rgba::BLACK,
             shadow: true,
+            shadow_look: Shadow::default(),
+            valign: VAlign::Middle,
+            caps: Caps::None,
+            underline: false,
+            strike: false,
         };
         Theme {
             name: "Built-in".to_owned(),
@@ -124,6 +201,16 @@ pub struct TextStyle {
     pub outline_color: Option<Rgba>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow_look: Option<Shadow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valign: Option<VAlign>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caps: Option<Caps>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strike: Option<bool>,
 }
 
 impl TextStyle {
@@ -149,6 +236,11 @@ impl TextStyle {
             outline_width: self.outline_width.unwrap_or(base.outline_width),
             outline_color: self.outline_color.unwrap_or(base.outline_color),
             shadow: self.shadow.unwrap_or(base.shadow),
+            shadow_look: self.shadow_look.unwrap_or(base.shadow_look),
+            valign: self.valign.unwrap_or(base.valign),
+            caps: self.caps.unwrap_or(base.caps),
+            underline: self.underline.unwrap_or(base.underline),
+            strike: self.strike.unwrap_or(base.strike),
         }
     }
 
@@ -164,6 +256,11 @@ impl TextStyle {
             outline_width: (wanted.outline_width != base.outline_width).then_some(wanted.outline_width),
             outline_color: (wanted.outline_color != base.outline_color).then_some(wanted.outline_color),
             shadow: (wanted.shadow != base.shadow).then_some(wanted.shadow),
+            shadow_look: (wanted.shadow_look != base.shadow_look).then_some(wanted.shadow_look),
+            valign: (wanted.valign != base.valign).then_some(wanted.valign),
+            caps: (wanted.caps != base.caps).then_some(wanted.caps),
+            underline: (wanted.underline != base.underline).then_some(wanted.underline),
+            strike: (wanted.strike != base.strike).then_some(wanted.strike),
         }
     }
 }
@@ -194,6 +291,33 @@ pub fn missing_fonts(used: &[String], installed: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capitalisation_changes_only_how_text_is_drawn() {
+        assert_eq!(Caps::None.apply("Свет rises"), "Свет rises");
+        assert_eq!(Caps::AllCaps.apply("Свет rises"), "СВЕТ RISES");
+        assert_eq!(Caps::Lowercase.apply("Свет RISES"), "свет rises");
+        assert_eq!(Caps::TitleCase.apply("i don't KNOW\nсвет встаёт"), "I Don't Know\nСвет Встаёт");
+    }
+
+    #[test]
+    fn new_style_settings_are_kept_only_where_they_differ_from_the_theme() {
+        let theme = Theme::builtin();
+        let base = theme.style_for(&Role::primary()).unwrap();
+        let mut wanted = base.clone();
+        wanted.valign = VAlign::Bottom;
+        wanted.underline = true;
+        wanted.shadow_look.offset = 3.0;
+        let own = TextStyle::between(base, &wanted);
+        assert_eq!(own.valign, Some(VAlign::Bottom));
+        assert_eq!(own.underline, Some(true));
+        assert_eq!(own.shadow_look.map(|s| s.offset), Some(3.0));
+        assert_eq!((own.caps, own.strike, own.size), (None, None, None));
+        assert_eq!(own.over(base), wanted);
+        // An old file with none of these fields still reads, and looks as the theme has it.
+        let old: TextStyle = serde_json::from_str("{\"size\": 80.0}").unwrap();
+        assert_eq!(old.over(base).valign, VAlign::Middle);
+    }
 
     #[test]
     fn the_fonts_a_song_uses_are_listed_once_each() {

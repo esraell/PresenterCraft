@@ -236,6 +236,7 @@ impl EditDraft {
             frame: Some(SlideRect { x: (SLIDE_WIDTH - w) / 2.0, y: (SLIDE_HEIGHT - h) / 2.0, w, h }),
             rotation: 0.0,
             opacity: 1.0,
+            fill: None,
             kind: ObjectKind::Text { text: "Text".to_owned(), style: TextStyle::default() },
         };
         self.selected = Some(object.id);

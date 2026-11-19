@@ -85,6 +85,9 @@ pub struct Object {
     /// From 0 (invisible) to 1 (solid).
     #[serde(default = "full_opacity", skip_serializing_if = "is_full")]
     pub opacity: f32,
+    /// The colour the object's box is filled with behind its content. `None` leaves it clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Rgba>,
     #[serde(flatten)]
     pub kind: ObjectKind,
 }
@@ -106,6 +109,7 @@ impl Object {
             frame: None,
             rotation: 0.0,
             opacity: 1.0,
+            fill: None,
             kind: ObjectKind::Text { text: text.into(), style: TextStyle::default() },
         }
     }

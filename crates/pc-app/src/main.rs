@@ -4,6 +4,7 @@ mod displays;
 mod editor;
 mod home;
 mod icons;
+mod inspector;
 mod load;
 mod media;
 mod output;
@@ -647,6 +648,12 @@ impl App {
                 if let Some(draft) = running.home_state.editing.as_mut() {
                     draft.selected = draft.slide.objects.first().map(|object| object.id);
                 }
+                // Testing aid: which tab of the inspector to show.
+                running.home_state.inspector.tab = match std::env::var("PRESENTERCRAFT_INSPECTOR_TAB").as_deref() {
+                    Ok("shape") => inspector::InspectorTab::Shape,
+                    Ok("build") => inspector::InspectorTab::Build,
+                    _ => inspector::InspectorTab::Text,
+                };
             }
             if running.frames == CAPTURE_AT {
                 match capture(gpu, egui_renderer, &jobs, &screen, home_config.format, path) {
