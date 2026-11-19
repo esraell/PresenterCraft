@@ -12,6 +12,7 @@ use pc_engine::{Command, Layer, Show, SlideRef};
 use pc_model::{Align as TextAlign, ObjectKind, Rgba, Slide, SlideRect, TextStyle, Theme};
 use pc_render::object_frame;
 
+use crate::displays::{DisplayInfo, Placement};
 use crate::editor::EditDraft;
 
 use crate::icons::{self, Icon};
@@ -77,6 +78,16 @@ pub struct HomeState {
     pub fonts: std::sync::Arc<Vec<String>>,
     /// True while the Bible page is showing in place of the slide grid.
     pub bible_open: bool,
+    /// True while the Settings window is open, and which of its panes is showing.
+    pub settings_open: bool,
+    pub settings_pane: usize,
+    /// The displays connected now, kept up to date by the app while Settings is open.
+    pub displays: Vec<DisplayInfo>,
+    /// Where the audience output is now.
+    pub output_placement: Placement,
+    /// Where the operator has just asked for the audience output to go. The app takes this
+    /// and moves the output.
+    pub requested_placement: Option<Placement>,
     /// What is typed in the Bible page's two fields, and its rows of translations.
     pub bible: BiblePage,
 }
@@ -175,6 +186,11 @@ impl Default for HomeState {
             live_edit: false,
             fonts: std::sync::Arc::default(),
             bible_open: false,
+            settings_open: false,
+            settings_pane: 1,
+            displays: Vec::new(),
+            output_placement: Placement::Windowed,
+            requested_placement: None,
             bible: BiblePage::default(),
         }
     }
@@ -396,6 +412,10 @@ pub fn home_ui(
     // Text boxes are dark wells in the lighter side columns.
     ui.visuals_mut().extreme_bg_color = FIELD;
     toolbar(ui, show, state, &mut commands);
+    if ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Comma)) {
+        state.settings_open = !state.settings_open;
+    }
+    settings_window(ui, state);
     if state.editing.is_some() {
         edit_view(ui, show, state, theme, thumb, canvas);
         return commands;
@@ -435,7 +455,7 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
                         selected: state.editing.is_none() && state.bible_open,
                         built: true,
                     },
-                    Tool::ghost(Icon::More, "More"),
+                    Tool { face: Icon::More.into(), label: "More", selected: state.settings_open, built: true },
                 ],
             );
             match views {
@@ -447,6 +467,8 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
                     state.editing = None;
                     state.bible_open = true;
                 }
+                // More opens Settings for now; other items will join it in a menu.
+                Some(4) => state.settings_open = !state.settings_open,
                 // Edit opens the slide that was last on screen, or the song's first slide.
                 Some(1) if state.editing.is_none() => {
                     let at = show.cursor().unwrap_or(SlideRef { presentation: show.selected(), slide: 0 });
@@ -1584,6 +1606,90 @@ fn edit_view(
     }
 }
 
+/// The panes of the Settings window, in order.
+const SETTINGS_PANES: [&str; 10] =
+    ["General", "Screens", "Audio", "Network", "Inputs", "Devices", "Media", "Import", "Groups", "Slide Labels"];
+
+/// The Settings window. The Screens pane works: it chooses the display the audience output
+/// is shown on. The other panes are in place and say they are not built yet.
+fn settings_window(ui: &mut egui::Ui, state: &mut HomeState) {
+    if !state.settings_open {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("Settings")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .fade_in(false)
+        .fade_out(false)
+        .default_size([640.0, 420.0])
+        .anchor(Align2::CENTER_CENTER, [0.0, -20.0])
+        .show(ui.ctx(), |ui| {
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(150.0);
+                    for (index, name) in SETTINGS_PANES.into_iter().enumerate() {
+                        if ui.selectable_label(state.settings_pane == index, name).clicked() {
+                            state.settings_pane = index;
+                        }
+                    }
+                });
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width(450.0);
+                    ui.set_min_height(360.0);
+                    let name = SETTINGS_PANES.get(state.settings_pane).copied().unwrap_or("General");
+                    ui.heading(name);
+                    ui.add_space(6.0);
+                    if name == "Screens" {
+                        screens_pane(ui, state);
+                    } else {
+                        ui.label(egui::RichText::new(format!("{name} settings are not built yet.")).color(DIM));
+                    }
+                });
+            });
+        });
+    if !open {
+        state.settings_open = false;
+    }
+}
+
+/// The Screens pane: the audience screen and where it is shown.
+fn screens_pane(ui: &mut egui::Ui, state: &mut HomeState) {
+    section_label(ui, "AUDIENCE SCREEN");
+    ui.label("Show the audience output on:");
+    ui.add_space(2.0);
+    let mut wanted = state.output_placement;
+    for display in &state.displays {
+        let label = format!("Display {}:  {}   {} x {}", display.index + 1, display.name, display.w, display.h);
+        ui.radio_value(&mut wanted, Placement::Fullscreen(display.index), label)
+            .on_hover_text("Fill this display with the audience output");
+    }
+    ui.radio_value(&mut wanted, Placement::Windowed, "A window")
+        .on_hover_text("Show the audience output in an ordinary window, for trying things out");
+    if state.displays.is_empty() {
+        ui.label(egui::RichText::new("No displays were found.").color(DIM));
+    }
+    if wanted != state.output_placement {
+        state.requested_placement = Some(wanted);
+    }
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(
+            "Choosing the display this window is on covers this window. Press Cmd+, to open Settings again.",
+        )
+        .size(11.5)
+        .color(DIM),
+    );
+    ui.add_space(12.0);
+    section_label(ui, "STAGE SCREEN");
+    ui.label(egui::RichText::new("The stage screen is not built yet.").color(DIM));
+    ui.add_space(12.0);
+    section_label(ui, "OUTPUTS");
+    ui.label(egui::RichText::new("NDI and other outputs are not built yet.").color(DIM));
+}
+
 /// The Bible page, in place of the slide grid: a field for a reference, a search field, and a
 /// row for each translation saying where its verse and its reference go on the slide. Looking
 /// verses up is not built yet, so this is the layout with its controls in place.
@@ -1994,6 +2100,27 @@ mod tests {
         assert!(page.remove_row(0) && page.remove_row(0));
         assert_eq!(page.rows.len(), 1);
         assert!(!page.remove_row(0), "one row always stays");
+    }
+
+    #[test]
+    fn the_settings_window_draws_every_pane() {
+        let show = show(2);
+        let ctx = egui::Context::default();
+        for pane in 0..SETTINGS_PANES.len() + 1 {
+            let mut state = HomeState {
+                settings_open: true,
+                settings_pane: pane,
+                displays: vec![
+                    DisplayInfo { index: 0, name: "Built-in".into(), x: 0, y: 0, w: 3024, h: 1964 },
+                    DisplayInfo { index: 1, name: "Projector".into(), x: 3024, y: 0, w: 1920, h: 1080 },
+                ],
+                output_placement: Placement::Fullscreen(1),
+                ..HomeState::default()
+            };
+            count_thumbs(&ctx, &show, &mut state);
+            assert!(state.settings_open, "drawing must not close Settings");
+            assert_eq!(state.requested_placement, None, "nothing was clicked, so nothing is asked for");
+        }
     }
 
     #[test]

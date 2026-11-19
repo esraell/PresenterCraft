@@ -126,6 +126,21 @@ fn add_fallback_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// The connected displays as the window system lists them.
+fn display_list(monitors: impl Iterator<Item = winit::monitor::MonitorHandle>) -> Vec<DisplayInfo> {
+    monitors
+        .enumerate()
+        .map(|(index, m)| DisplayInfo {
+            index,
+            name: m.name().unwrap_or_else(|| "Display".to_owned()),
+            x: m.position().x,
+            y: m.position().y,
+            w: m.size().width,
+            h: m.size().height,
+        })
+        .collect()
+}
+
 /// Draws the home window's last frame again into a texture and saves it as a PNG.
 fn capture(
     gpu: &Gpu,
@@ -222,18 +237,7 @@ struct App {
 impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Option<Running>, String> {
         let monitors: Vec<_> = el.available_monitors().collect();
-        let displays: Vec<DisplayInfo> = monitors
-            .iter()
-            .enumerate()
-            .map(|(index, m)| DisplayInfo {
-                index,
-                name: m.name().unwrap_or_else(|| "Display".to_owned()),
-                x: m.position().x,
-                y: m.position().y,
-                w: m.size().width,
-                h: m.size().height,
-            })
-            .collect();
+        let displays = display_list(monitors.iter().cloned());
         if self.options.list_displays {
             for d in &displays {
                 println!("display {}: {} {}x{} at {},{}", d.index, d.name, d.w, d.h, d.x, d.y);
@@ -337,7 +341,11 @@ impl App {
             egui_renderer,
             thumbs,
             preview,
-            home_state: HomeState { fonts: Arc::new(pc_render::Fonts::new().family_names()), ..HomeState::default() },
+            home_state: HomeState {
+                fonts: Arc::new(pc_render::Fonts::new().family_names()),
+                output_placement: placement,
+                ..HomeState::default()
+            },
             next_repaint: None,
             canvas: None,
             canvas_for: None,
@@ -459,6 +467,30 @@ impl App {
         }
     }
 
+    /// Moves the audience output to the display chosen in Settings, or into a window.
+    fn move_output(&mut self) {
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let Some(wanted) = running.home_state.requested_placement.take() else {
+            return;
+        };
+        match wanted {
+            Placement::Fullscreen(index) => {
+                // The display may have been unplugged since the list was drawn.
+                let Some(monitor) = running.output_window.available_monitors().nth(index) else {
+                    running.home_state.notice = Some(format!("Display {} is no longer connected.", index + 1));
+                    return;
+                };
+                running.output_window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor))));
+            }
+            Placement::Windowed => running.output_window.set_fullscreen(None),
+        }
+        running.home_state.output_placement = wanted;
+        // The output's size changes with its display; the window tells the output thread.
+        running.home_window.request_redraw();
+    }
+
     /// Redraws the Edit view's picture of the slide when the slide being edited changes.
     fn update_canvas(&mut self) {
         let Some(running) = self.running.as_mut() else {
@@ -485,6 +517,9 @@ impl App {
         } = running;
         let raw_input = egui_state.take_egui_input(home_window);
         thumbs.begin_frame();
+        if running.home_state.settings_open {
+            running.home_state.displays = display_list(home_window.available_monitors());
+        }
         if running.output.as_ref().is_none_or(OutputHandle::is_finished) {
             running.home_state.output_stopped = true;
         }
@@ -576,6 +611,10 @@ impl App {
             if running.frames == GO_LIVE_AT {
                 commands.push(Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 2 }));
                 commands.push(Command::ShowMedia(0));
+            }
+            // Testing aid: open Settings.
+            if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_SETTINGS").is_some() {
+                running.home_state.settings_open = true;
             }
             // Testing aid: show the Bible page.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_BIBLE").is_some() {
@@ -708,6 +747,7 @@ impl ApplicationHandler for App {
                     self.apply_edit(at, slide);
                 }
                 self.update_canvas();
+                self.move_output();
                 // Leaving the Edit view writes the songs changed there straight away.
                 let editing = self.running.as_ref().is_some_and(|r| r.home_state.editing.is_some());
                 if !editing && !self.unsaved.is_empty() {
