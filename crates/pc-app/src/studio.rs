@@ -380,10 +380,19 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
         // to the bottom of the column, so however many songs there are it is never pushed out
         // of sight; it takes the room its items need, up to two fifths of the column.
         let items = state.services.front().items.clone();
-        let service_height = (items.len().max(1) as f32 * 32.0 + 4.0).min(ui.available_height() * 0.4);
+        let column_height = ui.available_height();
+        // To begin with the service takes the room its items need; after that it is as tall
+        // as the line between the two was last dragged to make it.
+        let fitted = (items.len().max(1) as f32 * 32.0 + 4.0).min(column_height * 0.4) + 96.0;
         let mut add = None;
         let live_in = show.live().map(|at| at.presentation);
-        egui::Panel::bottom("service strip").resizable(false).exact_size(service_height + 96.0).frame(Frame::new()).show(ui, |ui| {
+        // The line between the library and the service can be dragged up and down.
+        let strip = egui::Panel::bottom("service strip")
+            .resizable(true)
+            .size_range(130.0..=(column_height - 150.0).max(130.0))
+            .default_size(fitted.max(220.0))
+            .frame(Frame::new());
+        strip.show(ui, |ui| {
             // The strip's own top edge is the line between the library and the service.
             ui.add_space(12.0);
             // ---- The service.
@@ -441,7 +450,7 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 Remove(usize),
             }
             let mut ask = None;
-            egui::ScrollArea::vertical().id_salt("service list").max_height(service_height).auto_shrink([false, true]).show(
+            egui::ScrollArea::vertical().id_salt("service list").auto_shrink([false, false]).show(
                 ui,
                 |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
