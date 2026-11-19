@@ -1,6 +1,7 @@
 use parley::{Alignment, AlignmentOptions, FontWeight, Layout, LineHeight, PositionedLayoutItem, StyleProperty};
 use pc_model::{
-    Align, BoxStyle, Object, ObjectKind, Rgba, Role, SLIDE_HEIGHT, SLIDE_WIDTH, Slide, SlideRect, Theme, VAlign,
+    Align, BoxStyle, Object, ObjectKind, Rgba, Role, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, Slide, SlideRect, Theme,
+    VAlign,
 };
 use vello::kurbo::{Affine, Join, Rect, Stroke};
 use vello::peniko::{Color, Fill, Mix};
@@ -68,7 +69,7 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
     let mut overflow = false;
     if let Some(slide) = layers.slide {
         let alone = main_is_alone(slide);
-        for object in &slide.objects {
+        for object in slide.objects.iter().filter(|object| !object.hidden) {
             let (_, themed) = placement(theme, object.role.as_ref(), alone);
             let rect = object.frame.unwrap_or(themed);
             // Turn the object about its own centre.
@@ -147,17 +148,38 @@ fn lay_out(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: f3
 /// height or reaches the smallest allowed size. Returns the layout and whether it still
 /// overflows.
 fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Layout<()>, bool) {
+    let too_big = |layout: &Layout<()>| layout.height() > rect.h || layout.width() > rect.w + 0.5;
+    let (shrinks, grows) = match style.scaling {
+        Scaling::None => (false, false),
+        Scaling::TextDown => (true, false),
+        Scaling::TextUp => (false, true),
+        Scaling::TextUpOrDown => (true, true),
+    };
     let floor = style.min_size.min(style.size).max(1.0);
     let mut size = style.size.max(floor);
-    loop {
-        let layout = lay_out(fonts, text, style, size, rect.w);
-        let too_big = layout.height() > rect.h || layout.width() > rect.w + 0.5;
-        if !too_big || size <= floor {
-            return (layout, too_big);
+    let mut layout = lay_out(fonts, text, style, size, rect.w);
+    if too_big(&layout) {
+        while shrinks && too_big(&layout) && size > floor {
+            size = (size * 0.96).max(floor);
+            layout = lay_out(fonts, text, style, size, rect.w);
         }
-        size = (size * 0.96).max(floor);
+    } else if grows && !text.trim().is_empty() {
+        // Grow in small steps and keep the last size that still fitted.
+        while size < LARGEST_GROWN {
+            let bigger = lay_out(fonts, text, style, size * 1.04, rect.w);
+            if too_big(&bigger) {
+                break;
+            }
+            size *= 1.04;
+            layout = bigger;
+        }
     }
+    let overflow = too_big(&layout);
+    (layout, overflow)
 }
+
+/// Text made bigger to fill its box stops growing here, in slide units.
+const LARGEST_GROWN: f32 = 1200.0;
 
 fn color(c: Rgba) -> Color {
     Color::from_rgba8(c.r, c.g, c.b, c.a)
@@ -172,6 +194,7 @@ fn draw_text_box(
     style: &BoxStyle,
     rect: SlideRect,
 ) -> bool {
+    let text = &*style.line_transform.apply(text);
     let text = &*style.caps.apply(text);
     let (layout, overflow) = fit(fonts, text, style, rect);
     // Place the text block in its box (in the middle it may spill both ways when it overflows).
@@ -344,6 +367,31 @@ mod tests {
             ..TextStyle::default()
         };
         assert!(!overflows(&Slide::new(vec![object])));
+    }
+
+    #[test]
+    fn scaling_decides_whether_text_shrinks_grows_or_spills() {
+        use pc_model::TextStyle;
+        let with = |text: &str, scaling: Scaling| {
+            let mut object = Object::text(Role::primary(), text);
+            let ObjectKind::Text { style, .. } = &mut object.kind;
+            *style = TextStyle { scaling: Some(scaling), ..TextStyle::default() };
+            Slide::new(vec![object])
+        };
+        let long = ["A line of words"; 9].join("\n");
+        assert!(!overflows(&with(&long, Scaling::TextDown)));
+        assert!(overflows(&with(&long, Scaling::None)));
+        assert!(overflows(&with(&long, Scaling::TextUp)));
+        assert!(!overflows(&with(&long, Scaling::TextUpOrDown)));
+        assert!(!overflows(&with("Short", Scaling::TextUp)));
+    }
+
+    #[test]
+    fn a_hidden_object_is_not_drawn() {
+        let mut slide = slide(&["A line of words"; 40].join("\n"), None);
+        assert!(overflows(&slide));
+        slide.objects[0].hidden = true;
+        assert!(!overflows(&slide));
     }
 
     #[test]

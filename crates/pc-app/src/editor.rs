@@ -83,6 +83,21 @@ pub fn moved(frame: SlideRect, by: (f32, f32)) -> SlideRect {
 
 /// A frame resized by dragging one handle a distance. The opposite side stays where it is,
 /// and the frame never gets smaller than [`MIN_SIDE`].
+/// A resized frame brought back to the proportions it started with, keeping the corner
+/// opposite the handle where it is. Only corner handles do this; sides resize freely.
+pub fn same_shape(from: SlideRect, handle: Handle, free: SlideRect) -> SlideRect {
+    let corner = (handle.moves_left() || handle.moves_right()) && (handle.moves_top() || handle.moves_bottom());
+    if !corner || from.w <= 0.0 || from.h <= 0.0 {
+        return free;
+    }
+    // Follow whichever side was dragged further, in proportion.
+    let scale = (free.w / from.w).max(free.h / from.h);
+    let (w, h) = ((from.w * scale).max(MIN_SIDE), (from.h * scale).max(MIN_SIDE));
+    let x = if handle.moves_left() { free.x + free.w - w } else { free.x };
+    let y = if handle.moves_top() { free.y + free.h - h } else { free.y };
+    SlideRect { x, y, w, h }
+}
+
 pub fn resized(frame: SlideRect, handle: Handle, by: (f32, f32)) -> SlideRect {
     let (mut left, mut top) = (frame.x, frame.y);
     let (mut right, mut bottom) = (frame.x + frame.w, frame.y + frame.h);
@@ -113,7 +128,14 @@ fn contains(frame: SlideRect, rotation: f32, point: (f32, f32)) -> bool {
 
 /// The topmost object under a point, in slide units.
 pub fn object_at(slide: &Slide, theme: &Theme, point: (f32, f32)) -> Option<Uuid> {
-    slide.objects.iter().rev().find(|o| contains(object_frame(slide, o, theme), o.rotation, point)).map(|o| o.id)
+    // Clicks pass through objects that are hidden or locked to whatever is behind them.
+    slide
+        .objects
+        .iter()
+        .rev()
+        .filter(|o| !o.hidden && !o.locked)
+        .find(|o| contains(object_frame(slide, o, theme), o.rotation, point))
+        .map(|o| o.id)
 }
 
 /// What a drag on the canvas is doing.
@@ -242,7 +264,8 @@ impl EditDraft {
     /// Adds a text object in the middle of the slide, on top, and selects it.
     pub fn add_text(&mut self) {
         self.record();
-        let (w, h) = (900.0, 220.0);
+        // Three quarters of the slide, in the middle.
+        let (w, h) = (SLIDE_WIDTH * 0.75, SLIDE_HEIGHT * 0.75);
         let number = self.slide.objects.len() + 1;
         let object = Object {
             id: Uuid::new_v4(),
@@ -251,6 +274,8 @@ impl EditDraft {
             frame: Some(SlideRect { x: (SLIDE_WIDTH - w) / 2.0, y: (SLIDE_HEIGHT - h) / 2.0, w, h }),
             rotation: 0.0,
             opacity: 1.0,
+            hidden: false,
+            locked: false,
             fill: None,
             kind: ObjectKind::Text { text: "Text".to_owned(), style: TextStyle::default() },
         };
@@ -318,12 +343,15 @@ impl EditDraft {
     }
 
     /// Continues the drag to a point. Returns true if the slide changed.
-    pub fn drag_to(&mut self, point: (f32, f32)) -> bool {
+    /// Moves the drag to a point. `keep_shape` (Shift held) keeps a box's proportions while a
+    /// corner is dragged.
+    pub fn drag_to(&mut self, point: (f32, f32), keep_shape: bool) -> bool {
         let Some(drag) = self.drag else { return false };
         let (id, frame) = match drag {
             Drag::Move { id, from, start } => (id, moved(from, (point.0 - start.0, point.1 - start.1))),
             Drag::Resize { id, handle, from, start } => {
-                (id, resized(from, handle, (point.0 - start.0, point.1 - start.1)))
+                let free = resized(from, handle, (point.0 - start.0, point.1 - start.1));
+                (id, if keep_shape { same_shape(from, handle, free) } else { free })
             }
         };
         let Some(index) = self.slide.objects.iter().position(|o| o.id == id) else { return false };
@@ -377,6 +405,35 @@ mod tests {
     }
 
     #[test]
+    fn a_corner_dragged_with_shift_keeps_the_boxs_shape() {
+        // F is 400 x 300: four to three.
+        let free = resized(F, Handle::BottomRight, (200.0, 30.0));
+        let kept = same_shape(F, Handle::BottomRight, free);
+        assert_eq!((kept.x, kept.y, kept.w, kept.h), (F.x, F.y, 600.0, 450.0));
+        // The opposite corner stays put when the top-left is dragged.
+        let free = resized(F, Handle::TopLeft, (-200.0, 0.0));
+        let kept = same_shape(F, Handle::TopLeft, free);
+        assert_eq!((kept.x + kept.w, kept.y + kept.h), (F.x + F.w, F.y + F.h));
+        assert_eq!((kept.w, kept.h), (600.0, 450.0));
+        // A side handle is left alone.
+        let free = resized(F, Handle::Right, (200.0, 0.0));
+        assert_eq!(same_shape(F, Handle::Right, free), free);
+    }
+
+    #[test]
+    fn locked_and_hidden_objects_let_clicks_through() {
+        let mut d = draft();
+        let theme = Theme::builtin();
+        let (main, translation) = (d.slide.objects[0].id, d.slide.objects[1].id);
+        assert_eq!(object_at(&d.slide, &theme, (960.0, 300.0)), Some(main));
+        d.slide.objects[0].locked = true;
+        assert_eq!(object_at(&d.slide, &theme, (960.0, 300.0)), None);
+        d.slide.objects[1].hidden = true;
+        assert_eq!(object_at(&d.slide, &theme, (960.0, 700.0)), None);
+        let _ = translation;
+    }
+
+    #[test]
     fn resizing_stops_at_the_smallest_size_without_flipping() {
         let squeezed = resized(F, Handle::Left, (5000.0, 0.0));
         assert_eq!(squeezed, SlideRect { x: 500.0 - MIN_SIDE, w: MIN_SIDE, ..F });
@@ -417,8 +474,8 @@ mod tests {
         let original = d.slide.clone();
         d.press(&theme, (960.0, 300.0), 8.0);
         assert_eq!(d.selected, Some(d.slide.objects[0].id));
-        assert!(d.drag_to((970.0, 310.0)));
-        assert!(d.drag_to((1000.0, 350.0)));
+        assert!(d.drag_to((970.0, 310.0), false));
+        assert!(d.drag_to((1000.0, 350.0), false));
         d.release();
         let themed = theme.boxes[0].rect;
         assert_eq!(d.slide.objects[0].frame, Some(SlideRect { x: themed.x + 40.0, y: themed.y + 50.0, ..themed }));
@@ -439,7 +496,7 @@ mod tests {
         let corner = (themed.x + themed.w, themed.y + themed.h);
         d.press(&theme, corner, 8.0);
         assert!(matches!(d.drag, Some(Drag::Resize { handle: Handle::BottomRight, .. })));
-        d.drag_to((corner.0 - 100.0, corner.1 + 60.0));
+        d.drag_to((corner.0 - 100.0, corner.1 + 60.0), false);
         assert_eq!(d.slide.objects[0].frame, Some(SlideRect { w: themed.w - 100.0, h: themed.h + 60.0, ..themed }));
     }
 
@@ -455,7 +512,7 @@ mod tests {
         assert!(!d.can_undo());
         d.press(&theme, (5.0, 5.0), 8.0);
         assert_eq!(d.selected, None);
-        assert!(!d.drag_to((50.0, 50.0)));
+        assert!(!d.drag_to((50.0, 50.0), false));
     }
 
     #[test]
@@ -486,7 +543,7 @@ mod tests {
         let mut d = draft();
         d.press(&theme, (960.0, 300.0), 8.0);
         assert!(!d.reset_to_theme(), "nothing to reset yet");
-        d.drag_to((900.0, 300.0));
+        d.drag_to((900.0, 300.0), false);
         d.release();
         d.selected_object_mut().unwrap().rotation = 12.0;
         assert!(d.reset_to_theme());

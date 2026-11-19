@@ -67,6 +67,48 @@ impl Caps {
     }
 }
 
+/// What happens when the text is too big or too small for its box.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scaling {
+    /// Nothing: text that does not fit spills out of its box.
+    None,
+    /// Text that does not fit is made smaller until it does.
+    #[default]
+    TextDown,
+    /// Text smaller than its box is made bigger until it fills it.
+    TextUp,
+    /// Both: the text always fills its box.
+    TextUpOrDown,
+}
+
+/// A change made to the text's lines when it is drawn. The stored text is untouched.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineTransform {
+    #[default]
+    None,
+    /// All the lines are run together into one, which wraps where it must.
+    RemoveLineReturns,
+    OneWordPerLine,
+    OneCharacterPerLine,
+}
+
+impl LineTransform {
+    /// The text as it is drawn under this setting.
+    pub fn apply<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        match self {
+            LineTransform::None => text.into(),
+            LineTransform::RemoveLineReturns => text.split_whitespace().collect::<Vec<_>>().join(" ").into(),
+            LineTransform::OneWordPerLine => text.split_whitespace().collect::<Vec<_>>().join("\n").into(),
+            LineTransform::OneCharacterPerLine => {
+                let letters: Vec<String> = text.chars().filter(|c| !c.is_whitespace()).map(String::from).collect();
+                letters.join("\n").into()
+            }
+        }
+    }
+}
+
 /// A soft shadow behind text.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Shadow {
@@ -110,6 +152,10 @@ pub struct BoxStyle {
     pub caps: Caps,
     pub underline: bool,
     pub strike: bool,
+    #[serde(default)]
+    pub scaling: Scaling,
+    #[serde(default)]
+    pub line_transform: LineTransform,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -182,6 +228,8 @@ impl Theme {
             caps: Caps::None,
             underline: false,
             strike: false,
+            scaling: Scaling::TextDown,
+            line_transform: LineTransform::None,
         };
         Theme {
             id: Uuid::nil(),
@@ -362,6 +410,10 @@ pub struct TextStyle {
     pub underline: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strike: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scaling: Option<Scaling>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_transform: Option<LineTransform>,
 }
 
 impl TextStyle {
@@ -387,6 +439,8 @@ impl TextStyle {
             caps: Some(look.caps),
             underline: Some(look.underline),
             strike: Some(look.strike),
+            scaling: Some(look.scaling),
+            line_transform: Some(look.line_transform),
         }
     }
 
@@ -412,6 +466,8 @@ impl TextStyle {
             caps: self.caps.unwrap_or(base.caps),
             underline: self.underline.unwrap_or(base.underline),
             strike: self.strike.unwrap_or(base.strike),
+            scaling: self.scaling.unwrap_or(base.scaling),
+            line_transform: self.line_transform.unwrap_or(base.line_transform),
         }
     }
 
@@ -432,6 +488,8 @@ impl TextStyle {
             caps: (wanted.caps != base.caps).then_some(wanted.caps),
             underline: (wanted.underline != base.underline).then_some(wanted.underline),
             strike: (wanted.strike != base.strike).then_some(wanted.strike),
+            scaling: (wanted.scaling != base.scaling).then_some(wanted.scaling),
+            line_transform: (wanted.line_transform != base.line_transform).then_some(wanted.line_transform),
         }
     }
 }
@@ -521,6 +579,15 @@ mod tests {
         let primary = edited.style_for(&Role::primary()).unwrap();
         assert!(primary.italic);
         assert_eq!(primary.rect, theme.style_for(&Role::primary()).unwrap().rect);
+    }
+
+    #[test]
+    fn line_transforms_change_only_how_text_is_drawn() {
+        let text = "Light rises\nover  the hills";
+        assert_eq!(LineTransform::None.apply(text), text);
+        assert_eq!(LineTransform::RemoveLineReturns.apply(text), "Light rises over the hills");
+        assert_eq!(LineTransform::OneWordPerLine.apply(text), "Light\nrises\nover\nthe\nhills");
+        assert_eq!(LineTransform::OneCharacterPerLine.apply("a b\nв"), "a\nb\nв");
     }
 
     #[test]

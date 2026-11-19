@@ -54,9 +54,25 @@ const GAP: f32 = 8.0;
 /// Height of the media bin, shared by its list (left column) and its thumbnails (middle).
 const MEDIA_BIN: f32 = 190.0;
 
+/// How a presentation's slides are laid out in the Show view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SlideView {
+    /// Thumbnails in rows.
+    #[default]
+    Grid,
+    /// The same tiles showing only each slide's words, which is quicker to read.
+    Easy,
+    /// One slide to a row: thumbnail, then its words.
+    Table,
+}
+
 pub struct HomeState {
+    /// How slides are laid out, and how many fit across the grid (2 to 7).
+    pub slide_view: SlideView,
+    pub columns: usize,
+    /// The slide picked out without being shown, by a right-click.
+    pub selected_slide: Option<SlideRef>,
     /// Displayed thumbnail width in points.
-    pub thumb_width: f32,
     /// Text typed into the library's filter box.
     pub filter: String,
     /// Set by the app when the output has stopped drawing, so the operator is told.
@@ -332,7 +348,9 @@ pub enum ThumbOf<'a> {
 impl Default for HomeState {
     fn default() -> HomeState {
         HomeState {
-            thumb_width: 170.0,
+            slide_view: SlideView::Grid,
+            columns: 4,
+            selected_slide: None,
             filter: String::new(),
             output_stopped: false,
             media_width: 150.0,
@@ -884,14 +902,18 @@ fn layer_button(
     rect: Rect,
     corners: CornerRadius,
     icon: Icon,
-    lit: bool,
+    (lit, any_live): (bool, bool),
     built: bool,
     hint: &str,
 ) -> bool {
     let id = ui.scope_id().with(("layer", hint));
     let response = ui.interact(rect, id, if built { Sense::click() } else { Sense::hover() });
+    // The whole strip goes dark red while anything is on screen, and the layer that has
+    // something on it is lit.
     let fill = if lit {
-        LIVE_RED
+        Color32::from_rgb(117, 82, 78)
+    } else if any_live {
+        if response.hovered() { Color32::from_rgb(104, 40, 38) } else { Color32::from_rgb(80, 30, 29) }
     } else if response.hovered() {
         Color32::from_rgb(52, 60, 63)
     } else {
@@ -968,18 +990,18 @@ fn live_panel(
             Rect::from_center_size(knob, vec2(11.0, 11.0)),
             if any_live { LIVE_RED } else { WELL },
         );
-        if clear_all.on_hover_text("Clear everything from the screen (F1)").clicked() {
+        if clear_all.on_hover_text("Clear All").clicked() {
             commands.push(Command::ClearAll);
         }
 
         let layers: [(Icon, &str, bool, bool); 7] = [
-            (Icon::Note, "Clear audio", false, false),
-            (Icon::Message, "Clear messages", false, false),
-            (Icon::Layers, "Clear props", false, false),
-            (Icon::Megaphone, "Clear announcements", false, false),
-            (Icon::Slide, "Clear the slide: take the words off the screen (C)", live, true),
-            (Icon::Picture, "Clear the media: take the picture off the screen", media_live, true),
-            (Icon::Camera, "Clear video input", false, false),
+            (Icon::Note, "Clear Audio", false, false),
+            (Icon::Message, "Clear Messages", false, false),
+            (Icon::Layers, "Clear Props", false, false),
+            (Icon::Megaphone, "Clear Announcements", false, false),
+            (Icon::Slide, "Clear Slide", live, true),
+            (Icon::Picture, "Clear Media", media_live, true),
+            (Icon::Camera, "Clear Video Input", false, false),
         ];
         for (index, (icon, hint, lit, built)) in layers.into_iter().enumerate() {
             let rect = Rect::from_min_size(
@@ -991,7 +1013,7 @@ fn live_panel(
                 6 => CornerRadius { se: CARD, nw: 0, sw: 0, ne: 0 },
                 _ => CornerRadius::ZERO,
             };
-            if layer_button(ui, rect, corners, icon, lit, built, hint) {
+            if layer_button(ui, rect, corners, icon, (lit, any_live), built, hint) {
                 match icon {
                     Icon::Slide => commands.push(Command::Clear(Layer::Slides)),
                     Icon::Picture => commands.push(Command::Clear(Layer::Media)),
@@ -1048,13 +1070,10 @@ fn live_panel(
                 ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
                 let width = ui.available_width();
                 let (row, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
-                for (index, (icon, what)) in [
-                    (Icon::Slide, "Presentation playback"),
-                    (Icon::Megaphone, "Announcement playback"),
-                    (Icon::Note, "Audio playback"),
-                ]
-                .into_iter()
-                .enumerate()
+                for (index, (icon, what)) in
+                    [(Icon::Slide, "Presentation"), (Icon::Megaphone, "Announcements"), (Icon::Note, "Audio")]
+                        .into_iter()
+                        .enumerate()
                 {
                     let centre = row.center() + vec2((index as f32 - 1.0) * 26.0, 0.0);
                     let ink = if index == 0 { TAB_BLUE } else { Color32::from_gray(170) };
@@ -1079,10 +1098,10 @@ fn live_panel(
                 ui.painter().text(row.left_top(), Align2::LEFT_TOP, "--:--", time.clone(), Color32::from_gray(130));
                 ui.painter().text(row.right_top(), Align2::RIGHT_TOP, "--:--", time, Color32::from_gray(130));
                 for (index, (icon, what)) in [
-                    (Icon::Back, "Back 15 seconds"),
-                    (Icon::Pause, "Play or pause"),
-                    (Icon::Forward, "Forward 15 seconds"),
-                    (Icon::ToEnd, "Jump to the last 30 seconds"),
+                    (Icon::Back, "Skip Backward 15 Seconds"),
+                    (Icon::Pause, "Play"),
+                    (Icon::Forward, "Skip Forward 15 Seconds"),
+                    (Icon::ToEnd, "Go To 30 Seconds From The End"),
                     (Icon::Flag, "Markers"),
                 ]
                 .into_iter()
@@ -1211,13 +1230,43 @@ fn live_panel(
 }
 
 /// The transition buttons and duration that sit at the left of a bottom bar.
+/// The right end of a slide area's bottom bar: the three views and the size slider.
+fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
+    ui.spacing_mut().item_spacing.x = 2.0;
+    // Further right is bigger, so fewer slides fit across.
+    let mut size = 7 - state.columns.clamp(2, 7);
+    ui.spacing_mut().slider_width = 90.0;
+    if ui.add(egui::Slider::new(&mut size, 0..=5).show_value(false)).on_hover_text("Slide size").changed() {
+        state.columns = 7 - size;
+    }
+    ghost(ui, Icon::Options, "View options");
+    for (view, face, hint) in [
+        (SlideView::Table, Face::Icon(Icon::Rows), "Table View"),
+        (SlideView::Easy, Face::Text("T"), "Easy View"),
+        (SlideView::Grid, Face::Icon(Icon::Grid), "Grid View"),
+    ] {
+        let (rect, response) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
+        let ink = if state.slide_view == view {
+            ACCENT
+        } else if response.hovered() {
+            Color32::from_gray(235)
+        } else {
+            Color32::from_gray(170)
+        };
+        paint_face(ui, face, Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), 14.0, ink);
+        if response.on_hover_text(hint).clicked() {
+            state.slide_view = view;
+        }
+    }
+}
+
 fn transition_controls(ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.x = 2.0;
-    ghost(ui, Icon::Plus, "Add");
+    ghost(ui, Icon::Plus, "Add Slide");
     ui.add_space(6.0);
     ghost(ui, Icon::Cut, "Cut");
     ghost(ui, Icon::Dissolve, "Dissolve");
-    ghost(ui, Icon::Transition, "More transitions");
+    ghost(ui, Icon::Transition, "Advanced");
     ui.add_space(6.0);
     ui.label(egui::RichText::new("0.4s").size(11.5).color(DIM)).on_hover_text(not_built("Transition time"));
 }
@@ -1478,6 +1527,14 @@ fn edit_view(
                             let Some(draft) = state.editing.as_mut() else { return };
                             // The top of the stack is listed first, as it is in front on the slide.
                             let mut pick = None;
+                            // What a row's icons or its right-click menu asked for.
+                            enum Ask {
+                                Hide(bool),
+                                Lock(bool),
+                                Delete,
+                                Rename(String),
+                            }
+                            let mut asked: Option<(pc_model::Uuid, Ask)> = None;
                             for object in draft.slide.objects.iter().rev() {
                                 let selected = draft.selected == Some(object.id);
                                 let (row, response) =
@@ -1487,22 +1544,115 @@ fn edit_view(
                                 } else if response.hovered() {
                                     ui.painter().rect_filled(row, 0.0, Color32::from_gray(46));
                                 }
+                                // A hidden object's row is greyed.
+                                let ink = if object.hidden { Color32::from_gray(120) } else { Color32::from_gray(230) };
                                 ui.painter().text(
                                     row.left_center() + vec2(12.0, 0.0),
                                     Align2::LEFT_CENTER,
                                     "T",
                                     FontId::proportional(15.0),
-                                    Color32::from_gray(230),
+                                    ink,
                                 );
-                                ui.painter().with_clip_rect(row).text(
+                                let name_area = Rect::from_min_max(row.min, pos2(row.max.x - 46.0, row.max.y));
+                                ui.painter().with_clip_rect(name_area).text(
                                     row.left_center() + vec2(32.0, 0.0),
                                     Align2::LEFT_CENTER,
                                     object.name.as_str(),
                                     FontId::proportional(13.0),
-                                    Color32::from_gray(230),
+                                    ink,
                                 );
+                                // Hide and lock sit at the right of the row under the pointer, the
+                                // selected row, and any row that is already hidden or locked.
+                                let marks = [
+                                    (object.hidden, "Hide", "Show", pos2(row.max.x - 34.0, row.center().y)),
+                                    (object.locked, "Lock", "Unlock", pos2(row.max.x - 14.0, row.center().y)),
+                                ];
+                                for (index, (on, to_set, to_clear, centre)) in marks.into_iter().enumerate() {
+                                    if !(on || selected || response.hovered()) {
+                                        continue;
+                                    }
+                                    let spot = Rect::from_center_size(centre, vec2(18.0, 18.0));
+                                    let mark = ui.interact(
+                                        spot,
+                                        ui.scope_id().with(("object mark", object.id, index)),
+                                        Sense::click(),
+                                    );
+                                    let mark_ink =
+                                        if on { Color32::from_rgb(240, 190, 40) } else { Color32::from_gray(170) };
+                                    let p = ui.painter();
+                                    if index == 0 {
+                                        // An eye; struck through when the object is hidden.
+                                        p.circle_stroke(centre, 5.0, Stroke::new(1.2, mark_ink));
+                                        p.circle_filled(centre, 2.0, mark_ink);
+                                        if on {
+                                            p.line_segment(
+                                                [centre + vec2(-6.0, 6.0), centre + vec2(6.0, -6.0)],
+                                                Stroke::new(1.4, mark_ink),
+                                            );
+                                        }
+                                    } else {
+                                        // A padlock; its shackle is open when unlocked.
+                                        p.rect_filled(
+                                            Rect::from_center_size(centre + vec2(0.0, 2.5), vec2(9.0, 7.0)),
+                                            1.5,
+                                            mark_ink,
+                                        );
+                                        let lift = if on { 0.0 } else { -2.0 };
+                                        p.line_segment(
+                                            [centre + vec2(-2.5, -1.0), centre + vec2(-2.5, -4.5 + lift)],
+                                            Stroke::new(1.3, mark_ink),
+                                        );
+                                        p.line_segment(
+                                            [centre + vec2(-2.5, -4.5 + lift), centre + vec2(2.5, -4.5 + lift)],
+                                            Stroke::new(1.3, mark_ink),
+                                        );
+                                        if on {
+                                            p.line_segment(
+                                                [centre + vec2(2.5, -1.0), centre + vec2(2.5, -4.5)],
+                                                Stroke::new(1.3, mark_ink),
+                                            );
+                                        }
+                                    }
+                                    if mark.on_hover_text(if on { to_clear } else { to_set }).clicked() {
+                                        asked =
+                                            Some((object.id, if index == 0 { Ask::Hide(!on) } else { Ask::Lock(!on) }));
+                                    }
+                                }
                                 if response.clicked() {
                                     pick = Some(object.id);
+                                }
+                                response.context_menu(|ui| {
+                                    ui.label(egui::RichText::new("Rename").size(11.0).color(DIM));
+                                    let mut name = object.name.clone();
+                                    if ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0)).changed() {
+                                        asked = Some((object.id, Ask::Rename(name)));
+                                    }
+                                    ui.separator();
+                                    if ui.button(if object.hidden { "Show" } else { "Hide" }).clicked() {
+                                        asked = Some((object.id, Ask::Hide(!object.hidden)));
+                                        ui.close();
+                                    }
+                                    if ui.button(if object.locked { "Unlock" } else { "Lock" }).clicked() {
+                                        asked = Some((object.id, Ask::Lock(!object.locked)));
+                                        ui.close();
+                                    }
+                                    if ui.button("Delete").clicked() {
+                                        asked = Some((object.id, Ask::Delete));
+                                        ui.close();
+                                    }
+                                });
+                            }
+                            if let Some((id, ask)) = asked {
+                                if matches!(ask, Ask::Delete) {
+                                    draft.selected = Some(id);
+                                    draft.delete_selected();
+                                } else if let Some(object) = draft.slide.objects.iter_mut().find(|o| o.id == id) {
+                                    match ask {
+                                        Ask::Hide(hidden) => object.hidden = hidden,
+                                        Ask::Lock(locked) => object.locked = locked,
+                                        Ask::Rename(name) => object.name = name,
+                                        Ask::Delete => {}
+                                    }
                                 }
                             }
                             if draft.slide.objects.is_empty() {
@@ -1707,7 +1857,8 @@ fn edit_view(
                     draft.press(theme, point, (HANDLE + 3.0) / scale);
                 }
                 if response.dragged() {
-                    draft.drag_to(point);
+                    let keep_shape = ui.input(|input| input.modifiers.shift);
+                    draft.drag_to(point, keep_shape);
                 }
             }
             if response.drag_stopped() || response.clicked() {
@@ -1980,12 +2131,7 @@ fn bible_area(
                 ui.add_space(8.0);
                 transition_controls(ui);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    ui.add(egui::Slider::new(&mut state.thumb_width, 120.0..=480.0).show_value(false))
-                        .on_hover_text("Slide size");
-                    ghost(ui, Icon::Options, "View options");
-                    ghost(ui, Icon::Rows, "Table view");
-                    ghost(ui, Icon::Grid, "Grid view");
+                    view_controls(ui, state);
                 });
             });
         });
@@ -2184,20 +2330,7 @@ fn slide_area(
             ui.horizontal(|ui| {
                 transition_controls(ui);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    ui.add(egui::Slider::new(&mut state.thumb_width, 120.0..=480.0).show_value(false))
-                        .on_hover_text("Slide size");
-                    ghost(ui, Icon::Options, "View options");
-                    ghost(ui, Icon::Rows, "Table view");
-                    ghost(ui, "T", "Text view");
-                    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::hover());
-                    icons::paint(
-                        ui.painter(),
-                        Icon::Grid,
-                        Rect::from_center_size(rect.center(), vec2(14.0, 14.0)),
-                        ACCENT,
-                    );
-                    response.on_hover_text("Grid view");
+                    view_controls(ui, state);
                 });
             });
         });
@@ -2233,8 +2366,15 @@ fn slide_area(
     });
 }
 
-/// One presentation's slides as a grid of thumbnails with a group bar under each. Clicking a
-/// slide puts it on screen.
+/// The outline of the slide on screen, of a slide picked out by a right-click, and of the
+/// slide that was last on screen once the screen has been cleared.
+const LIVE_OUTLINE: Color32 = Color32::from_rgb(240, 138, 36);
+const SELECTED_OUTLINE: Color32 = Color32::from_rgb(51, 119, 255);
+const WAS_LIVE_OUTLINE: Color32 = Color32::from_rgb(59, 84, 124);
+
+/// One presentation's slides, in the view chosen: a grid of thumbnails, the same grid showing
+/// only words, or a table. Clicking a slide puts it on screen; a right-click picks it out
+/// without showing it.
 fn slide_grid(
     ui: &mut egui::Ui,
     show: &Show,
@@ -2245,26 +2385,46 @@ fn slide_grid(
 ) {
     let Some(presentation) = show.presentations().get(which) else { return };
     let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&which));
-    let width = state.thumb_width;
-    let image_size = vec2(width, width * 9.0 / 16.0);
-    let bar_height = 20.0;
-    let cell = vec2(width, image_size.y + bar_height);
+    let view = state.slide_view;
+    let gap = 12.0;
+    let bar_height = 18.0;
     egui::ScrollArea::vertical().id_salt("slide grid").auto_shrink([false, false]).show(ui, |ui| {
-        ui.add_space(12.0);
+        ui.add_space(15.0);
         Frame::new().inner_margin(egui::Margin::symmetric(20, 0)).show(ui, |ui| {
+            // The slider sets how many slides fit across; they stretch to fill the width.
+            let columns = if view == SlideView::Table { 1 } else { state.columns.clamp(2, 7) };
+            let across = ui.available_width();
+            let width = ((across - gap * (columns as f32 - 1.0)) / columns as f32).floor().max(40.0);
+            let image_size = if view == SlideView::Table {
+                vec2(204.0, 204.0 * 9.0 / 16.0)
+            } else {
+                vec2(width, (width * 9.0 / 16.0).round())
+            };
+            let cell = if view == SlideView::Table {
+                vec2(across, image_size.y)
+            } else {
+                vec2(width, image_size.y + bar_height)
+            };
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(14.0, 14.0);
-                ui.add_space(0.0);
+                ui.spacing_mut().item_spacing = if view == SlideView::Table { vec2(0.0, 2.0) } else { vec2(gap, gap) };
+                let mut last_group = None;
                 for (index, (group, slide)) in presentation.slides().enumerate() {
+                    // A group's name is shown on its first slide only.
+                    let starts_group = last_group != Some(group.id);
+                    last_group = Some(group.id);
                     let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
                     let here = SlideRef { presentation: which, slide: index };
                     if response.clicked() {
+                        state.selected_slide = None;
                         commands.push(Command::GoTo(here));
+                    }
+                    if response.secondary_clicked() {
+                        state.selected_slide = Some(here);
                     }
                     // Editing is on the right-click menu, so reaching for it never puts a
                     // slide on screen by accident.
                     response.context_menu(|ui| {
-                        if ui.button("Edit words…").clicked() {
+                        if ui.button("Edit Slide").clicked() {
                             state.editing = EditDraft::of(show, here);
                             ui.close();
                         }
@@ -2273,49 +2433,117 @@ fn slide_grid(
                     if !ui.is_rect_visible(rect) {
                         continue;
                     }
-                    let image = Rect::from_min_size(rect.min, image_size);
-                    let painter = ui.painter();
-                    painter.rect_filled(image, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, Color32::BLACK);
-                    match thumb(if from_bible { ThumbOf::BibleSlide(slide) } else { ThumbOf::Slide(slide) }) {
-                        Some((texture, overflow)) => {
-                            egui::Image::from_texture((texture, image_size)).paint_at(ui, image);
-                            if overflow {
-                                let mark = image.right_top() + vec2(-14.0, 14.0);
-                                painter.circle_filled(mark, 9.0, Color32::from_rgb(240, 190, 40));
+                    let painter = ui.painter().clone();
+                    let ink = text_on(group.color);
+                    let words = || slide.texts().into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n");
+                    let mut picture = |ui: &mut egui::Ui, image: Rect| {
+                        painter.rect_filled(image, 0.0, Color32::BLACK);
+                        let of = if from_bible { ThumbOf::BibleSlide(slide) } else { ThumbOf::Slide(slide) };
+                        match thumb(of) {
+                            Some((texture, overflow)) => {
+                                egui::Image::from_texture((texture, image.size())).paint_at(ui, image);
+                                if overflow {
+                                    let mark = image.right_top() + vec2(-14.0, 14.0);
+                                    painter.circle_filled(mark, 9.0, Color32::from_rgb(240, 190, 40));
+                                    painter.text(
+                                        mark,
+                                        Align2::CENTER_CENTER,
+                                        "!",
+                                        FontId::proportional(14.0),
+                                        Color32::BLACK,
+                                    );
+                                }
+                            }
+                            None => ui.ctx().request_repaint(),
+                        }
+                    };
+                    match view {
+                        SlideView::Table => {
+                            // A strip in the group's colour with the number, the thumbnail, the words.
+                            let strip = Rect::from_min_size(rect.min, vec2(34.0, rect.height()));
+                            painter.rect_filled(rect, 0.0, Color32::from_gray(38));
+                            painter.rect_filled(strip, 0.0, color32(group.color));
+                            painter.text(
+                                strip.center(),
+                                Align2::CENTER_CENTER,
+                                format!("{}.", index + 1),
+                                FontId::proportional(13.0),
+                                ink,
+                            );
+                            let image = Rect::from_min_size(rect.min + vec2(34.0, 0.0), image_size);
+                            picture(ui, image);
+                            let text_at = pos2(image.max.x + 14.0, rect.min.y + 8.0);
+                            let mut top = text_at.y;
+                            if starts_group && !group.name.is_empty() {
                                 painter.text(
-                                    mark,
-                                    Align2::CENTER_CENTER,
-                                    "!",
-                                    FontId::proportional(14.0),
-                                    Color32::BLACK,
+                                    text_at,
+                                    Align2::LEFT_TOP,
+                                    group.name.as_str(),
+                                    FontId::proportional(12.0),
+                                    Color32::from_gray(160),
+                                );
+                                top += 18.0;
+                            }
+                            let clip = Rect::from_min_max(pos2(text_at.x, rect.min.y), rect.max);
+                            painter.with_clip_rect(clip).text(
+                                pos2(text_at.x, top),
+                                Align2::LEFT_TOP,
+                                words(),
+                                FontId::proportional(13.0),
+                                Color32::from_gray(230),
+                            );
+                        }
+                        SlideView::Grid | SlideView::Easy => {
+                            let image = Rect::from_min_size(rect.min, image_size);
+                            if view == SlideView::Easy {
+                                // Only the words, plain, on black: quick to read at any size.
+                                painter.rect_filled(image, 0.0, Color32::BLACK);
+                                painter.with_clip_rect(image).text(
+                                    image.min + vec2(8.0, 6.0),
+                                    Align2::LEFT_TOP,
+                                    words(),
+                                    FontId::proportional((width / 15.0).clamp(10.0, 18.0)),
+                                    Color32::from_gray(235),
+                                );
+                            } else {
+                                picture(ui, image);
+                            }
+                            // The bar under the slide: its number, and its group on the group's first slide.
+                            let bar = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
+                            painter.rect_filled(bar, 0.0, color32(group.color));
+                            let number = painter.text(
+                                bar.left_center() + vec2(5.0, 0.0),
+                                Align2::LEFT_CENTER,
+                                (index + 1).to_string(),
+                                FontId::proportional(12.5),
+                                ink,
+                            );
+                            if starts_group {
+                                painter.with_clip_rect(bar).text(
+                                    pos2(number.max.x + 6.0, bar.center().y),
+                                    Align2::LEFT_CENTER,
+                                    group.name.as_str(),
+                                    FontId::proportional(12.0),
+                                    ink,
                                 );
                             }
                         }
-                        None => ui.ctx().request_repaint(),
                     }
-                    // The bar under the slide: its number and its group, in the group's colour.
-                    let bar = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
-                    painter.rect_filled(bar, CornerRadius { nw: 0, ne: 0, sw: 3, se: 3 }, color32(group.color));
-                    let ink = text_on(group.color);
-                    painter.text(
-                        bar.left_center() + vec2(7.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        (index + 1).to_string(),
-                        FontId::proportional(13.0),
-                        ink,
-                    );
-                    painter.text(
-                        bar.right_center() - vec2(7.0, 0.0),
-                        Align2::RIGHT_CENTER,
-                        group.name.as_str(),
-                        FontId::proportional(12.0),
-                        ink,
-                    );
-
-                    if show.live() == Some(here) {
-                        painter.rect_stroke(rect, 3.0, Stroke::new(3.0, ACCENT), StrokeKind::Outside);
+                    // Orange for the slide on screen; blue for one picked out; a dim blue for
+                    // the slide that was on screen before it was cleared.
+                    let outline = if show.live() == Some(here) {
+                        Some(Stroke::new(2.0, LIVE_OUTLINE))
+                    } else if state.selected_slide == Some(here) {
+                        Some(Stroke::new(3.0, SELECTED_OUTLINE))
+                    } else if show.live().is_none() && show.cursor() == Some(here) {
+                        Some(Stroke::new(1.5, WAS_LIVE_OUTLINE))
                     } else if response.hovered() {
-                        painter.rect_stroke(rect, 3.0, Stroke::new(1.0, Color32::from_gray(150)), StrokeKind::Outside);
+                        Some(Stroke::new(1.0, Color32::from_gray(150)))
+                    } else {
+                        None
+                    };
+                    if let Some(stroke) = outline {
+                        painter.rect_stroke(rect, 0.0, stroke, StrokeKind::Outside);
                     }
                 }
             });

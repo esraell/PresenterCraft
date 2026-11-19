@@ -4,7 +4,8 @@
 
 use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use pc_model::{
-    Align as TextAlign, BoxStyle, Caps, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, TextStyle, Theme, VAlign,
+    Align as TextAlign, BoxStyle, Caps, LineTransform, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, TextStyle,
+    Theme, VAlign,
 };
 use pc_render::object_frame;
 
@@ -763,12 +764,22 @@ fn text_look(ui: &mut egui::Ui, wanted: &mut BoxStyle, base: &BoxStyle, fonts: &
     rule(ui);
 
     labelled(ui, "Scaling", |ui, width| {
-        let mut picked = 0;
-        choice_later(ui, "scaling", width, &mut picked, &["Text down"], "Other ways to scale");
+        let options = [
+            (Scaling::None, "None"),
+            (Scaling::TextUp, "Text up"),
+            (Scaling::TextDown, "Text down"),
+            (Scaling::TextUpOrDown, "Text up or down"),
+        ];
+        choice(ui, "scaling", width, &mut wanted.scaling, &options);
     });
     labelled(ui, "Line Transform", |ui, width| {
-        let mut picked = 0;
-        choice_later(ui, "line transform", width, &mut picked, &["None"], "Line Transform");
+        let options = [
+            (LineTransform::None, "None"),
+            (LineTransform::RemoveLineReturns, "Remove line returns"),
+            (LineTransform::OneWordPerLine, "One word per line"),
+            (LineTransform::OneCharacterPerLine, "One character per line"),
+        ];
+        choice(ui, "line transform", width, &mut wanted.line_transform, &options);
     });
     rule(ui);
 

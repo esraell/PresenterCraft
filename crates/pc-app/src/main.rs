@@ -828,6 +828,14 @@ impl App {
                     running.home_state.bible.options.pane = usize::from(pane == "bibles");
                 }
             }
+            // Testing aid: show the slides in another view.
+            if running.frames == GO_LIVE_AT + 2 {
+                match std::env::var("PRESENTERCRAFT_SLIDE_VIEW").as_deref() {
+                    Ok("easy") => running.home_state.slide_view = home::SlideView::Easy,
+                    Ok("table") => running.home_state.slide_view = home::SlideView::Table,
+                    _ => {}
+                }
+            }
             // Testing aid: open the Theme Editor, optionally with its first box selected.
             if running.frames == GO_LIVE_AT + 2
                 && let Ok(what) = std::env::var("PRESENTERCRAFT_CAPTURE_THEMES")
