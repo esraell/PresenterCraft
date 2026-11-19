@@ -128,6 +128,11 @@ pub struct HomeState {
     pub theme_names: Vec<String>,
     /// What each theme calls its two templates, the one for two languages first.
     pub template_names: Vec<Vec<String>>,
+    /// The templates of the theme songs use, by id and name, for a slide's Template menu.
+    pub song_templates: Vec<(pc_model::Uuid, String)>,
+    /// A slide whose template was just chosen from its menu (`None` lets the theme choose).
+    /// The app changes the slide and the screen.
+    pub pending_template: Option<(SlideRef, Option<pc_model::Uuid>)>,
     /// The template being renamed in the Theme Editor, and its name as typed so far.
     pub renaming_template: Option<(usize, String)>,
     /// The template of the theme being edited that is about to be deleted, once confirmed.
@@ -570,6 +575,8 @@ impl Default for HomeState {
             theme_edit: None,
             theme_names: Vec::new(),
             template_names: Vec::new(),
+            song_templates: Vec::new(),
+            pending_template: None,
             renaming_template: None,
             confirm_delete_template: None,
             theme_layouts: Vec::new(),
@@ -2612,6 +2619,25 @@ fn slide_grid(
                         if ui.button("Edit Slide").clicked() {
                             state.editing = EditDraft::of(show, here);
                             ui.close();
+                        }
+                        // Which of the theme's templates the slide is drawn with. Automatic
+                        // lets the theme pick the one that suits what is on the slide.
+                        if !from_bible && !state.song_templates.is_empty() {
+                            ui.menu_button("Template", |ui| {
+                                let current =
+                                    slide.template.filter(|id| state.song_templates.iter().any(|(t, _)| t == id));
+                                if ui.add(egui::Button::selectable(current.is_none(), "Automatic")).clicked() {
+                                    state.pending_template = Some((here, None));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                for (id, name) in &state.song_templates {
+                                    if ui.add(egui::Button::selectable(current == Some(*id), name.as_str())).clicked() {
+                                        state.pending_template = Some((here, Some(*id)));
+                                        ui.close();
+                                    }
+                                }
+                            });
                         }
                     });
                     // Slides scrolled out of view cost nothing: no thumbnail is asked for.

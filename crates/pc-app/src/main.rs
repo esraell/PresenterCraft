@@ -101,6 +101,11 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
 /// The id of the sample song the app starts with.
 const SAMPLE_SONG_ID: Uuid = Uuid::from_u128(0x7361_6d70_6c65_5f73_6f6e_6700_0000_0001);
 
+/// The templates of the theme songs use, by id and name, in order.
+fn song_templates(theme: &Theme) -> Vec<(Uuid, String)> {
+    theme.templates.iter().map(|template| (template.id, template.name.clone())).collect()
+}
+
 /// What a theme calls its templates, in order.
 fn template_names(theme: &Theme) -> Vec<String> {
     theme.templates.iter().map(|template| template.name.clone()).collect()
@@ -396,6 +401,7 @@ impl App {
                 theme_for_songs: self.songs_theme,
                 theme_layouts: self.theme_layouts(),
                 template_names: self.themes.iter().map(template_names).collect(),
+                song_templates: song_templates(&self.theme),
                 bible_layout: self.bible_layout,
                 services: service::load(),
                 // A song is found again by its file, without the ending (which changes when
@@ -711,6 +717,7 @@ impl App {
             state.theme_for_bible = self.bible_theme;
             state.theme_layouts = layouts;
             state.template_names = self.themes.iter().map(template_names).collect();
+            state.song_templates = song_templates(&self.theme);
             state.bible_layout = self.bible_layout;
             state.bible.boxes = home::layout_boxes(&self.theme_for_bible, self.bible_layout);
             state.bible.box_labels = home::layout_labels(&self.theme_for_bible, self.bible_layout);
@@ -1586,6 +1593,18 @@ impl ApplicationHandler<String> for App {
                 self.apply(commands);
                 if let Some((at, slide)) = self.running.as_mut().and_then(|r| r.home_state.pending_edit.take()) {
                     self.apply_edit(at, slide);
+                }
+                // A template chosen from a slide's menu: the slide is changed and, if it is on
+                // screen, the screen too.
+                if let Some((at, template)) = self.running.as_mut().and_then(|r| r.home_state.pending_template.take())
+                    && let Some((_, slide)) =
+                        self.show.presentations().get(at.presentation).and_then(|p| p.slide(at.slide))
+                {
+                    let slide = Slide { template, ..slide.clone() };
+                    self.apply_edit(at, slide);
+                    if self.show.live() == Some(at) {
+                        self.refresh_output();
+                    }
                 }
                 // A Bible passage just looked up goes into its slot. It is never the slot on
                 // screen, so the output is untouched.

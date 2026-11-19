@@ -71,7 +71,8 @@ ProPresenter.
 **Themes**
 - A theme decides where each kind of text goes and how it looks. It has any number of
   templates, each a set of named boxes. A song's slide uses the template that suits it (two
-  languages or one); Bible slides use the template you choose.
+  languages or one) unless you pick one from the slide's right-click menu; Bible slides use
+  the template you choose.
 - Templates can be added, duplicated, renamed and deleted. Changes save as you make them.
 
 ![The theme editor](docs/images/themes.png)
@@ -96,7 +97,6 @@ Among the things PresenterCraft can't do yet:
 - Stage screens (confidence monitors), timers, messages, props, macros.
 - Transitions other than Cut and Dissolve.
 - Formatting one word differently from the rest of its box; line and letter spacing.
-- Choosing a template for a song slide by hand.
 - Importing songs from other presentation apps or from CCLI SongSelect.
 - Tested builds for Windows and Linux.
 - Remote control, an API, and MCP.
