@@ -72,3 +72,20 @@ fn almost_every_verse_has_a_partner_in_the_other_numbering() {
     assert!(lost.len() <= 12, "{} English verses have no Russian partner: {lost:?}", lost.len());
     assert!(lost_back.len() <= 20, "{} Russian verses have no English partner: {lost_back:?}", lost_back.len());
 }
+
+/// Two English verses should not land on the same Russian verse, apart from the handful the
+/// Russian text joins into one.
+#[test]
+fn english_verses_land_on_different_russian_verses() {
+    let kjv = load("kjv");
+    let mut seen = std::collections::HashMap::new();
+    let mut shared = Vec::new();
+    for (verse, _) in kjv.all() {
+        let there = convert(verse, Numbering::English, Numbering::Synodal);
+        if let Some(first) = seen.insert(there, verse) {
+            shared.push(format!("{} and {} -> {}", name(first), name(verse), name(there)));
+        }
+    }
+    println!("English verses sharing a Russian verse: {shared:?}");
+    assert!(shared.len() <= 12, "{} English verses share a Russian verse: {shared:?}", shared.len());
+}

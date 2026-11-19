@@ -1788,18 +1788,18 @@ fn bible_area(
             }
         });
 
-        // Say so when two Bibles are shown together and one numbers its verses its own way.
+        // Say so when two Bibles are shown together and one only mostly follows a known numbering.
         let own: Vec<&str> = state
             .bible
             .rows
             .iter()
             .filter_map(|row| state.bible.shelf.bibles.get(row.bible))
-            .filter(|b| b.numbering == pc_bible::Numbering::Own)
+            .filter(|b| b.loose)
             .map(|b| b.name.as_str())
             .collect();
         if !own.is_empty() && state.bible.rows.len() > 1 {
             let note = format!(
-                "{} numbers some verses its own way, so beside another Bible a few (the Psalms above all) may not be the matching verse.",
+                "{} numbers a few verses its own way, so beside another Bible a verse here and there may be one off.",
                 own.join(" and ")
             );
             Frame::new().inner_margin(egui::Margin::symmetric(12, 4)).show(ui, |ui| {

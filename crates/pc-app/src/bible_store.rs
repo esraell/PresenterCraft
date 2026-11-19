@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 /// Where the Bible files are published: the address their names are added to. They are
 /// files attached to a release of the project on GitHub. While the project is private this
 /// address answers nobody, and Install says the download could not be made.
-const DOWNLOADS: Option<&str> = Some("https://github.com/esraell/presentercraft/releases/download/bibles-1");
+const DOWNLOADS: Option<&str> = Some("https://github.com/esraell/presentercraft/releases/download/bibles-2");
 
 /// The largest Bible file that will be fetched. The biggest so far is under 2 MB.
 const LARGEST: u64 = 16 * 1024 * 1024;
@@ -196,6 +196,7 @@ mod tests {
             credit: String::new(),
             source: "made for a test".to_owned(),
             numbering: Numbering::English,
+            loose: false,
         };
         Bible::from_verse_lines(info, "JOH 3:16 For God so loved the world", str::to_owned).to_bytes()
     }

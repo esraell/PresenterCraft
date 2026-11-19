@@ -1,13 +1,14 @@
 //! Bibles do not all number their verses the same way. The Russian Synodal text counts a
 //! psalm's title as a verse, joins and splits a few psalms, and starts some chapters a verse
-//! or two earlier or later than English Bibles do. This turns a verse's number in one scheme
-//! into its number in the other, so two Bibles can be shown side by side.
+//! or two earlier or later than English Bibles do; the Hebrew text differs from both. This
+//! turns a verse's number in one tradition into its number in another, so two Bibles can be
+//! shown side by side.
 //!
-//! The table covers the Psalms and the places where a chapter starts differently. A few
-//! places where one scheme joins two verses into one are not covered and may be one verse off
-//! at the very end of a chapter: Leviticus 14, Joshua 24, 1 Samuel 20, Proverbs 4 and 13,
-//! Isaiah 3, Acts 19, 2 Corinthians 11 and 13, 3 John.
+//! The numbers come from the standard tables in `data/` (see its README): each says how its
+//! tradition's verses map to the original-language numbering, so any two can be matched by
+//! going through the original.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::VerseRef;
@@ -18,11 +19,10 @@ use crate::books::book_by_code;
 pub enum Numbering {
     /// As in the King James Version and most English Bibles.
     English,
-    /// As in the Russian Synodal translation.
+    /// As in the Russian Synodal translation (its Protestant edition).
     Synodal,
-    /// Its own way, which the table does not know. Such a Bible is fine on its own; beside
-    /// another, some verses (the Psalms above all) may not be the matching ones.
-    Own,
+    /// As in the Hebrew and Greek texts.
+    Original,
 }
 
 impl Numbering {
@@ -30,7 +30,7 @@ impl Numbering {
         match self {
             Numbering::English => "english",
             Numbering::Synodal => "synodal",
-            Numbering::Own => "own",
+            Numbering::Original => "original",
         }
     }
 
@@ -38,150 +38,89 @@ impl Numbering {
         match name {
             "english" => Some(Numbering::English),
             "synodal" => Some(Numbering::Synodal),
-            "own" => Some(Numbering::Own),
+            "original" => Some(Numbering::Original),
             _ => None,
         }
     }
 }
 
-/// A run of verses in one English chapter and where the run starts in the Synodal text.
-struct Rule {
-    book: usize,
-    english_chapter: u16,
-    english_from: u16,
-    english_to: u16,
-    synodal_chapter: u16,
-    synodal_from: u16,
+/// One tradition's verses and the original-numbering verse each one is.
+struct Table {
+    to_original: HashMap<VerseRef, VerseRef>,
+    from_original: HashMap<VerseRef, VerseRef>,
 }
 
-/// The end of a chapter, whatever its length.
-const END: u16 = u16::MAX;
+/// The tables name books by their standard codes; a few differ from the codes in Bible files.
+fn book_of(code: &str) -> Option<usize> {
+    let ours = match code {
+        "SNG" => "SOL",
+        "EZK" => "EZE",
+        "JOL" => "JOE",
+        "NAM" => "NAH",
+        "MRK" => "MAR",
+        "JHN" => "JOH",
+        "PHP" => "PHI",
+        "JAS" => "JAM",
+        "1JN" => "1JO",
+        "2JN" => "2JO",
+        "3JN" => "3JO",
+        other => other,
+    };
+    book_by_code(ours)
+}
 
-/// Synodal psalms whose title takes up verse 1.
-const TITLE_ONE: [u16; 56] = [
-    3, 4, 5, 6, 7, 8, 11, 17, 18, 19, 20, 21, 29, 30, 33, 35, 37, 38, 39, 40, 41, 43, 44, 45, 46, 47, 48, 52, 54, 55,
-    56, 57, 58, 60, 61, 62, 63, 64, 66, 67, 68, 69, 74, 75, 76, 79, 80, 82, 83, 84, 87, 88, 91, 101, 107, 139,
-];
-/// Synodal psalms whose title takes up verses 1 and 2.
-const TITLE_TWO: [u16; 4] = [50, 51, 53, 59];
+/// Reads `3:1-8` into chapter 3, verses 1 to 8.
+fn span(text: &str) -> Option<(u16, u16, u16)> {
+    let (chapter, verses) = text.split_once(':')?;
+    let (from, to) = verses.split_once('-').unwrap_or((verses, verses));
+    Some((chapter.parse().ok()?, from.parse().ok()?, to.parse().ok()?))
+}
 
-fn rules() -> &'static [Rule] {
-    static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
-    RULES.get_or_init(|| {
-        let mut rules = Vec::new();
-        let mut add = |code: &str, ec: u16, ef: u16, et: u16, sc: u16, sf: u16| {
-            if let Some(book) = book_by_code(code) {
-                rules.push(Rule {
-                    book,
-                    english_chapter: ec,
-                    english_from: ef,
-                    english_to: et,
-                    synodal_chapter: sc,
-                    synodal_from: sf,
-                });
-            }
+/// Reads a table's mapping lines, such as `PSA 51:1-19 = PSA 51:3-21`. Other lines (the lists
+/// of chapter lengths, notes, books beyond the sixty-six) are passed over.
+fn read(table: &str) -> Table {
+    let mut to_original = HashMap::new();
+    let mut from_original = HashMap::new();
+    for line in table.lines() {
+        let line = line.split('#').next().unwrap_or_default();
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let [book, here, "=", original_book, there] = parts.as_slice() else { continue };
+        let (Some(book), Some(original_book)) = (book_of(book), book_of(original_book)) else { continue };
+        let (Some((chapter, from, to)), Some((original_chapter, original_from, _))) = (span(here), span(there)) else {
+            continue;
         };
-        // Psalms. English 9 and 10 are Synodal 9; 114 and 115 are 113; 116 is 114 and 115;
-        // 147 is 146 and 147. Between those the Synodal number is one less.
-        for english in 1..=150_u16 {
-            let synodal = match english {
-                1..=8 | 148..=150 => english,
-                9 | 10 | 114..=116 | 147 => continue,
-                _ => english - 1,
-            };
-            let title = if TITLE_TWO.contains(&synodal) {
-                2
-            } else if TITLE_ONE.contains(&synodal) {
-                1
-            } else {
-                0
-            };
-            if synodal != english || title != 0 {
-                add("PSA", english, 1, END, synodal, 1 + title);
-            }
+        for step in 0..=to.saturating_sub(from) {
+            let ours = VerseRef { book, chapter, verse: from + step };
+            let original = VerseRef { book: original_book, chapter: original_chapter, verse: original_from + step };
+            // Where a table gives a verse two partners, the first stands.
+            to_original.entry(ours).or_insert(original);
+            from_original.entry(original).or_insert(ours);
         }
-        add("PSA", 9, 1, END, 9, 2);
-        add("PSA", 10, 1, END, 9, 22);
-        add("PSA", 114, 1, END, 113, 1);
-        add("PSA", 115, 1, END, 113, 9);
-        add("PSA", 116, 1, 9, 114, 1);
-        add("PSA", 116, 10, END, 115, 1);
-        add("PSA", 147, 1, 11, 146, 1);
-        add("PSA", 147, 12, END, 147, 1);
-        // Chapters that start at a different verse.
-        add("NUM", 12, 16, 16, 13, 1);
-        add("NUM", 13, 1, END, 13, 2);
-        add("NUM", 29, 40, 40, 30, 1);
-        add("NUM", 30, 1, END, 30, 2);
-        add("JOS", 6, 1, 1, 5, 16);
-        add("JOS", 6, 2, END, 6, 1);
-        add("1SA", 23, 29, 29, 24, 1);
-        add("1SA", 24, 1, END, 24, 2);
-        add("JOB", 40, 1, 5, 39, 31);
-        add("JOB", 40, 6, END, 40, 1);
-        add("JOB", 41, 1, 8, 40, 20);
-        add("JOB", 41, 9, END, 41, 1);
-        add("ECC", 5, 1, 1, 4, 17);
-        add("ECC", 5, 2, END, 5, 1);
-        add("SOL", 1, 2, END, 1, 1);
-        add("SOL", 6, 13, 13, 7, 1);
-        add("SOL", 7, 1, END, 7, 2);
-        add("DAN", 4, 1, 3, 3, 31);
-        add("DAN", 4, 4, END, 4, 1);
-        add("HOS", 13, 16, 16, 14, 1);
-        add("HOS", 14, 1, END, 14, 2);
-        add("JON", 1, 17, 17, 2, 1);
-        add("JON", 2, 1, END, 2, 2);
-        // The closing praise of Romans stands after chapter 14 in the Synodal text.
-        add("ROM", 16, 25, 27, 14, 24);
-        rules
-    })
+    }
+    Table { to_original, from_original }
 }
 
-/// The same verse under another way of numbering. Where the schemes agree, or the table does
-/// not cover the place, the number is unchanged.
-pub fn convert(verse: VerseRef, from: Numbering, to: Numbering) -> VerseRef {
-    match (from, to) {
-        (Numbering::English, Numbering::Synodal) => rules()
-            .iter()
-            .find(|r| {
-                r.book == verse.book
-                    && r.english_chapter == verse.chapter
-                    && (r.english_from..=r.english_to).contains(&verse.verse)
-            })
-            .map_or(verse, |r| VerseRef {
-                book: verse.book,
-                chapter: r.synodal_chapter,
-                verse: r.synodal_from + (verse.verse - r.english_from),
-            }),
-        (Numbering::Synodal, Numbering::English) => {
-            // The rule that starts latest at or before the verse is the one it belongs to.
-            let rule = rules()
-                .iter()
-                .filter(|r| {
-                    r.book == verse.book
-                        && r.synodal_chapter == verse.chapter
-                        && r.synodal_from <= verse.verse
-                        && (r.english_to == END || verse.verse - r.synodal_from <= r.english_to - r.english_from)
-                })
-                .max_by_key(|r| r.synodal_from);
-            match rule {
-                Some(r) => VerseRef {
-                    book: verse.book,
-                    chapter: r.english_chapter,
-                    verse: r.english_from + (verse.verse - r.synodal_from),
-                },
-                // A title verse has no number of its own in English: it is part of verse 1.
-                None => match rules().iter().find(|r| r.book == verse.book && r.synodal_chapter == verse.chapter) {
-                    Some(r) if verse.verse < r.synodal_from => {
-                        VerseRef { book: verse.book, chapter: r.english_chapter, verse: r.english_from }
-                    }
-                    _ => verse,
-                },
-            }
-        }
-        _ => verse,
+fn table(numbering: Numbering) -> Option<&'static Table> {
+    static ENGLISH: OnceLock<Table> = OnceLock::new();
+    static SYNODAL: OnceLock<Table> = OnceLock::new();
+    match numbering {
+        Numbering::English => Some(ENGLISH.get_or_init(|| read(include_str!("../data/eng.vrs")))),
+        Numbering::Synodal => Some(SYNODAL.get_or_init(|| read(include_str!("../data/rsc.vrs")))),
+        Numbering::Original => None,
     }
+}
+
+/// The same verse under another way of numbering. Where the traditions agree the number is
+/// unchanged.
+pub fn convert(verse: VerseRef, from: Numbering, to: Numbering) -> VerseRef {
+    if from == to {
+        return verse;
+    }
+    let original = table(from).and_then(|t| t.to_original.get(&verse)).copied().unwrap_or(verse);
+    let there = table(to).and_then(|t| t.from_original.get(&original)).copied().unwrap_or(original);
+    // The tables count a psalm's title as verse 0 where a tradition leaves it unnumbered.
+    // Bible files keep such a title in verse 1.
+    VerseRef { verse: there.verse.max(1), ..there }
 }
 
 #[cfg(test)]
@@ -196,6 +135,12 @@ mod tests {
         let (e, s) = (at(code, english.0, english.1), at(code, synodal.0, synodal.1));
         assert_eq!(convert(e, Numbering::English, Numbering::Synodal), s, "{code} {english:?} to Synodal");
         assert_eq!(convert(s, Numbering::Synodal, Numbering::English), e, "{code} {synodal:?} to English");
+    }
+
+    #[test]
+    fn the_tables_are_read() {
+        assert!(table(Numbering::English).unwrap().to_original.len() > 2000);
+        assert!(table(Numbering::Synodal).unwrap().to_original.len() > 2000);
     }
 
     #[test]
@@ -216,6 +161,7 @@ mod tests {
     #[test]
     fn a_title_verse_belongs_to_the_first_english_verse() {
         assert_eq!(convert(at("PSA", 50, 1), Numbering::Synodal, Numbering::English), at("PSA", 51, 1));
+        assert_eq!(convert(at("PSA", 50, 2), Numbering::Synodal, Numbering::English), at("PSA", 51, 1));
         assert_eq!(convert(at("PSA", 3, 1), Numbering::Synodal, Numbering::English), at("PSA", 3, 1));
     }
 
@@ -228,6 +174,16 @@ mod tests {
         both_ways("JOB", (41, 1), (40, 20));
         both_ways("ROM", (16, 25), (14, 24));
         both_ways("JOH", (3, 16), (3, 16));
+    }
+
+    #[test]
+    fn hebrew_numbering_is_reached_from_both() {
+        // "Have mercy upon me, O God": English 51:1, Synodal 50:3, Hebrew 51:3.
+        assert_eq!(convert(at("PSA", 51, 1), Numbering::English, Numbering::Original), at("PSA", 51, 3));
+        assert_eq!(convert(at("PSA", 50, 3), Numbering::Synodal, Numbering::Original), at("PSA", 51, 3));
+        assert_eq!(convert(at("PSA", 51, 3), Numbering::Original, Numbering::Synodal), at("PSA", 50, 3));
+        // Malachi 4 in English is the end of chapter 3 in Hebrew.
+        assert_eq!(convert(at("MAL", 4, 1), Numbering::English, Numbering::Original), at("MAL", 3, 19));
     }
 
     #[test]

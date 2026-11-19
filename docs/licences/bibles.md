@@ -84,15 +84,17 @@ has bought one of these elsewhere cannot get it through PresenterCraft.
   --example convert` makes one from eBible's one-verse-per-line text. The only changes to the
   words: the King James source marks paragraphs with a pilcrow and the translators' added
   words with square brackets, and those marks are removed (the words stay).
-- **Verse numbering.** A table lines up English and Synodal numbering for the Psalms and for
-  the chapters that start at a different verse. Checked against the shipped texts: of 31,102
-  King James verses, 5 have no partner in the Synodal text because it joins them to the verse
-  before (Leviticus 14:57, Isaiah 3:26, Acts 19:41, 2 Corinthians 11:33 and 13:14); those
-  slides show the English alone.
+- **Verse numbering.** Bibles are lined up with the standard numbering tables from SIL's
+  libpalaso (MIT licence; see `crates/pc-bible/data/README.md`): English, the Russian Synodal's
+  Protestant edition, and the original-language numbering. Each Bible file names the one it
+  follows, chosen by comparing its chapter lengths with every table. Checked against the
+  shipped texts: of 31,102 King James verses, 2 have no partner in the Synodal text (Acts
+  19:41 and 2 Corinthians 13:14, which it joins to the verse before), and 8 pairs of English
+  verses share one Russian verse because the Synodal joins them.
 
 ## Downloads
 
-- The Bibles under "Free" are files attached to the project's `bibles-1` release on GitHub.
+- The Bibles under "Free" are files attached to the project's `bibles-2` release on GitHub.
   Install fetches `<id>.pcbible` from there, checks it against the SHA-256 written into the
   app for that Bible, checks that it reads as that Bible, and only then keeps it in the
   Bibles folder (`~/Library/Application Support/PresenterCraft/Bibles` on a Mac). A file with
@@ -107,13 +109,15 @@ has bought one of these elsewhere cannot get it through PresenterCraft.
 - Not offered yet, though free: Douay-Rheims and Brenton's Septuagint (they have books beyond
   the sixty-six, which the app does not handle yet) and the Russian Open Bible (published in a
   different file format).
-- **Numbering.** Geneva, both French Bibles, the Hebrew text and Kulish number some verses
-  their own way. They are marked so, and the Bible page says that beside another Bible a few
-  verses may not be the matching ones.
+- **Numbering.** The French Darby, the Hebrew text and the SBL Greek follow the
+  original-language numbering exactly. Geneva and Kulish mostly follow the English numbering
+  (they differ from it in 40 and 55 chapters, by a verse or so) and Louis Segond mostly follows
+  the original (54 chapters differ). Those three are marked as a loose fit, and the Bible page
+  says that beside another Bible a verse here and there may be one off.
 - **Brackets.** Several of these texts mark words the translators added with square brackets.
   They are shown as published; only the King James has them removed.
 
 ## Still to work out
 
-- A matching table for the Bibles that number verses their own way.
+- Exact tables for the three loosely fitting Bibles (Geneva, Kulish, Louis Segond).
 - Books beyond the sixty-six.

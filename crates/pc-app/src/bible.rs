@@ -5,7 +5,7 @@ use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, p
 
 use std::sync::Arc;
 
-use pc_bible::{Bible, Numbering, VerseRef, convert, parse_reference};
+use pc_bible::{Bible, VerseRef, convert, parse_reference};
 use pc_model::{
     Align as TextAlign, Group, Object, ObjectKind, Presentation, Rgba, Role, Slide, SlideRect, TextStyle, Uuid,
 };
@@ -27,7 +27,8 @@ pub struct Shelved {
     pub short: String,
     pub terms: String,
     pub credit: String,
-    pub numbering: Numbering,
+    /// True when it only mostly follows that numbering.
+    pub loose: bool,
     pub shipped: bool,
     kept: Kept,
     /// Read the first time it is asked for, so an unused Bible costs no memory.
@@ -80,7 +81,7 @@ impl Shelf {
             short: info.short,
             terms: info.terms,
             credit: info.credit,
-            numbering: info.numbering,
+            loose: info.loose,
             shipped,
             kept,
             loaded: None,
@@ -292,7 +293,7 @@ pub const OFFERED: &[Offered] = &[
         short: "GNV",
         id: "gnv",
         terms: "Public domain",
-        checksum: "5dd7feac9014063c062ad314913e66f3f07e8a93763fe8ac701d3cf6b5cd10e9",
+        checksum: "f87c06d1934e1a075c09246fd604ef22d31be162567c215bdfc28043ac02eb1a",
     },
     Offered {
         language: "French",
@@ -300,7 +301,7 @@ pub const OFFERED: &[Offered] = &[
         short: "LSG",
         id: "lsg",
         terms: "Public domain",
-        checksum: "abbc1f94215e66f68c5d4a8a5c1a8a285a048aad8d26e56e444c34d6df5b9010",
+        checksum: "7f044422526909a0611618fe55663db4079964f1db0dc0cdc304b244db4682ee",
     },
     Offered {
         language: "French",
@@ -308,7 +309,7 @@ pub const OFFERED: &[Offered] = &[
         short: "FRDBY",
         id: "frdby",
         terms: "Public domain",
-        checksum: "75fceec270c23298182f7502e87fe00eb5a69051c093afa5b2f7a9873c2f80d8",
+        checksum: "5d179898daa5e6ed02009eb7909d62fe7273eb55cb13d519fd1478c7a4d40eb2",
     },
     Offered {
         language: "German",
@@ -332,7 +333,7 @@ pub const OFFERED: &[Offered] = &[
         short: "SBLGNT",
         id: "sblgnt",
         terms: "CC BY 4.0",
-        checksum: "4fa6c89017ea41a429d674759325372619811c8917ad30ed936cfa6be07a9944",
+        checksum: "5874411a89d59706a1bf7d8d34616ddd91d86aadc7dffbd911da1d8769da6c7f",
     },
     Offered {
         language: "Greek",
@@ -348,7 +349,7 @@ pub const OFFERED: &[Offered] = &[
         short: "WLC",
         id: "wlc",
         terms: "Public domain",
-        checksum: "34349ded0cf4584b5735eb41c7a10cbca5045bd8a3691dc05794021cdb406257",
+        checksum: "376b60ec5e9db4c4afeb5fd5b542c53cea2973e38e879f368a6b09011cbb43d7",
     },
     Offered {
         language: "Portuguese",
@@ -380,7 +381,7 @@ pub const OFFERED: &[Offered] = &[
         short: "UKR1905",
         id: "ukr1905",
         terms: "Public domain",
-        checksum: "b8039d9d88784dd4da7c5be6755529609c698d03e436a5b8e0aa0e800f925c32",
+        checksum: "2f7f15cdc4bcdd1bde456487d202258846c6259aafa0feeb83f5038bef3d63a3",
     },
 ];
 

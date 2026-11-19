@@ -22,7 +22,7 @@ fn main() {
             .to_owned()
     };
     let Some(numbering) = Numbering::from_name(&get("numbering")) else {
-        return eprintln!("numbering= must be english, synodal or own");
+        return eprintln!("numbering= must be english, synodal or original");
     };
     let info = Info {
         id: get("id"),
@@ -33,6 +33,7 @@ fn main() {
         credit: get("credit"),
         source: get("source"),
         numbering,
+        loose: get("fit") == "loose",
     };
     if info.id.is_empty() || info.name.is_empty() {
         return eprintln!("id= and name= are needed");

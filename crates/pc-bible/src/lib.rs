@@ -16,7 +16,7 @@ pub use numbering::{Numbering, convert};
 const FIRST_LINE: &str = "presentercraft-bible 1";
 
 /// One verse's place: the book's position in [`BOOKS`], then chapter and verse from 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VerseRef {
     pub book: usize,
     pub chapter: u16,
@@ -40,6 +40,9 @@ pub struct Info {
     /// Where the text was taken from.
     pub source: String,
     pub numbering: Numbering,
+    /// True when the Bible only mostly follows that numbering, so that beside another Bible a
+    /// few verses may be one off.
+    pub loose: bool,
 }
 
 /// A whole Bible held in memory: all its words in one piece, and where each verse is in it.
@@ -121,6 +124,7 @@ impl Bible {
             credit: String::new(),
             source: String::new(),
             numbering: Numbering::English,
+            loose: false,
         };
         for line in lines {
             if line.is_empty() {
@@ -141,6 +145,7 @@ impl Bible {
                         format!("This Bible file uses a verse numbering this version does not know: {value}.")
                     })?;
                 }
+                "numbering-fit" => info.loose = value == "loose",
                 _ => {}
             }
         }
@@ -176,7 +181,7 @@ impl Bible {
     pub fn to_bytes(&self) -> Vec<u8> {
         let i = &self.info;
         let mut out = format!(
-            "{FIRST_LINE}\nid: {}\nname: {}\nshort: {}\nlanguage: {}\nterms: {}\ncredit: {}\nsource: {}\nnumbering: {}\n\n",
+            "{FIRST_LINE}\nid: {}\nname: {}\nshort: {}\nlanguage: {}\nterms: {}\ncredit: {}\nsource: {}\nnumbering: {}\nnumbering-fit: {}\n\n",
             i.id,
             i.name,
             i.short,
@@ -184,7 +189,8 @@ impl Bible {
             i.terms,
             i.credit,
             i.source,
-            i.numbering.name()
+            i.numbering.name(),
+            if i.loose { "loose" } else { "exact" }
         );
         for (place, words) in self.all() {
             out.push_str(&format!("{} {}:{} {words}\n", BOOKS[place.book].code, place.chapter, place.verse));
@@ -344,6 +350,7 @@ mod tests {
             credit: String::new(),
             source: "made for a test".to_owned(),
             numbering,
+            loose: false,
         }
     }
 
