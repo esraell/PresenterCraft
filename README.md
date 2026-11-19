@@ -49,7 +49,8 @@ SoftPresenter is built to be:
 
 - **Songs and slides.** Songs as slides in groups (Verse, Chorus, Bridge), arrangements, one-key
   jumps, nineteen transitions, libraries of your own, and playlists with headers, shown as one
-  scroll from song to song. Undo and redo.
+  scroll from song to song. Songs import from text, ChordPro, rich-text, Word and lyric-service
+  files, in any common encoding. Undo and redo.
 - **Bible.** Look up `John 3:16-18` or `Пс 22:1-3`, search by word, up to four translations on
   one slide; four Bibles come with the app and fifteen more download from inside it.
 - **Media.** Pictures and videos behind the words or on their own, media playlists, folders the
@@ -97,9 +98,9 @@ The full list, area by area, is in [docs/features.md](docs/features.md).
    shows each screen's name on it, so you can check which is which.
 2. **Bring in the songs.** New Song (Command-N) asks for a title and a theme and takes the words
    pasted in: a line in square brackets starts a group, a blank line starts a new slide, and a
-   line with only `--` separates the main language from the translation. Song text files can
-   also be opened from the command line (see [Get started](#get-started) and
-   [the format](#song-text-files)).
+   line with only `--` separates the main language from the translation. Songs you already have
+   come in with File › Import Songs…, or by dropping their files on the window: text (see
+   [the format](#song-text-files)), ChordPro, rich text, Word and lyric-service files.
 3. **Build the running order.** Make a playlist with the + beside PLAYLISTS (say "Sunday
    Morning"), drag songs into it in order, and add headers to group them.
 4. **Add the readings.** In the Bible view (Control-B), type a reference such as `John 3:16-18`,
@@ -207,9 +208,9 @@ preferences. The log is in `~/Library/Logs/SoftPresenter/`.
 
 SoftPresenter aims to be the presentation app a church never has to pay for and never outgrows:
 complete enough for a large Sunday service, simple enough for a volunteer, light enough for an
-old laptop, and open to scripts and AI. First on the list: importing songs from files and from a
-church's existing software, PowerPoint import, FFmpeg inside the app, and media and
-placeholder items in playlists. After that come a network API with a phone remote and an MCP
+old laptop, and open to scripts and AI. First on the list: bringing playlists and media across
+from a church's existing software, PowerPoint import, FFmpeg inside the app, media and
+placeholder items in playlists, and fixing a slide's words from the Show view. After that come a network API with a phone remote and an MCP
 server for AI assistants, and tested Windows and Linux builds.
 
 The full plan, about 170 features with their size and how much each matters on a Sunday, is in
