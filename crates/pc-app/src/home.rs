@@ -147,6 +147,16 @@ pub fn layout_boxes(theme: &Theme, layout: Template) -> Vec<(pc_model::Role, Sli
         .collect()
 }
 
+/// What each box of a layout is called, in the order `layout_boxes` gives them.
+pub fn layout_labels(theme: &Theme, layout: Template) -> Vec<String> {
+    theme
+        .boxes
+        .iter()
+        .filter(|style| layout == Template::Full || style.role != pc_model::Role::translation())
+        .map(pc_model::BoxStyle::label)
+        .collect()
+}
+
 /// What a layout is called.
 pub fn layout_name(layout: Template) -> &'static str {
     match layout {
@@ -175,11 +185,6 @@ pub fn box_diagram(
     }
 }
 
-/// What a target is called in its menu.
-fn target_label(target: &BibleTarget) -> String {
-    target.as_ref().map_or_else(|| "None".to_owned(), pc_model::Role::label)
-}
-
 /// One translation on the Bible page and where its text goes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BibleRow {
@@ -201,6 +206,8 @@ pub struct BiblePage {
     /// The boxes of the theme layout Bible slides use, and where each sits on the slide. The
     /// Verse and Reference menus offer these.
     pub boxes: Vec<(pc_model::Role, SlideRect)>,
+    /// What each of those boxes is called, in the same order.
+    pub box_labels: Vec<String>,
     /// Where the main box is pinned when the layout for two languages is used with only one,
     /// so the words stay where that layout puts them.
     pub pin_main: Option<SlideRect>,
@@ -242,6 +249,7 @@ impl Default for BiblePage {
             ],
             shelf,
             boxes: layout_boxes(&Theme::builtin(), Template::Full),
+            box_labels: layout_labels(&Theme::builtin(), Template::Full),
             pin_main: None,
             downloads: crate::bible_store::Downloads::default(),
             slots: None,
@@ -941,11 +949,25 @@ fn edit_view(
                                 }
                             },
                         );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ghost(ui, Icon::Plus, "More layouts in a theme");
-                        });
                     }
                 });
+                // The theme's name, always in reach: type to rename it.
+                if let Some(edit) = state.theme_edit.as_mut() {
+                    ui.add_space(4.0);
+                    let before = edit.theme.name.clone();
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut edit.theme.name)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Theme name"),
+                    );
+                    if edit.theme.name != before && !edit.theme.name.trim().is_empty() {
+                        edit.changed = true;
+                    }
+                    // An emptied name goes back to what it was when the field is left.
+                    if field.lost_focus() && edit.theme.name.trim().is_empty() {
+                        edit.theme.name = state.theme_names.get(edit.index).cloned().unwrap_or(before);
+                    }
+                }
             });
 
             egui::Panel::bottom("edit objects")
@@ -1373,6 +1395,11 @@ fn edit_view(
 
         // Pointer on the canvas: select, move, resize. Positions are turned into slide units.
         let scale = slide.width() / pc_model::SLIDE_WIDTH;
+        // The safe edge: a faint frame a little inside the slide. Boxes snap to it, so text can
+        // be kept an even distance from the edge of the screen.
+        let (safe_x, safe_y) = crate::editor::SAFE_EDGE;
+        let safe = slide.shrink2(vec2(safe_x * scale, safe_y * scale));
+        ui.painter().rect_stroke(safe, 0.0, Stroke::new(1.0, Color32::from_white_alpha(38)), StrokeKind::Inside);
         let to_slide = |p: egui::Pos2| ((p.x - slide.min.x) / scale, (p.y - slide.min.y) / scale);
         let to_screen = |f: SlideRect| Rect::from_min_size(slide.min + vec2(f.x, f.y) * scale, vec2(f.w, f.h) * scale);
         let response = ui.interact(area, ui.scope_id().with("canvas"), Sense::click_and_drag());
@@ -1520,6 +1547,15 @@ fn edit_view(
         match state.theme_edit.as_mut() {
             // A theme's layout: the theme is remade from it, and the app takes the theme.
             Some(edit) => {
+                // A box added in the editor is given a role of its own once, so renaming it
+                // later does not turn it into a different box.
+                let mut taken: Vec<pc_model::Role> =
+                    draft.slide.objects.iter().filter_map(|o| o.role.clone()).collect();
+                for object in draft.slide.objects.iter_mut().filter(|o| o.role.is_none()) {
+                    let role = edit.theme.unused_role(&object.name, &taken);
+                    taken.push(role.clone());
+                    object.role = Some(role);
+                }
                 edit.theme = edit.theme.with_template(edit.template, &draft.slide);
                 edit.changed = true;
             }
@@ -1696,11 +1732,24 @@ fn target_menu(
     salt: (&str, usize),
     target: &mut BibleTarget,
     boxes: &[(pc_model::Role, SlideRect)],
+    labels: &[String],
     taken: &[pc_model::Role],
     with_verse: Option<&pc_model::Role>,
 ) {
     let is_with_verse = with_verse.is_some() && target.as_ref() == with_verse;
-    let shown = if is_with_verse { "With Verse".to_owned() } else { target_label(target) };
+    // A box is called what the theme calls it.
+    let label_of = |role: &pc_model::Role| {
+        boxes
+            .iter()
+            .position(|(have, _)| have == role)
+            .and_then(|at| labels.get(at).cloned())
+            .unwrap_or_else(|| role.label())
+    };
+    let shown = match target {
+        _ if is_with_verse => "With Verse".to_owned(),
+        Some(role) => label_of(role),
+        None => "None".to_owned(),
+    };
     egui::ComboBox::from_id_salt(salt).selected_text(shown).width(130.0).height(360.0).show_ui(ui, |ui| {
         let entry = |ui: &mut egui::Ui, name: &str, lit: Option<&pc_model::Role>, chosen: bool, free: bool| -> bool {
             let (row, response) =
@@ -1743,7 +1792,7 @@ fn target_menu(
             }
             let chosen = target.as_ref() == Some(role);
             let free = chosen || !taken.contains(role);
-            if entry(ui, &role.label(), Some(role), chosen, free) {
+            if entry(ui, &label_of(role), Some(role), chosen, free) {
                 *target = Some(role.clone());
                 ui.close();
             }
@@ -1877,6 +1926,7 @@ fn bible_area(
             let mut remove = None;
             let count = state.bible.rows.len();
             let boxes = state.bible.boxes.clone();
+            let labels = state.bible.box_labels.clone();
             let used: Vec<(BibleTarget, BibleTarget)> =
                 state.bible.rows.iter().map(|row| (row.verse.clone(), row.reference.clone())).collect();
             for (index, row) in state.bible.rows.iter_mut().enumerate() {
@@ -1905,11 +1955,11 @@ fn bible_area(
                             .flatten()
                             .collect()
                     };
-                    target_menu(ui, ("bible verse", index), &mut row.verse, &boxes, &taken(true), None);
+                    target_menu(ui, ("bible verse", index), &mut row.verse, &boxes, &labels, &taken(true), None);
                     ui.add_space(8.0);
                     ui.label("Reference");
                     let with = row.verse.clone();
-                    target_menu(ui, ("bible reference", index), &mut row.reference, &boxes, &taken(false), with.as_ref());
+                    target_menu(ui, ("bible reference", index), &mut row.reference, &boxes, &labels, &taken(false), with.as_ref());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // The first row adds a translation; the others remove themselves.
                         if index == 0 {

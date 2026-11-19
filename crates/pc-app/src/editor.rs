@@ -147,6 +147,10 @@ pub enum Guide {
     Across(f32),
 }
 
+/// The safe edge: the margin kept clear round the slide, in slide units (a twentieth of its
+/// width and height). Text placed inside it is never tight against the edge of a screen.
+pub const SAFE_EDGE: (f32, f32) = (SLIDE_WIDTH * 0.05, SLIDE_HEIGHT * 0.05);
+
 /// How near, in slide units, a dragged object must come to a line to be pulled onto it.
 const SNAP: f32 = 14.0;
 
@@ -154,8 +158,9 @@ const SNAP: f32 = 14.0;
 /// and middles of the other objects. Returns the frame, moved if it was near one, and the
 /// lines it now sits on.
 pub fn snapped(frame: SlideRect, others: &[SlideRect]) -> (SlideRect, Vec<Guide>) {
-    let mut down = vec![0.0, SLIDE_WIDTH / 2.0, SLIDE_WIDTH];
-    let mut across = vec![0.0, SLIDE_HEIGHT / 2.0, SLIDE_HEIGHT];
+    // The slide's edges and middle, and the safe edge inside them.
+    let mut down = vec![0.0, SAFE_EDGE.0, SLIDE_WIDTH / 2.0, SLIDE_WIDTH - SAFE_EDGE.0, SLIDE_WIDTH];
+    let mut across = vec![0.0, SAFE_EDGE.1, SLIDE_HEIGHT / 2.0, SLIDE_HEIGHT - SAFE_EDGE.1, SLIDE_HEIGHT];
     for other in others {
         down.extend([other.x, other.x + other.w / 2.0, other.x + other.w]);
         across.extend([other.y, other.y + other.h / 2.0, other.y + other.h]);
@@ -639,12 +644,15 @@ mod tests {
         assert_eq!((frame.x + frame.w / 2.0, frame.y + frame.h / 2.0), (SLIDE_WIDTH / 2.0, SLIDE_HEIGHT / 2.0));
         assert_eq!(guides, [Guide::Down(SLIDE_WIDTH / 2.0), Guide::Across(SLIDE_HEIGHT / 2.0)]);
         // Far from every line it is left alone.
-        let far = SlideRect { x: 333.0, y: 77.0, w: 400.0, h: 300.0 };
+        let far = SlideRect { x: 333.0, y: 177.0, w: 400.0, h: 300.0 };
         assert_eq!(snapped(far, &[]), (far, Vec::new()));
         // Its left edge 8 units from another box's left edge: pulled to it.
         let other = SlideRect { x: 341.0, y: 600.0, w: 100.0, h: 100.0 };
         let (frame, guides) = snapped(far, &[other]);
         assert_eq!((frame.x, guides), (341.0, vec![Guide::Down(341.0)]));
+        // Near the safe edge it is pulled onto that.
+        let (frame, guides) = snapped(SlideRect { x: SAFE_EDGE.0 + 9.0, y: 177.0, w: 400.0, h: 300.0 }, &[]);
+        assert_eq!((frame.x, guides), (SAFE_EDGE.0, vec![Guide::Down(SAFE_EDGE.0)]));
     }
 
     #[test]

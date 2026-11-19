@@ -48,6 +48,8 @@ pub struct InspectorState {
     pub lock_shape: bool,
     /// Switches for the options that are shown but not built yet, so they can still be ticked.
     pub later: Later,
+    /// What has been typed to narrow the list of fonts.
+    pub font_search: String,
 }
 
 #[derive(Debug, Default)]
@@ -659,7 +661,7 @@ fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
 
     let shown = style.over(&base);
     let mut wanted = shown.clone();
-    text_look(ui, &mut wanted, &base, &fonts, &mut inspector.later);
+    text_look(ui, &mut wanted, &base, &fonts, inspector);
     if wanted != shown {
         *style = TextStyle::between(&base, &wanted);
     }
@@ -685,15 +687,53 @@ fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
 }
 
 /// The Text tab's controls for one look. `wanted` starts as the look the text has now.
-fn text_look(ui: &mut egui::Ui, wanted: &mut BoxStyle, base: &BoxStyle, fonts: &[String], later: &mut Later) {
+fn text_look(
+    ui: &mut egui::Ui,
+    wanted: &mut BoxStyle,
+    base: &BoxStyle,
+    fonts: &[String],
+    inspector: &mut InspectorState,
+) {
     let full = ui.available_width();
     egui::ComboBox::from_id_salt("font family")
         .selected_text(wanted.font_family.as_str())
         .width(full)
         .height(360.0)
         .show_ui(ui, |ui| {
-            for family in fonts {
-                ui.selectable_value(&mut wanted.font_family, family.clone(), family.as_str());
+            // Type to narrow the list: the field has the keyboard as soon as the menu opens,
+            // and Return takes the first font left.
+            let search = ui.add(
+                egui::TextEdit::singleline(&mut inspector.font_search)
+                    .hint_text("Search fonts")
+                    .desired_width(f32::INFINITY),
+            );
+            search.request_focus();
+            let typed = inspector.font_search.trim().to_lowercase();
+            // Fonts that start with what was typed come before those that only contain it.
+            let mut found: Vec<&String> = fonts.iter().filter(|name| name.to_lowercase().starts_with(&typed)).collect();
+            found.extend(fonts.iter().filter(|name| {
+                let name = name.to_lowercase();
+                !name.starts_with(&typed) && name.contains(&typed)
+            }));
+            let enter = ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if enter
+                && !typed.is_empty()
+                && let Some(first) = found.first()
+            {
+                wanted.font_family = (*first).clone();
+                inspector.font_search.clear();
+                ui.close();
+            }
+            ui.separator();
+            if found.is_empty() {
+                ui.label(egui::RichText::new("No font has that in its name.").color(DIM));
+            }
+            for family in found {
+                if ui.selectable_label(wanted.font_family == *family, family.as_str()).clicked() {
+                    wanted.font_family = family.clone();
+                    inspector.font_search.clear();
+                    ui.close();
+                }
             }
         });
     ui.horizontal(|ui| {
@@ -854,9 +894,9 @@ fn text_look(ui: &mut egui::Ui, wanted: &mut BoxStyle, base: &BoxStyle, fonts: &
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(TICK, ROW), Layout::left_to_right(Align::Center), |ui| {
             ui.set_min_width(TICK);
-            tick_later(ui, &mut later.lines_only, "Lines Only");
+            tick_later(ui, &mut inspector.later.lines_only, "Lines Only");
         });
-        if later.lines_only {
+        if inspector.later.lines_only {
             let mut picked = 0;
             choice_later(ui, "lines only", ui.available_width(), &mut picked, &["Full Width"], "Lines Only");
         }
@@ -865,10 +905,10 @@ fn text_look(ui: &mut egui::Ui, wanted: &mut BoxStyle, base: &BoxStyle, fonts: &
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(TICK, ROW), Layout::left_to_right(Align::Center), |ui| {
             ui.set_min_width(TICK);
-            tick_later(ui, &mut later.scrolling, "Scrolling");
+            tick_later(ui, &mut inspector.later.scrolling, "Scrolling");
         });
-        if later.scrolling {
-            let picked = later.scroll_direction;
+        if inspector.later.scrolling {
+            let picked = inspector.later.scroll_direction;
             let width = ui.available_width();
             if let Some(index) = segments(
                 ui,
@@ -886,20 +926,27 @@ fn text_look(ui: &mut egui::Ui, wanted: &mut BoxStyle, base: &BoxStyle, fonts: &
                     );
                 },
             ) {
-                later.scroll_direction = index;
+                inspector.later.scroll_direction = index;
             }
         }
     });
     rule(ui);
-    tick_later(ui, &mut later.list, "List");
+    tick_later(ui, &mut inspector.later.list, "List");
     rule(ui);
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(TICK, ROW), Layout::left_to_right(Align::Center), |ui| {
             ui.set_min_width(TICK);
-            tick_later(ui, &mut later.linked_text, "Linked Text");
+            tick_later(ui, &mut inspector.later.linked_text, "Linked Text");
         });
-        if later.linked_text {
-            choice_later(ui, "linked text", ui.available_width(), &mut later.linked_type, &LINKED_TYPES, "Linked Text");
+        if inspector.later.linked_text {
+            choice_later(
+                ui,
+                "linked text",
+                ui.available_width(),
+                &mut inspector.later.linked_type,
+                &LINKED_TYPES,
+                "Linked Text",
+            );
         }
     });
 }

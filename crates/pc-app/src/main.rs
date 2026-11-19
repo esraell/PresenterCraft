@@ -396,6 +396,7 @@ impl App {
                     slots: Some(self.bible_slots),
                     shelf: bible::Shelf::with_installed(),
                     boxes: home::layout_boxes(&self.theme_for_bible, self.bible_layout),
+                    box_labels: home::layout_labels(&self.theme_for_bible, self.bible_layout),
                     pin_main: self.pinned_main(),
                     ..home::BiblePage::default()
                 },
@@ -664,6 +665,7 @@ impl App {
             state.theme_layouts = layouts;
             state.bible_layout = self.bible_layout;
             state.bible.boxes = home::layout_boxes(&self.theme_for_bible, self.bible_layout);
+            state.bible.box_labels = home::layout_labels(&self.theme_for_bible, self.bible_layout);
             state.bible.pin_main = pinned;
             running.home_window.request_redraw();
         }
@@ -732,6 +734,13 @@ impl App {
             }
             self.unsaved_since = Some(Instant::now());
             self.themes_changed();
+            // A theme is written at once, so nothing is lost if the app stops without
+            // warning. While a box is being dragged it waits for the drag to end.
+            let dragging =
+                self.running.as_ref().is_some_and(|r| r.home_state.editing.as_ref().is_some_and(|d| d.drag.is_some()));
+            if !dragging {
+                self.save_unsaved();
+            }
         }
         if leave {
             if let Some(running) = self.running.as_mut() {
