@@ -926,7 +926,8 @@ impl Default for HomeState {
             stage_on: true,
             identify: false,
             ndi_draft: None,
-            ndi_available: pc_ndi::NdiOutput::AVAILABLE,
+            // Assumed until it has been looked for.
+            ndi_available: true,
             inspector: crate::inspector::InspectorState::default(),
             theme_edit: None,
             theme_names: Vec::new(),
@@ -3158,9 +3159,10 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
                             let label = output_label(&choice, &state.displays);
                             let on = std::mem::discriminant(&choice) == std::mem::discriminant(&screen.output)
                                 && (is_ndi || choice == screen.output);
-                            let entry = ui
-                                .add_enabled(!is_ndi || state.ndi_available, egui::Button::selectable(on, label))
-                                .on_disabled_hover_text("This build of PresenterCraft does not include NDI.");
+                            let mut entry = ui.add(egui::Button::selectable(on, label));
+                            if is_ndi && !state.ndi_available {
+                                entry = entry.on_hover_text(pc_ndi::NOT_INSTALLED);
+                            }
                             if entry.clicked() && choice != screen.output {
                                 state.screens[index].output = choice;
                                 state.ndi_draft = None;
@@ -3203,6 +3205,19 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
             Output::Off => "This screen is kept in the list and shows nowhere.",
         };
         ui.label(egui::RichText::new(about).size(11.5).color(TEXT_DIM));
+        // Where NDI comes from, wherever it is chosen; and, without it, that it isn't installed.
+        if matches!(screen.output, Output::Ndi(_)) {
+            ui.horizontal_wrapped(|ui| {
+                if !state.ndi_available {
+                    ui.label(
+                        egui::RichText::new("NDI isn't installed on this computer. Install NDI Tools (free), then turn this screen on again:")
+                            .size(11.5)
+                            .color(Color32::from_rgb(255, 170, 120)),
+                    );
+                }
+                ui.hyperlink_to(egui::RichText::new("ndi.video").size(11.5), pc_ndi::DOWNLOAD_URL);
+            });
+        }
         // An audience screen's look: which layers it shows, its colour, its covered edges.
         if screen.kind == Kind::Audience {
             ui.add_space(14.0);

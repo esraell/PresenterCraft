@@ -1,7 +1,7 @@
 //! Lists the NDI sources visible on the network for a few seconds. Used to check that
-//! PresenterCraft's source really appears: `cargo run -p pc-ndi --features sdk --example find`.
+//! PresenterCraft's source really appears: `cargo run -p pc-ndi --features sdk-examples --example find`.
 
-#[cfg(feature = "sdk")]
+#[cfg(feature = "sdk-examples")]
 fn main() {
     use std::time::Duration;
 
@@ -34,7 +34,7 @@ fn main() {
     }
 }
 
-#[cfg(not(feature = "sdk"))]
+#[cfg(not(feature = "sdk-examples"))]
 fn main() {
-    eprintln!("Build with --features sdk to look for NDI sources.");
+    eprintln!("Build with --features sdk-examples to look for NDI sources.");
 }

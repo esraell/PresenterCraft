@@ -2942,6 +2942,7 @@ name = "pc-ndi"
 version = "0.1.0"
 dependencies = [
  "grafton-ndi",
+ "libloading",
 ]
 
 [[package]]

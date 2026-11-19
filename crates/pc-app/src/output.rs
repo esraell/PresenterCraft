@@ -119,10 +119,28 @@ pub enum NdiStatus {
     Failed(String),
 }
 
+/// An NDI picture being copied back from the GPU: the sources it is for, the buffer it is
+/// copied into (each row padded as the GPU requires), and whether the copy has come back (and
+/// worked).
+struct NdiReadback {
+    ids: Vec<Uuid>,
+    buffer: wgpu::Buffer,
+    padded_row: usize,
+    done: Arc<Mutex<Option<bool>>>,
+}
+
 /// The size of the picture sent over NDI, whatever size any window is.
 const NDI_SIZE: (u32, u32) = (1920, 1080);
 
-type NdiStatuses = Arc<Mutex<Vec<(Uuid, NdiStatus)>>>;
+/// Each screen's NDI source as the window sees it: started (by its name, and how it is doing
+/// now), or refused before it could start.
+#[derive(Clone)]
+enum NdiEntry {
+    Started(String, pc_ndi::Watch),
+    Refused(String),
+}
+
+type NdiStatuses = Arc<Mutex<Vec<(Uuid, NdiEntry)>>>;
 
 /// The operator's Program preview is what the screens show: the output thread draws the
 /// audience picture a second time, small, into one of two textures the window shows, turn about: which one was drawn last, and how many
@@ -199,10 +217,22 @@ impl OutputHandle {
         self.tx.send(msg).is_ok()
     }
 
-    /// What a screen's NDI output is doing now.
+    /// What a screen's NDI output is doing now. `Off` while it is still starting.
     pub fn ndi_status(&self, screen: Uuid) -> NdiStatus {
-        let statuses = self.ndi_status.lock().map(|all| all.clone()).unwrap_or_default();
-        statuses.into_iter().find(|(id, _)| *id == screen).map(|(_, status)| status).unwrap_or_default()
+        let entry = self
+            .ndi_status
+            .lock()
+            .ok()
+            .and_then(|all| all.iter().find(|(id, _)| *id == screen).map(|(_, entry)| entry.clone()));
+        match entry {
+            None => NdiStatus::Off,
+            Some(NdiEntry::Refused(reason)) => NdiStatus::Failed(reason),
+            Some(NdiEntry::Started(name, watch)) => match watch.state() {
+                pc_ndi::State::Starting => NdiStatus::Off,
+                pc_ndi::State::Sending => NdiStatus::On(name),
+                pc_ndi::State::Failed(reason) => NdiStatus::Failed(reason),
+            },
+        }
     }
 
     /// True once the thread has stopped, which it only does on shutdown or a fatal error.
@@ -283,6 +313,11 @@ struct Output {
     /// The NDI sources that are switched on, and the texture their picture is drawn into.
     ndi: Vec<(Uuid, NdiOutput)>,
     ndi_target: Option<wgpu::Texture>,
+    /// NDI pictures on their way back from the GPU, buffers kept to copy the next ones into,
+    /// and whether a newer picture is waiting for the round under way to finish.
+    ndi_pending: Vec<NdiReadback>,
+    ndi_buffers: Vec<wgpu::Buffer>,
+    ndi_dirty: bool,
     ndi_status: NdiStatuses,
     /// While screens are being identified: the name each one shows instead of the show.
     /// While screens are identified: each screen's name (as a slide), its colour, and when it
@@ -355,6 +390,9 @@ fn run(
         fading: None,
         ndi: Vec::new(),
         ndi_target: None,
+        ndi_pending: Vec::new(),
+        ndi_buffers: Vec::new(),
+        ndi_dirty: false,
         ndi_status,
         identify: Vec::new(),
         identify_since: Instant::now(),
@@ -389,6 +427,20 @@ fn run(
                 Ok(msg) => Some(msg),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => return,
+            }
+        } else if output.ndi_waiting() {
+            // NDI pictures on their way back from the GPU are looked for every couple of
+            // milliseconds (never waited on), with a playing video kept going meanwhile.
+            match rx.recv_timeout(Duration::from_millis(2)) {
+                Ok(msg) => Some(msg),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    output.finish_ndi();
+                    if output.frame.plays_video() && output.take_video_picture() {
+                        output.draw(false);
+                    }
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
         } else if output.ticks() {
             // Stage screens show the time: wake at the start of each second to redraw them.
@@ -601,16 +653,25 @@ impl Output {
     fn set_ndi(&mut self, id: Uuid, name: Option<String>) {
         // Stop the old source first, so a renamed one does not appear twice.
         self.ndi.retain(|(have, _)| *have != id);
+        // Starting never waits on NDI: the source starts on its own thread.
         let status = name.map(|name| match NdiOutput::start(&name) {
             Ok(ndi) => {
-                let status = NdiStatus::On(ndi.name().to_owned());
+                let entry = NdiEntry::Started(ndi.name().to_owned(), ndi.watch());
                 self.ndi.push((id, ndi));
-                status
+                entry
             }
-            Err(reason) => NdiStatus::Failed(reason),
+            Err(reason) => NdiEntry::Refused(reason),
         });
         if self.ndi.is_empty() {
             self.ndi_target = None;
+            self.ndi_pending.clear();
+            self.ndi_buffers.clear();
+            self.ndi_dirty = false;
+        }
+        // A new source gets the picture on screen now.
+        if !self.ndi.is_empty() {
+            let frame = self.frame.clone();
+            self.send_ndi(&frame);
         }
         if let Ok(mut shared) = self.ndi_status.lock() {
             shared.retain(|(have, _)| *have != id);
@@ -733,40 +794,131 @@ impl Output {
         !self.identify.is_empty() && self.identify_since.elapsed().as_secs_f32() < IDENTIFY_BREATHS * IDENTIFY_BREATH
     }
 
-    /// Draws the picture at NDI's size and hands it to every NDI source. This does not depend
-    /// on any window: with none open, NDI still sends.
+    /// Draws the picture at NDI's size for every NDI source and starts copying it back from the
+    /// GPU, without waiting for the copy: `finish_ndi` hands it over once it is there. One
+    /// round of copies is under way at a time; a picture that comes while one is under way is
+    /// not waited for, and the newest is drawn as soon as the round is done. This does not
+    /// depend on any window: with none open, NDI still sends.
     fn send_ndi(&mut self, frame: &Frame) {
+        self.finish_ndi();
+        if self.ndi.is_empty() {
+            return;
+        }
+        if !self.ndi_pending.is_empty() {
+            self.ndi_dirty = true;
+            return;
+        }
+        self.ndi_dirty = false;
         let (w, h) = NDI_SIZE;
-        let ids: Vec<Uuid> = self.ndi.iter().map(|(id, _)| *id).collect();
-        // The show is drawn once and sent to all; a screen being identified gets its own picture.
-        let mut shared: Option<Vec<u8>> = None;
-        for id in ids {
-            let own = self.identify.iter().any(|(have, ..)| *have == id)
-                || self.is_stage(id)
-                || self.looks.iter().any(|(have, _)| *have == id);
-            let pixels = match shared.as_ref().filter(|_| !own) {
-                Some(pixels) => pixels.clone(),
-                None => {
-                    let scene = self.scene_for(id, frame, w, h);
-                    let target = self.ndi_target.get_or_insert_with(|| target_texture(&self.device, w, h));
-                    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-                    if let Err(e) = self.painter.paint(&self.device, &self.queue, &scene, &view, w, h) {
-                        return crate::applog::problem("output", &format!("The NDI picture could not be drawn: {e}"));
-                    }
-                    match read_pixels(&self.device, &self.queue, target) {
-                        Ok(pixels) => {
-                            if !own {
-                                shared = Some(pixels.clone());
-                            }
-                            pixels
+        // The show is drawn once for every source that shows it as it is; a screen being
+        // identified, a stage screen or one with its own look gets its own picture.
+        let mut shared: Vec<Uuid> = Vec::new();
+        let mut own: Vec<Uuid> = Vec::new();
+        for (id, ndi) in &self.ndi {
+            // A source that couldn't start (NDI not installed, say) gets nothing drawn for it.
+            if matches!(ndi.state(), pc_ndi::State::Failed(_)) {
+                continue;
+            }
+            let alone = self.identify.iter().any(|(have, ..)| have == id)
+                || self.is_stage(*id)
+                || self.looks.iter().any(|(have, _)| have == id);
+            if alone { own.push(*id) } else { shared.push(*id) }
+        }
+        let mut groups: Vec<Vec<Uuid>> = own.into_iter().map(|id| vec![id]).collect();
+        if !shared.is_empty() {
+            groups.push(shared);
+        }
+        for ids in groups {
+            let scene = self.scene_for(ids[0], frame, w, h);
+            let target = self.ndi_target.get_or_insert_with(|| target_texture(&self.device, w, h)).clone();
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            if let Err(e) = self.painter.paint(&self.device, &self.queue, &scene, &view, w, h) {
+                return crate::applog::problem("output", &format!("The NDI picture could not be drawn: {e}"));
+            }
+            // The copy is queued after the drawing, so it takes this picture even though the next
+            // group is drawn into the same texture straight after.
+            let padded_row = (w as usize * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize)
+                * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+            let buffer = self.ndi_buffers.pop().unwrap_or_else(|| {
+                self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("NDI readback"),
+                    size: (padded_row * h as usize) as u64,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                })
+            });
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encoder.copy_texture_to_buffer(
+                target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(padded_row as u32),
+                        rows_per_image: None,
+                    },
+                },
+                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            );
+            self.queue.submit([encoder.finish()]);
+            let done: Arc<Mutex<Option<bool>>> = Arc::default();
+            let flag = done.clone();
+            buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                if let Ok(mut flag) = flag.lock() {
+                    *flag = Some(result.is_ok());
+                }
+            });
+            self.ndi_pending.push(NdiReadback { ids, buffer, padded_row, done });
+        }
+    }
+
+    /// True while pictures for NDI are on their way back from the GPU.
+    fn ndi_waiting(&self) -> bool {
+        !self.ndi_pending.is_empty()
+    }
+
+    /// Hands every NDI picture that has come back from the GPU to its sources, without
+    /// waiting for any still on the way; then, if a newer picture came meanwhile, starts it.
+    fn finish_ndi(&mut self) {
+        if self.ndi_pending.is_empty() {
+            return;
+        }
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        let (w, h) = NDI_SIZE;
+        let row = w as usize * 4;
+        let mut still = Vec::new();
+        for readback in std::mem::take(&mut self.ndi_pending) {
+            let done = readback.done.lock().ok().and_then(|done| *done);
+            match done {
+                None => still.push(readback),
+                Some(false) => crate::applog::problem("output", "An NDI picture could not be read back."),
+                Some(true) => {
+                    let pixels = {
+                        let slice = readback.buffer.slice(..);
+                        let Ok(mapped) = slice.get_mapped_range() else { continue };
+                        let mut pixels = Vec::with_capacity(row * h as usize);
+                        for padded in mapped.chunks(readback.padded_row) {
+                            pixels.extend_from_slice(&padded[..row]);
                         }
-                        Err(e) => return eprintln!("The NDI picture could not be read back: {e}"),
+                        pixels
+                    };
+                    readback.buffer.unmap();
+                    for id in &readback.ids {
+                        if let Some((_, ndi)) = self.ndi.iter().find(|(have, _)| have == id) {
+                            ndi.show(w, h, pixels.clone());
+                        }
+                    }
+                    // Kept for the next picture, two at most.
+                    if self.ndi_buffers.len() < 2 {
+                        self.ndi_buffers.push(readback.buffer);
                     }
                 }
-            };
-            if let Some((_, ndi)) = self.ndi.iter().find(|(have, _)| *have == id) {
-                ndi.show(w, h, pixels);
             }
+        }
+        self.ndi_pending = still;
+        if self.ndi_pending.is_empty() && self.ndi_dirty {
+            let frame = self.frame.clone();
+            self.send_ndi(&frame);
         }
     }
 
@@ -1009,23 +1161,10 @@ impl Output {
             self.present(index, &scene);
             self.targets[index].shown = Some(scene);
         }
-        let (w, h) = NDI_SIZE;
-        let stage_ndi: Vec<Uuid> = self.ndi.iter().map(|(id, _)| *id).filter(|id| self.is_stage(*id)).collect();
-        for id in stage_ndi {
-            let scene = self.scene_for(id, &frame, w, h);
-            let target = self.ndi_target.get_or_insert_with(|| target_texture(&self.device, w, h));
-            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-            if let Err(e) = self.painter.paint(&self.device, &self.queue, &scene, &view, w, h) {
-                return crate::applog::problem("output", &format!("The NDI picture could not be drawn: {e}"));
-            }
-            match read_pixels(&self.device, &self.queue, target) {
-                Ok(pixels) => {
-                    if let Some((_, ndi)) = self.ndi.iter().find(|(have, _)| *have == id) {
-                        ndi.show(w, h, pixels);
-                    }
-                }
-                Err(e) => return eprintln!("The NDI picture could not be read back: {e}"),
-            }
+        // A stage screen sent over NDI gets the new time too, the same way as every NDI picture
+        // (never waited on).
+        if self.ndi.iter().any(|(id, _)| self.is_stage(*id)) {
+            self.send_ndi(&frame);
         }
     }
 

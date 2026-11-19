@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds PresenterCraft and wraps it as a Mac app, target/release/PresenterCraft.app, so the
 # menu bar, the Dock and Activity Monitor call it "PresenterCraft". Any arguments are passed to
-# cargo (for example --no-default-features to build without NDI).
+# cargo.
 #
 #   scripts/macos-app.sh
 #   open target/release/PresenterCraft.app

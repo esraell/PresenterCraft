@@ -1,8 +1,8 @@
 //! Receives one picture from the NDI source whose name contains the given words and says what
 //! it holds. Used to check that PresenterCraft's NDI picture really arrives:
-//! `cargo run -p pc-ndi --features sdk --example receive -- "PresenterCraft"`.
+//! `cargo run -p pc-ndi --features sdk-examples --example receive -- "PresenterCraft"`.
 
-#[cfg(feature = "sdk")]
+#[cfg(feature = "sdk-examples")]
 fn main() {
     use std::time::Duration;
 
@@ -45,7 +45,7 @@ fn main() {
     }
 }
 
-#[cfg(not(feature = "sdk"))]
+#[cfg(not(feature = "sdk-examples"))]
 fn main() {
-    eprintln!("Build with --features sdk to receive NDI.");
+    eprintln!("Build with --features sdk-examples to receive NDI.");
 }

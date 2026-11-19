@@ -5,12 +5,29 @@ edition.workspace = true
 publish.workspace = true
 
 [features]
-# Builds against the NDI SDK, which must be installed. Without it this crate still builds and
-# reports that NDI is not included.
-sdk = ["dep:grafton-ndi"]
+# Only for the two examples that look for and receive NDI sources (to check PresenterCraft's
+# own): they use a third-party NDI library that needs the NDI SDK installed to build. Nothing
+# else uses it, so the app and its tests build without the SDK.
+sdk-examples = ["dep:grafton-ndi"]
 
 [dependencies]
+# Opens the NDI runtime when the first NDI source starts, so the app needs neither the NDI SDK
+# to build nor the runtime to start.
+libloading = "0.8"
 grafton-ndi = { version = "=2.1.0", default-features = false, optional = true }
 
-[lints]
-workspace = true
+[[example]]
+name = "find"
+required-features = ["sdk-examples"]
+
+[[example]]
+name = "receive"
+required-features = ["sdk-examples"]
+
+# Calling into the NDI runtime needs `unsafe`; this crate allows it only in its `runtime`
+# module, as pc-video does for the media frameworks. Every unsafe block says why it is sound.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

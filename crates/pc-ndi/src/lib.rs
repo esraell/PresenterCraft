@@ -1,65 +1,97 @@
 //! Sends a screen's picture over the network as an NDI® source.
 //!
-//! NDI® is a registered trademark of Vizrt NDI AB. This crate calls the NDI runtime installed
-//! on the computer through the `grafton-ndi` library; it contains nothing from the NDI SDK.
-//! See `docs/licences/ndi.md` for what the SDK's licence asks.
+//! NDI® is a registered trademark of Vizrt NDI AB. The NDI runtime is not part of PresenterCraft
+//! and is not needed to build it or to start it: it is looked for on the computer when the first
+//! NDI source starts, on that source's own thread. Without it, the source says NDI isn't
+//! installed and where to get it, and everything else carries on. See `docs/licences/ndi.md`.
 //!
-//! The work happens on its own thread, so handing over a picture never waits on the network.
+//! The work happens on each source's own thread, so handing over a picture never waits on NDI
+//! or the network.
+
+#[allow(unsafe_code)]
+mod runtime;
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+pub use runtime::NOT_INSTALLED;
+
+/// Where NDI can be downloaded, shown wherever NDI is chosen.
+pub const DOWNLOAD_URL: &str = "https://ndi.video/";
 
 /// How often the current picture is sent again while nothing changes. A receiver that joins
 /// late, or a mixer that expects a steady source, gets a picture within this time. Each send is
 /// compressed again by NDI, so this is kept slow: every 100 ms, two idle sources took about a
 /// tenth of the computer's time; every second, about a fortieth.
-// Unused in a build without the SDK, which has nothing to send to.
-#[cfg_attr(not(feature = "sdk"), allow(dead_code))]
 const RESEND_EVERY: Duration = Duration::from_millis(1000);
 
 /// One picture to send: tightly packed RGBA rows.
-#[cfg_attr(not(feature = "sdk"), allow(dead_code))]
 struct Picture {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
 }
 
+/// What a source is doing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum State {
+    /// Looking for the NDI runtime and starting the source.
+    Starting,
+    Sending,
+    /// It could not start, or stopped; the reason in plain words.
+    Failed(String),
+}
+
+/// What a source is doing, seen from anywhere.
+#[derive(Clone, Debug)]
+pub struct Watch(Arc<Mutex<State>>);
+
+impl Watch {
+    pub fn state(&self) -> State {
+        self.0.lock().map_or_else(|_| State::Failed("NDI stopped.".to_owned()), |state| state.clone())
+    }
+}
+
 /// A running NDI source. Dropping it stops the source.
 pub struct NdiOutput {
     name: String,
+    state: Arc<Mutex<State>>,
     tx: Option<Sender<Picture>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl NdiOutput {
-    /// True when this build can send NDI at all.
-    pub const AVAILABLE: bool = cfg!(feature = "sdk");
-
-    /// Starts an NDI source with this name. The error is a plain sentence for the operator.
+    /// Starts an NDI source with this name. Never waits for NDI: the source starts on its own
+    /// thread, and `state` says how that went. The error is a plain sentence for the operator.
     pub fn start(name: &str) -> Result<NdiOutput, String> {
         let name = name.trim();
         if name.is_empty() {
             return Err("The NDI source needs a name.".to_owned());
         }
         let (tx, rx) = channel();
-        let (ready_tx, ready_rx) = channel();
-        let source = name.to_owned();
+        let state = Arc::new(Mutex::new(State::Starting));
+        let (source, shared) = (name.to_owned(), state.clone());
         let thread = std::thread::Builder::new()
             .name("ndi".to_owned())
-            .spawn(move || run(&source, &rx, &ready_tx))
+            .spawn(move || run(&source, &rx, &shared))
             .map_err(|e| format!("Could not start the NDI thread: {e}"))?;
-        // The thread says whether the NDI runtime could be started before we report success.
-        match ready_rx.recv() {
-            Ok(Ok(())) => Ok(NdiOutput { name: name.to_owned(), tx: Some(tx), thread: Some(thread) }),
-            Ok(Err(reason)) => Err(reason),
-            Err(_) => Err("NDI stopped before it could start.".to_owned()),
-        }
+        Ok(NdiOutput { name: name.to_owned(), state, tx: Some(tx), thread: Some(thread) })
     }
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// What the source is doing now.
+    pub fn state(&self) -> State {
+        self.watch().state()
+    }
+
+    /// A way to see what the source is doing from another thread.
+    pub fn watch(&self) -> Watch {
+        Watch(self.state.clone())
     }
 
     /// Hands over the picture to send from now on. Never blocks. A picture whose size and
@@ -84,9 +116,14 @@ impl Drop for NdiOutput {
     }
 }
 
+/// Whether the NDI runtime is on this computer. Only looks for its file (a few quick checks),
+/// so it can be asked from anywhere.
+pub fn installed() -> bool {
+    runtime::locate().is_some()
+}
+
 /// Waits for the next picture, or for the time to send the current one again. Returns `None`
 /// when the output has been dropped.
-#[cfg_attr(not(feature = "sdk"), allow(dead_code))]
 fn next_picture(rx: &Receiver<Picture>, current: Option<Picture>) -> Option<Option<Picture>> {
     match rx.recv_timeout(RESEND_EVERY) {
         Ok(mut newest) => {
@@ -101,51 +138,24 @@ fn next_picture(rx: &Receiver<Picture>, current: Option<Picture>) -> Option<Opti
     }
 }
 
-#[cfg(feature = "sdk")]
-fn run(name: &str, rx: &Receiver<Picture>, ready: &Sender<Result<(), String>>) {
-    use grafton_ndi::{NDI, PixelFormat, Sender as NdiSender, SenderOptions, VideoFrame};
-
-    let started = NDI::new().map_err(|e| format!("The NDI runtime could not be started: {e}")).and_then(|ndi| {
-        let options = SenderOptions::builder(name).build();
-        NdiSender::new(&ndi, &options)
-            .map(|sender| (ndi, sender))
-            .map_err(|e| format!("The NDI source could not be created: {e}"))
-    });
-    let (_ndi, sender) = match started {
-        Ok(pair) => {
-            let _ = ready.send(Ok(()));
-            pair
-        }
-        Err(reason) => {
-            let _ = ready.send(Err(reason));
-            return;
+fn run(name: &str, rx: &Receiver<Picture>, state: &Mutex<State>) {
+    let set = |now: State| {
+        if let Ok(mut state) = state.lock() {
+            *state = now;
         }
     };
-
+    let source = match runtime::get().and_then(|runtime| runtime::Source::new(runtime, name)) {
+        Ok(source) => source,
+        Err(reason) => return set(State::Failed(reason)),
+    };
+    set(State::Sending);
     let mut current: Option<Picture> = None;
-    let mut frame: Option<VideoFrame> = None;
     while let Some(next) = next_picture(rx, current.take()) {
         current = next;
-        let Some(picture) = &current else { continue };
-        let (w, h) = (picture.width as i32, picture.height as i32);
-        // Keep one frame buffer and make a new one only when the size changes.
-        if frame.as_ref().is_none_or(|f| f.width() != w || f.height() != h) {
-            // The fourth byte is ignored: the picture is opaque.
-            frame =
-                VideoFrame::builder().resolution(w, h).pixel_format(PixelFormat::RGBX).frame_rate(30, 1).build().ok();
-        }
-        let Some(frame) = frame.as_mut() else { continue };
-        let data = frame.data_mut();
-        if data.len() == picture.rgba.len() {
-            data.copy_from_slice(&picture.rgba);
-            sender.send_video(frame);
+        if let Some(picture) = current.as_mut() {
+            source.send(picture.width, picture.height, &mut picture.rgba);
         }
     }
-}
-
-#[cfg(not(feature = "sdk"))]
-fn run(_name: &str, _rx: &Receiver<Picture>, ready: &Sender<Result<(), String>>) {
-    let _ = ready.send(Err("This build of PresenterCraft does not include NDI.".to_owned()));
 }
 
 #[cfg(test)]
@@ -157,10 +167,12 @@ mod tests {
         assert!(NdiOutput::start("   ").err().is_some_and(|e| e.contains("needs a name")));
     }
 
-    #[cfg(not(feature = "sdk"))]
     #[test]
-    fn a_build_without_the_sdk_says_so() {
-        assert!(NdiOutput::start("Test").err().is_some_and(|e| e.contains("does not include NDI")));
+    fn starting_never_waits_for_ndi() {
+        let started = std::time::Instant::now();
+        let output = NdiOutput::start("PresenterCraft test").unwrap();
+        assert!(started.elapsed() < Duration::from_millis(50), "start returns at once");
+        drop(output);
     }
 
     #[test]

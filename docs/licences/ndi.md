@@ -17,8 +17,9 @@ publishing or selling anything that includes NDI.
 ## What we must not do
 
 - Put any other SDK file in this repository or in a download: no headers, examples, tools or
-  documentation. The agreement treats the SDK as confidential. The source here only calls
-  NDI through a third-party library; it contains nothing from the SDK.
+  documentation. The agreement treats the SDK as confidential. The source here contains no
+  SDK file: only declarations of the few functions it calls, following the headers, which
+  carry their own MIT licence (see below).
 - Modify, reverse engineer, decompile or work around the limits of the SDK or NDI's
   protocols, or let anyone else do so.
 - Ship a version that is not compatible with other NDI products, or that falls behind: the
@@ -50,8 +51,17 @@ publishing or selling anything that includes NDI.
 
 ## How PresenterCraft uses it
 
-- NDI is part of the normal build, which therefore needs the SDK installed. A computer
-  without it can build the rest with `--no-default-features`; that build says NDI is not
-  included.
-- At run time it loads the NDI runtime already installed on the computer. Nothing from NDI is
-  copied into the app.
+- Building PresenterCraft needs nothing from NDI. `crates/pc-ndi/src/runtime.rs` declares the
+  handful of functions and structures it calls, following the SDK's headers
+  (`Processing.NDI.Lib.h`, `Processing.NDI.structs.h`, `Processing.NDI.Send.h`). Those
+  headers are under the MIT licence, unlike the rest of the SDK, and their notice is kept in
+  that file. No header or other SDK file is in the repository.
+- The app is not linked with the NDI runtime. When an NDI screen is turned on, it looks for
+  the runtime that NDI Tools (or the SDK) installed, the way the SDK's own "dynamic loading"
+  header describes (the folder `NDI_RUNTIME_DIR_V6` names, then `/usr/local/lib`, then the
+  SDK's copy), and opens it on that screen's own thread. Without it, the screen says NDI
+  isn't installed and links to https://ndi.video/, and the rest of the app is unaffected.
+  Nothing from NDI is copied into the app.
+- The two examples in `crates/pc-ndi/examples` (which look for and receive NDI sources, to
+  check PresenterCraft's own) use a third-party NDI library that needs the SDK; they build
+  only with `--features sdk-examples`, never as part of the app or its tests.

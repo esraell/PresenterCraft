@@ -8,13 +8,6 @@ publish.workspace = true
 name = "presentercraft"
 path = "src/main.rs"
 
-[features]
-# NDI output is part of the app. Building it needs the NDI SDK installed; see
-# docs/licences/ndi.md. A computer without the SDK can still build the rest with
-# `--no-default-features`.
-default = ["ndi"]
-ndi = ["pc-ndi/sdk"]
-
 [dependencies]
 pc-ndi.workspace = true
 pc-bible.workspace = true

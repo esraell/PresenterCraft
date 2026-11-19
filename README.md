@@ -245,17 +245,14 @@ Among the things PresenterCraft can't do yet:
 
 ## Build and run
 
-You need Rust (a recent stable release; the code uses the 2024 edition) and, for NDI, the free
-NDI SDK from [ndi.video](https://ndi.video). Running a build with NDI needs the NDI runtime,
-which the SDK or NDI Tools installs.
+You need Rust (a recent stable release; the code uses the 2024 edition). Nothing from NDI is
+needed to build or start PresenterCraft: sending a screen over NDI uses the NDI runtime that
+NDI Tools installs (free, from [ndi.video](https://ndi.video)), found when an NDI screen is
+turned on. Without it, NDI screens say NDI isn't installed and everything else works.
 
     git clone https://github.com/esraell/PresenterCraft
     cd PresenterCraft
     cargo run --release
-
-Without the NDI SDK, everything else builds with:
-
-    cargo run --release --no-default-features
 
 On a Mac, to get a proper `PresenterCraft.app` (named correctly in the menu bar and the Dock):
 
@@ -328,7 +325,8 @@ PresenterCraft's own licence is still being chosen and will be added to this rep
   none of its code is in or linked with PresenterCraft. See
   [`docs/licences/ffmpeg.md`](docs/licences/ffmpeg.md), including why a release must bundle an
   LGPL build and never Homebrew's.
-- **NDI:** nothing from the NDI SDK is in this repository;
+- **NDI:** the NDI runtime is opened at run time, never linked; the few declarations needed to
+  call it follow NDI's MIT-licensed headers, with their notice, in `crates/pc-ndi/src/runtime.rs`;
   [`docs/licences/ndi.md`](docs/licences/ndi.md) covers what its licence asks of a published
   build. NDI® is a registered trademark of Vizrt NDI AB.
 

@@ -600,6 +600,8 @@ struct Running {
     egui_renderer: egui_wgpu::Renderer,
     thumbs: Thumbs,
     preview: Option<egui::TextureId>,
+    /// When it was last looked whether NDI is installed.
+    ndi_checked: Option<Instant>,
     /// The live preview's two textures, as the window knows them.
     live_preview_ids: Vec<egui::TextureId>,
 
@@ -840,6 +842,7 @@ impl App {
             thumbs,
             preview,
             live_preview_ids,
+            ndi_checked: None,
 
             preview_before: None,
             preview_changed: Instant::now(),
@@ -2573,6 +2576,12 @@ impl App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
+        // Whether NDI is installed, looked at again every few seconds (a few file checks), so
+        // installing it while the app runs is noticed.
+        if running.ndi_checked.is_none_or(|at| at.elapsed() >= Duration::from_secs(3)) {
+            running.home_state.ndi_available = pc_ndi::installed();
+            running.ndi_checked = Some(Instant::now());
+        }
         let monitors: Vec<_> = el.available_monitors().collect();
         let displays = display_list(monitors.iter().cloned());
         let home = running
@@ -2764,6 +2773,9 @@ impl App {
             .map(|(screen, place)| match place {
                 Placed::Ndi(_) => match output.ndi_status(screen.id) {
                     output::NdiStatus::On(name) => (format!("Sending as \"{name}\" at 1920 x 1080"), true),
+                    output::NdiStatus::Failed(reason) if reason == pc_ndi::NOT_INSTALLED => {
+                        ("NDI isn't installed on this computer".to_owned(), false)
+                    }
                     output::NdiStatus::Failed(reason) => (reason, false),
                     output::NdiStatus::Off => {
                         starting = true;
@@ -3882,6 +3894,7 @@ impl ApplicationHandler<String> for App {
                 if let Ok(name) = std::env::var("PRESENTERCRAFT_NDI") {
                     let screen = screens::Screen::new("NDI".to_owned(), screens::Output::Ndi(name));
                     running.home_state.screens.push(screen);
+                    running.home_state.screen_selected = running.home_state.screens.len() - 1;
                 }
                 running.home_window.request_redraw();
                 self.running = Some(running);
