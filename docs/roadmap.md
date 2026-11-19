@@ -1,9 +1,9 @@
 # Roadmap
 
-These are the features planned for PresenterCraft, beyond what the README's
+These are the features planned for SoftPresenter, beyond what the README's
 [What works today](../README.md#what-works-today) lists. Sizes and order may change as each one
 is built, and nothing here is promised by a date. Ideas are welcome as
-[issues](https://github.com/esraell/PresenterCraft/issues).
+[issues](https://github.com/esraell/SoftPresenter/issues).
 
 Size: S = under a day, M = days, L = a week or more. Sunday: how much it matters for a typical church service.
 
@@ -95,7 +95,7 @@ rather than a feature, but no church on Windows can use the app without them.
 - **Media kept with the library.** Every imported file copied into the app's folder, found again when moved, and unused copies cleaned up. (started: pictures put on slides are copied to the Images folder; media bin items and videos stay where they are) · M · Medium
 - **Live video inputs.** Cameras, capture cards, NDI sources and AirPlay as a layer, from the media bin, a slide action or a box on a slide. (started: a test program that receives NDI) · L · Medium
 - **Media bin filter, list view and size slider.** Find media by name, which matters most, and a list with path, duration, transition and format. · S · Medium
-- **Foreground and background media.** Each media cue is marked background (it stays under the slides as they change) or foreground (a one-off item such as a video, which shows even over slide background colours and has its own rule for the music; see Audio). Both play on the media layer under the words. (started: one kind of media cue; PresenterCraft has no slide background colours yet, so the difference matters less) · S–M · Low
+- **Foreground and background media.** Each media cue is marked background (it stays under the slides as they change) or foreground (a one-off item such as a video, which shows even over slide background colours and has its own rule for the music; see Audio). Both play on the media layer under the words. (started: one kind of media cue; SoftPresenter has no slide background colours yet, so the difference matters less) · S–M · Low
 - **Fit with blur.** Fit the picture and fill the bars with a blurred copy of it, for portrait phone photos. · S · Low
 - **Media inspector.** Alignment, flip, crop, rotation, play rate, a thumbnail from any frame, and a transition for each item. (started: one transition for the whole media bin) · M · Low
 - **Fading a video's sound in and out.** · S · Low
@@ -124,7 +124,7 @@ rather than a feature, but no church on Windows can use the app without them.
 
 - **Modern licensed translations.** NIV, ESV, NKJV, NLT, RV1960 and others, which English-speaking churches expect; each needs a licence. · L · Medium
 - **More free Bibles in more languages.** (started: 4 ship with the app and 15 more can be downloaded, in 9 languages in all) · M · Low
-- **Importing a Bible file a church already has** (USFM, OSIS, Zefania). (started: a converter for developers, and .pcbible files that install when dropped on the window) · M · Low
+- **Importing a Bible file a church already has** (USFM, OSIS, Zefania). (started: a converter for developers, and .spbible files that install when dropped on the window) · M · Low
 - **A transition of its own for Bible slides.** (started: the shared slide transition) · S · Low
 - **The reference straight after the verse.** The reference follows the last word, on the same line. (started: the reference can go on a line of its own in the same box) · S · Low
 - **Red-letter text.** Needs the data for each Bible. · M · Low
@@ -184,7 +184,7 @@ rather than a feature, but no church on Windows can use the app without them.
 
 ## Library, playlists and import/export
 
-- **Importing songs from files and the clipboard.** Text, rich text and Word files, with a choice of how slides are split (paragraph, line or marker), group labels recognised, and the theme, library and playlist to use. (started: text files in PresenterCraft's own format, from the command line only; New Song takes pasted words) · M · High
+- **Importing songs from files and the clipboard.** Text, rich text and Word files, with a choice of how slides are split (paragraph, line or marker), group labels recognised, and the theme, library and playlist to use. (started: text files in SoftPresenter's own format, from the command line only; New Song takes pasted words) · M · High
 - **PowerPoint import.** As editable slides, as pictures, or as objects and text (weekly sermon slides). · L · High
 - **SongSelect lyric files.** The files CCLI SongSelect downloads (text and ChordPro) imported as songs with their groups and CCLI details. · S–M · High
 - **Importing from a church's existing presentation software**, so a library can move over in one go: songs, playlists and their media. Some ways in are M, full file import L. · M–L · High
@@ -195,7 +195,7 @@ rather than a feature, but no church on Windows can use the app without them.
 - **Playlist templates.** Save a service's shape and start next week from it. · S–M · Medium
 - **Arrangement and key chosen per playlist item.** The same song sung differently in two services. (started: one chosen arrangement per song) · S–M · Medium
 - **Planning Center Services.** A plan becomes a playlist, its items match songs in the library, and its sequences become arrangements. · L · Medium
-- **OpenLyrics and EasyWorship import.** OpenLyrics covers OpenLP, Quelea and FreeShow, and could be PresenterCraft's open export format too. · M each · Medium
+- **OpenLyrics and EasyWorship import.** OpenLyrics covers OpenLP, Quelea and FreeShow, and could be SoftPresenter's open export format too. · M each · Medium
 - **ChordPro and OpenSong import.** · S–M each · Low
 - **Exporting a song.** As a file, a bundle with its media, text, or slide pictures. (started: song files can be copied by hand) · S–M · Low
 - **Printing.** Lyrics, slides and playlists, with notes (lyric sheets for the band). · M · Low
@@ -205,12 +205,12 @@ rather than a feature, but no church on Windows can use the app without them.
 - **File menu items.** New Playlist, New Library, Import, Export and Print. (started: New Song and New Slide; the + buttons make playlists and libraries) · S · Low
 - **MultiTracks, and Amazing's APlay.** APlay brings children's-ministry curriculum playlists in, ready to run. · L · Low
 - **Keynote import.** · L · Low
-- **Moving to another computer, workspaces and cloud sync.** (started: one data folder, which `PRESENTERCRAFT_DATA` can point elsewhere) · M–L · Low
+- **Moving to another computer, workspaces and cloud sync.** (started: one data folder, which `SOFTPRESENTER_DATA` can point elsewhere) · M–L · Low
 - **Sending presentations to digital signage screens.** · L · Low
 
 ## Remote control and integrations
 
-- **Network API.** HTTP (and one JSON message per line over TCP) control of slides, playlists, clears, timers, messages, props, macros, screen setups and screens, with live status updates and slide thumbnails. Most of this section needs it. (started: `presentercraft ctl` controls the running app from the same computer; nothing listens on the network) · L · Medium
+- **Network API.** HTTP (and one JSON message per line over TCP) control of slides, playlists, clears, timers, messages, props, macros, screen setups and screens, with live status updates and slide thumbnails. Most of this section needs it. (started: `softpresenter ctl` controls the running app from the same computer; nothing listens on the network) · L · Medium
 - **Phone or tablet remote.** Browse playlists, put slides up, clear, run macros; passwords for watching only and for control. M as a web page the app serves, L as an app. · M–L · Medium
 - **Control page in a browser.** Needs the network API. · M · Medium
 - **Stream Deck and Bitfocus Companion.** Buttons that run the show, ideally through modules that already exist. Needs the network API. · M · Medium
@@ -227,7 +227,7 @@ rather than a feature, but no church on Windows can use the app without them.
 
 - **Tested Windows and Linux builds.** · L · High
 - **Editable key mappings.** Rebind keys, with filters for changed keys and clashes, a reset, and keys for your own clear buttons, macros and props. (started: a read-only table) · M · Medium
-- **The app in other languages.** Russian or Ukrainian menus for operators, which matters for the two-language churches PresenterCraft is made for. · M–L · Medium
+- **The app in other languages.** Russian or Ukrainian menus for operators, which matters for the two-language churches SoftPresenter is made for. · M–L · Medium
 - **Updates pane.** Checking now, notices of new versions, an opt-in beta and release notes; it matters more once there are releases. (started: Help › What's New opens the list of changes) · M · Low
 - **Media and Import panes.** Default scaling, layer, picture duration, video loop and what audio does at its end, for imported items. · S · Low
 - **Network, Inputs and Devices panes.** Built with the features they set up. · S each · Low
@@ -246,7 +246,7 @@ Ideas of our own, beyond the lists above:
 - TimelyChurch songs and schedules.
 - VoxLive live translation shown on a screen.
 - An API over the network with a stream of changes, and MCP for AI agents. The command line
-  `presentercraft ctl` already controls the running app; see [cli.md](cli.md).
+  `softpresenter ctl` already controls the running app; see [cli.md](cli.md).
 - DeckLink output.
 - Fully customisable NDI.
 - Audio routing in one place.

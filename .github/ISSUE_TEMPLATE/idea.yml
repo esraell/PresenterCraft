@@ -1,12 +1,12 @@
 name: An idea
-description: Something PresenterCraft should do to help run a service.
+description: Something SoftPresenter should do to help run a service.
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
         Describe what you need in your own words. Please don't paste screenshots or text from
-        other presentation software: PresenterCraft is built from descriptions of what people
+        other presentation software: SoftPresenter is built from descriptions of what people
         need, not from other products.
   - type: textarea
     id: what

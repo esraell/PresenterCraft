@@ -27,8 +27,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: PresenterCraft version
-      description: From PresenterCraft > About PresenterCraft. If you built it yourself, also the commit from `git log -1 --oneline`.
+      label: SoftPresenter version
+      description: From SoftPresenter > About SoftPresenter. If you built it yourself, also the commit from `git log -1 --oneline`.
       placeholder: 0.1.0 (a184a56)
     validations:
       required: true
@@ -60,13 +60,13 @@ body:
     attributes:
       label: Log
       description: |
-        Attach or paste `~/Library/Logs/PresenterCraft/PresenterCraft.log`. It can contain song
+        Attach or paste `~/Library/Logs/SoftPresenter/SoftPresenter.log`. It can contain song
         titles and file names, so read it before you share it.
   - type: textarea
     id: screenshots
     attributes:
       label: Screenshots
-      description: Of PresenterCraft only, please.
+      description: Of SoftPresenter only, please.
   - type: checkboxes
     id: checks
     attributes:

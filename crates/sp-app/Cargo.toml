@@ -1,0 +1,40 @@
+[package]
+name = "sp-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "softpresenter"
+path = "src/main.rs"
+
+[dependencies]
+sp-ndi.workspace = true
+sp-bible.workspace = true
+# Videos, and pictures in the system's own formats (HEIC, TIFF...).
+sp-video.workspace = true
+ureq.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sp-model.workspace = true
+sp-engine.workspace = true
+sp-render.workspace = true
+winit.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+pollster.workspace = true
+png.workspace = true
+image.workspace = true
+chrono.workspace = true
+trash.workspace = true
+rfd.workspace = true
+rodio.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda.workspace = true
+
+[lints]
+workspace = true

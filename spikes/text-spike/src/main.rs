@@ -267,7 +267,7 @@ impl ApplicationHandler for App {
             el.exit();
             return;
         }
-        let mut attrs = Window::default_attributes().with_title("PresenterCraft text spike");
+        let mut attrs = Window::default_attributes().with_title("SoftPresenter text spike");
         match self.opts.display {
             Some(i) => match monitors.get(i) {
                 Some(m) => attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(Some(m.clone())))),

@@ -1,10 +1,10 @@
 # Notices
 
-## PresenterCraft
+## SoftPresenter
 
-Copyright (C) 2026 Esrael Nate and the PresenterCraft contributors.
+Copyright (C) 2026 Esrael Nate and the SoftPresenter contributors.
 
-PresenterCraft is free software: you can redistribute it and/or modify it under the terms of
+SoftPresenter is free software: you can redistribute it and/or modify it under the terms of
 the GNU General Public License as published by the Free Software Foundation, either version 3
 of the License, or (at your option) any later version, with the additional permission in
 [ADDITIONAL-PERMISSION.md](ADDITIONAL-PERMISSION.md). It is distributed in the hope that it will
@@ -12,21 +12,21 @@ be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHA
 FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License in [LICENSE](LICENSE) for
 more details.
 
-### The PresenterCraft name
+### The SoftPresenter name
 
-The GNU GPL gives no rights to the name "PresenterCraft" (GPL section 7(e)). If you pass on a
+The GNU GPL gives no rights to the name "SoftPresenter" (GPL section 7(e)). If you pass on a
 changed version, give it a name of its own. Saying plainly what it is, such as "based on
-PresenterCraft", is fine.
+SoftPresenter", is fine.
 
-## Parts that are not PresenterCraft's own
+## Parts that are not SoftPresenter's own
 
 ### NDI®
 
-The NDI runtime library and the NDI SDK are not part of PresenterCraft and are not covered by
-the GNU GPL. PresenterCraft never ships them: the person using it installs NDI themselves, and
-PresenterCraft opens it while running. They are copyright Vizrt NDI AB and its licensors (NDI's
+The NDI runtime library and the NDI SDK are not part of SoftPresenter and are not covered by
+the GNU GPL. SoftPresenter never ships them: the person using it installs NDI themselves, and
+SoftPresenter opens it while running. They are copyright Vizrt NDI AB and its licensors (NDI's
 SDK licence names the copyright owner as NDI, Inc.) and are licensed on Vizrt NDI AB's own
-terms. For those NDI components only, and for nothing else in PresenterCraft:
+terms. For those NDI components only, and for nothing else in SoftPresenter:
 
 - do not modify, reverse engineer, disassemble or recompile them, or the protocols they use,
   and do not attempt to; do not get around their technical limits;
@@ -37,11 +37,11 @@ terms. For those NDI components only, and for nothing else in PresenterCraft:
 - follow the export laws and regulations of the United States.
 
 Vizrt NDI AB's own terms ask anyone who builds software with the NDI SDK to accept its licence.
-That is between them and Vizrt NDI AB; it places no condition on PresenterCraft's own code, which
+That is between them and Vizrt NDI AB; it places no condition on SoftPresenter's own code, which
 stays under the GNU GPL. NDI® is a registered trademark of Vizrt NDI AB. NDI Tools, which
 installs the runtime, is free from <https://ndi.video/>.
 
-The declarations in `crates/pc-ndi/src/runtime.rs` follow the NDI SDK's header files, which
+The declarations in `crates/sp-ndi/src/runtime.rs` follow the NDI SDK's header files, which
 carry this licence:
 
 > Copyright (C) 2023-2026 Vizrt NDI AB. All rights reserved.
@@ -63,8 +63,8 @@ carry this licence:
 
 ### Blackmagic Design DeckLink
 
-PresenterCraft does not use DeckLink yet. When it does, the Desktop Video drivers and DeckLink
-SDK will be installed by the person using it, never shipped with PresenterCraft, in the same way
+SoftPresenter does not use DeckLink yet. When it does, the Desktop Video drivers and DeckLink
+SDK will be installed by the person using it, never shipped with SoftPresenter, in the same way
 as NDI, and their notices will be added here from the DeckLink SDK's licence.
 
 ### Fonts built into the app
@@ -80,7 +80,7 @@ The interface toolkit (egui) builds these fonts into the app. Each keeps its own
 
 ### Verse-numbering tables
 
-`crates/pc-bible/data/*.vrs` are copied unchanged from SIL's libpalaso and built into the app:
+`crates/sp-bible/data/*.vrs` are copied unchanged from SIL's libpalaso and built into the app:
 
 > Copyright (c) 2007-2026 SIL Global
 >
@@ -101,20 +101,20 @@ The interface toolkit (egui) builds these fonts into the app. Each keeps its own
 
 ### Bibles
 
-The Bible texts that come with PresenterCraft, and those it offers to download, are not under
+The Bible texts that come with SoftPresenter, and those it offers to download, are not under
 the GNU GPL. Each keeps its own terms: public domain, or an open licence that lets anyone pass
 it on. [`docs/licences/bibles.md`](docs/licences/bibles.md) lists each one and any conditions
 it carries.
 
 ### FFmpeg
 
-PresenterCraft plays some videos by running FFmpeg as a separate program. No FFmpeg code is in
-or linked with PresenterCraft. A release that includes FFmpeg includes an LGPL build, with its
+SoftPresenter plays some videos by running FFmpeg as a separate program. No FFmpeg code is in
+or linked with SoftPresenter. A release that includes FFmpeg includes an LGPL build, with its
 licence and a link to the exact source it was built from;
 [`docs/licences/ffmpeg.md`](docs/licences/ffmpeg.md) explains.
 
 ### Other libraries
 
-PresenterCraft is built from many open-source Rust libraries, each under its own licence (MIT,
+SoftPresenter is built from many open-source Rust libraries, each under its own licence (MIT,
 Apache 2.0, MPL 2.0, BSD, ISC, Zlib and similar), all of which can be combined with the GNU GPL
 version 3. `cargo metadata` lists each library and its licence.

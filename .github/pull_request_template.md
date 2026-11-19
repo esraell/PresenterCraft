@@ -17,10 +17,10 @@ in CONTRIBUTING.md, with your Signed-off-by line (git commit -s).
 <!-- Anything you couldn't try, so nobody assumes it works. -->
 
 **Screenshots**
-<!-- For anything that looks different. PresenterCraft only, please. -->
+<!-- For anything that looks different. SoftPresenter only, please. -->
 
 - [ ] `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
-      `PRESENTERCRAFT_QUIET=1 cargo test --workspace` pass
+      `SOFTPRESENTER_QUIET=1 cargo test --workspace` pass
 - [ ] The README's "What works today" and "Not built yet" are updated if what works changed
 - [ ] Nothing from another presentation product: no names, wording, screenshots or looks
 - [ ] No song lyrics or Bible text that isn't public domain

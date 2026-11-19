@@ -1,0 +1,636 @@
+//! Videos the system's player can't play (MKV, WebM, AVI and the like, or a codec the computer
+//! lacks), played with FFmpeg run as a separate program: one copy decodes the pictures, another
+//! the sound. Nothing is converted first, so a video brought in at the last minute plays at
+//! once. The pictures are paced here, by a clock that the sound starts, so they keep in step;
+//! pausing simply stops reading, and FFmpeg waits on its full pipe. Only a seek starts FFmpeg
+//! again. Where the codec allows, FFmpeg decodes on the Mac's video hardware.
+
+use std::collections::VecDeque;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use crate::Frame;
+
+/// The largest picture asked of FFmpeg: the screens are 1080p.
+const MAX_W: u32 = 1920;
+const MAX_H: u32 = 1080;
+/// The sound is asked for as stereo at 48 kHz, as 32-bit floats.
+const RATE: u32 = 48_000;
+const CHANNELS: u16 = 2;
+/// At most half a second of sound waits to be played; FFmpeg is held back beyond that.
+const SOUND_AHEAD: usize = RATE as usize * CHANNELS as usize / 2;
+
+/// Where an FFmpeg program is: in the app, then where Homebrew and others put it. An app opened
+/// from the Finder isn't given the shell's search path, so the places are named in full.
+pub fn tool(name: &str) -> Option<PathBuf> {
+    let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+    let mut places: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+        places.push(dir.join(&file));
+        places.push(dir.join("../Resources").join(&file));
+    }
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+        places.push(Path::new(dir).join(&file));
+    }
+    places.into_iter().find(|place| place.is_file())
+}
+
+fn shown_name(path: &Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
+}
+
+fn missing(path: &Path) -> String {
+    format!(
+        "{}: this video needs FFmpeg to play, and FFmpeg isn't on this computer. MP4 and MOV videos play without it.",
+        shown_name(path)
+    )
+}
+
+/// What FFmpeg says a video is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Info {
+    pub width: u32,
+    pub height: u32,
+    /// Pictures a second, between 1 and 60.
+    pub fps: f64,
+    pub duration: Option<f64>,
+    pub sound: bool,
+}
+
+/// A rate written as FFmpeg writes it, "30000/1001", as a number.
+fn rate(text: &str) -> Option<f64> {
+    let (top, bottom) = text.split_once('/')?;
+    let (top, bottom) = (top.parse::<f64>().ok()?, bottom.parse::<f64>().ok()?);
+    (bottom > 0.0 && top > 0.0).then(|| top / bottom)
+}
+
+/// Reads what ffprobe says of a video, as JSON.
+fn info_from(json: &serde_json::Value) -> Option<Info> {
+    let streams = json["streams"].as_array()?;
+    let video =
+        streams.iter().find(|stream| stream["codec_type"] == "video" && stream["disposition"]["attached_pic"] != 1)?;
+    let width = u32::try_from(video["width"].as_u64()?).ok()?;
+    let height = u32::try_from(video["height"].as_u64()?).ok()?;
+    let fps = video["avg_frame_rate"]
+        .as_str()
+        .and_then(rate)
+        .or_else(|| video["r_frame_rate"].as_str().and_then(rate))
+        .unwrap_or(30.0)
+        .clamp(1.0, 60.0);
+    let duration = json["format"]["duration"].as_str().and_then(|text| text.parse::<f64>().ok());
+    let sound = streams.iter().any(|stream| stream["codec_type"] == "audio");
+    (width > 0 && height > 0).then_some(Info { width, height, fps, duration, sound })
+}
+
+/// What a video is: its size, frame rate, length and whether it has sound.
+pub fn probe(path: &Path) -> Result<Info, String> {
+    let ffprobe = tool("ffprobe").ok_or_else(|| missing(path))?;
+    let out = Command::new(ffprobe)
+        .args(["-v", "error", "-print_format", "json", "-show_streams", "-show_format"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{}: FFmpeg could not be started ({e}).", shown_name(path)))?;
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    info_from(&json).ok_or_else(|| format!("{}: not a video SoftPresenter can open.", shown_name(path)))
+}
+
+/// The size pictures are asked for in: within a box, keeping the shape, with even sides as
+/// the pixel formats need.
+fn fitted(info: &Info, max_w: u32, max_h: u32) -> (u32, u32) {
+    let (w, h) = (f64::from(info.width), f64::from(info.height));
+    let scale = (f64::from(max_w) / w).min(f64::from(max_h) / h).min(1.0);
+    let even = |side: f64| ((side.round() as u32).max(2)) & !1;
+    (even(w * scale), even(h * scale))
+}
+
+/// A still from a video, about `at` seconds in (sooner in a short video), no larger than
+/// `max_side` on its longer side.
+pub fn still(path: &Path, max_side: u32, at: f64) -> Result<Frame, String> {
+    let info = probe(path)?;
+    let ffmpeg = tool("ffmpeg").ok_or_else(|| missing(path))?;
+    let (w, h) = fitted(&info, max_side, max_side);
+    let at = info.duration.map_or(0.0, |length| at.min(length * 0.5));
+    let out = Command::new(ffmpeg)
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", &format!("{at:.3}"), "-i"])
+        .arg(path)
+        .args(["-frames:v", "1", "-an", "-sn", "-vf", &format!("scale={w}:{h},setsar=1")])
+        .args(["-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("{}: FFmpeg could not be started ({e}).", shown_name(path)))?;
+    let wanted = (w as usize) * (h as usize) * 4;
+    if out.stdout.len() != wanted {
+        return Err(format!("{}: FFmpeg could not read a picture from this video.", shown_name(path)));
+    }
+    Ok(Frame { width: w, height: h, rgba: out.stdout })
+}
+
+/// The time a run of the video has played for: started by the first sound played (or, with no
+/// sound, the first picture ready), stopped while paused.
+#[derive(Default)]
+struct Clock {
+    state: Mutex<ClockState>,
+}
+
+#[derive(Default)]
+struct ClockState {
+    started: Option<Instant>,
+    paused: bool,
+    paused_at: Option<Instant>,
+    paused_for: Duration,
+}
+
+impl Clock {
+    fn start(&self) {
+        if let Ok(mut state) = self.state.lock()
+            && state.started.is_none()
+        {
+            let now = Instant::now();
+            state.started = Some(now);
+            if state.paused {
+                state.paused_at = Some(now);
+            }
+        }
+    }
+
+    /// Seconds played, or `None` before it starts.
+    fn elapsed(&self) -> Option<f64> {
+        let state = self.state.lock().ok()?;
+        let started = state.started?;
+        let now = state.paused_at.unwrap_or_else(Instant::now);
+        Some(now.saturating_duration_since(started).saturating_sub(state.paused_for).as_secs_f64())
+    }
+
+    fn set_paused(&self, paused: bool) {
+        let Ok(mut state) = self.state.lock() else { return };
+        if state.paused == paused {
+            return;
+        }
+        state.paused = paused;
+        if paused {
+            if state.started.is_some() {
+                state.paused_at = Some(Instant::now());
+            }
+        } else if let Some(at) = state.paused_at.take() {
+            state.paused_for += at.elapsed();
+        }
+    }
+}
+
+/// Sound decoded and waiting to be played, shared by the thread that reads it from FFmpeg and
+/// the source the sound output plays.
+struct Sound {
+    waiting: Mutex<VecDeque<f32>>,
+    room: Condvar,
+    done: AtomicBool,
+    clock: Arc<Clock>,
+}
+
+/// What the sound output plays: the decoded sound, as it comes. It starts the clock with its
+/// first sample, and plays silence for a moment if FFmpeg falls behind.
+struct SoundSource {
+    sound: Arc<Sound>,
+    taken: VecDeque<f32>,
+    started: bool,
+    /// Samples played, for the sync trace.
+    played: u64,
+}
+
+/// Testing aid: SOFTPRESENTER_TRACE_SYNC prints, once a second, how far the sound and the
+/// pictures have got against the clock, to check they keep in step.
+fn tracing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("SOFTPRESENTER_TRACE_SYNC").is_some())
+}
+
+impl Iterator for SoundSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.taken.is_empty()
+            && let Ok(mut waiting) = self.sound.waiting.lock()
+        {
+            let take = waiting.len().min(4096);
+            self.taken.extend(waiting.drain(..take));
+            self.sound.room.notify_one();
+        }
+        match self.taken.pop_front() {
+            Some(sample) => {
+                if !self.started {
+                    self.started = true;
+                    self.sound.clock.start();
+                }
+                self.played += 1;
+                let per_second = u64::from(RATE) * u64::from(CHANNELS);
+                if tracing() && self.played.is_multiple_of(per_second) {
+                    let clock = self.sound.clock.elapsed().unwrap_or(0.0);
+                    eprintln!("sync sound {:.3}s clock {clock:.3}s", self.played as f64 / per_second as f64);
+                }
+                Some(sample)
+            }
+            None if self.sound.done.load(Ordering::Relaxed) => None,
+            None => Some(0.0),
+        }
+    }
+}
+
+impl rodio::Source for SoundSource {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+    fn channels(&self) -> rodio::ChannelCount {
+        CHANNELS
+    }
+    fn sample_rate(&self) -> rodio::SampleRate {
+        RATE
+    }
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+}
+
+/// Where a playing video's newest picture waits for the screens. It can be sent to another
+/// thread.
+#[derive(Clone)]
+pub struct Frames {
+    slot: Arc<Mutex<Option<Frame>>>,
+}
+
+impl Frames {
+    pub fn same(&self, other: &Frames) -> bool {
+        Arc::ptr_eq(&self.slot, &other.slot)
+    }
+
+    /// The newest picture, if one has come since the last was taken.
+    pub fn next(&self) -> Option<Frame> {
+        self.slot.lock().ok()?.take()
+    }
+}
+
+/// One run of FFmpeg from a point in the video: its programs and the threads reading them.
+struct Run {
+    from: f64,
+    clock: Arc<Clock>,
+    stop: Arc<AtomicBool>,
+    ended: Arc<AtomicBool>,
+    problem: Arc<Mutex<Option<String>>>,
+    children: Vec<Child>,
+    threads: Vec<JoinHandle<()>>,
+    sink: Option<rodio::Sink>,
+}
+
+impl Drop for Run {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(sink) = self.sink.take() {
+            sink.stop();
+        }
+        // Ending the programs closes their pipes, which ends the threads reading them.
+        for child in &mut self.children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A video playing through FFmpeg, with its sound.
+pub struct Player {
+    path: PathBuf,
+    info: Info,
+    size: (u32, u32),
+    looping: bool,
+    paused: bool,
+    volume: f32,
+    slot: Arc<Mutex<Option<Frame>>>,
+    stream: Option<rodio::OutputStream>,
+    run: Option<Run>,
+}
+
+impl Player {
+    /// Opens a video, playing from its start. The error is a sentence for the operator.
+    pub fn open(path: &Path) -> Result<Player, String> {
+        tool("ffmpeg").ok_or_else(|| missing(path))?;
+        let info = probe(path)?;
+        let stream = if info.sound {
+            rodio::OutputStreamBuilder::open_default_stream()
+                .map(|mut stream| {
+                    stream.log_on_drop(false);
+                    stream
+                })
+                .ok()
+        } else {
+            None
+        };
+        let mut player = Player {
+            path: path.to_owned(),
+            info,
+            size: fitted(&info, MAX_W, MAX_H),
+            looping: false,
+            paused: true,
+            volume: 1.0,
+            slot: Arc::new(Mutex::new(None)),
+            stream,
+            run: None,
+        };
+        player.start_at(0.0)?;
+        Ok(player)
+    }
+
+    /// Starts FFmpeg from a point, in place of any run before.
+    fn start_at(&mut self, from: f64) -> Result<(), String> {
+        self.run = None;
+        let ffmpeg = tool("ffmpeg").ok_or_else(|| missing(&self.path))?;
+        let from = self.info.duration.map_or(from, |length| from.clamp(0.0, (length - 0.05).max(0.0)));
+        let clock = Arc::new(Clock::default());
+        clock.set_paused(self.paused);
+        let stop = Arc::new(AtomicBool::new(false));
+        let ended = Arc::new(AtomicBool::new(false));
+        let problem = Arc::new(Mutex::new(None));
+        let mut run = Run {
+            from,
+            clock: clock.clone(),
+            stop: stop.clone(),
+            ended: ended.clone(),
+            problem: problem.clone(),
+            children: Vec::new(),
+            threads: Vec::new(),
+            sink: None,
+        };
+        // The arguments both programs share: where to start, whether to loop, the file.
+        let start = |command: &mut Command, looping: bool| {
+            command.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
+            if looping {
+                command.args(["-stream_loop", "-1"]);
+            }
+            command.args(["-ss", &format!("{from:.3}"), "-i"]).arg(&self.path).stdin(Stdio::null());
+        };
+
+        // The pictures: a fixed rate and size, so each picture's time and length are known.
+        let (w, h) = self.size;
+        let fps = self.info.fps;
+        let mut pictures = Command::new(&ffmpeg);
+        if cfg!(target_os = "macos") {
+            pictures.args(["-hwaccel", "videotoolbox"]);
+        }
+        // Up to 1080p, two decoding threads keep up and hold far less memory than FFmpeg's own
+        // choice (a 1080p VP9 video: about 190 MB, against about 270 MB). Larger videos need
+        // FFmpeg's choice to keep up.
+        if self.info.height <= 1080 {
+            pictures.args(["-threads", "2"]);
+        }
+        start(&mut pictures, self.looping);
+        pictures
+            .args(["-an", "-sn", "-vf", &format!("fps={fps:.4},scale={w}:{h},setsar=1")])
+            .args(["-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = pictures.spawn().map_err(|e| format!("FFmpeg could not be started: {e}"))?;
+        let (Some(mut out), Some(mut errors)) = (child.stdout.take(), child.stderr.take()) else {
+            return Err("FFmpeg could not be started.".to_owned());
+        };
+        run.children.push(child);
+        let sound_drives = self.info.sound && self.stream.is_some();
+        let slot = self.slot.clone();
+        let (looping, frame_len) = (self.looping, (w as usize) * (h as usize) * 4);
+        let (clock_v, stop_v, ended_v) = (clock.clone(), stop.clone(), ended.clone());
+        run.threads.push(std::thread::spawn(move || {
+            let mut shown: u64 = 0;
+            loop {
+                let mut rgba = vec![0u8; frame_len];
+                if out.read_exact(&mut rgba).is_err() {
+                    if shown == 0 && !stop_v.load(Ordering::Relaxed) {
+                        let mut said = String::new();
+                        let _ = errors.read_to_string(&mut said);
+                        let first = said.lines().next().unwrap_or("it could not decode the video").trim().to_owned();
+                        if let Ok(mut problem) = problem.lock() {
+                            *problem = Some(format!("FFmpeg could not play the video: {first}"));
+                        }
+                    }
+                    if !looping {
+                        ended_v.store(true, Ordering::Relaxed);
+                    }
+                    return;
+                }
+                if !sound_drives {
+                    clock_v.start();
+                }
+                // Each picture waits for its time on the clock.
+                let due = shown as f64 / fps;
+                shown += 1;
+                loop {
+                    if stop_v.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    match clock_v.elapsed() {
+                        Some(now) if now + 0.002 >= due => break,
+                        Some(now) => std::thread::sleep(Duration::from_secs_f64((due - now).min(0.01))),
+                        None => std::thread::sleep(Duration::from_millis(5)),
+                    }
+                }
+                if tracing() && shown.is_multiple_of(fps.round().max(1.0) as u64) {
+                    let clock = clock_v.elapsed().unwrap_or(0.0);
+                    eprintln!("sync picture {due:.3}s clock {clock:.3}s");
+                }
+                if let Ok(mut slot) = slot.lock() {
+                    *slot = Some(Frame { width: w, height: h, rgba });
+                }
+            }
+        }));
+
+        // The sound: stereo at 48 kHz, into a queue the sound output drains.
+        if let Some(stream) = self.stream.as_ref().filter(|_| self.info.sound) {
+            let mut sound_cmd = Command::new(&ffmpeg);
+            start(&mut sound_cmd, self.looping);
+            sound_cmd
+                .args(["-vn", "-sn", "-ac", &CHANNELS.to_string(), "-ar", &RATE.to_string(), "-f", "f32le", "pipe:1"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            let mut child = sound_cmd.spawn().map_err(|e| format!("FFmpeg could not be started: {e}"))?;
+            let Some(mut out) = child.stdout.take() else {
+                return Err("FFmpeg could not be started.".to_owned());
+            };
+            run.children.push(child);
+            let sound = Arc::new(Sound {
+                waiting: Mutex::new(VecDeque::with_capacity(SOUND_AHEAD)),
+                room: Condvar::new(),
+                done: AtomicBool::new(false),
+                clock: clock.clone(),
+            });
+            let reader = sound.clone();
+            let stop_a = stop.clone();
+            run.threads.push(std::thread::spawn(move || {
+                let mut bytes = [0u8; 16384];
+                let mut carry: Vec<u8> = Vec::new();
+                loop {
+                    let read = match out.read(&mut bytes) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => read,
+                    };
+                    carry.extend_from_slice(&bytes[..read]);
+                    let whole = carry.len() / 4 * 4;
+                    let samples: Vec<f32> =
+                        carry[..whole].as_chunks::<4>().0.iter().map(|four| f32::from_le_bytes(*four)).collect();
+                    carry.drain(..whole);
+                    let Ok(mut waiting) = reader.waiting.lock() else { break };
+                    // Held back while half a second is already waiting; FFmpeg then waits too.
+                    let mut waiting = loop {
+                        if stop_a.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if waiting.len() < SOUND_AHEAD {
+                            break waiting;
+                        }
+                        match reader.room.wait_timeout(waiting, Duration::from_millis(50)) {
+                            Ok((still_waiting, _)) => waiting = still_waiting,
+                            Err(_) => return,
+                        }
+                    };
+                    waiting.extend(samples);
+                }
+                reader.done.store(true, Ordering::Relaxed);
+            }));
+            let sink = rodio::Sink::connect_new(stream.mixer());
+            sink.set_volume(self.volume);
+            if self.paused {
+                sink.pause();
+            }
+            sink.append(SoundSource { sound, taken: VecDeque::new(), started: false, played: 0 });
+            run.sink = Some(sink);
+        }
+        self.run = Some(run);
+        Ok(())
+    }
+
+    pub fn frames(&self) -> Frames {
+        Frames { slot: self.slot.clone() }
+    }
+
+    pub fn play(&mut self) {
+        if self.ended() {
+            self.paused = false;
+            let _ = self.start_at(0.0);
+            return;
+        }
+        self.paused = false;
+        if let Some(run) = &self.run {
+            run.clock.set_paused(false);
+            if let Some(sink) = &run.sink {
+                sink.play();
+            }
+        }
+    }
+
+    pub fn pause(&mut self) {
+        self.paused = true;
+        if let Some(run) = &self.run {
+            run.clock.set_paused(true);
+            if let Some(sink) = &run.sink {
+                sink.pause();
+            }
+        }
+    }
+
+    pub fn playing(&self) -> bool {
+        !self.paused && !self.ended()
+    }
+
+    pub fn seek(&mut self, to: f64) {
+        let _ = self.start_at(to.max(0.0));
+    }
+
+    /// How far in it is, in seconds.
+    pub fn position(&self) -> f64 {
+        let Some(run) = &self.run else { return 0.0 };
+        let at = run.from + run.clock.elapsed().unwrap_or(0.0);
+        match self.info.duration {
+            Some(length) if self.looping && length > 0.0 => at % length,
+            Some(length) => at.min(length),
+            None => at,
+        }
+    }
+
+    pub fn duration(&self) -> Option<f64> {
+        self.info.duration
+    }
+
+    /// Looping is part of how FFmpeg is started, so a change starts it again where it is.
+    pub fn set_looping(&mut self, looping: bool) {
+        if self.looping != looping {
+            self.looping = looping;
+            let at = self.position();
+            let _ = self.start_at(at);
+        }
+    }
+
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume.clamp(0.0, 1.0);
+        if let Some(sink) = self.run.as_ref().and_then(|run| run.sink.as_ref()) {
+            sink.set_volume(self.volume);
+        }
+    }
+
+    pub fn ended(&self) -> bool {
+        self.run.as_ref().is_some_and(|run| run.ended.load(Ordering::Relaxed))
+    }
+
+    pub fn problem(&self) -> Option<String> {
+        self.run.as_ref().and_then(|run| run.problem.lock().ok().and_then(|problem| problem.clone()))
+    }
+
+    /// FFmpeg loops by itself; nothing to do but say when to look again.
+    pub fn tick(&mut self) -> Duration {
+        Duration::from_millis(200)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rates_sizes_and_what_ffprobe_says_are_read() {
+        assert_eq!(rate("30000/1001").map(|r| (r * 100.0).round()), Some(2997.0));
+        assert_eq!(rate("0/0"), None);
+        let json: serde_json::Value = serde_json::json!({
+            "streams": [
+                {"codec_type": "video", "width": 3840, "height": 2160, "avg_frame_rate": "0/0", "r_frame_rate": "25/1"},
+                {"codec_type": "audio"}
+            ],
+            "format": {"duration": "12.5"}
+        });
+        let info = info_from(&json).unwrap();
+        assert_eq!(info, Info { width: 3840, height: 2160, fps: 25.0, duration: Some(12.5), sound: true });
+        assert_eq!(fitted(&info, MAX_W, MAX_H), (1920, 1080));
+        // A tall video fits the box by its height, with even sides.
+        let tall = Info { width: 1081, height: 1921, ..info };
+        assert_eq!(fitted(&tall, MAX_W, MAX_H), (608, 1080));
+        // A cover picture is not the video.
+        let cover = serde_json::json!({"streams": [{"codec_type": "video", "width": 600, "height": 600, "disposition": {"attached_pic": 1}}]});
+        assert!(info_from(&cover).is_none());
+    }
+
+    #[test]
+    fn the_clock_waits_to_start_and_stops_while_paused() {
+        let clock = Clock::default();
+        assert_eq!(clock.elapsed(), None);
+        clock.start();
+        std::thread::sleep(Duration::from_millis(30));
+        clock.set_paused(true);
+        let at = clock.elapsed().unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        assert!((clock.elapsed().unwrap() - at).abs() < 0.001, "paused");
+        clock.set_paused(false);
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(clock.elapsed().unwrap() > at + 0.015);
+    }
+}

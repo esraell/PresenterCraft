@@ -1,19 +1,19 @@
 #!/bin/sh
-# Builds PresenterCraft and wraps it as a Mac app, target/release/PresenterCraft.app, so the
-# menu bar, the Dock and Activity Monitor call it "PresenterCraft". Any arguments are passed to
+# Builds SoftPresenter and wraps it as a Mac app, target/release/SoftPresenter.app, so the
+# menu bar, the Dock and Activity Monitor call it "SoftPresenter". Any arguments are passed to
 # cargo.
 #
 #   scripts/macos-app.sh
-#   open target/release/PresenterCraft.app
+#   open target/release/SoftPresenter.app
 set -eu
 cd "$(dirname "$0")/.."
-cargo build --release -p pc-app "$@"
+cargo build --release -p sp-app "$@"
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-app=target/release/PresenterCraft.app
+app=target/release/SoftPresenter.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/presentercraft "$app/Contents/MacOS/PresenterCraft"
+cp target/release/softpresenter "$app/Contents/MacOS/softpresenter"
 # NSAppSleepDisabled: macOS must not slow the app down (App Nap) while its windows are hidden;
 # timed slides and timers run by the clock during a service.
 cat > "$app/Contents/Info.plist" <<PLIST
@@ -22,13 +22,13 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>PresenterCraft</string>
+    <string>SoftPresenter</string>
     <key>CFBundleDisplayName</key>
-    <string>PresenterCraft</string>
+    <string>SoftPresenter</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.esraell.presentercraft</string>
+    <string>com.softpresenter.app</string>
     <key>CFBundleExecutable</key>
-    <string>PresenterCraft</string>
+    <string>softpresenter</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

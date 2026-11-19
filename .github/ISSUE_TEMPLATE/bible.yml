@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        PresenterCraft offers a Bible only if its terms let anyone pass it on: public domain, or
+        SoftPresenter offers a Bible only if its terms let anyone pass it on: public domain, or
         an open licence. docs/licences/bibles.md lists the ones offered now.
   - type: input
     id: name

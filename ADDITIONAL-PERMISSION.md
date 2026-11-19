@@ -1,8 +1,8 @@
-# PresenterCraft: additional permission for separately installed video libraries
+# SoftPresenter: additional permission for separately installed video libraries
 
 (GNU General Public License version 3, section 7)
 
-Copyright (C) 2026 Esrael Nate and the PresenterCraft contributors.
+Copyright (C) 2026 Esrael Nate and the SoftPresenter contributors.
 
 1. "The Listed Components" are: (a) the NDI® runtime library and NDI SDK published by
    Vizrt NDI AB; and (b) the Desktop Video drivers and DeckLink SDK published by

@@ -68,14 +68,14 @@ if [ "$failed" -ne 0 ]; then
 Each commit needs a sign-off from its author (see CONTRIBUTING.md). To sign off every commit on
 your branch as yourself:
 
-    git fetch https://github.com/esraell/PresenterCraft.git master
+    git fetch https://github.com/esraell/SoftPresenter.git master
     git rebase --signoff FETCH_HEAD
     git push --force-with-lease
 
 If a commit's author isn't you as git is set up on this computer (a commit made on GitHub's
 website, for example), make yourself its author and sign it off instead:
 
-    git fetch https://github.com/esraell/PresenterCraft.git master
+    git fetch https://github.com/esraell/SoftPresenter.git master
     git rebase --exec 'git commit --amend --no-edit --reset-author --signoff' FETCH_HEAD
     git push --force-with-lease
 EOF

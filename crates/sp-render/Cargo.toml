@@ -1,0 +1,18 @@
+[package]
+name = "sp-render"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sp-model.workspace = true
+vello.workspace = true
+parley.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
+png.workspace = true
+
+[lints]
+workspace = true

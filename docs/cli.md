@@ -1,6 +1,6 @@
-# Controlling PresenterCraft from the command line
+# Controlling SoftPresenter from the command line
 
-While PresenterCraft runs, `presentercraft ctl COMMAND …` controls it from a terminal, a script
+While SoftPresenter runs, `softpresenter ctl COMMAND …` controls it from a terminal, a script
 or an AI agent. Every command is carried out by the same code as the window's own buttons, so
 what the command line does and what a click does are always the same.
 
@@ -8,14 +8,14 @@ Command names are a first version and may still change before the first release.
 
 ## Using it
 
-The `presentercraft` program is the app itself. In a built Mac app it is
-`PresenterCraft.app/Contents/MacOS/PresenterCraft`; from the source, `cargo run --release -- ctl …`.
+The `softpresenter` program is the app itself. In a built Mac app it is
+`SoftPresenter.app/Contents/MacOS/SoftPresenter`; from the source, `cargo run --release -- ctl …`.
 
-    presentercraft ctl status
-    presentercraft ctl go "Amazing Grace" 3
-    presentercraft ctl next
-    presentercraft ctl clear all
-    presentercraft ctl status --json
+    softpresenter ctl status
+    softpresenter ctl go "Amazing Grace" 3
+    softpresenter ctl next
+    softpresenter ctl clear all
+    softpresenter ctl status --json
 
 - **Names** can be typed in full or in part, in any case: `go amazing` finds "Amazing Grace".
   A name that fits several things is never guessed: the reply lists them, and nothing changes.
@@ -75,7 +75,7 @@ The `presentercraft` program is the app itself. In a built Mac app it is
 | Command | Does |
 |---|---|
 | `song new TITLE [FILE.txt]` | A new song, its words from a song text file (a line in square brackets starts a group, a blank line a new slide) |
-| `song delete SONG --yes` | Deletes a song (one made in PresenterCraft goes to the Trash) |
+| `song delete SONG --yes` | Deletes a song (one made in SoftPresenter goes to the Trash) |
 | `playlist open NAME` | Puts a playlist in front |
 | `playlist add SONG [to PLAYLIST]` | Adds a song to a playlist (the one in front if none is named) |
 
@@ -108,7 +108,7 @@ names in their numbered order.
 ## How it works, and who can use it
 
 - When the app starts it listens on a socket file, `control/ctl.sock` in its data folder
-  (`~/Library/Application Support/PresenterCraft/control/` on a Mac). The folder can be entered
+  (`~/Library/Application Support/SoftPresenter/control/` on a Mac). The folder can be entered
   only by the user the app runs as, and the socket can be opened only by that user.
 - Nothing listens on the network: no other computer, and no web page in a browser, can reach
   it. A program running as the same user can, which is no more than that program could do by
@@ -119,10 +119,10 @@ names in their numbered order.
 - A second copy of the app leaves the first one's socket alone and runs without one.
 - The socket is removed when the app quits. With the app not running, `ctl` says so.
 - Commands that delete something can't be undone, so they need `--yes`.
-- Each command is logged in the app's log (`~/Library/Logs/PresenterCraft/PresenterCraft.log`).
+- Each command is logged in the app's log (`~/Library/Logs/SoftPresenter/SoftPresenter.log`).
 
-For tests, `PRESENTERCRAFT_CONTROL_SOCKET=/short/path/ctl.sock` puts the socket elsewhere (a
-socket's path must be short, about 100 bytes), and `PRESENTERCRAFT_DATA` points the app and the
+For tests, `SOFTPRESENTER_CONTROL_SOCKET=/short/path/ctl.sock` puts the socket elsewhere (a
+socket's path must be short, about 100 bytes), and `SOFTPRESENTER_DATA` points the app and the
 command line at another data folder, so a test never reaches the copy in use.
 
 ## Still to come

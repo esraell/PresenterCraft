@@ -1,4 +1,4 @@
-# A map of PresenterCraft
+# A map of SoftPresenter
 
 What the app looks like, what every part of it does, which command-line command does the same,
 where it keeps its files, and how the code is laid out. Written for people and AI agents
@@ -86,8 +86,8 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 | Command-N | New song |
 | Command-L | Back to the song on screen |
 
-Every menu bar item, with its shortcut, is listed by `presentercraft ctl menu`; any of them can be
-chosen with `presentercraft ctl menu ITEM`.
+Every menu bar item, with its shortcut, is listed by `softpresenter ctl menu`; any of them can be
+chosen with `softpresenter ctl menu ITEM`.
 
 ## The Edit view (and the theme editor)
 
@@ -150,13 +150,13 @@ chosen with `presentercraft ctl menu ITEM`.
 
 ## Where the app keeps things
 
-On a Mac, in `~/Library/Application Support/PresenterCraft/` (or the folder
-`PRESENTERCRAFT_DATA` names):
+On a Mac, in `~/Library/Application Support/SoftPresenter/` (or the folder
+`SOFTPRESENTER_DATA` names):
 
 | File or folder | Holds |
 |---|---|
-| `Songs/*.pcpres` | Songs made or changed in the app (JSON) |
-| `Themes/*.pctheme` | Themes (JSON); `themes-in-use.txt` says which theme songs and Bible slides use |
+| `Songs/*.sppres` | Songs made or changed in the app (JSON) |
+| `Themes/*.sptheme` | Themes (JSON); `themes-in-use.txt` says which theme songs and Bible slides use |
 | `Images/` | Pictures put on slides |
 | `services.json` | Playlists |
 | `media.json` | The media bin and media playlists |
@@ -165,34 +165,34 @@ On a Mac, in `~/Library/Application Support/PresenterCraft/` (or the folder
 | `preferences.json`, `bible-page.json` | Small choices, and how the Bible page was left |
 | `control/ctl.sock` | The command line's socket, while the app runs |
 
-The log is `~/Library/Logs/PresenterCraft/PresenterCraft.log`: what went on screen, commands,
+The log is `~/Library/Logs/SoftPresenter/SoftPresenter.log`: what went on screen, commands,
 problems, and once a minute how long drawing took.
 
 ## How the code is laid out
 
 | Crate | Holds |
 |---|---|
-| `pc-model` | The data: songs (presentations, groups, slides, objects), themes and layouts, transitions, builds, actions |
-| `pc-engine` | The show's state: what is selected, what is on screen, next and previous, clearing layers |
-| `pc-render` | Drawing slides on the GPU with vello: screens, thumbnails, transitions |
-| `pc-video` | Playing videos: macOS's own player, FFmpeg for other formats |
-| `pc-ndi` | Sending screens over NDI (the runtime is opened when an NDI screen starts) |
-| `pc-bible` | Bibles: references, verse numbering, search |
-| `pc-app` | The app: the window (egui), the screens' thread (`output.rs`), the views (`home.rs`, `studio.rs`, `editor.rs`, `inspector.rs`), the command line (`control.rs`), the menu bar (`menubar.rs`) |
+| `sp-model` | The data: songs (presentations, groups, slides, objects), themes and layouts, transitions, builds, actions |
+| `sp-engine` | The show's state: what is selected, what is on screen, next and previous, clearing layers |
+| `sp-render` | Drawing slides on the GPU with vello: screens, thumbnails, transitions |
+| `sp-video` | Playing videos: macOS's own player, FFmpeg for other formats |
+| `sp-ndi` | Sending screens over NDI (the runtime is opened when an NDI screen starts) |
+| `sp-bible` | Bibles: references, verse numbering, search |
+| `sp-app` | The app: the window (egui), the screens' thread (`output.rs`), the views (`home.rs`, `studio.rs`, `editor.rs`, `inspector.rs`), the command line (`control.rs`), the menu bar (`menubar.rs`) |
 
 ## Trying the app safely (for agents and tests)
 
-- Every test run sets `PRESENTERCRAFT_QUIET=1`: its windows open behind everything, its screens
+- Every test run sets `SOFTPRESENTER_QUIET=1`: its windows open behind everything, its screens
   never go full screen, and it sends no NDI. Point it at a copy of the data with
-  `PRESENTERCRAFT_DATA`, and for the command line set `PRESENTERCRAFT_CONTROL_SOCKET` to a short
+  `SOFTPRESENTER_DATA`, and for the command line set `SOFTPRESENTER_CONTROL_SOCKET` to a short
   path, so nothing reaches the copy someone is using.
-- `presentercraft --capture-home FILE.png` saves a picture of the window and quits;
-  `PRESENTERCRAFT_CAPTURE_AFTER=SECONDS` waits before taking it, and
-  `PRESENTERCRAFT_CAPTURE_OUTPUT=FILE.png` saves the first screen's picture.
+- `softpresenter --capture-home FILE.png` saves a picture of the window and quits;
+  `SOFTPRESENTER_CAPTURE_AFTER=SECONDS` waits before taking it, and
+  `SOFTPRESENTER_CAPTURE_OUTPUT=FILE.png` saves the first screen's picture.
 - Testing aids (environment variables) open a view or do something at start:
-  `PRESENTERCRAFT_GO_LIVE=1` (a slide on screen), `_GO_LIVE_MEDIA=1` (the first media item),
+  `SOFTPRESENTER_GO_LIVE=1` (a slide on screen), `_GO_LIVE_MEDIA=1` (the first media item),
   `_CAPTURE_EDITOR`, `_CAPTURE_BIBLE`, `_CAPTURE_THEMES`, `_CAPTURE_SETTINGS`,
   `_PLAYLIST`, `_OPEN_ITEM=N`, `_MENU=ItemId,ItemId`, `_DROP=FILE`, `_PICK=songs:0,2`,
   `_WINDOW_SIZE=WxH`, `_NDI=NAME`, `_HIDE_NDI=1`, `_TRACE_PREVIEW=1`.
 - The command line drives a quiet copy as it would the real one:
-  `PRESENTERCRAFT_DATA=… PRESENTERCRAFT_CONTROL_SOCKET=… presentercraft ctl status`.
+  `SOFTPRESENTER_DATA=… SOFTPRESENTER_CONTROL_SOCKET=… softpresenter ctl status`.

@@ -1,8 +1,8 @@
-# Contributing to PresenterCraft
+# Contributing to SoftPresenter
 
 Thank you for helping. There are three ways in:
 
-- **Something doesn't work?** [Open a bug report](https://github.com/esraell/PresenterCraft/issues/new/choose).
+- **Something doesn't work?** [Open a bug report](https://github.com/esraell/SoftPresenter/issues/new/choose).
 - **An idea, or a Bible translation you'd like offered?** Open an idea or a Bible request from
   the same page.
 - **A change you'd like to make?** Read on.
@@ -17,16 +17,16 @@ short conversation up front saves work that can't be used.
 
 ## Building and checking
 
-The [README](README.md#build-and-run) says how to build and run PresenterCraft; nothing from
+The [README](README.md#build-and-run) says how to build and run SoftPresenter; nothing from
 NDI is needed to build it. Before you send a change, run the same three checks the automatic
 checks run, with test windows kept out of the way:
 
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
-    PRESENTERCRAFT_QUIET=1 cargo test --workspace
+    SOFTPRESENTER_QUIET=1 cargo test --workspace
 
 `rust-toolchain.toml` pins the Rust version, so `rustup` installs the right one by itself. The
-picture tests in `crates/pc-render/tests/golden.rs` compare against pictures made on the
+picture tests in `crates/sp-render/tests/golden.rs` compare against pictures made on the
 maintainer's Mac, so they may differ on yours; say so in your pull request if they do.
 
 ## Sending a change
@@ -42,7 +42,7 @@ maintainer's Mac, so they may differ on yours; say so in your pull request if th
 
 ## Commits
 
-Every commit in PresenterCraft, from the maintainer, from AI tools and from contributors, is
+Every commit in SoftPresenter, from the maintainer, from AI tools and from contributors, is
 written the same way.
 
 ### The subject line
@@ -59,9 +59,9 @@ written the same way.
 - After a blank line, write prose wrapped at about 100 characters.
 - Say what changed and why, from the operator's side first; then what a developer needs to
   know, such as a change to saved files, a new setting, or how files saved before still open.
-- Name a new testing switch on a line of its own: `Testing aid: PRESENTERCRAFT_X …`.
+- Name a new testing switch on a line of its own: `Testing aid: SOFTPRESENTER_X …`.
 - End by saying how it was checked, and what wasn't:
-  `Checked: cargo test -p pc-model; by hand, dragged a song onto a playlist. Not checked:
+  `Checked: cargo test -p sp-model; by hand, dragged a song onto a playlist. Not checked:
   video sound over NDI.` A commit that changes only text files may leave this out.
 
 An example:
@@ -72,9 +72,9 @@ An example:
     playlist's order, each under a bar with its name. Scrolling down goes on into the next
     song. A song opened from a library still shows only its own slides.
 
-    Testing aid: PRESENTERCRAFT_OPEN_ITEM opens an item of the playlist in front by its place.
+    Testing aid: SOFTPRESENTER_OPEN_ITEM opens an item of the playlist in front by its place.
 
-    Checked: cargo test -p pc-app; by hand, scrolled through a three-song playlist.
+    Checked: cargo test -p sp-app; by hand, scrolled through a three-song playlist.
 
 ### Never in a commit
 
@@ -102,7 +102,7 @@ This covers the message, the code, the tests and every file:
 
 ## Clean room
 
-PresenterCraft is our own work. Behaviour that operators know from other presentation software
+SoftPresenter is our own work. Behaviour that operators know from other presentation software
 is welcome; the names, wording, icons, artwork and looks of other products are not, and nothing
 may come from decompiling another product or from file formats extracted from one. If you know
 another product well, describe what you need in plain words.
@@ -115,7 +115,7 @@ did). The sign-off is yours to give, never the tool's.
 
 ## Licence of contributions
 
-PresenterCraft is licensed under the GNU General Public License, version 3 or later, with the
+SoftPresenter is licensed under the GNU General Public License, version 3 or later, with the
 additional permission in [ADDITIONAL-PERMISSION.md](ADDITIONAL-PERMISSION.md). Your contribution
 is licensed the same way. There is no other agreement to sign.
 
@@ -124,7 +124,7 @@ in short, that you wrote the change or otherwise have the right to submit it und
 project's licence. To sign off as you commit, use `git commit -s`. To add a forgotten sign-off
 to every commit on your branch:
 
-    git fetch https://github.com/esraell/PresenterCraft.git master
+    git fetch https://github.com/esraell/SoftPresenter.git master
     git rebase --signoff FETCH_HEAD
     git push --force-with-lease
 
@@ -132,6 +132,6 @@ The sign-off has to match each commit's author. If a commit's author isn't you a
 on your computer (a commit made on GitHub's website, for example), make yourself its author and
 sign it off in one go:
 
-    git fetch https://github.com/esraell/PresenterCraft.git master
+    git fetch https://github.com/esraell/SoftPresenter.git master
     git rebase --exec 'git commit --amend --no-edit --reset-author --signoff' FETCH_HEAD
     git push --force-with-lease

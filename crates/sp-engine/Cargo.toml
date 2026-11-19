@@ -1,0 +1,12 @@
+[package]
+name = "sp-engine"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sp-model.workspace = true
+
+[lints]
+workspace = true

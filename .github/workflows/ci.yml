@@ -21,7 +21,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
-      PRESENTERCRAFT_QUIET: "1"
+      SOFTPRESENTER_QUIET: "1"
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,12 +33,12 @@ jobs:
       - name: Lints
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
-        run: cargo test --workspace --exclude pc-render
-      - name: Tests (pc-render, without the picture tests)
-        run: cargo test -p pc-render --lib
+        run: cargo test --workspace --exclude sp-render
+      - name: Tests (sp-render, without the picture tests)
+        run: cargo test -p sp-render --lib
       - name: Say which tests were left out
         run: >-
-          echo "::notice title=Picture tests skipped::crates/pc-render/tests/golden.rs compares
+          echo "::notice title=Picture tests skipped::crates/sp-render/tests/golden.rs compares
           against pictures made on the maintainer's Mac with its GPU and fonts, so it runs there,
           not here."
 

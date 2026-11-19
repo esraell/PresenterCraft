@@ -1,6 +1,6 @@
 # Security
 
-PresenterCraft runs in front of a congregation, opens files people share, and talks to other
+SoftPresenter runs in front of a congregation, opens files people share, and talks to other
 devices on the network, so security problems matter to us.
 
 ## Reporting a problem
@@ -12,7 +12,7 @@ happens next.
 
 ## What counts
 
-- A song, theme, playlist, Bible or media file that crashes PresenterCraft, makes it hang, or
+- A song, theme, playlist, Bible or media file that crashes SoftPresenter, makes it hang, or
   runs code.
 - A downloaded Bible accepted without matching its checksum.
 - Anything that can be reached over the network: NDI today, and the remote-control API when

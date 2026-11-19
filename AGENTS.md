@@ -1,40 +1,40 @@
-# Working on PresenterCraft as an AI agent
+# Working on SoftPresenter as an AI agent
 
 This file is for AI coding agents (Claude, Codex, Cursor and others). People are welcome to read
 it too.
 
-**Start with the [README](README.md).** It says what PresenterCraft is and who it is for, what
+**Start with the [README](README.md).** It says what SoftPresenter is and who it is for, what
 works today, how to build and run it, the crate map and the checks to run before a change. This
 file doesn't repeat any of that; it adds what an agent needs on top. Two more pages are
 written for agents as much as for people:
 
 - [docs/app-map.md](docs/app-map.md): every view, panel and window, what each part does, the
   matching command-line command, where the data lives and how the code is laid out.
-- [docs/cli.md](docs/cli.md): `presentercraft ctl`, which controls the running app from a
+- [docs/cli.md](docs/cli.md): `softpresenter ctl`, which controls the running app from a
   terminal or a script, its replies and its security model.
 
 ## Running the app without getting in anyone's way
 
-PresenterCraft opens full-screen windows on other displays and can send over the network. A
+SoftPresenter opens full-screen windows on other displays and can send over the network. A
 careless test run puts a slide in front of whoever is using the computer.
 
-- **Every test run sets `PRESENTERCRAFT_QUIET=1`** (or uses `--capture-home FILE`). Its windows
+- **Every test run sets `SOFTPRESENTER_QUIET=1`** (or uses `--capture-home FILE`). Its windows
   then open behind everything else and don't take the keyboard, its screens never go full screen,
   and it sends nothing over NDI.
-- **Use a data folder of your own:** `PRESENTERCRAFT_DATA=/some/empty/folder`. Without it, the
+- **Use a data folder of your own:** `SOFTPRESENTER_DATA=/some/empty/folder`. Without it, the
   app reads and writes the owner's real library, Bibles and settings in
-  `~/Library/Application Support/PresenterCraft/`.
-- **Never run `presentercraft ctl` against the owner's app.** Set `PRESENTERCRAFT_DATA` and
-  `PRESENTERCRAFT_CONTROL_SOCKET` to a test copy first. Without them, `ctl` drives the owner's
+  `~/Library/Application Support/SoftPresenter/`.
+- **Never run `softpresenter ctl` against the owner's app.** Set `SOFTPRESENTER_DATA` and
+  `SOFTPRESENTER_CONTROL_SOCKET` to a test copy first. Without them, `ctl` drives the owner's
   live app, which may be on the real screens in front of a congregation.
 - **Run one instance at a time,** and close it when you are done. Don't leave builds running
   that you haven't measured.
 - **Before leaving a build running,** watch it idle for a few seconds:
   `top -l 5 -pid <pid> -stats pid,cpu,mem` (top's MEM includes GPU memory). Expect about 0% CPU
-  and flat memory. Then run a few seconds with `PRESENTERCRAFT_STRESS=1` (continuous redrawing)
+  and flat memory. Then run a few seconds with `SOFTPRESENTER_STRESS=1` (continuous redrawing)
   and check that memory stays flat. A redraw loop once leaked a gigabyte a second.
 - **You may not be able to see the screen.** `--capture-home FILE` and the
-  `PRESENTERCRAFT_CAPTURE_*` switches save pictures of the windows, so you can look at what you
+  `SOFTPRESENTER_CAPTURE_*` switches save pictures of the windows, so you can look at what you
   built.
 
 ## Testing switches
@@ -44,35 +44,35 @@ person:
 
 | Switch | What it does |
 |---|---|
-| `PRESENTERCRAFT_QUIET=1` | Windows open behind everything, no full screen, no NDI |
-| `PRESENTERCRAFT_DATA=<folder>` | Keep the library, Bibles, settings and log in that folder instead of the owner's |
-| `PRESENTERCRAFT_CONTROL_SOCKET=<path>` | Where `presentercraft ctl` and the app meet; a short path for a test copy |
+| `SOFTPRESENTER_QUIET=1` | Windows open behind everything, no full screen, no NDI |
+| `SOFTPRESENTER_DATA=<folder>` | Keep the library, Bibles, settings and log in that folder instead of the owner's |
+| `SOFTPRESENTER_CONTROL_SOCKET=<path>` | Where `softpresenter ctl` and the app meet; a short path for a test copy |
 | `--capture-home FILE` | Go to the third slide, save a PNG of the home window, quit |
-| `PRESENTERCRAFT_CAPTURE_AFTER=<seconds>` | How long a capture run waits before taking its picture |
-| `PRESENTERCRAFT_CAPTURE_*` | Capture a particular window instead (`_BIBLE`, `_EDITOR`, `_THEMES`, `_SETTINGS`, `_STAGE_LAYOUTS`, `_OUTPUT`…) |
-| `PRESENTERCRAFT_GO_LIVE=1` | Start with the first slide on screen and the first media item behind it |
-| `PRESENTERCRAFT_OPEN_ITEM=<n>` | Open the nth item of the playlist in front, as a click does |
-| `PRESENTERCRAFT_PICK=songs:0,2` | Pick out songs or media items by place, as Command-clicks do |
-| `PRESENTERCRAFT_DROP=<file>` | Drop a file on the window, as dragging from the Finder does |
-| `PRESENTERCRAFT_MENU=<ids>` | Choose menu bar items by id, one every few frames |
-| `PRESENTERCRAFT_WINDOW_SIZE=1100x700` | Open the window at another size |
-| `PRESENTERCRAFT_STRESS=1` | Redraw continuously, to check memory stays flat |
-| `PRESENTERCRAFT_STOP_DRAWING_AFTER=<s>` | Stop drawing the window after a while, as minimising does |
-| `PRESENTERCRAFT_TRACE_REPAINT=1` | Log what keeps asking for the window to be redrawn |
-| `PRESENTERCRAFT_HIDE_NDI=1` | Behave as on a computer without NDI installed |
-| `PRESENTERCRAFT_NDI=<name>` | Also send over NDI under this name, this run only |
+| `SOFTPRESENTER_CAPTURE_AFTER=<seconds>` | How long a capture run waits before taking its picture |
+| `SOFTPRESENTER_CAPTURE_*` | Capture a particular window instead (`_BIBLE`, `_EDITOR`, `_THEMES`, `_SETTINGS`, `_STAGE_LAYOUTS`, `_OUTPUT`…) |
+| `SOFTPRESENTER_GO_LIVE=1` | Start with the first slide on screen and the first media item behind it |
+| `SOFTPRESENTER_OPEN_ITEM=<n>` | Open the nth item of the playlist in front, as a click does |
+| `SOFTPRESENTER_PICK=songs:0,2` | Pick out songs or media items by place, as Command-clicks do |
+| `SOFTPRESENTER_DROP=<file>` | Drop a file on the window, as dragging from the Finder does |
+| `SOFTPRESENTER_MENU=<ids>` | Choose menu bar items by id, one every few frames |
+| `SOFTPRESENTER_WINDOW_SIZE=1100x700` | Open the window at another size |
+| `SOFTPRESENTER_STRESS=1` | Redraw continuously, to check memory stays flat |
+| `SOFTPRESENTER_STOP_DRAWING_AFTER=<s>` | Stop drawing the window after a while, as minimising does |
+| `SOFTPRESENTER_TRACE_REPAINT=1` | Log what keeps asking for the window to be redrawn |
+| `SOFTPRESENTER_HIDE_NDI=1` | Behave as on a computer without NDI installed |
+| `SOFTPRESENTER_NDI=<name>` | Also send over NDI under this name, this run only |
 
 There are more, each beside the code that reads it with a `// Testing aid:` comment. List them
 all with:
 
-    git grep -ohE 'PRESENTERCRAFT_[A-Z_]+' crates | sort -u
+    git grep -ohE 'SOFTPRESENTER_[A-Z_]+' crates | sort -u
 
 A new switch gets the same `// Testing aid:` comment, and a `Testing aid:` line in its commit
 message.
 
 ## Rules
 
-- **`unsafe` code** is allowed only in `pc-video`'s macOS module and `pc-ndi`'s `runtime`
+- **`unsafe` code** is allowed only in `sp-video`'s macOS module and `sp-ndi`'s `runtime`
   module, and every block says why it is sound. Anywhere else, find a safe way or ask the owner.
 - **Live safety.** Nothing slow (reading files, decoding, network, waiting on NDI) runs on the
   thread that draws the screens. The audience must never see a freeze or the wrong slide because
@@ -87,7 +87,7 @@ message.
   documents, or personal details of real people.
 - **Third-party code.** Before linking anything new, read its licence and record it in
   `docs/licences/`, and in `NOTICE.md` if it ships with the app.
-- **Tests that need a GPU** go in `crates/pc-render/tests/golden.rs`, which the automatic checks
+- **Tests that need a GPU** go in `crates/sp-render/tests/golden.rs`, which the automatic checks
   leave out, or are marked `#[ignore]` with the reason.
 - **The README follows the code.** When what works changes, update "What works today" and "Not
   built yet" in the same commit.

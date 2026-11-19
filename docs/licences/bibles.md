@@ -1,11 +1,11 @@
-# Bibles PresenterCraft may offer
+# Bibles SoftPresenter may offer
 
 Which Bible translations can be downloaded from inside the app, or shipped with it, and what
 each one's terms ask. Researched on 2026-11-19. This is a working note, not legal advice, and it
 comes from one pass of reading: **read each source again before the download is built**, and
 before a version of the app is sold.
 
-The rule for the list in `crates/pc-app/src/bible.rs`: a Bible is offered only if its terms let
+The rule for the list in `crates/sp-app/src/bible.rs`: a Bible is offered only if its terms let
 anyone pass it on, including inside software that is sold, and only if those terms were read
 at the source named here.
 
@@ -53,7 +53,7 @@ Their owners do not allow free redistribution, or forbid it in anything that is 
 NIV, ESV, NLT, NKJV, NASB, CSB, Amplified, NET (may not be bundled with anything sold),
 Reina-Valera 1960, Reina Valera Gómez, LBLA, the 1996 Ukrainian Bible, the modern Russian
 translations (Новый Русский Перевод, the Russian Bible Society's translation). A church that
-has bought one of these elsewhere cannot get it through PresenterCraft.
+has bought one of these elsewhere cannot get it through SoftPresenter.
 
 ## Not decided
 
@@ -79,13 +79,13 @@ has bought one of these elsewhere cannot get it through PresenterCraft.
 
 - **Four Bibles come with the app**: King James, World English, Berean Standard and the
   Synodal. All four are public domain with no conditions. Their files are in `assets/bibles/`.
-- **Our file format** (`.pcbible`) is the publisher's words, one verse per line, with a few
-  lines saying which Bible it is, its terms and its source, compressed. `cargo run -p pc-bible
+- **Our file format** (`.spbible`) is the publisher's words, one verse per line, with a few
+  lines saying which Bible it is, its terms and its source, compressed. `cargo run -p sp-bible
   --example convert` makes one from eBible's one-verse-per-line text. The only changes to the
   words: the King James source marks paragraphs with a pilcrow and the translators' added
   words with square brackets, and those marks are removed (the words stay).
 - **Verse numbering.** Bibles are lined up with the standard numbering tables from SIL's
-  libpalaso (MIT licence; see `crates/pc-bible/data/README.md`): English, the Russian Synodal's
+  libpalaso (MIT licence; see `crates/sp-bible/data/README.md`): English, the Russian Synodal's
   Protestant edition, and the original-language numbering. Each Bible file names the one it
   follows, chosen by comparing its chapter lengths with every table. Checked against the
   shipped texts: of 31,102 King James verses, 2 have no partner in the Synodal text (Acts
@@ -95,11 +95,11 @@ has bought one of these elsewhere cannot get it through PresenterCraft.
 ## Downloads
 
 - The Bibles under "Free" are files attached to the project's `bibles-2` release on GitHub.
-  Install fetches `<id>.pcbible` from there, checks it against the SHA-256 written into the
+  Install fetches `<id>.spbible` from there, checks it against the SHA-256 written into the
   app for that Bible, checks that it reads as that Bible, and only then keeps it in the
-  Bibles folder (`~/Library/Application Support/PresenterCraft/Bibles` on a Mac). A file with
+  Bibles folder (`~/Library/Application Support/SoftPresenter/Bibles` on a Mac). A file with
   any other checksum is not installed.
-- Dropping a `.pcbible` file on the window installs it too.
+- Dropping a `.spbible` file on the window installs it too.
 - To publish a new or corrected Bible: convert it, attach it to a new release (`bibles-2`),
   and update its checksum and the release name in the app. Files in a release that the app
   already points at must never be replaced, or older versions of the app will refuse them.
