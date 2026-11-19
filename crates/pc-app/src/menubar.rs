@@ -76,6 +76,7 @@ pub enum Action {
     TestWhite,
     IdentifyScreens,
     ConfigureScreens,
+    StageLayouts,
     Website,
     ReportIssue,
     WhatsNew,
@@ -288,6 +289,7 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Check(Action::TestWhite, "Test Pattern: White", None),
             Line,
             Do(Action::ConfigureScreens, "Configure Screens…", option_cmd('1')),
+            Do(Action::StageLayouts, "Edit Stage Layouts…", None),
         ],
     ),
     (

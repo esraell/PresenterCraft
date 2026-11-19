@@ -40,6 +40,9 @@ pub struct Screen {
     pub output: Output,
     #[serde(default)]
     pub kind: Kind,
+    /// For a stage screen, the stage layout it is drawn with, by its id; `None` uses the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_layout: Option<Uuid>,
 }
 
 /// Where a screen ends up on this computer as it is now.
@@ -55,7 +58,7 @@ pub enum Placed {
 
 impl Screen {
     pub fn new(name: String, output: Output) -> Screen {
-        Screen { id: Uuid::new_v4(), name, output, kind: Kind::Audience }
+        Screen { id: Uuid::new_v4(), name, output, kind: Kind::Audience, stage_layout: None }
     }
 
     pub fn stage(name: String, output: Output) -> Screen {

@@ -978,6 +978,7 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut HomeState) {
 fn stage_tab(ui: &mut egui::Ui, state: &mut HomeState) {
     caption(ui, "STAGE");
     let mut any = false;
+    let mut chosen: Option<(usize, pc_model::Uuid)> = None;
     for (index, screen) in state.screens.iter().enumerate().filter(|(_, screen)| screen.kind == Kind::Stage) {
         any = true;
         let status = state.screen_status.get(index).map_or("", |(status, _)| status.as_str());
@@ -985,13 +986,36 @@ fn stage_tab(ui: &mut egui::Ui, state: &mut HomeState) {
             ui.label(egui::RichText::new(screen.name.as_str()).size(13.0).color(TEXT));
             ui.label(egui::RichText::new(status).size(11.5).color(TEXT_DIM));
         });
+        // The layout the screen is drawn with.
+        let layout = crate::stage::layout_for(&state.stage_layouts, screen.stage_layout);
+        egui::ComboBox::from_id_salt(("stage layout", screen.id))
+            .selected_text(layout.name.as_str())
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                for option in &state.stage_layouts {
+                    if ui.add(egui::Button::selectable(option.id == layout.id, option.name.as_str())).clicked() {
+                        chosen = Some((index, option.id));
+                    }
+                }
+            });
+    }
+    if let Some((index, layout)) = chosen
+        && let Some(screen) = state.screens.get_mut(index)
+    {
+        screen.stage_layout = Some(layout);
+        state.screens_changed = true;
     }
     if !any {
         ui.label(egui::RichText::new("No stage screens yet.").size(12.0).color(TEXT_FAINT));
     }
-    if ui.button("Configure Screens…").clicked() {
-        state.settings_open = true;
-    }
+    ui.horizontal(|ui| {
+        if ui.button("Configure Screens…").clicked() {
+            state.settings_open = true;
+        }
+        if ui.button("Edit Layouts…").on_hover_text("Lay out what the stage screens show").clicked() {
+            state.stage_editor_open = true;
+        }
+    });
     ui.add_space(10.0);
     caption(ui, "STAGE MESSAGE");
     let field = ui.add(

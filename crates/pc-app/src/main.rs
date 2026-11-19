@@ -20,6 +20,7 @@ mod props;
 mod screens;
 mod service;
 mod stage;
+mod stage_editor;
 mod studio;
 mod theme_store;
 mod thumbs;
@@ -124,7 +125,10 @@ fn open_panel_window(
 ) -> Result<PanelWindow, String> {
     let attrs = Window::default_attributes()
         .with_title(kind.title())
-        .with_inner_size(winit::dpi::LogicalSize::new(760.0, 520.0))
+        .with_inner_size(match kind {
+            Panel::StageLayouts => winit::dpi::LogicalSize::new(1160.0, 620.0),
+            _ => winit::dpi::LogicalSize::new(760.0, 520.0),
+        })
         .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 440.0));
     let attrs = if quiet {
         attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom)
@@ -474,15 +478,17 @@ fn paint_ui(
 enum Panel {
     Screens,
     Settings,
+    StageLayouts,
 }
 
 impl Panel {
-    const ALL: [Panel; 2] = [Panel::Screens, Panel::Settings];
+    const ALL: [Panel; 3] = [Panel::Screens, Panel::Settings, Panel::StageLayouts];
 
     fn title(self) -> &'static str {
         match self {
             Panel::Screens => "Screens",
             Panel::Settings => "Settings",
+            Panel::StageLayouts => "Stage Layouts",
         }
     }
 
@@ -491,6 +497,7 @@ impl Panel {
         match self {
             Panel::Screens => state.settings_open,
             Panel::Settings => state.preferences_open,
+            Panel::StageLayouts => state.stage_editor_open,
         }
     }
 
@@ -502,6 +509,7 @@ impl Panel {
                 state.identify = false;
             }
             Panel::Settings => state.preferences_open = false,
+            Panel::StageLayouts => state.stage_editor_open = false,
         }
     }
 }
@@ -534,7 +542,7 @@ struct Running {
     /// The names the screens were last told to show while being identified.
     identify_sent: Option<Vec<(Uuid, String)>>,
     /// The stage screens the output was last told of, and whether they were on.
-    stage_sent: Option<(Vec<Uuid>, bool)>,
+    stage_sent: Option<(Vec<(Uuid, pc_model::ThemeTemplate)>, bool)>,
     /// What the output was last told to show over the slides.
     overlay_sent: Option<output::Overlay>,
     output: Option<OutputHandle>,
@@ -932,6 +940,7 @@ impl App {
     /// Tells the output what is on each layer now, then redraws the operator's preview.
     fn refresh_output(&mut self) {
         let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
+        let about = self.stage_about();
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -956,6 +965,7 @@ impl App {
                     .and_then(|(_, slide)| slide.transition)
                     .unwrap_or(running.home_state.transition),
                 next,
+                about,
             };
             if !output.send(OutputMsg::Show(frame)) {
                 running.home_state.output_stopped = true;
@@ -964,10 +974,22 @@ impl App {
         self.refresh_preview(true);
     }
 
+    /// The song on screen's title and its slide's group, for the stage screens.
+    fn stage_about(&self) -> stage::About {
+        match self.show.live_slide() {
+            Some((song, _)) => {
+                let group = self.show.live().and_then(|at| song.slide(at.slide)).map(|(group, _)| group.name.clone());
+                stage::About { title: Some(song.title.clone()), group }
+            }
+            None => stage::About::default(),
+        }
+    }
+
     /// Redraws the Program preview: what the audience sees, or what the stage sees. `fade` lets
     /// it fade from the last picture as the screens do; a clock's tick doesn't fade.
     fn refresh_preview(&mut self, fade: bool) {
         let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
+        let about = self.stage_about();
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -982,10 +1004,14 @@ impl App {
                 song.slide(at.slide).map(|(_, slide)| slide.clone())
             });
             let overlay = running.overlay_sent.clone().unwrap_or_default();
-            let picture = stage::slide(slide.as_deref(), next.as_ref(), &overlay);
+            // The layout of the first stage screen, as the people on stage see it.
+            let wanted =
+                state.screens.iter().find(|screen| screen.kind == screens::Kind::Stage).and_then(|s| s.stage_layout);
+            let template = stage::layout_for(&state.stage_layouts, wanted);
+            let picture = stage::slide(slide.as_deref(), next.as_ref(), &overlay, &about, &template);
             let layers = Layers { media: None, slide: Some(&picture), overlay: None };
-            let (now, before) =
-                running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &stage::theme());
+            let layout = stage::theme_for(&template);
+            let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &layout);
             running.preview = now;
             running.preview_before = before;
             let now = Instant::now();
@@ -1774,16 +1800,17 @@ impl App {
             output.send(OutputMsg::Redraw);
         }
 
-        // Stage screens: which they are, and whether they are on.
+        // Stage screens: which they are, the layout each is drawn with, and whether they are on.
         let stage = (
             list.iter()
                 .filter(|screen| screen.kind == screens::Kind::Stage)
-                .map(|screen| screen.id)
+                .map(|screen| (screen.id, stage::layout_for(&home_state.stage_layouts, screen.stage_layout)))
                 .collect::<Vec<_>>(),
             home_state.stage_on,
         );
         if running.stage_sent.as_ref() != Some(&stage) {
-            output.send(OutputMsg::Stage { screens: stage.0.clone(), on: stage.1 });
+            let screens = stage.0.iter().map(|(id, layout)| (*id, Arc::new(stage::theme_for(layout)))).collect();
+            output.send(OutputMsg::Stage { screens, on: stage.1 });
             running.stage_sent = Some(stage);
         }
 
@@ -1971,6 +1998,11 @@ impl App {
                     }
                 }
             }
+            // Testing aid: open the Stage Layouts window.
+            if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_STAGE_LAYOUTS").is_some() {
+                running.home_state.stage_editor_open = true;
+                running.home_state.stage_edit = (0, Some(0));
+            }
             // Testing aid: show the stage picture in the Program preview.
             if running.frames == GO_LIVE_AT + 2 && std::env::var("PRESENTERCRAFT_PREVIEW").as_deref() == Ok("stage") {
                 running.home_state.preview_stage = true;
@@ -2146,6 +2178,7 @@ impl App {
         let mut full = panel.ctx.run_ui(raw_input, |ui| match kind {
             Panel::Screens => commands.extend(home::screens_ui(ui, home_state, output_on)),
             Panel::Settings => home::settings_ui(ui, home_state),
+            Panel::StageLayouts => stage_editor::ui(ui, home_state),
         });
         panel.state.handle_platform_output(&panel.window, std::mem::take(&mut full.platform_output));
         let delay = full.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
@@ -2162,7 +2195,11 @@ impl App {
         panel.frames += 1;
         // Testing aid: a capture run with a panel asked for also saves that window, every
         // frame once it has settled, so the last one saved is the latest.
-        let ending = if kind == Panel::Screens { "screens.png" } else { "settings.png" };
+        let ending = match kind {
+            Panel::Screens => "screens.png",
+            Panel::Settings => "settings.png",
+            Panel::StageLayouts => "stage.png",
+        };
         if let Some(path) = &self.options.capture_home
             && panel.frames >= 2
             && let Err(e) =
@@ -2327,6 +2364,11 @@ impl App {
         {
             state.notice = Some(problem);
         }
+        if std::mem::take(&mut state.stage_layouts_changed)
+            && let Err(problem) = stage::save_layouts(&state.stage_layouts)
+        {
+            state.notice = Some(problem);
+        }
         // Props that clear themselves, once their time is up.
         let props = state.props.clone();
         state.props_live.retain(|(id, since)| {
@@ -2484,6 +2526,7 @@ impl App {
             A::Quit => {}
             A::Settings => state.preferences_open = true,
             A::ConfigureScreens => state.settings_open = true,
+            A::StageLayouts => state.stage_editor_open = true,
             A::NewSong => state.new_song = true,
             A::NewSlide => {
                 let song = match (&state.editing, &state.theme_edit) {
@@ -2668,6 +2711,7 @@ impl ApplicationHandler<String> for App {
                 running.home_state.messages = messages::load();
                 running.home_state.props = props::load();
                 running.home_state.macros = macros::load();
+                running.home_state.stage_layouts = stage::load_layouts();
                 running.home_state.audio_tracks = audio::load();
                 // Macros set to run when PresenterCraft starts.
                 let startup: Vec<pc_model::ShowAction> = running

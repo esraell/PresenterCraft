@@ -201,6 +201,12 @@ pub struct HomeState {
     pub messages: Vec<crate::messages::Message>,
     pub messages_changed: bool,
     pub message_selected: Option<pc_model::Uuid>,
+    /// The stage layouts, and true when they have changed and are to be saved.
+    pub stage_layouts: Vec<pc_model::ThemeTemplate>,
+    pub stage_layouts_changed: bool,
+    /// True while the Stage Layouts window is open; the layout chosen in it, and its item chosen.
+    pub stage_editor_open: bool,
+    pub stage_edit: (usize, Option<usize>),
     /// True when the Program preview shows what the stage screens show, not the audience's.
     pub preview_stage: bool,
     /// A message cut or copied, to paste; and one being renamed in its row, with its name so far.
@@ -739,6 +745,10 @@ impl Default for HomeState {
             messages: Vec::new(),
             messages_changed: false,
             message_selected: None,
+            stage_layouts: crate::stage::builtin_layouts(),
+            stage_layouts_changed: false,
+            stage_editor_open: false,
+            stage_edit: (0, None),
             preview_stage: false,
             message_clip: None,
             message_rename: None,

@@ -23,6 +23,8 @@ pub struct Frame {
     pub transition: pc_model::Transition,
     /// The slide after the one on screen, for stage screens.
     pub next: Option<Arc<Slide>>,
+    /// The song on screen's title and the slide's group, for stage screens.
+    pub about: crate::stage::About,
 }
 
 /// What is shown over the slides: a message on the audience screens; the stage message and the
@@ -65,9 +67,10 @@ pub enum OutputMsg {
     RemoveSurface(Uuid),
     /// What is shown over the slides.
     Overlay(Overlay),
-    /// Which screens are stage screens, and whether stage screens are on.
+    /// Which screens are stage screens and the layout each is drawn with, and whether stage
+    /// screens are on.
     Stage {
-        screens: Vec<Uuid>,
+        screens: Vec<(Uuid, Arc<Theme>)>,
         on: bool,
     },
     /// Show each screen's own name on it, so the operator can tell them apart; an empty list
@@ -169,10 +172,9 @@ struct Output {
     /// While screens are being identified: the name each one shows instead of the show.
     identify: Vec<(Uuid, Arc<Slide>)>,
     identify_theme: Arc<Theme>,
-    /// The stage screens, whether they are on, and the layout they are drawn with.
-    stage: Vec<Uuid>,
+    /// The stage screens with the layout each is drawn with, and whether they are on.
+    stage: Vec<(Uuid, Arc<Theme>)>,
     stage_on: bool,
-    stage_theme: Arc<Theme>,
     overlay: Overlay,
 }
 
@@ -191,6 +193,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             enabled: true,
             transition: pc_model::Transition::of(pc_model::TransitionKind::Cut),
             next: None,
+            about: crate::stage::About::default(),
         },
         targets: Vec::new(),
         fading: None,
@@ -201,7 +204,6 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         identify_theme: Arc::new(Theme::builtin()),
         stage: Vec::new(),
         stage_on: true,
-        stage_theme: Arc::new(crate::stage::theme()),
         overlay: Overlay::default(),
         device,
         queue,
@@ -358,11 +360,12 @@ impl Output {
         if let Some((_, name)) = self.identify.iter().find(|(have, _)| *have == id) {
             return (None, Some(name.clone()), None, self.identify_theme.clone());
         }
-        if self.stage.contains(&id) {
-            let words = self
-                .stage_on
-                .then(|| Arc::new(crate::stage::slide(frame.slide.as_deref(), frame.next.as_deref(), &self.overlay)));
-            return (None, words, None, self.stage_theme.clone());
+        if let Some((_, layout)) = self.stage.iter().find(|(have, _)| *have == id) {
+            let words = self.stage_on.then(|| layout.templates.first()).flatten().map(|template| {
+                let (now, next) = (frame.slide.as_deref(), frame.next.as_deref());
+                Arc::new(crate::stage::slide(now, next, &self.overlay, &frame.about, template))
+            });
+            return (None, words, None, layout.clone());
         }
         if let Some(pattern) = self.overlay.test_pattern {
             return (None, Some(Arc::new(pattern.slide())), None, self.identify_theme.clone());
@@ -399,7 +402,7 @@ impl Output {
         // The show is drawn once and sent to all; a screen being identified gets its own picture.
         let mut shared: Option<Vec<u8>> = None;
         for id in ids {
-            let own = self.identify.iter().any(|(have, _)| *have == id) || self.stage.contains(&id);
+            let own = self.identify.iter().any(|(have, _)| *have == id) || self.is_stage(id);
             let pixels = match shared.as_ref().filter(|_| !own) {
                 Some(pixels) => pixels.clone(),
                 None => {
@@ -443,6 +446,7 @@ impl Output {
                 (target.id, target.config.width, target.config.height)
             };
             let scene = self.scene_for(id, &frame, w, h);
+            let stage = self.is_stage(id);
             // What is in the window this instant: the last whole picture, or a fade part-way.
             let target = &mut self.targets[index];
             let before = match target.fade.take() {
@@ -453,7 +457,6 @@ impl Output {
                 None => target.shown.take(),
             };
             // Stage screens change at once: the people on stage need the words now.
-            let stage = self.stage.contains(&id);
             match before {
                 Some(from) if new_picture && frame.transition.duration() > 0.0 && !stage => {
                     target.fade = Some((from, scene));
@@ -477,11 +480,16 @@ impl Output {
         self.has_stage() || self.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text))
     }
 
+    /// True for a stage screen.
+    fn is_stage(&self, id: Uuid) -> bool {
+        self.stage.iter().any(|(have, _)| *have == id)
+    }
+
     /// True when there is a stage screen to keep the time on.
     fn has_stage(&self) -> bool {
         self.stage_on
-            && (self.targets.iter().any(|target| self.stage.contains(&target.id))
-                || self.ndi.iter().any(|(id, _)| self.stage.contains(id)))
+            && (self.targets.iter().any(|target| self.is_stage(target.id))
+                || self.ndi.iter().any(|(id, _)| self.is_stage(*id)))
     }
 
     /// Draws the stage screens again, for the time, leaving the others as they are.
@@ -492,7 +500,7 @@ impl Output {
                 let target = &self.targets[index];
                 (target.id, target.config.width, target.config.height)
             };
-            if !self.stage.contains(&id) {
+            if !self.is_stage(id) {
                 continue;
             }
             let scene = self.scene_for(id, &frame, w, h);
@@ -500,7 +508,7 @@ impl Output {
             self.targets[index].shown = Some(scene);
         }
         let (w, h) = NDI_SIZE;
-        let stage_ndi: Vec<Uuid> = self.ndi.iter().map(|(id, _)| *id).filter(|id| self.stage.contains(id)).collect();
+        let stage_ndi: Vec<Uuid> = self.ndi.iter().map(|(id, _)| *id).filter(|id| self.is_stage(*id)).collect();
         for id in stage_ndi {
             let scene = self.scene_for(id, &frame, w, h);
             let target = self.ndi_target.get_or_insert_with(|| target_texture(&self.device, w, h));

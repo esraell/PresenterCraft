@@ -75,6 +75,11 @@ ProPresenter.
   stage, in tabs under the Program panel. A slide can carry the same actions, done when it goes on screen.
 - The Program preview shows what the audience sees, or (from the chooser beside PROGRAM) what
   the stage screens show, with the time kept up to date.
+- **Stage layouts**: each stage screen picks a layout in the Stage tab (Words and Next, Words
+  Only, Words and Notes, Clock and Timer, or your own). Screens > Edit Stage Layouts… lays them
+  out: the current and next slide, the next label, the clock, a timer, the slide's notes, the
+  song's title and group, and the stage message, each dragged into place and resized, with its
+  size, colour and alignment.
 
 **Bible**
 - Scripture Lookup in English and Russian (`John 3:16-18`, `jn 3:16`, `Psalm 23`,
@@ -140,7 +145,6 @@ ProPresenter.
 Among the things PresenterCraft can't do yet:
 
 - Videos and live video inputs.
-- Stage layouts other than the built-in one.
 - Most of ProPresenter's 37 transitions (ten are built).
 - Formatting one word differently from the rest of its box.
 - Importing songs from other presentation apps or from CCLI SongSelect.
