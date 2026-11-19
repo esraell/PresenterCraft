@@ -10,18 +10,25 @@ fn folder() -> Option<PathBuf> {
 }
 
 fn in_use_file() -> Option<PathBuf> {
-    crate::bible_store::data_dir().map(|dir| dir.join("theme-in-use.txt"))
+    crate::bible_store::data_dir().map(|dir| dir.join("themes-in-use.txt"))
 }
 
-/// Every theme, and the place in the list of the one in use. The built-in theme is always
+/// Every theme, and the places in the list of the ones songs and Bible slides use. The built-in theme is always
 /// there, as it was last saved if it has been changed; the others follow in name order.
-pub fn load_all() -> (Vec<Theme>, usize) {
+pub fn load_all() -> (Vec<Theme>, usize, usize) {
     let mut themes = folder().map_or_else(|| vec![Theme::builtin()], |folder| load_from(&folder));
     themes[1..].sort_by_key(|theme| theme.name.to_lowercase());
-    let wanted = in_use_file().and_then(|file| std::fs::read_to_string(file).ok());
-    let wanted = wanted.and_then(|text| Uuid::parse_str(text.trim()).ok());
-    let in_use = wanted.and_then(|id| themes.iter().position(|theme| theme.id == id)).unwrap_or(0);
-    (themes, in_use)
+    // The note has a line for each kind of slide: `songs=<id>` and `bible=<id>`.
+    let note = in_use_file().and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default();
+    let place = |kind: &str| {
+        note.lines()
+            .find_map(|line| line.strip_prefix(kind)?.strip_prefix('='))
+            .and_then(|id| Uuid::parse_str(id.trim()).ok())
+            .and_then(|id| themes.iter().position(|theme| theme.id == id))
+            .unwrap_or(0)
+    };
+    let (songs, bible) = (place("songs"), place("bible"));
+    (themes, songs, bible)
 }
 
 fn load_from(folder: &Path) -> Vec<Theme> {
@@ -59,13 +66,13 @@ fn save_in(folder: &Path, theme: &Theme) -> Result<(), String> {
         .map_err(|e| format!("Could not save the theme: {e}"))
 }
 
-/// Remembers which theme is in use, for the next start.
-pub fn remember_in_use(theme: &Theme) {
+/// Remembers which themes songs and Bible slides use, for the next start.
+pub fn remember_in_use(songs: &Theme, bible: &Theme) {
     if let Some(file) = in_use_file() {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(file, theme.id.to_string());
+        let _ = std::fs::write(file, format!("songs={}\nbible={}\n", songs.id, bible.id));
     }
 }
 

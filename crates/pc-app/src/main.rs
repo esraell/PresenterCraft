@@ -233,12 +233,15 @@ struct App {
     /// change was made.
     unsaved: Vec<usize>,
     unsaved_since: Option<Instant>,
+    /// The theme songs are drawn with, and the one Bible slides are drawn with: copies of
+    /// the themes at `songs_theme` and `bible_theme` in `themes`.
     theme: Arc<Theme>,
-    /// Every theme, and the place of the one in use. `theme` is a copy of that one.
+    theme_for_bible: Arc<Theme>,
     themes: Vec<Theme>,
-    theme_in_use: usize,
-    /// True when the theme in use has changes not yet written to its file.
-    theme_unsaved: bool,
+    songs_theme: usize,
+    bible_theme: usize,
+    /// The themes with changes not yet written to their files, by place.
+    themes_unsaved: Vec<usize>,
     /// Testing aid: select a box once the Theme Editor has opened.
     capture_selects_box: bool,
     running: Option<Running>,
@@ -358,10 +361,12 @@ impl App {
                 fonts: Arc::new(pc_render::Fonts::new().family_names()),
                 output_placement: placement,
                 theme_names: self.themes.iter().map(|theme| theme.name.clone()).collect(),
-                theme_in_use: self.theme_in_use,
+                theme_for_songs: self.songs_theme,
+                theme_for_bible: self.bible_theme,
                 bible: home::BiblePage {
                     slots: Some(self.bible_slots),
                     shelf: bible::Shelf::with_installed(),
+                    boxes: self.theme_for_bible.boxes.iter().map(|style| style.role.clone()).collect(),
                     ..home::BiblePage::default()
                 },
                 ..HomeState::default()
@@ -400,6 +405,7 @@ impl App {
 
     /// Tells the output what is on each layer now, then redraws the operator's preview.
     fn refresh_output(&mut self) {
+        let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -410,7 +416,7 @@ impl App {
             let frame = Frame {
                 media: media.clone(),
                 slide: slide.clone(),
-                theme: self.theme.clone(),
+                theme: theme.clone(),
                 enabled: self.show.output_enabled(),
             };
             if !output.send(OutputMsg::Show(frame)) {
@@ -418,7 +424,7 @@ impl App {
             }
         }
         let layers = Layers { media: media.as_ref(), slide: slide.as_deref() };
-        running.preview = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &self.theme);
+        running.preview = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &theme);
     }
 
     /// Adds a file dropped on the window to the media bin, or says why it could not be added.
@@ -496,10 +502,10 @@ impl App {
                 Err(e) => problem = Some(format!("The change was not saved. {e}")),
             }
         }
-        if std::mem::take(&mut self.theme_unsaved)
-            && let Err(e) = theme_store::save(&self.theme)
-        {
-            problem = Some(e);
+        for index in std::mem::take(&mut self.themes_unsaved) {
+            if let Some(Err(e)) = self.themes.get(index).map(theme_store::save) {
+                problem = Some(e);
+            }
         }
         self.unsaved_since = None;
         if let Some(running) = self.running.as_mut() {
@@ -508,24 +514,33 @@ impl App {
         }
     }
 
-    /// Makes a theme the one in use: every thumbnail is drawn again with it. The output is
-    /// left as it is; `refresh_output` brings it up to date.
-    fn use_theme(&mut self, index: usize) {
-        let Some(theme) = self.themes.get(index) else {
-            return;
-        };
-        self.theme_in_use = index;
-        self.theme = Arc::new(theme.clone());
+    /// The theme a presentation's slides are drawn with: the Bible theme for a Bible passage,
+    /// the songs theme for everything else.
+    fn theme_of(&self, presentation: usize) -> &Arc<Theme> {
+        if self.bible_slots.contains(&presentation) { &self.theme_for_bible } else { &self.theme }
+    }
+
+    /// Brings everything that depends on the themes up to date after one was changed or
+    /// chosen: the copies slides are drawn with, every thumbnail, and what the window lists.
+    /// The output is left as it is; `refresh_output` brings it up to date.
+    fn themes_changed(&mut self) {
+        self.songs_theme = self.songs_theme.min(self.themes.len().saturating_sub(1));
+        self.bible_theme = self.bible_theme.min(self.themes.len().saturating_sub(1));
+        self.theme = Arc::new(self.themes[self.songs_theme].clone());
+        self.theme_for_bible = Arc::new(self.themes[self.bible_theme].clone());
         if let Some(running) = self.running.as_mut() {
             running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
             running.canvas_for = None;
-            running.home_state.theme_names = self.themes.iter().map(|theme| theme.name.clone()).collect();
-            running.home_state.theme_in_use = index;
+            let state = &mut running.home_state;
+            state.theme_names = self.themes.iter().map(|theme| theme.name.clone()).collect();
+            state.theme_for_songs = self.songs_theme;
+            state.theme_for_bible = self.bible_theme;
+            state.bible.boxes = self.theme_for_bible.boxes.iter().map(|style| style.role.clone()).collect();
             running.home_window.request_redraw();
         }
     }
 
-    /// Carries out what the Theme menu and the Theme Editor asked for this frame.
+    /// Carries out what the Theme menu, Bible Options and the Theme Editor asked for this frame.
     fn handle_themes(&mut self) {
         use home::ThemeRequest;
         let Some(running) = self.running.as_mut() else {
@@ -533,30 +548,35 @@ impl App {
         };
         let request = running.home_state.theme_request.take();
         let editing = running.home_state.theme_edit.is_some();
+        let count = self.themes.len();
         match request {
-            Some(ThemeRequest::Use(index)) if index != self.theme_in_use && index < self.themes.len() => {
-                // Changes to the theme being left are written before moving on.
-                self.save_unsaved();
-                self.use_theme(index);
-                theme_store::remember_in_use(&self.theme);
-                if editing {
-                    self.open_theme_editor();
-                } else {
+            Some(ThemeRequest::UseForSongs(index)) if index < count && index != self.songs_theme => {
+                self.songs_theme = index;
+                self.themes_changed();
+                theme_store::remember_in_use(&self.theme, &self.theme_for_bible);
+                if !editing {
+                    self.refresh_output();
+                }
+            }
+            Some(ThemeRequest::UseForBible(index)) if index < count && index != self.bible_theme => {
+                self.bible_theme = index;
+                self.themes_changed();
+                theme_store::remember_in_use(&self.theme, &self.theme_for_bible);
+                if !editing {
                     self.refresh_output();
                 }
             }
             Some(ThemeRequest::New) => {
-                self.save_unsaved();
                 let mut theme = (*self.theme).clone();
                 theme.id = Uuid::new_v4();
                 theme.name = "New Theme".to_owned();
                 self.themes.push(theme);
-                self.use_theme(self.themes.len() - 1);
-                self.theme_unsaved = true;
-                theme_store::remember_in_use(&self.theme);
-                self.open_theme_editor();
+                self.themes_unsaved.push(self.themes.len() - 1);
+                self.unsaved_since = Some(Instant::now());
+                self.themes_changed();
+                self.open_theme_editor(self.themes.len() - 1);
             }
-            Some(ThemeRequest::Edit) => self.open_theme_editor(),
+            Some(ThemeRequest::Edit(index)) if index < count => self.open_theme_editor(index),
             _ => {}
         }
         let Some(running) = self.running.as_mut() else {
@@ -565,15 +585,17 @@ impl App {
         let Some(edit) = running.home_state.theme_edit.as_mut() else {
             return;
         };
-        let (changed, leave) = (std::mem::take(&mut edit.changed), edit.leave);
+        let (changed, leave, index) = (std::mem::take(&mut edit.changed), edit.leave, edit.index);
         if changed {
             let theme = edit.theme.clone();
-            if let Some(slot) = self.themes.get_mut(self.theme_in_use) {
+            if let Some(slot) = self.themes.get_mut(index) {
                 *slot = theme;
             }
-            self.theme_unsaved = true;
+            if !self.themes_unsaved.contains(&index) {
+                self.themes_unsaved.push(index);
+            }
             self.unsaved_since = Some(Instant::now());
-            self.use_theme(self.theme_in_use);
+            self.themes_changed();
         }
         if leave {
             if let Some(running) = self.running.as_mut() {
@@ -586,15 +608,16 @@ impl App {
         }
     }
 
-    /// Opens the Theme Editor on the theme in use.
-    fn open_theme_editor(&mut self) {
-        let Some(running) = self.running.as_mut() else {
+    /// Opens the Theme Editor on the theme at a place in the list.
+    fn open_theme_editor(&mut self, index: usize) {
+        let (Some(theme), Some(running)) = (self.themes.get(index), self.running.as_mut()) else {
             return;
         };
-        let edit = home::ThemeEdit::of((*self.theme).clone());
+        let edit = home::ThemeEdit::of(index, theme.clone());
         running.home_state.editing = Some(EditDraft::of_slide(edit.theme.template_slide(edit.template), 0));
         running.home_state.theme_edit = Some(edit);
         running.home_state.bible_open = false;
+        running.canvas_for = None;
         running.home_window.request_redraw();
     }
 
@@ -648,8 +671,14 @@ impl App {
         if editing == running.canvas_for {
             return;
         }
-        if let Some((_, slide)) = &editing {
-            running.canvas = running.thumbs.canvas(&running.gpu, &mut running.egui_renderer, slide, &self.theme);
+        if let Some((at, slide)) = &editing {
+            // A theme's layout is drawn with that theme; a slide with its presentation's.
+            let theme = match &running.home_state.theme_edit {
+                Some(edit) => self.themes.get(edit.index).unwrap_or(&self.theme),
+                None if self.bible_slots.contains(&at.presentation) => &self.theme_for_bible,
+                None => &self.theme,
+            };
+            running.canvas = running.thumbs.canvas(&running.gpu, &mut running.egui_renderer, slide, theme);
         }
         running.canvas_for = editing;
         running.home_window.request_redraw();
@@ -675,14 +704,25 @@ impl App {
             running.home_state.output_stopped = true;
         }
         let mut commands = Vec::new();
-        let (show, theme, preview, pictures) = (&self.show, &self.theme, running.preview, &self.pictures);
+        let (show, preview, pictures) = (&self.show, running.preview, &self.pictures);
+        let (songs_theme, bible_theme): (&Theme, &Theme) = (&self.theme, &self.theme_for_bible);
+        // The theme the part of the window in front works with: the one being edited, the
+        // Bible's on the Bible page or when a Bible slide is being edited, otherwise the songs'.
+        let state = &running.home_state;
+        let edited = state.theme_edit.as_ref().and_then(|edit| self.themes.get(edit.index));
+        let on_bible = match &state.editing {
+            Some(draft) => self.bible_slots.contains(&draft.at.presentation),
+            None => state.bible_open,
+        };
+        let theme = edited.unwrap_or(if on_bible { bible_theme } else { songs_theme });
         let canvas = running.canvas;
         let home_state = &mut running.home_state;
         let mut full = egui_ctx.run_ui(raw_input, |ui| {
             // The toolkit may run this closure twice in one frame, and input arrives only the
             // first time, so add to the list rather than replace it.
             let mut thumb = |which: ThumbOf| match which {
-                ThumbOf::Slide(slide) => thumbs.get(gpu, egui_renderer, slide, theme),
+                ThumbOf::Slide(slide) => thumbs.get(gpu, egui_renderer, slide, songs_theme),
+                ThumbOf::BibleSlide(slide) => thumbs.get(gpu, egui_renderer, slide, bible_theme),
                 ThumbOf::Layout(index, slide) => {
                     // A layout is made anew each frame; a fixed id lets its thumbnail be kept
                     // until the theme changes, when every thumbnail is dropped.
@@ -692,7 +732,7 @@ impl App {
                 }
                 ThumbOf::Media(index) => {
                     let (item, picture) = (show.media().get(index)?, pictures.get(index)?);
-                    thumbs.get_media(gpu, egui_renderer, item.id, picture, theme).map(|texture| (texture, false))
+                    thumbs.get_media(gpu, egui_renderer, item.id, picture, songs_theme).map(|texture| (texture, false))
                 }
             };
             commands.extend(home_ui(ui, show, home_state, theme, &mut thumb, preview, canvas));
@@ -792,7 +832,7 @@ impl App {
             if running.frames == GO_LIVE_AT + 2
                 && let Ok(what) = std::env::var("PRESENTERCRAFT_CAPTURE_THEMES")
             {
-                running.home_state.theme_request = Some(home::ThemeRequest::Edit);
+                running.home_state.theme_request = Some(home::ThemeRequest::Edit(0));
                 running.home_state.inspector.tab = inspector::InspectorTab::Text;
                 self.capture_selects_box = what == "box";
             }
@@ -1039,7 +1079,7 @@ fn main() -> ExitCode {
         }
     };
     event_loop.set_control_flow(ControlFlow::Wait);
-    let (themes, theme_in_use) = theme_store::load_all();
+    let (themes, songs_theme, bible_theme) = theme_store::load_all();
     let mut app = App {
         options,
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
@@ -1048,10 +1088,12 @@ fn main() -> ExitCode {
         pictures: Vec::new(),
         unsaved: Vec::new(),
         unsaved_since: None,
-        theme: Arc::new(themes[theme_in_use].clone()),
+        theme: Arc::new(themes[songs_theme].clone()),
+        theme_for_bible: Arc::new(themes[bible_theme].clone()),
         themes,
-        theme_in_use,
-        theme_unsaved: false,
+        songs_theme,
+        bible_theme,
+        themes_unsaved: Vec::new(),
         capture_selects_box: false,
         running: None,
         failed: false,

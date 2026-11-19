@@ -100,9 +100,10 @@ pub struct HomeState {
     pub inspector: crate::inspector::InspectorState,
     /// The Theme Editor, while it is open. The layout being worked on is the draft in `editing`.
     pub theme_edit: Option<ThemeEdit>,
-    /// Every theme's name, and the place of the one in use.
+    /// Every theme's name, and the places of the ones songs and Bible slides use.
     pub theme_names: Vec<String>,
-    pub theme_in_use: usize,
+    pub theme_for_songs: usize,
+    pub theme_for_bible: usize,
     /// What the Theme menu or the Theme Editor has just asked for. The app takes this.
     pub theme_request: Option<ThemeRequest>,
     /// A menu open under a toolbar button, and where its top-left corner is.
@@ -113,24 +114,13 @@ pub struct HomeState {
     pub bible: BiblePage,
 }
 
-/// Where a translation's verse text or reference goes on the slide.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BibleTarget {
-    None,
-    Main,
-    Translation,
-}
+/// Where a translation's words, or its reference, go on a Bible slide: one of the Bible
+/// theme's boxes, or nowhere.
+pub type BibleTarget = Option<pc_model::Role>;
 
-impl BibleTarget {
-    const ALL: [BibleTarget; 3] = [BibleTarget::None, BibleTarget::Main, BibleTarget::Translation];
-
-    fn label(self) -> &'static str {
-        match self {
-            BibleTarget::None => "None",
-            BibleTarget::Main => "Main",
-            BibleTarget::Translation => "Translation",
-        }
-    }
+/// What a target is called in its menu.
+fn target_label(target: &BibleTarget) -> String {
+    target.as_ref().map_or_else(|| "None".to_owned(), pc_model::Role::label)
 }
 
 /// One translation on the Bible page and where its text goes.
@@ -151,6 +141,8 @@ pub struct BiblePage {
     pub options: crate::bible::BibleOptions,
     /// The Bibles installed.
     pub shelf: crate::bible::Shelf,
+    /// The boxes of the theme Bible slides use, which the Verse and Reference menus offer.
+    pub boxes: Vec<pc_model::Role>,
     /// Bibles being downloaded.
     pub downloads: crate::bible_store::Downloads,
     /// The two places among the show's presentations kept for Bible passages. A new passage
@@ -180,10 +172,15 @@ impl Default for BiblePage {
             options: crate::bible::BibleOptions::default(),
             // Two translations side by side is the usual case here: one for each language.
             rows: vec![
-                BibleRow { bible: place("kjv"), verse: BibleTarget::Main, reference: BibleTarget::Main },
-                BibleRow { bible: place("syn"), verse: BibleTarget::Translation, reference: BibleTarget::None },
+                BibleRow {
+                    bible: place("kjv"),
+                    verse: Some(pc_model::Role::primary()),
+                    reference: Some(pc_model::Role::reference()),
+                },
+                BibleRow { bible: place("syn"), verse: Some(pc_model::Role::translation()), reference: None },
             ],
             shelf,
+            boxes: Theme::builtin().boxes.into_iter().map(|style| style.role).collect(),
             downloads: crate::bible_store::Downloads::default(),
             slots: None,
             showing: 0,
@@ -205,7 +202,7 @@ impl BiblePage {
         if self.rows.len() >= Self::MAX_ROWS {
             return false;
         }
-        self.rows.push(BibleRow { bible: 0, verse: BibleTarget::None, reference: BibleTarget::None });
+        self.rows.push(BibleRow { bible: 0, verse: None, reference: None });
         true
     }
 
@@ -225,7 +222,11 @@ impl BiblePage {
         let mut rows = Vec::new();
         for row in &self.rows {
             match self.shelf.get(row.bible) {
-                Ok(bible) => rows.push(crate::bible::RowChoice { bible, verse: row.verse, reference: row.reference }),
+                Ok(bible) => rows.push(crate::bible::RowChoice {
+                    bible,
+                    verse: row.verse.clone(),
+                    reference: row.reference.clone(),
+                }),
                 Err(problem) => {
                     self.message = Some(problem);
                     return;
@@ -276,9 +277,11 @@ impl BiblePage {
     }
 }
 
-/// The Theme Editor's working copy of the theme in use.
+/// The Theme Editor's working copy of a theme.
 #[derive(Clone, Debug)]
 pub struct ThemeEdit {
+    /// The theme's place in the list.
+    pub index: usize,
     pub theme: Theme,
     /// Which of the theme's two layouts is on the canvas.
     pub template: Template,
@@ -289,20 +292,22 @@ pub struct ThemeEdit {
 }
 
 impl ThemeEdit {
-    pub fn of(theme: Theme) -> ThemeEdit {
-        ThemeEdit { theme, template: Template::Full, changed: false, leave: false }
+    pub fn of(index: usize, theme: Theme) -> ThemeEdit {
+        ThemeEdit { index, theme, template: Template::Full, changed: false, leave: false }
     }
 }
 
 /// Something asked of the app about themes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeRequest {
-    /// Use the theme at this place in the list.
-    Use(usize),
-    /// Make a new theme, a copy of the one in use, and open it in the Theme Editor.
+    /// Songs use the theme at this place in the list.
+    UseForSongs(usize),
+    /// Bible slides use the theme at this place in the list.
+    UseForBible(usize),
+    /// Make a new theme, a copy of the one songs use, and open it in the Theme Editor.
     New,
-    /// Open the Theme Editor on the theme in use.
-    Edit,
+    /// Open the Theme Editor on the theme at this place in the list.
+    Edit(usize),
 }
 
 /// A menu that opens under a toolbar button.
@@ -315,6 +320,8 @@ pub enum ToolMenu {
 /// Which thumbnail the window is asking for.
 #[derive(Clone, Copy)]
 pub enum ThumbOf<'a> {
+    /// A slide of a Bible passage, drawn with the theme Bible slides use.
+    BibleSlide(&'a Slide),
     /// One of a theme's layouts, by its place; drawn fresh whenever the theme changes.
     Layout(usize, &'a Slide),
     Slide(&'a Slide),
@@ -348,7 +355,8 @@ impl Default for HomeState {
             inspector: crate::inspector::InspectorState::default(),
             theme_edit: None,
             theme_names: Vec::new(),
-            theme_in_use: 0,
+            theme_for_songs: 0,
+            theme_for_bible: 0,
             theme_request: None,
             menu: None,
             menu_fresh: false,
@@ -642,9 +650,24 @@ fn tool_menu(ui: &mut egui::Ui, state: &mut HomeState) {
                     };
                     match menu {
                         ToolMenu::Theme => {
-                            for (index, name) in state.theme_names.clone().iter().enumerate() {
-                                if row(ui, name, index == state.theme_in_use, true) {
-                                    state.theme_request = Some(ThemeRequest::Use(index));
+                            // One short list says which theme each kind of slide uses.
+                            let names = state.theme_names.clone();
+                            let heading = |ui: &mut egui::Ui, text: &str| {
+                                ui.add_space(2.0);
+                                ui.label(egui::RichText::new(text).size(10.5).strong().color(Color32::from_gray(150)));
+                            };
+                            heading(ui, "  SONGS USE");
+                            for (index, name) in names.iter().enumerate() {
+                                if row(ui, name, index == state.theme_for_songs, true) {
+                                    state.theme_request = Some(ThemeRequest::UseForSongs(index));
+                                    close = true;
+                                }
+                            }
+                            ui.separator();
+                            heading(ui, "  BIBLE SLIDES USE");
+                            for (index, name) in names.iter().enumerate() {
+                                if row(ui, name, index == state.theme_for_bible, true) {
+                                    state.theme_request = Some(ThemeRequest::UseForBible(index));
                                     close = true;
                                 }
                             }
@@ -653,14 +676,14 @@ fn tool_menu(ui: &mut egui::Ui, state: &mut HomeState) {
                                 state.theme_request = Some(ThemeRequest::New);
                                 close = true;
                             }
-                            if row(ui, "Edit Theme…", false, true) {
-                                state.theme_request = Some(ThemeRequest::Edit);
+                            if row(ui, "Edit Themes…", false, true) {
+                                state.theme_request = Some(ThemeRequest::Edit(state.theme_for_songs));
                                 close = true;
                             }
                         }
                         ToolMenu::More => {
                             if row(ui, "Theme Editor", state.theme_edit.is_some(), true) {
-                                state.theme_request = Some(ThemeRequest::Edit);
+                                state.theme_request = Some(ThemeRequest::Edit(state.theme_for_songs));
                                 close = true;
                             }
                             for name in ["Stage Editor", "CCLI Editor", "Props Editor", "Mask Editor"] {
@@ -1412,14 +1435,16 @@ fn edit_view(
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Plus, "Add a slide"));
                     } else {
-                        // The theme being edited: choosing another edits (and uses) that one.
-                        let in_use = state.theme_names.get(state.theme_in_use).cloned().unwrap_or_default();
+                        // The theme being edited. Choosing another edits that one; which theme
+                        // songs and Bible slides use is set from the Theme button.
+                        let editing = state.theme_edit.as_ref().map_or(0, |edit| edit.index);
+                        let in_use = state.theme_names.get(editing).cloned().unwrap_or_default();
                         egui::ComboBox::from_id_salt("theme picker").selected_text(in_use).width(120.0).show_ui(
                             ui,
                             |ui| {
                                 for (index, name) in state.theme_names.iter().enumerate() {
-                                    if ui.selectable_label(index == state.theme_in_use, name.as_str()).clicked() {
-                                        state.theme_request = Some(ThemeRequest::Use(index));
+                                    if ui.selectable_label(index == editing, name.as_str()).clicked() {
+                                        state.theme_request = Some(ThemeRequest::Edit(index));
                                     }
                                 }
                                 ui.separator();
@@ -1572,7 +1597,12 @@ fn edit_view(
                                 );
                                 let image = Rect::from_min_size(cell.min + vec2(8.0, 8.0), image_size);
                                 ui.painter().rect_filled(image, 0.0, Color32::BLACK);
-                                match thumb(ThumbOf::Slide(slide)) {
+                                let of = if state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation)) {
+                                    ThumbOf::BibleSlide(slide)
+                                } else {
+                                    ThumbOf::Slide(slide)
+                                };
+                                match thumb(of) {
                                     Some((texture, _)) => {
                                         egui::Image::from_texture((texture, image_size)).paint_at(ui, image)
                                     }
@@ -1993,14 +2023,18 @@ fn bible_area(
                             state.bible.options.open = false;
                         }
                         let bible = &mut state.bible;
-                        crate::bible::options_popup(
+                        let picked = crate::bible::options_popup(
                             ui.ctx(),
                             &mut bible.options,
                             &mut bible.shelf,
                             &mut bible.downloads,
                             button.rect,
                             "Songs",
+                            (&state.theme_names, state.theme_for_bible),
                         );
+                        if let Some(index) = picked {
+                            state.theme_request = Some(ThemeRequest::UseForBible(index));
+                        }
                     }
                 });
             });
@@ -2021,22 +2055,24 @@ fn bible_area(
                     );
                     ui.add_space(8.0);
                     ui.label("Verse");
-                    egui::ComboBox::from_id_salt(("bible verse", index)).selected_text(row.verse.label()).width(120.0).show_ui(
-                        ui,
-                        |ui| {
-                            for target in BibleTarget::ALL {
-                                ui.selectable_value(&mut row.verse, target, target.label());
+                    egui::ComboBox::from_id_salt(("bible verse", index))
+                        .selected_text(target_label(&row.verse))
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for target in std::iter::once(None).chain(state.bible.boxes.iter().cloned().map(Some)) {
+                                let name = target_label(&target);
+                                ui.selectable_value(&mut row.verse, target, name);
                             }
-                        },
-                    );
+                        });
                     ui.add_space(8.0);
                     ui.label("Reference");
                     egui::ComboBox::from_id_salt(("bible reference", index))
-                        .selected_text(row.reference.label())
+                        .selected_text(target_label(&row.reference))
                         .width(120.0)
                         .show_ui(ui, |ui| {
-                            for target in BibleTarget::ALL {
-                                ui.selectable_value(&mut row.reference, target, target.label());
+                            for target in std::iter::once(None).chain(state.bible.boxes.iter().cloned().map(Some)) {
+                                let name = target_label(&target);
+                                ui.selectable_value(&mut row.reference, target, name);
                             }
                         });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -2208,6 +2244,7 @@ fn slide_grid(
     commands: &mut Vec<Command>,
 ) {
     let Some(presentation) = show.presentations().get(which) else { return };
+    let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&which));
     let width = state.thumb_width;
     let image_size = vec2(width, width * 9.0 / 16.0);
     let bar_height = 20.0;
@@ -2239,7 +2276,7 @@ fn slide_grid(
                     let image = Rect::from_min_size(rect.min, image_size);
                     let painter = ui.painter();
                     painter.rect_filled(image, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, Color32::BLACK);
-                    match thumb(ThumbOf::Slide(slide)) {
+                    match thumb(if from_bible { ThumbOf::BibleSlide(slide) } else { ThumbOf::Slide(slide) }) {
                         Some((texture, overflow)) => {
                             egui::Image::from_texture((texture, image_size)).paint_at(ui, image);
                             if overflow {
@@ -2371,7 +2408,7 @@ mod tests {
                     &Theme::builtin(),
                     &mut |which| {
                         match which {
-                            ThumbOf::Slide(_) | ThumbOf::Layout(..) => slides += 1,
+                            ThumbOf::Slide(_) | ThumbOf::BibleSlide(_) | ThumbOf::Layout(..) => slides += 1,
                             ThumbOf::Media(_) => media += 1,
                         }
                         None

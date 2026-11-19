@@ -27,6 +27,25 @@ impl Rgba {
 pub struct Role(pub String);
 
 impl Role {
+    /// The line that says where a Bible verse is from.
+    pub fn reference() -> Role {
+        Role("reference".to_owned())
+    }
+
+    /// The role's name as people see it: "Main", "Translation", or the role's own name with
+    /// a capital and spaces.
+    pub fn label(&self) -> String {
+        match self.0.as_str() {
+            "primary" => "Main".to_owned(),
+            "translation" => "Translation".to_owned(),
+            other => {
+                let spaced = other.replace('-', " ");
+                let mut letters = spaced.chars();
+                letters.next().map_or_else(String::new, |first| first.to_uppercase().chain(letters).collect())
+            }
+        }
+    }
+
     /// The main language.
     pub fn primary() -> Role {
         Role("primary".to_owned())
@@ -95,13 +114,7 @@ pub struct Object {
 impl Object {
     /// A text object that follows the theme for its role.
     pub fn text(role: Role, text: impl Into<String>) -> Object {
-        let name = if role == Role::primary() {
-            "Main".to_owned()
-        } else if role == Role::translation() {
-            "Translation".to_owned()
-        } else {
-            role.0.clone()
-        };
+        let name = role.label();
         Object {
             id: Uuid::new_v4(),
             name,

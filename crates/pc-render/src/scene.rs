@@ -67,7 +67,7 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
 
     let mut overflow = false;
     if let Some(slide) = layers.slide {
-        let alone = slide.objects.len() == 1;
+        let alone = main_is_alone(slide);
         for object in &slide.objects {
             let (_, themed) = placement(theme, object.role.as_ref(), alone);
             let rect = object.frame.unwrap_or(themed);
@@ -99,6 +99,11 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
     Built { scene, overflow }
 }
 
+/// True when the slide has no second language, so the main language takes its own larger place.
+fn main_is_alone(slide: &Slide) -> bool {
+    !slide.objects.iter().any(|object| object.role.as_ref() == Some(&Role::translation()))
+}
+
 /// The style and rectangle for a box. A lone main-language box, or a box whose role the theme
 /// does not know, is centred on the slide in the main-language style.
 fn placement<'a>(theme: &'a Theme, role: Option<&Role>, alone: bool) -> (Option<&'a BoxStyle>, SlideRect) {
@@ -112,7 +117,7 @@ fn placement<'a>(theme: &'a Theme, role: Option<&Role>, alone: bool) -> (Option<
 /// Where an object sits on its slide, in slide units: its own place if it has one, otherwise
 /// the theme's place for its role. The editor uses this to find and outline objects.
 pub fn object_frame(slide: &Slide, object: &Object, theme: &Theme) -> SlideRect {
-    object.frame.unwrap_or_else(|| placement(theme, object.role.as_ref(), slide.objects.len() == 1).1)
+    object.frame.unwrap_or_else(|| placement(theme, object.role.as_ref(), main_is_alone(slide)).1)
 }
 
 fn lay_out(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: f32) -> Layout<()> {

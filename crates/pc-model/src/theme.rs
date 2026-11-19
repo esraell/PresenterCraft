@@ -203,6 +203,18 @@ impl Theme {
                     Rgba::rgb(255, 150, 40),
                     4.0,
                 ),
+                // Where a Bible verse is from, small along the bottom. Songs do not use it.
+                BoxStyle {
+                    weight: 500,
+                    ..base(
+                        Role::reference(),
+                        SlideRect { x: 120.0, y: 950.0, w: 1680.0, h: 80.0 },
+                        44.0,
+                        24.0,
+                        Rgba::WHITE,
+                        2.0,
+                    )
+                },
             ],
             solo_primary: SlideRect { x: 120.0, y: 240.0, w: 1680.0, h: 600.0 },
             background: None,
@@ -470,7 +482,7 @@ mod tests {
             let slide = theme.template_slide(template);
             assert_eq!(theme.with_template(template, &slide), theme);
         }
-        assert_eq!(theme.template_slide(Template::Full).objects.len(), 2);
+        assert_eq!(theme.template_slide(Template::Full).objects.len(), 3);
         assert_eq!(theme.template_slide(Template::Alone).objects.len(), 1);
     }
 
@@ -490,7 +502,7 @@ mod tests {
         let translation = edited.style_for(&Role::translation()).unwrap();
         assert_eq!((translation.rect.x, translation.size), (10.0, 48.0));
         assert!(edited.style_for(&Role("verse-reference".to_owned())).is_some());
-        assert_eq!(edited.boxes.len(), 3);
+        assert_eq!(edited.boxes.len(), 4);
 
         // Deleting the main box in the editor does not take it out of the theme.
         slide.objects.remove(0);

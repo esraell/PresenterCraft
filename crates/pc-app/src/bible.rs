@@ -6,11 +6,9 @@ use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, p
 use std::sync::Arc;
 
 use pc_bible::{Bible, VerseRef, convert, parse_reference};
-use pc_model::{
-    Align as TextAlign, Group, Object, ObjectKind, Presentation, Rgba, Role, Slide, SlideRect, TextStyle, Uuid,
-};
+use pc_model::{Group, Object, Presentation, Rgba, Role, Slide, Uuid};
 
-use crate::home::{BibleTarget, not_built};
+use crate::home::BibleTarget;
 
 /// Where a Bible's file is.
 enum Kept {
@@ -122,14 +120,10 @@ pub struct RowChoice {
     pub reference: BibleTarget,
 }
 
-/// Where the reference line sits on a Bible slide, in slide units.
-const REFERENCE_PLACE: SlideRect = SlideRect { x: 120.0, y: 950.0, w: 1680.0, h: 80.0 };
-/// Where the verse sits when there is no second language under it.
-const ALONE_PLACE: SlideRect = SlideRect { x: 120.0, y: 160.0, w: 1680.0, h: 740.0 };
-
 /// Turns what was typed in Scripture Lookup into slides. The reference is read in the
-/// numbering of the first translation; the others are lined up with it. The error is a plain
-/// sentence for the operator.
+/// numbering of the first translation; the others are lined up with it. Each translation's
+/// words, and its reference, go into the theme box chosen for them; a box given both holds
+/// the words with the reference under them. The error is a plain sentence for the operator.
 pub fn build_passage(typed: &str, rows: &[RowChoice], options: &BibleOptions) -> Result<Presentation, String> {
     let lead = rows.first().ok_or_else(|| "Choose a Bible first.".to_owned())?;
     let range = parse_reference(typed)?;
@@ -149,73 +143,68 @@ pub fn build_passage(typed: &str, rows: &[RowChoice], options: &BibleOptions) ->
     let count = chunks.len();
     let mut slides = Vec::with_capacity(count);
     for (index, chunk) in chunks.into_iter().enumerate() {
-        let words_for = |target: BibleTarget| -> String {
-            let mut parts: Vec<String> = Vec::new();
-            for row in rows.iter().filter(|row| row.verse == target) {
-                let mut text = String::new();
-                for place in chunk {
-                    let there = in_row(row, *place);
-                    let Some(words) = row.bible.verse(there) else { continue };
-                    if !text.is_empty() {
-                        text.push(' ');
-                    }
-                    if options.show_verse_numbers {
-                        text.push_str(&format!("{} ", there.verse));
-                    }
-                    text.push_str(words);
-                }
-                if !text.is_empty() {
-                    parts.push(text);
-                }
-            }
-            parts.join("\n")
-        };
-        let (main, translation) = (words_for(BibleTarget::Main), words_for(BibleTarget::Translation));
-        let mut objects = Vec::new();
-        if !main.is_empty() {
-            let mut object = Object::text(Role::primary(), main);
-            if translation.is_empty() {
-                object.frame = Some(ALONE_PLACE);
-            }
-            objects.push(object);
-        }
-        if !translation.is_empty() {
-            objects.push(Object::text(Role::translation(), translation));
-        }
         let (Some(from), Some(to)) = (chunk.first().copied(), chunk.last().copied()) else { continue };
-        let named: Vec<String> = match options.reference {
-            ReferenceStyle::NoReference => Vec::new(),
-            ReferenceStyle::PassageLast if index + 1 != count => Vec::new(),
-            style => rows
-                .iter()
-                .filter(|row| row.reference != BibleTarget::None)
-                .map(|row| match style {
-                    ReferenceStyle::VerseReferences => label(row, from, to),
-                    _ => label(row, first, last),
-                })
-                .collect(),
+        let words_of = |row: &RowChoice| -> String {
+            let mut text = String::new();
+            for place in chunk {
+                let there = in_row(row, *place);
+                let Some(words) = row.bible.verse(there) else { continue };
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                if options.show_verse_numbers {
+                    text.push_str(&format!("{} ", there.verse));
+                }
+                text.push_str(words);
+            }
+            text
         };
-        if !named.is_empty() {
-            objects.push(Object {
-                id: Uuid::new_v4(),
-                name: "Reference".to_owned(),
-                role: None,
-                frame: Some(REFERENCE_PLACE),
-                rotation: 0.0,
-                opacity: 1.0,
-                fill: None,
-                kind: ObjectKind::Text {
-                    text: named.join("  ·  "),
-                    style: TextStyle {
-                        size: Some(44.0),
-                        weight: Some(500),
-                        outline_width: Some(2.0),
-                        align: Some(TextAlign::Center),
-                        ..TextStyle::default()
-                    },
-                },
+        let reference_shown = match options.reference {
+            ReferenceStyle::NoReference => false,
+            ReferenceStyle::PassageLast => index + 1 == count,
+            ReferenceStyle::VerseReferences | ReferenceStyle::PassageEach => true,
+        };
+        let reference_of = |row: &RowChoice| match options.reference {
+            ReferenceStyle::VerseReferences => label(row, from, to),
+            _ => label(row, first, last),
+        };
+        // What goes in each box, in the order the boxes are first named: every translation's
+        // words first, then the references.
+        let mut boxes: Vec<(Role, Vec<String>, Vec<String>)> = Vec::new();
+        let mut put = |role: &Role, words: Option<String>, reference: Option<String>| {
+            let at = boxes.iter().position(|(have, _, _)| have == role).unwrap_or_else(|| {
+                boxes.push((role.clone(), Vec::new(), Vec::new()));
+                boxes.len() - 1
             });
+            boxes[at].1.extend(words);
+            boxes[at].2.extend(reference);
+        };
+        for row in rows {
+            if let Some(role) = &row.verse {
+                let words = words_of(row);
+                if !words.is_empty() {
+                    put(role, Some(words), None);
+                }
+            }
         }
+        if reference_shown {
+            for row in rows {
+                if let Some(role) = &row.reference {
+                    put(role, None, Some(reference_of(row)));
+                }
+            }
+        }
+        let objects: Vec<Object> = boxes
+            .into_iter()
+            .map(|(role, words, references)| {
+                // Translations sharing a box each take a line; references sharing one sit side by side.
+                let mut lines = words;
+                if !references.is_empty() {
+                    lines.push(references.join("  ·  "));
+                }
+                Object::text(role, lines.join("\n"))
+            })
+            .collect();
         slides.push(Slide::new(objects));
     }
     let name = lead.bible.label(first, last);
@@ -425,7 +414,9 @@ pub fn options_popup(
     downloads: &mut crate::bible_store::Downloads,
     button: Rect,
     library: &str,
-) {
+    themes: (&[String], usize),
+) -> Option<usize> {
+    let mut picked_theme = None;
     let size = vec2(508.0, 262.0);
     let corner = pos2(button.max.x - size.x + 8.0, button.max.y + 8.0);
     egui::Area::new(egui::Id::unique("bible options"))
@@ -502,7 +493,7 @@ pub fn options_popup(
                             ui.vertical(|ui| {
                                 ui.set_width(size.x - 144.0 - 32.0);
                                 if options.pane == 0 {
-                                    slide_options(ui, options, library);
+                                    picked_theme = slide_options(ui, options, library, themes);
                                 } else {
                                     bibles(ui, options, shelf, downloads);
                                 }
@@ -511,9 +502,16 @@ pub fn options_popup(
                     });
                 });
         });
+    picked_theme
 }
 
-fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, library: &str) {
+fn slide_options(
+    ui: &mut egui::Ui,
+    options: &mut BibleOptions,
+    library: &str,
+    (themes, in_use): (&[String], usize),
+) -> Option<usize> {
+    let mut picked_theme = None;
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.checkbox(&mut options.show_verse_numbers, "Show Verse Numbers")
@@ -541,19 +539,20 @@ fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, library: &str) {
     ui.add_space(6.0);
     egui::Grid::new("bible slide options").num_columns(2).spacing([10.0, 12.0]).show(ui, |ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(egui::RichText::new("Theme").strong()));
-        let (swatch, response) = ui.allocate_exact_size(vec2(66.0, 37.0), Sense::hover());
-        // No theme chosen: the chequered pattern that stands for "nothing".
-        ui.painter().rect_filled(swatch, 2.0, Color32::from_gray(18));
-        for row in 0..4 {
-            for col in 0..7 {
-                if (row + col) % 2 == 0 {
-                    let cell =
-                        Rect::from_min_size(swatch.min + vec2(col as f32 * 9.5, row as f32 * 9.25), vec2(9.5, 9.25));
-                    ui.painter().rect_filled(cell.intersect(swatch), 0.0, Color32::from_gray(34));
+        // The theme Bible slides use. The Theme button in the toolbar sets the same thing.
+        let chosen = themes.get(in_use).map_or("", String::as_str);
+        egui::ComboBox::from_id_salt("bible theme")
+            .selected_text(chosen)
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for (index, name) in themes.iter().enumerate() {
+                    if ui.selectable_label(index == in_use, name.as_str()).clicked() {
+                        picked_theme = Some(index);
+                    }
                 }
-            }
-        }
-        response.on_hover_text(not_built("Choosing a theme for Bible slides"));
+            })
+            .response
+            .on_hover_text("The theme Bible slides use. Its boxes are what the Verse and Reference menus offer.");
         ui.end_row();
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(egui::RichText::new("Import Library").strong())
@@ -563,6 +562,7 @@ fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, library: &str) {
         });
         ui.end_row();
     });
+    picked_theme
 }
 
 fn bibles(
@@ -659,12 +659,24 @@ fn bibles(
 mod tests {
     use super::*;
 
+    fn main() -> BibleTarget {
+        Some(Role::primary())
+    }
+
+    fn translation() -> BibleTarget {
+        Some(Role::translation())
+    }
+
+    fn reference() -> BibleTarget {
+        Some(Role::reference())
+    }
+
     fn rows(shelf: &mut Shelf, ids: &[(&str, BibleTarget, BibleTarget)]) -> Vec<RowChoice> {
         ids.iter()
             .map(|(id, verse, reference)| RowChoice {
                 bible: shelf.get(shelf.position(id).unwrap()).unwrap(),
-                verse: *verse,
-                reference: *reference,
+                verse: verse.clone(),
+                reference: reference.clone(),
             })
             .collect()
     }
@@ -676,10 +688,7 @@ mod tests {
     #[test]
     fn a_reference_becomes_one_slide_for_each_verse_in_both_languages() {
         let mut shelf = Shelf::shipped();
-        let rows = rows(
-            &mut shelf,
-            &[("kjv", BibleTarget::Main, BibleTarget::Main), ("syn", BibleTarget::Translation, BibleTarget::None)],
-        );
+        let rows = rows(&mut shelf, &[("kjv", main(), reference()), ("syn", translation(), None)]);
         let passage = build_passage("John 3:16-17", &rows, &BibleOptions::default()).unwrap();
         assert_eq!(passage.title, "John 3:16-17");
         assert_eq!(passage.slide_count(), 2);
@@ -693,22 +702,13 @@ mod tests {
     #[test]
     fn the_russian_psalm_is_the_one_that_matches_the_english() {
         let mut shelf = Shelf::shipped();
-        let english_first = rows(
-            &mut shelf,
-            &[
-                ("kjv", BibleTarget::Main, BibleTarget::Main),
-                ("syn", BibleTarget::Translation, BibleTarget::Translation),
-            ],
-        );
+        let english_first = rows(&mut shelf, &[("kjv", main(), reference()), ("syn", translation(), reference())]);
         let passage = build_passage("Psalm 23:1", &english_first, &BibleOptions::default()).unwrap();
         let shown = texts(passage.slide(0).unwrap().1).join(" | ");
         assert!(shown.contains("The LORD is my shepherd") && shown.contains("Пастырь мой"), "{shown}");
         assert!(shown.contains("Psalms 23:1  ·  Псалтирь 22:1"), "{shown}");
         // Typed the Russian way with the Russian Bible first, it is the same psalm.
-        let russian_first = rows(
-            &mut shelf,
-            &[("syn", BibleTarget::Main, BibleTarget::None), ("kjv", BibleTarget::Translation, BibleTarget::None)],
-        );
+        let russian_first = rows(&mut shelf, &[("syn", main(), None), ("kjv", translation(), None)]);
         let passage = build_passage("Пс 22:1", &russian_first, &BibleOptions::default()).unwrap();
         let shown = texts(passage.slide(0).unwrap().1).join(" | ");
         assert!(shown.contains("Пастырь мой") && shown.contains("The LORD is my shepherd"), "{shown}");
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn the_options_change_the_slides() {
         let mut shelf = Shelf::shipped();
-        let rows = rows(&mut shelf, &[("web", BibleTarget::Main, BibleTarget::Main)]);
+        let rows = rows(&mut shelf, &[("web", main(), reference())]);
         let options = BibleOptions {
             break_on_new_verse: false,
             show_verse_numbers: true,
@@ -741,9 +741,24 @@ mod tests {
     }
 
     #[test]
+    fn words_and_reference_sharing_a_box_are_one_object_with_the_reference_last() {
+        let mut shelf = Shelf::shipped();
+        let rows = rows(&mut shelf, &[("kjv", main(), main()), ("syn", translation(), None)]);
+        let passage = build_passage("John 3:16", &rows, &BibleOptions::default()).unwrap();
+        let (_, slide) = passage.slide(0).unwrap();
+        assert_eq!(slide.objects.len(), 2);
+        let main_box = slide.text_for(&Role::primary()).unwrap();
+        assert!(main_box.starts_with("For God so loved") && main_box.ends_with("\nJohn 3:16"), "{main_box}");
+        // A translation sent nowhere is left off the slide.
+        let rows = self::rows(&mut shelf, &[("kjv", main(), None), ("syn", None, None)]);
+        let passage = build_passage("John 3:16", &rows, &BibleOptions::default()).unwrap();
+        assert_eq!(passage.slide(0).unwrap().1.objects.len(), 1);
+    }
+
+    #[test]
     fn a_reference_that_names_nothing_says_so() {
         let mut shelf = Shelf::shipped();
-        let rows = rows(&mut shelf, &[("kjv", BibleTarget::Main, BibleTarget::Main)]);
+        let rows = rows(&mut shelf, &[("kjv", main(), reference())]);
         assert!(build_passage("John 99", &rows, &BibleOptions::default()).unwrap_err().contains("no such verses"));
         assert!(build_passage("Nobody 1:1", &rows, &BibleOptions::default()).unwrap_err().contains("No book"));
         assert!(build_passage("John 3:16", &[], &BibleOptions::default()).is_err());

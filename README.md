@@ -17,12 +17,19 @@ goes fullscreen on it; with one display it opens as an ordinary window.
 
 ## Themes
 
-A theme says where each language's words go on a slide and how they look. More, Theme Editor
-opens the theme in use: click a box on the slide to move, resize or restyle it, or click the
-empty slide to name the theme and give it a background colour. A theme has two layouts, one
-for slides with two languages and one for slides with only the main language. The Theme button
-chooses which theme is in use and makes new ones. Themes are saved as `.pctheme` files in the
-app's Themes folder, and changes reach the audience when the editor is left.
+A theme says where each kind of text goes on a slide and how it looks. It has named boxes
+(Main, Translation, Reference, and any you add) and two layouts: one for slides with two
+languages and one for slides with only the main language.
+
+One short list says which theme is used where: the Theme button shows "Songs use" and "Bible
+slides use", each with a tick on its theme. Bible, Options, Theme changes the same Bible line.
+Slides follow their theme as it is now, so changing a theme changes every slide that uses it;
+text restyled by hand on a slide keeps what was set there.
+
+More, Theme Editor opens a theme: click a box on the slide to move, resize or restyle it, or
+click the empty slide to name the theme and give it a background colour. Themes are saved as
+`.pctheme` files in the app's Themes folder as they are changed, and reach the audience when
+the editor is left.
 
 ## Bible
 
@@ -31,6 +38,9 @@ The Bible button opens Scripture Lookup. Type a reference (`John 3:16`, `jn 3:16
 shows it. Two translations can be shown together, one as the main language and one as the
 translation; where their verse numbers differ (the Russian Psalms, for one) the matching verses
 are found. Typing words in Search and pressing Return lists the verses that hold them.
+
+Each translation's Verse and Reference menus list the boxes of the theme Bible slides use,
+so the theme decides where the words and the reference sit.
 
 Four public-domain Bibles come with the app: King James, World English, Berean Standard and
 the Russian Synodal. Fifteen more can be installed from Options, Bibles, Free, or by dropping
