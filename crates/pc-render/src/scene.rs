@@ -31,12 +31,15 @@ pub struct Layers<'a> {
     /// A picture behind the words. It fills the slide, cropped at the edges if its shape differs.
     pub media: Option<&'a Picture>,
     pub slide: Option<&'a Slide>,
+    /// Words over everything else, such as a message. Its objects carry their own places and
+    /// looks.
+    pub overlay: Option<&'a Slide>,
 }
 
 /// Draws a slide for a target of the given pixel size: black, with the slide fitted inside.
 /// `None` draws black only, which is what a cleared layer looks like.
 pub fn build_scene(fonts: &mut Fonts, slide: Option<&Slide>, theme: &Theme, target_w: u32, target_h: u32) -> Built {
-    build_layers(fonts, &Layers { media: None, slide }, theme, target_w, target_h)
+    build_layers(fonts, &Layers { media: None, slide, overlay: None }, theme, target_w, target_h)
 }
 
 /// Draws every layer for a target of the given pixel size: black, then the media, then the
@@ -67,38 +70,48 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
 
     let mut overflow = false;
     if let Some(slide) = layers.slide {
-        // The slide is drawn with one of the theme's templates: the one it names, or the one
-        // that suits what is on it.
-        let template = theme.template_for(slide);
-        for object in slide.objects.iter().filter(|object| !object.hidden) {
-            let Some(template) = template else { continue };
-            let rect = object.frame.unwrap_or_else(|| template.place_for(object.role.as_ref()));
-            // Turn the object about its own centre.
-            let centre = (f64::from(rect.x + rect.w / 2.0), f64::from(rect.y + rect.h / 2.0));
-            let placed = to_target * Affine::rotate_about(f64::from(object.rotation).to_radians(), centre);
-            let faded = object.opacity < 1.0;
-            if faded {
-                let whole_slide = Rect::new(0.0, 0.0, f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
-                scene.push_layer(Fill::NonZero, Mix::Normal, object.opacity.clamp(0.0, 1.0), to_target, &whole_slide);
-            }
-            if let Some(fill) = object.fill {
-                let (x, y) = (f64::from(rect.x), f64::from(rect.y));
-                let filled = Rect::new(x, y, x + f64::from(rect.w), y + f64::from(rect.h));
-                scene.fill(Fill::NonZero, placed, color(fill), None, &filled);
-            }
-            match &object.kind {
-                ObjectKind::Text { text, style } => {
-                    // The theme's style for the object's role, with the object's own settings over it.
-                    let Some(style) = template.text_style(object.role.as_ref(), style) else { continue };
-                    overflow |= draw_text_box(&mut scene, fonts, placed, text, &style, rect);
-                }
-            }
-            if faded {
-                scene.pop_layer();
-            }
-        }
+        overflow |= draw_objects(&mut scene, fonts, to_target, slide, theme);
+    }
+    if let Some(overlay) = layers.overlay {
+        draw_objects(&mut scene, fonts, to_target, overlay, theme);
     }
     Built { scene, overflow }
+}
+
+/// Draws a slide's objects. Returns whether any text overflowed its box.
+fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: &Slide, theme: &Theme) -> bool {
+    let mut overflow = false;
+    // The slide is drawn with one of the theme's templates: the one it names, or the one
+    // that suits what is on it.
+    let template = theme.template_for(slide);
+    for object in slide.objects.iter().filter(|object| !object.hidden) {
+        let Some(template) = template else { continue };
+        let rect = object.frame.unwrap_or_else(|| template.place_for(object.role.as_ref()));
+        // Turn the object about its own centre.
+        let centre = (f64::from(rect.x + rect.w / 2.0), f64::from(rect.y + rect.h / 2.0));
+        let placed = to_target * Affine::rotate_about(f64::from(object.rotation).to_radians(), centre);
+        let faded = object.opacity < 1.0;
+        if faded {
+            let whole_slide = Rect::new(0.0, 0.0, f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
+            scene.push_layer(Fill::NonZero, Mix::Normal, object.opacity.clamp(0.0, 1.0), to_target, &whole_slide);
+        }
+        if let Some(fill) = object.fill {
+            let (x, y) = (f64::from(rect.x), f64::from(rect.y));
+            let filled = Rect::new(x, y, x + f64::from(rect.w), y + f64::from(rect.h));
+            scene.fill(Fill::NonZero, placed, color(fill), None, &filled);
+        }
+        match &object.kind {
+            ObjectKind::Text { text, style } => {
+                // The theme's style for the object's role, with the object's own settings over it.
+                let Some(style) = template.text_style(object.role.as_ref(), style) else { continue };
+                overflow |= draw_text_box(scene, fonts, placed, text, &style, rect);
+            }
+        }
+        if faded {
+            scene.pop_layer();
+        }
+    }
+    overflow
 }
 
 /// One picture fading into another: `from` with `to` over it, `amount` of the way in (0 is

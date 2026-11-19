@@ -115,6 +115,22 @@ pub struct HomeState {
     pub screen_status: Vec<(String, bool)>,
     /// The screen chosen in the Screens window.
     pub screen_selected: usize,
+    /// The tab open under the Program panel: 0 Timers, 1 Messages, 2 Stage.
+    pub live_tab: usize,
+    /// The timers, and true when their settings have changed and are to be saved.
+    pub timers: Vec<crate::timers::Timer>,
+    pub timers_changed: bool,
+    /// The timer whose settings are open.
+    pub timer_open: Option<pc_model::Uuid>,
+    /// The messages, and true when they have changed and are to be saved.
+    pub messages: Vec<crate::messages::Message>,
+    pub messages_changed: bool,
+    pub message_selected: Option<pc_model::Uuid>,
+    /// The message showing over the slides, and since when.
+    pub message_live: Option<(pc_model::Uuid, std::time::Instant)>,
+    /// The note for the people on stage, and whether it is showing on the stage screens.
+    pub stage_message: String,
+    pub stage_message_live: bool,
     /// True while the stage screens are on.
     pub stage_on: bool,
     /// True while every screen shows its own name instead of the show.
@@ -573,6 +589,16 @@ impl Default for HomeState {
             screens_changed: false,
             screen_status: Vec::new(),
             screen_selected: 0,
+            live_tab: 0,
+            timers: Vec::new(),
+            timers_changed: false,
+            timer_open: None,
+            messages: Vec::new(),
+            messages_changed: false,
+            message_selected: None,
+            message_live: None,
+            stage_message: String::new(),
+            stage_message_live: false,
             stage_on: true,
             identify: false,
             ndi_draft: None,
@@ -739,7 +765,7 @@ pub fn home_ui(
         return commands;
     }
     crate::studio::library(ui, show, state, &mut commands);
-    crate::studio::program_panel(ui, show, state.output_stopped, preview, &mut commands);
+    crate::studio::program_panel(ui, show, state, preview, &mut commands);
     crate::studio::media_strip(ui, show, state, thumb, &mut commands);
     if state.bible_open {
         bible_area(ui, show, state, thumb, &mut commands);

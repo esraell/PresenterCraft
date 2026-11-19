@@ -221,7 +221,13 @@ pub fn block_button(ui: &mut egui::Ui, size: egui::Vec2, text: &str, key: &str, 
 }
 
 /// Several choices in one rounded bar, the chosen one raised. Returns the one clicked.
-fn segmented(ui: &mut egui::Ui, salt: &str, each: egui::Vec2, labels: &[&str], chosen: Option<usize>) -> Option<usize> {
+pub fn segmented(
+    ui: &mut egui::Ui,
+    salt: &str,
+    each: egui::Vec2,
+    labels: &[&str],
+    chosen: Option<usize>,
+) -> Option<usize> {
     let (bar, _) = ui.allocate_exact_size(vec2(each.x * labels.len() as f32 + 6.0, each.y + 6.0), Sense::hover());
     ui.painter().rect_filled(bar, RADIUS + 2.0, BG);
     let mut clicked = None;
@@ -641,10 +647,11 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
 pub fn program_panel(
     ui: &mut egui::Ui,
     show: &Show,
-    output_stopped: bool,
+    state: &mut HomeState,
     preview: crate::home::Preview,
     commands: &mut Vec<Command>,
 ) {
+    let output_stopped = state.output_stopped;
     let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 16, right: 16, top: 14, bottom: 12 });
     egui::Panel::right("live").resizable(false).exact_size(340.0).frame(frame).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
@@ -777,6 +784,8 @@ pub fn program_panel(
                 }
             }
         });
+        // Timers, messages and the stage, in tabs under the rest.
+        crate::live_tabs::live_tabs(ui, state);
     });
 }
 

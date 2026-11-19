@@ -229,7 +229,7 @@ fn render_layers(media: Option<&pc_render::Picture>, slide: Option<&Slide>, w: u
     let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
     let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
     let mut painter = Painter::new(device).expect("painter");
-    let layers = pc_render::Layers { media, slide };
+    let layers = pc_render::Layers { media, slide, overlay: None };
     let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), w, h);
     let texture = target_texture(device, w, h);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

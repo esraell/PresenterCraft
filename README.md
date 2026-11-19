@@ -48,6 +48,10 @@ ProPresenter.
   Several services can be kept and switched between; the line between the two lists can be
   dragged.
 - Pictures dropped on the window go into the media bin and can be shown behind the words.
+- Slides can be disabled from their right-click menu: they stay in the song but are skipped.
+- **Timers** (count down, count down to a time of day, or count up), **Messages** shown over
+  the slides (with the time or a timer in them, and an optional time to leave by themselves),
+  and a **Stage Message** for the people on stage, in tabs under the Program panel.
 
 **Bible**
 - Scripture Lookup in English and Russian (`John 3:16-18`, `jn 3:16`, `Psalm 23`,
@@ -81,8 +85,8 @@ ProPresenter.
 **Screens**
 - Any number of audience screens, each sent to a display, a window, or the network over NDI,
   all showing the same picture. Open them with the gear button or **Cmd+,**.
-- Stage screens for the people on stage: the words on screen now, the next slide's words, and
-  the time.
+- Stage screens for the people on stage: the words on screen now, the next slide's words, the
+  time, a running timer and the stage message.
 - A screen whose display is unplugged waits for it instead of jumping to another display.
   Identify Screens shows each screen's name on it.
 
@@ -98,7 +102,7 @@ ProPresenter.
 Among the things PresenterCraft can't do yet:
 
 - Videos, audio, and live video inputs.
-- Stage layouts other than the built-in one; timers, messages, props, macros.
+- Stage layouts other than the built-in one; props and macros.
 - Transitions other than Cut and Dissolve.
 - Formatting one word differently from the rest of its box.
 - Importing songs from other presentation apps or from CCLI SongSelect.

@@ -7,6 +7,8 @@ const NOW: &str = "now";
 const NEXT_LABEL: &str = "next-label";
 const NEXT: &str = "next";
 const CLOCK: &str = "clock";
+const TIMER: &str = "timer";
+const MESSAGE: &str = "stage-message";
 
 /// The layout stage screens are drawn with.
 pub fn theme() -> Theme {
@@ -58,6 +60,22 @@ pub fn theme() -> Theme {
             64.0,
             Rgba::WHITE,
             Align::Right,
+            VAlign::Middle,
+        ),
+        plain(
+            TIMER,
+            SlideRect { x: 60.0, y: 24.0, w: 900.0, h: 90.0 },
+            64.0,
+            Rgba::rgb(120, 220, 140),
+            Align::Left,
+            VAlign::Middle,
+        ),
+        plain(
+            MESSAGE,
+            SlideRect { x: 0.0, y: 120.0, w: 1920.0, h: 110.0 },
+            64.0,
+            Rgba::WHITE,
+            Align::Center,
             VAlign::Middle,
         ),
     ];
@@ -113,17 +131,27 @@ fn words(slide: &Slide) -> String {
         .join("\n")
 }
 
-/// The stage screen's picture as a slide: the time, the words on screen now, and the next
-/// slide's words.
-pub fn slide(now: Option<&Slide>, next: Option<&Slide>) -> Slide {
+/// The stage screen's picture as a slide: the time, the words on screen now, the next slide's
+/// words, the first running timer, and the stage message if one is showing.
+pub fn slide(now: Option<&Slide>, next: Option<&Slide>, overlay: &crate::output::Overlay) -> Slide {
     let time = chrono::Local::now().format("%-I:%M").to_string();
     let mut objects = vec![Object::text(Role(CLOCK.to_owned()), time)];
+    let instant = std::time::Instant::now();
+    if let Some(timer) = overlay.timers.iter().find(|timer| timer.running()) {
+        let value = timer.text(instant, crate::timers::seconds_into_day());
+        objects.push(Object::text(Role(TIMER.to_owned()), format!("{}  {value}", timer.name)));
+    }
     if let Some(now) = now {
         objects.push(Object::text(Role(NOW.to_owned()), words(now)));
     }
     if let Some(next) = next {
         objects.push(Object::text(Role(NEXT_LABEL.to_owned()), "NEXT"));
         objects.push(Object::text(Role(NEXT.to_owned()), words(next)));
+    }
+    if let Some(message) = overlay.stage_message.as_deref().filter(|message| !message.trim().is_empty()) {
+        let mut banner = Object::text(Role(MESSAGE.to_owned()), message);
+        banner.fill = Some(Rgba::rgb(190, 30, 30));
+        objects.push(banner);
     }
     Slide::new(objects)
 }
@@ -144,7 +172,8 @@ mod tests {
             "S",
             "We lift our voices, we lift our hands\nWe sing together across the lands\n--\nМы поднимаем голоса и руки\n\nOne song, one heart\n--\nОдна песня, одно сердце\n",
         );
-        let built = slide(song.slide(0).map(|(_, s)| s), song.slide(1).map(|(_, s)| s));
+        let built =
+            slide(song.slide(0).map(|(_, s)| s), song.slide(1).map(|(_, s)| s), &crate::output::Overlay::default());
         let (w, h) = (1920, 1080);
         let mut cx = RenderContext::new();
         let id = pollster::block_on(cx.device(None)).expect("a GPU");
@@ -164,7 +193,7 @@ mod tests {
     fn a_stage_screen_shows_the_time_the_words_now_and_the_next_words() {
         let song = pc_model::parse_song_text("S", "One\n--\nОдин\n\nTwo\n");
         let (now, next) = (song.slide(0).unwrap().1, song.slide(1).unwrap().1);
-        let built = slide(Some(now), Some(next));
+        let built = slide(Some(now), Some(next), &crate::output::Overlay::default());
         let text = |role: &str| {
             built
                 .objects
@@ -177,7 +206,18 @@ mod tests {
         assert_eq!(text(NEXT).as_deref(), Some("Two"));
         assert!(text(CLOCK).is_some_and(|time| time.contains(':')));
         // Nothing on screen and nothing next: only the time.
-        assert_eq!(slide(None, None).objects.len(), 1);
+        assert_eq!(slide(None, None, &crate::output::Overlay::default()).objects.len(), 1);
+        // A running timer and a stage message show too.
+        let mut timer = crate::timers::Timer::new("Sermon".to_owned());
+        timer.start(std::time::Instant::now());
+        let overlay = crate::output::Overlay {
+            timers: vec![timer],
+            stage_message: Some("Wrap up".to_owned()),
+            ..crate::output::Overlay::default()
+        };
+        let with = slide(None, None, &overlay);
+        assert!(with.objects.iter().any(|o| o.as_text().is_some_and(|t| t.starts_with("Sermon  00:0"))));
+        assert!(with.objects.iter().any(|o| o.as_text() == Some("Wrap up") && o.fill.is_some()));
         // Every box the slide uses is in the layout.
         let theme = theme();
         for object in &built.objects {

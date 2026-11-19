@@ -25,6 +25,16 @@ pub struct Frame {
     pub next: Option<Arc<Slide>>,
 }
 
+/// What is shown over the slides: a message on the audience screens; the stage message and the
+/// timers on the stage screens.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Overlay {
+    /// The message's words, tokens and all; they are filled in as it is drawn.
+    pub message: Option<String>,
+    pub stage_message: Option<String>,
+    pub timers: Vec<crate::timers::Timer>,
+}
+
 pub enum OutputMsg {
     Show(Frame),
     /// A window to draw a screen in. The thread takes ownership of its surface.
@@ -47,6 +57,8 @@ pub enum OutputMsg {
     },
     /// Stop drawing in a screen's window.
     RemoveSurface(Uuid),
+    /// What is shown over the slides.
+    Overlay(Overlay),
     /// Which screens are stage screens, and whether stage screens are on.
     Stage {
         screens: Vec<Uuid>,
@@ -118,6 +130,9 @@ impl OutputHandle {
     }
 }
 
+/// What a screen shows: the picture behind, the slide, words over them, and the theme.
+type Content = (Option<Picture>, Option<Arc<Slide>>, Option<Arc<Slide>>, Arc<Theme>);
+
 /// A window a screen is drawn in.
 struct Target {
     id: Uuid,
@@ -152,6 +167,7 @@ struct Output {
     stage: Vec<Uuid>,
     stage_on: bool,
     stage_theme: Arc<Theme>,
+    overlay: Overlay,
 }
 
 fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver<OutputMsg>, ndi_status: NdiStatuses) {
@@ -173,6 +189,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         stage: Vec::new(),
         stage_on: true,
         stage_theme: Arc::new(crate::stage::theme()),
+        overlay: Overlay::default(),
         device,
         queue,
     };
@@ -186,7 +203,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => return,
             }
-        } else if output.has_stage() {
+        } else if output.ticks() {
             // Stage screens show the time: wake at the start of each second to redraw them.
             let into_second = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -194,7 +211,11 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             match rx.recv_timeout(Duration::from_secs(1).saturating_sub(into_second) + Duration::from_millis(5)) {
                 Ok(msg) => Some(msg),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    output.draw_stage();
+                    if output.overlay.message.as_deref().is_some_and(crate::messages::has_tokens) {
+                        output.draw(false);
+                    } else {
+                        output.draw_stage();
+                    }
                     continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
@@ -224,6 +245,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                 OutputMsg::Redraw => {}
                 OutputMsg::SetNdi { id, name } => output.set_ndi(id, name),
                 OutputMsg::RemoveSurface(id) => output.targets.retain(|target| target.id != id),
+                OutputMsg::Overlay(overlay) => output.overlay = overlay,
                 OutputMsg::Stage { screens, on } => {
                     output.stage = screens;
                     output.stage_on = on;
@@ -319,26 +341,32 @@ impl Output {
 
     /// What a screen shows now: its own name while screens are being identified, the show
     /// otherwise. Cheap copies: the picture, the slide and the theme are shared.
-    fn content_for(&self, id: Uuid, frame: &Frame) -> (Option<Picture>, Option<Arc<Slide>>, Arc<Theme>) {
+    fn content_for(&self, id: Uuid, frame: &Frame) -> Content {
         if let Some((_, name)) = self.identify.iter().find(|(have, _)| *have == id) {
-            return (None, Some(name.clone()), self.identify_theme.clone());
+            return (None, Some(name.clone()), None, self.identify_theme.clone());
         }
         if self.stage.contains(&id) {
+            let words = self
+                .stage_on
+                .then(|| Arc::new(crate::stage::slide(frame.slide.as_deref(), frame.next.as_deref(), &self.overlay)));
+            return (None, words, None, self.stage_theme.clone());
+        }
+        if !frame.enabled {
+            return (None, None, None, frame.theme.clone());
+        }
+        // A message shows over whatever is on the audience screens.
+        let message = self.overlay.message.as_deref().map(|text| {
             let words =
-                self.stage_on.then(|| Arc::new(crate::stage::slide(frame.slide.as_deref(), frame.next.as_deref())));
-            return (None, words, self.stage_theme.clone());
-        }
-        if frame.enabled {
-            (frame.media.clone(), frame.slide.clone(), frame.theme.clone())
-        } else {
-            (None, None, frame.theme.clone())
-        }
+                crate::messages::fill_in(text, &self.overlay.timers, Instant::now(), crate::timers::seconds_into_day());
+            Arc::new(crate::messages::slide(&words))
+        });
+        (frame.media.clone(), frame.slide.clone(), message, frame.theme.clone())
     }
 
     /// Builds what a screen shows now for a target of a size.
     fn scene_for(&mut self, id: Uuid, frame: &Frame, w: u32, h: u32) -> vello::Scene {
-        let (media, slide, theme) = self.content_for(id, frame);
-        let layers = Layers { media: media.as_ref(), slide: slide.as_deref() };
+        let (media, slide, overlay, theme) = self.content_for(id, frame);
+        let layers = Layers { media: media.as_ref(), slide: slide.as_deref(), overlay: overlay.as_deref() };
         build_layers(&mut self.fonts, &layers, &theme, w, h).scene
     }
 
@@ -416,6 +444,12 @@ impl Output {
         if fading {
             self.step_fade();
         }
+    }
+
+    /// True when something on the screens changes by itself each second: the time on a stage
+    /// screen, or a message with the time or a timer in it.
+    fn ticks(&self) -> bool {
+        self.has_stage() || self.overlay.message.as_deref().is_some_and(crate::messages::has_tokens)
     }
 
     /// True when there is a stage screen to keep the time on.

@@ -7,9 +7,11 @@ mod editor;
 mod home;
 mod icons;
 mod inspector;
+mod live_tabs;
 mod load;
 mod media;
 mod menubar;
+mod messages;
 mod output;
 mod screens;
 mod service;
@@ -17,6 +19,7 @@ mod stage;
 mod studio;
 mod theme_store;
 mod thumbs;
+mod timers;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -40,6 +43,7 @@ use crate::home::{HomeState, ThumbOf, home_ui};
 use crate::output::{Frame, OutputHandle, OutputMsg};
 use crate::screens::Placed;
 use crate::thumbs::Thumbs;
+use crate::timers::Timer;
 
 /// The GPU device and its queue: one per process, shared with the output thread.
 pub struct Gpu {
@@ -356,6 +360,8 @@ struct Running {
     identify_sent: Option<Vec<(Uuid, String)>>,
     /// The stage screens the output was last told of, and whether they were on.
     stage_sent: Option<(Vec<Uuid>, bool)>,
+    /// What the output was last told to show over the slides.
+    overlay_sent: Option<output::Overlay>,
     output: Option<OutputHandle>,
     /// The Screens window, while it is open.
     screens_window: Option<PanelWindow>,
@@ -524,6 +530,7 @@ impl App {
             ndi_sent: Vec::new(),
             identify_sent: None,
             stage_sent: None,
+            overlay_sent: None,
             output: Some(output),
             screens_window: None,
             gpu,
@@ -582,6 +589,13 @@ impl App {
         let mut any = false;
         let mut output_changed = false;
         for command in commands {
+            // Clear All, and Clear Messages, take a message off the screens.
+            if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Messages))
+                && running.home_state.message_live.take().is_some()
+            {
+                output_changed = true;
+                any = true;
+            }
             let changes = self.show.apply(command);
             output_changed |= changes.slides || changes.media || changes.output_enabled;
             if changes.selection {
@@ -625,7 +639,22 @@ impl App {
                 running.home_state.output_stopped = true;
             }
         }
-        let layers = Layers { media: media.as_ref(), slide: slide.as_deref() };
+        // The operator's preview shows a message over the slide, as the audience sees it.
+        let message = running.home_state.message_live.and_then(|(id, _)| {
+            let message = running.home_state.messages.iter().find(|message| message.id == id)?;
+            let words = messages::fill_in(
+                &message.text,
+                &running.home_state.timers,
+                Instant::now(),
+                timers::seconds_into_day(),
+            );
+            Some(messages::slide(&words))
+        });
+        let layers = Layers {
+            media: media.as_ref(),
+            slide: slide.as_deref(),
+            overlay: message.as_ref().filter(|_| self.show.output_enabled()),
+        };
         let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &theme);
         running.preview = now;
         running.preview_before = before;
@@ -1327,6 +1356,25 @@ impl App {
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_SETTINGS").is_some() {
                 running.home_state.settings_open = true;
             }
+            // Testing aid: open a tab under the Program panel, and show the first message.
+            if running.frames == GO_LIVE_AT + 2
+                && let Ok(tab) = std::env::var("PRESENTERCRAFT_LIVE_TAB")
+            {
+                let state = &mut running.home_state;
+                state.live_tab = match tab.as_str() {
+                    "messages" => 1,
+                    "stage" => 2,
+                    _ => 0,
+                };
+                if let Some(first) = state.messages.first() {
+                    state.message_selected = Some(first.id);
+                    state.message_live = Some((first.id, Instant::now()));
+                }
+                if let Some(first) = state.timers.first_mut() {
+                    state.timer_open = Some(first.id);
+                    first.start(Instant::now() - Duration::from_secs(83));
+                }
+            }
             // Testing aid: show the Bible page.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_BIBLE").is_some() {
                 running.home_state.bible_open = true;
@@ -1473,6 +1521,58 @@ impl App {
             eprintln!("Could not save the Screens window: {e}");
         }
         commands
+    }
+
+    /// Saves the timers and messages when they change, takes a message off when its time is up,
+    /// and tells the output what to show over the slides when that changes.
+    fn sync_overlay(&mut self) {
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let state = &mut running.home_state;
+        if std::mem::take(&mut state.timers_changed)
+            && let Err(problem) = timers::save(&state.timers)
+        {
+            state.notice = Some(problem);
+        }
+        if std::mem::take(&mut state.messages_changed)
+            && let Err(problem) = messages::save(&state.messages)
+        {
+            state.notice = Some(problem);
+        }
+        // A message that leaves by itself, once its time is up.
+        if let Some((id, since)) = state.message_live
+            && let Some(after) = state.messages.iter().find(|message| message.id == id).and_then(|m| m.dismiss_after)
+            && since.elapsed().as_secs() >= u64::from(after)
+        {
+            state.message_live = None;
+        }
+        let message = state
+            .message_live
+            .and_then(|(id, _)| state.messages.iter().find(|message| message.id == id))
+            .map(|message| message.text.clone());
+        let overlay = output::Overlay {
+            message,
+            stage_message: state.stage_message_live.then(|| state.stage_message.clone()),
+            timers: state.timers.clone(),
+        };
+        // While a timer runs, or a message counts down to leaving, the window shows it each second.
+        let ticking = state.timers.iter().any(Timer::running) || state.message_live.is_some();
+        if ticking {
+            let soon = Instant::now() + Duration::from_millis(500);
+            running.next_repaint = Some(running.next_repaint.map_or(soon, |at| at.min(soon)));
+        }
+        if running.overlay_sent.as_ref() == Some(&overlay) {
+            return;
+        }
+        let message_changed = running.overlay_sent.as_ref().is_none_or(|sent| sent.message != overlay.message);
+        if let Some(output) = &running.output {
+            output.send(OutputMsg::Overlay(overlay.clone()));
+        }
+        running.overlay_sent = Some(overlay);
+        if message_changed {
+            self.refresh_output();
+        }
     }
 
     /// Carries out a choice from the menu bar.
@@ -1679,6 +1779,8 @@ impl ApplicationHandler<String> for App {
                     made
                 });
                 self.prefs_saved = Some(prefs);
+                running.home_state.timers = timers::load();
+                running.home_state.messages = messages::load();
                 // A display asked for on the command line takes the first screen, this run only.
                 if let Some(index) = self.options.output_display
                     && let Some(display) = display_list(el.available_monitors()).into_iter().find(|d| d.index == index)
@@ -1923,6 +2025,7 @@ impl ApplicationHandler<String> for App {
                 self.update_canvas();
                 self.sync_screens(el);
                 self.sync_screens_window(el);
+                self.sync_overlay();
                 self.tick_menu();
                 // Leaving the Edit view writes the songs changed there straight away.
                 let editing = self.running.as_ref().is_some_and(|r| r.home_state.editing.is_some());
