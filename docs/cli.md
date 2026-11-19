@@ -39,6 +39,7 @@ needed. Then:
 | `songs` | Every song in the library, numbered |
 | `slides [SONG]` | A song's slides (the one shown in the window if none is named): number, group, words, and which is on screen |
 | `playlists` | The playlists |
+| `libraries` | The libraries, with how many songs each has |
 | `playlist [NAME]` | A playlist's items (the one in front if none is named) |
 | `media` | The media bin's items |
 | `themes`, `screens`, `timers`, `messages`, `props`, `macros` | Each list, numbered |
@@ -82,6 +83,7 @@ needed. Then:
 | `song import FILE… or FOLDER…` | Imports songs from text, lyric, ChordPro, rich-text or Word files, ProPresenter 7 `.pro` documents, or SoftPresenter song files, as File › Import Songs… does; a folder becomes a library of its name, and each folder inside it another. A song already in the library is skipped. The reply's data lists `imported` and `problems` |
 | `song delete SONG --yes` | Deletes a song (one made in SoftPresenter goes to the Trash) |
 | `playlist open NAME` | Puts a playlist in front |
+| `library open NAME` | Shows a library's songs in the song list; `library open all` shows every song |
 | `playlist add SONG [to PLAYLIST]` | Adds a song to a playlist (the one in front if none is named) |
 
 ### Everything on the menu bar

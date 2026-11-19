@@ -24,8 +24,9 @@ pub const OLD_SONG_EXTENSION: &str = "pcpres";
 
 /// Endings of text files read as songs: plain text, lyric files and ChordPro.
 pub const TEXT_ENDINGS: [&str; 6] = ["txt", "text", "cho", "chordpro", "chopro", "crd"];
-/// Endings of documents read as songs through macOS's own text converter.
-pub const DOCUMENT_ENDINGS: [&str; 5] = ["doc", "docx", "odt", "html", "htm"];
+/// Endings of documents read as songs through macOS's own text converter. Not web pages: the
+/// converter may fetch what a page links to from the internet.
+pub const DOCUMENT_ENDINGS: [&str; 3] = ["doc", "docx", "odt"];
 /// Rich text, read by SoftPresenter itself.
 pub const RICH_TEXT_ENDING: &str = "rtf";
 /// The documents ProPresenter 7 saves songs in.
@@ -83,8 +84,8 @@ pub fn import_endings() -> Vec<&'static str> {
 }
 
 /// Reads a song from a file to import: text in any common encoding, a lyric file, ChordPro,
-/// rich text, a song document saved by ProPresenter 7, or (on macOS) a Word, OpenDocument or
-/// web page file. The error is a plain
+/// rich text, a song document saved by ProPresenter 7, or (on macOS) a Word or OpenDocument
+/// file. The error is a plain
 /// sentence for the operator.
 pub fn import_file(path: &Path) -> Result<Presentation, String> {
     let name = path.file_name().map_or_else(|| "The file".into(), |n| n.to_string_lossy().into_owned());
@@ -114,7 +115,7 @@ pub fn import_file(path: &Path) -> Result<Presentation, String> {
     Ok(song)
 }
 
-/// The words of a Word, OpenDocument or web page file, from macOS's own converter
+/// The words of a Word or OpenDocument file, from macOS's own converter
 /// (textutil), which ships with every Mac. It gets ten seconds.
 #[cfg(target_os = "macos")]
 fn document_text(path: &Path) -> Result<String, String> {

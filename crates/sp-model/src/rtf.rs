@@ -1,7 +1,8 @@
 //! The words of a rich-text (RTF) document, without its formatting. Enough of RTF for song
-//! words: paragraphs and line breaks, Unicode characters (`\uN`), characters in the document's
-//! code page (`\'hh`, Windows-1251 or Windows-1252), the usual typographic marks, and skipping
-//! the parts that hold no words (font and colour tables, pictures, document information).
+//! words: paragraphs and line breaks, Unicode characters (`\uN`), characters in a code page
+//! (`\'hh`: Windows-1251 when the font or the document says Cyrillic, otherwise Windows-1252),
+//! the usual typographic marks, and skipping the parts that hold no words (font and colour
+//! tables, pictures, document information).
 
 use crate::import::{windows_1251, windows_1252};
 
@@ -31,6 +32,22 @@ const NO_WORDS: [&str; 22] = [
     "fldinst",
 ];
 
+/// What holds inside one `{…}` group of a document.
+#[derive(Clone, Copy)]
+struct Group {
+    /// Its words are not shown (a font table, a picture…).
+    skip: bool,
+    /// How many characters stand in for a Unicode character after `\uN` (`\ucN`).
+    stand_ins: usize,
+    /// The font chosen with `\fN`, which says which code page `\'hh` is in.
+    font: Option<i64>,
+    /// Inside the font table, where `\fN` names a font rather than choosing one.
+    font_table: bool,
+}
+
+/// The `\fcharset` that means Cyrillic (Windows-1251).
+const CYRILLIC_CHARSET: i64 = 204;
+
 /// The words of an RTF document, one line for each paragraph or line break, with trailing
 /// spaces and empty lines at the end left off. Not RTF at all: the bytes read as text.
 pub fn rtf_to_text(bytes: &[u8]) -> String {
@@ -38,31 +55,50 @@ pub fn rtf_to_text(bytes: &[u8]) -> String {
         return crate::decode_text(bytes);
     }
     let mut out = String::new();
-    // For each open group: whether it is skipped, and how many characters stand in for a
-    // Unicode character after it (`\ucN`).
-    let mut groups: Vec<(bool, usize)> = vec![(false, 1)];
+    let mut groups = vec![Group { skip: false, stand_ins: 1, font: None, font_table: false }];
+    // The document's own code page is Cyrillic (`\ansicpg1251`).
     let mut cyrillic = false;
+    // Each font's character set, from the font table, and the font used when none is chosen.
+    // Text in a Cyrillic font is in Windows-1251 even when the document says Windows-1252,
+    // as rich text saved on a Mac often is.
+    let mut charsets: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut naming_font: Option<i64> = None;
+    let mut default_font: Option<i64> = None;
     // Characters still to skip after a `\uN`, and the first half of a character written as
     // two UTF-16 halves.
     let mut stand_ins = 0usize;
     let mut high_half: Option<u16> = None;
     let mut at = 0;
-    let push = |out: &mut String, c: char, groups: &[(bool, usize)], stand_ins: &mut usize| {
+    let push = |out: &mut String, c: char, groups: &[Group], stand_ins: &mut usize| {
         if *stand_ins > 0 {
             *stand_ins -= 1;
-        } else if !groups.last().is_some_and(|g| g.0) {
+        } else if !groups.last().is_some_and(|g| g.skip) {
             out.push(c);
         }
+    };
+    // A byte of text in the code page of the font in use.
+    let in_code_page = |byte: u8,
+                        groups: &[Group],
+                        charsets: &std::collections::HashMap<i64, i64>,
+                        default_font: Option<i64>,
+                        cyrillic: bool| {
+        let font = groups.last().and_then(|g| g.font).or(default_font);
+        let cyrillic = match font.and_then(|font| charsets.get(&font)) {
+            Some(&charset) => charset == CYRILLIC_CHARSET || (charset == 0 && cyrillic),
+            None => cyrillic,
+        };
+        if cyrillic { windows_1251(byte) } else { windows_1252(byte) }
     };
     while at < bytes.len() {
         let byte = bytes[at];
         at += 1;
         match byte {
             b'{' => {
-                let parent = *groups.last().unwrap_or(&(false, 1));
+                let parent =
+                    *groups.last().unwrap_or(&Group { skip: false, stand_ins: 1, font: None, font_table: false });
                 // `{\*\…}` is a part a reader may skip when it doesn't know it.
                 let starred = bytes[at..].starts_with(b"\\*");
-                groups.push((parent.0 || starred, parent.1));
+                groups.push(Group { skip: parent.skip || starred, ..parent });
                 stand_ins = 0;
             }
             b'}' => {
@@ -95,13 +131,27 @@ pub fn rtf_to_text(bytes: &[u8]) -> String {
                     if NO_WORDS.contains(&word)
                         && let Some(group) = groups.last_mut()
                     {
-                        group.0 = true;
+                        group.skip = true;
+                        group.font_table |= word == "fonttbl";
                     }
+                    let in_font_table = groups.last().is_some_and(|g| g.font_table);
                     match word {
                         "ansicpg" => cyrillic = number == Some(1251),
+                        "deff" => default_font = number,
+                        "f" if in_font_table => naming_font = number,
+                        "f" => {
+                            if let Some(group) = groups.last_mut() {
+                                group.font = number;
+                            }
+                        }
+                        "fcharset" if in_font_table => {
+                            if let (Some(font), Some(charset)) = (naming_font, number) {
+                                charsets.insert(font, charset);
+                            }
+                        }
                         "uc" => {
                             if let Some(group) = groups.last_mut() {
-                                group.1 = number.unwrap_or(1).clamp(0, 8) as usize;
+                                group.stand_ins = number.unwrap_or(1).clamp(0, 8) as usize;
                             }
                         }
                         "u" => {
@@ -120,7 +170,7 @@ pub fn rtf_to_text(bytes: &[u8]) -> String {
                             if let Some(c) = c {
                                 push(&mut out, c, &groups, &mut stand_ins);
                             }
-                            stand_ins = groups.last().map_or(1, |g| g.1);
+                            stand_ins = groups.last().map_or(1, |g| g.stand_ins);
                         }
                         "par" | "line" | "sect" | "page" | "row" => push(&mut out, '\n', &groups, &mut 0),
                         "tab" | "cell" => push(&mut out, ' ', &groups, &mut 0),
@@ -140,7 +190,7 @@ pub fn rtf_to_text(bytes: &[u8]) -> String {
                             let hex = bytes.get(at..at + 2).and_then(|h| std::str::from_utf8(h).ok());
                             if let Some(value) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
                                 at += 2;
-                                let c = if cyrillic { windows_1251(value) } else { windows_1252(value) };
+                                let c = in_code_page(value, &groups, &charsets, default_font, cyrillic);
                                 push(&mut out, c, &groups, &mut stand_ins);
                             }
                         }
@@ -151,7 +201,7 @@ pub fn rtf_to_text(bytes: &[u8]) -> String {
                         b'\\' | b'{' | b'}' => push(&mut out, char::from(next), &groups, &mut stand_ins),
                         b'*' => {
                             if let Some(group) = groups.last_mut() {
-                                group.0 = true;
+                                group.skip = true;
                             }
                         }
                         // `\-`, an optional hyphen, and anything else: nothing to show.
@@ -165,7 +215,7 @@ pub fn rtf_to_text(bytes: &[u8]) -> String {
             // A byte outside ASCII shouldn't be in RTF, but some writers put one in: read it
             // in the document's code page.
             _ => {
-                let c = if cyrillic { windows_1251(byte) } else { windows_1252(byte) };
+                let c = in_code_page(byte, &groups, &charsets, default_font, cyrillic);
                 push(&mut out, c, &groups, &mut stand_ins);
             }
         }
@@ -210,6 +260,13 @@ Caf\'e9 \ldblquote here\rdblquote }";
         assert_eq!(rtf_to_text(br"{\rtf1\ansi\ansicpg1251 \'c4\'ee\'ec}"), "Дом");
         // A character outside the first plane, in two halves.
         assert_eq!(rtf_to_text(br"{\rtf1 \u-10179?\u-8704?}"), "😀");
+    }
+
+    #[test]
+    fn text_in_a_cyrillic_font_is_read_in_its_code_page_though_the_document_says_western() {
+        // As a Mac saves it: the document in Windows-1252, the Cyrillic font naming charset 204.
+        let rtf = br"{\rtf1\ansi\ansicpg1252 {\fonttbl\f0\fswiss\fcharset0 Helvetica;\f1\fnil\fcharset204 PTSans;}\f0 Caf\'e9 \f1 \'c4\'ee\'ec\par {\f0 \'e9}\'c4}";
+        assert_eq!(rtf_to_text(rtf), "Café Дом\néД");
     }
 
     #[test]

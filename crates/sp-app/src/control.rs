@@ -230,6 +230,8 @@ const COMMANDS: &[&str] = &[
     "songs",
     "slides",
     "playlists",
+    "libraries",
+    "library",
     "playlist",
     "media",
     "media-playlist",
@@ -376,9 +378,12 @@ Layers and controls
   audio play TRACK | audio pause | audio stop | audio volume 0-100
   bible REFERENCE [--show]     look a passage up (and put its first verse on screen)
 
-Songs and playlists
+Songs, libraries and playlists
   song new TITLE [FILE.txt]    a new song, its words from a song text file
-  song import FILE…            import songs from text, lyric, ChordPro, rich-text or Word files
+  song import FILE… | FOLDER…  import songs (text, lyric, ChordPro, rich text, Word, .pro); a
+                               folder becomes a library of its name
+  libraries                    the libraries, with how many songs each has
+  library open NAME | all      show a library's songs, or all songs
   song delete SONG --yes
   playlist open NAME
   playlist add SONG [PLAYLIST]
@@ -448,6 +453,8 @@ impl crate::App {
             "songs" => Ok(self.ctl_songs()),
             "slides" => self.ctl_slides(&rest(args, 1)),
             "playlists" => Ok(self.ctl_playlists()),
+            "libraries" => Ok(self.ctl_libraries()),
+            "library" => self.ctl_library(args),
             "playlist" => self.ctl_playlist(args),
             "media" => self.ctl_media(args),
             "media-playlist" => self.ctl_media_playlist(args),
@@ -693,6 +700,43 @@ impl crate::App {
         };
         self.with_state(|state| state.view_request = Some(at));
         Ok(Reply::done(format!("Switching to the {which} view.")))
+    }
+
+    fn ctl_libraries(&self) -> Reply {
+        let libraries = self.running.as_ref().map(|r| r.home_state.libraries.clone()).unwrap_or_default();
+        let lines: Vec<String> = libraries
+            .iter()
+            .map(|l| format!("{} ({} song{})", l.name, l.songs.len(), if l.songs.len() == 1 { "" } else { "s" }))
+            .collect();
+        let data: Vec<serde_json::Value> =
+            libraries.iter().map(|l| serde_json::json!({"name": l.name, "songs": l.songs.len()})).collect();
+        Reply::with(numbered(&lines), serde_json::json!(data))
+    }
+
+    fn ctl_library(&mut self, args: &[String]) -> Result<Reply, String> {
+        let names: Vec<String> = self
+            .running
+            .as_ref()
+            .map(|r| r.home_state.libraries.iter().map(|l| l.name.clone()).collect())
+            .unwrap_or_default();
+        match args.get(1).map(|w| w.to_lowercase()).as_deref() {
+            Some("open") if rest(args, 2).eq_ignore_ascii_case("all") => {
+                self.with_state(|state| {
+                    state.library_shown = None;
+                    state.playlist_open = false;
+                });
+                Ok(Reply::done("Showing all songs."))
+            }
+            Some("open") => {
+                let at = find("library", &names, &rest(args, 2))?;
+                self.with_state(|state| {
+                    state.library_shown = state.libraries.get(at).map(|l| l.id);
+                    state.playlist_open = false;
+                });
+                Ok(Reply::done(format!("Showing the library {}.", names[at])))
+            }
+            _ => Err("library open NAME, or library open all".to_owned()),
+        }
     }
 
     fn ctl_playlists(&self) -> Reply {
@@ -1026,12 +1070,23 @@ impl crate::App {
                         problems.join("\n")
                     });
                 }
+                // The text names the first few; the data lists them all.
+                const NAMED: usize = 10;
                 let mut text = match imported.as_slice() {
                     [one] => format!("Imported {one}."),
-                    many => format!("Imported {} songs: {}.", many.len(), many.join(", ")),
+                    many if many.len() <= NAMED => format!("Imported {} songs: {}.", many.len(), many.join(", ")),
+                    many => format!(
+                        "Imported {} songs: {}, and {} more.",
+                        many.len(),
+                        many[..NAMED].join(", "),
+                        many.len() - NAMED
+                    ),
                 };
-                for problem in &problems {
+                for problem in problems.iter().take(NAMED) {
                     text.push_str(&format!("\n{problem}"));
+                }
+                if problems.len() > NAMED {
+                    text.push_str(&format!("\n…and {} more not imported (see the log).", problems.len() - NAMED));
                 }
                 Ok(Reply::with(text, serde_json::json!({"imported": imported, "problems": problems})))
             }

@@ -2401,6 +2401,17 @@ impl App {
             if let Some(at) = already {
                 problems.push(format!("{} is already in the library.", song.title));
                 first.get_or_insert(at);
+                // A song in two of the folders imported goes into both their libraries.
+                if let (Some(name), Some(running)) = (library, self.running.as_mut()) {
+                    let state = &mut running.home_state;
+                    if let Some(key) = state.song_keys.get(at).cloned()
+                        && let Some(into) = state.libraries.iter_mut().find(|l| l.name == *name)
+                        && !into.has(&key)
+                    {
+                        into.songs.push(key);
+                        state.libraries_changed = true;
+                    }
+                }
                 continue;
             }
             // A song made from another file gets an id of its own, so the two are never mixed up.

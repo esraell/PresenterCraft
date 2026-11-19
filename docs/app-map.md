@@ -41,7 +41,7 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 
 | Part | Does | Command line |
 |---|---|---|
-| LIBRARY rows | All Songs, and libraries of your own; + makes one; right-click to rename or delete | `songs` |
+| LIBRARY rows | All Songs, and libraries of your own; + makes one; right-click to rename or delete | `songs`, `libraries`, `library open NAME` (or `all`) |
 | PLAYLISTS rows | Playlists; + makes one; drop songs on a row to add them | `playlists`, `playlist open NAME` |
 | Song list (a library chosen) | Click opens a song; Command/Shift-click and dragging pick several; drag picked songs onto a playlist or library; Delete asks, then deletes; right-click for Duplicate, Theme, Transition, Reflow, Play on Announcements Layer, Delete… | `select SONG`, `song delete SONG --yes`, `announce SONG` |
 | Playlist items (a playlist chosen) | Songs, Bible passages and headers in running order; drag to reorder; + adds a header | `playlist [NAME]`, `playlist add SONG to PLAYLIST` |

@@ -31,7 +31,7 @@ feature changes, this page changes in the same commit.
   languages), the lyric files song services give (title, sections, and a footer whose song
   number, writers and copyright go into the song's details; a church's own licence number is
   never kept), ChordPro (sections from its directives, chords taken out), SoftPresenter's own
-  song text and song files, rich text, and on macOS Word, OpenDocument and web page files.
+  song text and song files, rich text, and on macOS Word and OpenDocument files.
 - **Bringing a library across from ProPresenter 7.** File › Import from ProPresenter… opens
   its Libraries folder; choose one library, or the folder of all of them. Each folder becomes a
   library of the same name. Each song keeps its groups, slides, arrangements (and the one

@@ -9,8 +9,8 @@
 //! arrangements, and its copyright details. Everything else in the document is passed over.
 //!
 //! A slide's text boxes are told apart by what they hold, since their names are whatever a
-//! church typed: the box in the largest type is the main words, the next largest the
-//! translation, and a line such as "Psalm 133:3" the reference (the one in the main words'
+//! church typed: the box set in the largest type across the song is the main words, the next
+//! the translation, and a line such as "Psalm 133:3" the reference (the one in the main words'
 //! script, when there are two). Empty boxes are left out.
 
 use std::collections::HashMap;
@@ -215,8 +215,10 @@ fn read(bytes: &[u8], fallback: &str) -> Result<Presentation, &'static str> {
     let mut song_groups = Vec::new();
     let mut group_ids: HashMap<String, Uuid> = HashMap::new();
     let mut placed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let ranking = rank_positions(cues.values());
+    let main_cyrillic = main_script(cues.values(), &ranking);
     let make_slide = |cue: &Cue| {
-        let mut slide = Slide::new(slide_objects(&cue.words));
+        let mut slide = Slide::new(slide_objects(&cue.words, &ranking, main_cyrillic));
         slide.label = cue.label.clone();
         slide.notes = cue.notes.clone();
         slide.enabled = !says || cue.enabled.unwrap_or(false);
@@ -272,28 +274,89 @@ fn read(bytes: &[u8], fallback: &str) -> Result<Presentation, &'static str> {
     })
 }
 
-/// A slide's text objects from its boxes' words: the largest type as the main words, the next
-/// as the translation, and a reference line as the reference.
-fn slide_objects(boxes: &[(String, Option<u32>)]) -> Vec<Object> {
-    let filled: Vec<&(String, Option<u32>)> = boxes.iter().filter(|(text, _)| !text.trim().is_empty()).collect();
-    let (references, mut words): (Vec<_>, Vec<_>) = filled.into_iter().partition(|(text, _)| is_reference(text));
-    // A slide with only a reference on it shows that as its words.
-    let references = if words.is_empty() {
-        std::mem::take(&mut words).into_iter().chain(references).collect::<Vec<_>>()
-    } else {
-        references
-    };
-    let (words, references) = if words.is_empty() { (references, Vec::new()) } else { (words, references) };
-    let mut words = words;
-    // Largest first; boxes of one size keep their order.
-    words.sort_by_key(|(_, size)| std::cmp::Reverse(size.unwrap_or(0)));
-    let mut objects = vec![Object::text(Role::primary(), words.first().map(|(t, _)| t.clone()).unwrap_or_default())];
-    if let Some((translation, _)) = words.get(1) {
-        objects.push(Object::text(Role::translation(), translation.clone()));
+/// The positions of a song's text boxes, main words first. Each position is ranked by the size
+/// of type it holds most often in the song: that is the size it was set in, where one slide can
+/// mislead (long words shrunk to fit, a title slide in big type). Equal sizes keep their order.
+/// Ranking once for the whole song keeps the main words in one language from slide to slide.
+fn rank_positions<'a>(cues: impl Iterator<Item = &'a Cue>) -> Vec<usize> {
+    let mut sizes: Vec<HashMap<u32, usize>> = Vec::new();
+    for cue in cues {
+        for (at, (text, size)) in cue.words.iter().enumerate() {
+            if text.trim().is_empty() || is_reference(text) {
+                continue;
+            }
+            if sizes.len() <= at {
+                sizes.resize_with(at + 1, HashMap::new);
+            }
+            *sizes[at].entry(size.unwrap_or(0)).or_default() += 1;
+        }
     }
-    let main_cyrillic = words.first().is_some_and(|(t, _)| is_cyrillic(t));
-    let reference = references.iter().find(|(t, _)| is_cyrillic(t) == main_cyrillic).or(references.first());
-    if let Some((reference, _)) = reference {
+    // The size each position holds most often; of two as often, the larger.
+    let usual: Vec<Option<u32>> = sizes
+        .iter()
+        .map(|counts| counts.iter().max_by_key(|&(size, count)| (*count, *size)).map(|(size, _)| *size))
+        .collect();
+    let mut order: Vec<usize> = (0..usual.len()).filter(|&at| usual[at].is_some()).collect();
+    order.sort_by_key(|&at| (std::cmp::Reverse(usual[at]), at));
+    order
+}
+
+/// Whether a song's main words are in Cyrillic letters: what the main box holds on most of the
+/// slides that have words in two scripts. `None` when no slide has both.
+fn main_script<'a>(cues: impl Iterator<Item = &'a Cue>, ranking: &[usize]) -> Option<bool> {
+    let (mut cyrillic, mut other) = (0, 0);
+    for cue in cues {
+        let words = ranked_words(&cue.words, ranking);
+        let scripts: Vec<bool> = words.iter().map(|(_, text)| is_cyrillic(text)).collect();
+        if scripts.contains(&true) && scripts.contains(&false) {
+            if scripts[0] { cyrillic += 1 } else { other += 1 }
+        }
+    }
+    (cyrillic + other > 0).then_some(cyrillic >= other)
+}
+
+/// A slide's word boxes (filled, not references), by their place, in the song's ranking.
+fn ranked_words<'a>(boxes: &'a [(String, Option<u32>)], ranking: &[usize]) -> Vec<(usize, &'a str)> {
+    let rank = |at: usize| ranking.iter().position(|&place| place == at).unwrap_or(usize::MAX);
+    let mut words: Vec<(usize, &str)> = boxes
+        .iter()
+        .enumerate()
+        .filter(|(_, (text, _))| !text.trim().is_empty() && !is_reference(text))
+        .map(|(at, (text, _))| (at, text.as_str()))
+        .collect();
+    words.sort_by_key(|&(at, _)| (rank(at), at));
+    words
+}
+
+/// A slide's text objects from its boxes' words, in the song's ranking of positions: the first
+/// filled position as the main words, the next as the translation, and a reference line as the
+/// reference (the one in the main words' script, when there are two). On a slide whose boxes
+/// hold the two languages the other way round from the rest of the song (`main_cyrillic`), the
+/// words in the song's main language are still the main words.
+fn slide_objects(boxes: &[(String, Option<u32>)], ranking: &[usize], main_cyrillic: Option<bool>) -> Vec<Object> {
+    let references: Vec<(usize, &str)> = boxes
+        .iter()
+        .enumerate()
+        .filter(|(_, (text, _))| !text.trim().is_empty() && is_reference(text))
+        .map(|(at, (text, _))| (at, text.as_str()))
+        .collect();
+    let mut words = ranked_words(boxes, ranking);
+    if let Some(main) = main_cyrillic
+        && words.first().is_some_and(|(_, text)| is_cyrillic(text) != main)
+        && let Some(at) = words.iter().position(|(_, text)| is_cyrillic(text) == main)
+    {
+        let found = words.remove(at);
+        words.insert(0, found);
+    }
+    // A slide with only a reference on it shows that as its words.
+    let (words, references) = if words.is_empty() { (references, Vec::new()) } else { (words, references) };
+    let mut objects = vec![Object::text(Role::primary(), words.first().map_or("", |(_, t)| t).to_owned())];
+    if let Some((_, translation)) = words.get(1) {
+        objects.push(Object::text(Role::translation(), (*translation).to_owned()));
+    }
+    let main_cyrillic = words.first().is_some_and(|(_, t)| is_cyrillic(t));
+    let reference = references.iter().find(|(_, t)| is_cyrillic(t) == main_cyrillic).or(references.first());
+    if let Some((_, reference)) = reference {
         objects.push(Object::text(Role::reference(), reference.trim().to_owned()));
     }
     objects
@@ -571,6 +634,44 @@ mod tests {
         assert_eq!(slide.text_for(&Role::translation()), Some("Let your light shine"));
         assert_eq!(slide.text_for(&Role::reference()), Some("Пс 132:3"), "the reference in the main words' script");
         assert_eq!(slide.objects.len(), 3, "the empty box is left out");
+    }
+
+    #[test]
+    fn the_main_words_stay_in_one_language_when_a_long_slide_was_shrunk_to_fit() {
+        // The first box is set at 100 and the second at 80. On one slide the first box's long
+        // words were shrunk to 60, and on another the second box holds a title in 300.
+        let doc = [
+            field(12, &group("g", "", &["a", "b", "c", "d"])),
+            field(13, &cue("a", &[r"{\rtf1 \fs100 \'c4\'ee\'ec}", r"{\rtf1 \fs80 Home}"], "", true)),
+            field(13, &cue("b", &[r"{\rtf1 \fs60 \'c4\'ee\'ec \'c4\'ee\'ec}", r"{\rtf1 \fs80 Home again}"], "", true)),
+            field(13, &cue("c", &[r"{\rtf1 \fs100 \'c4\'ee\'ec}", r"{\rtf1 \fs300 Home Title}"], "", true)),
+            field(13, &cue("d", &[r"{\rtf1 \fs100 \'c4\'ee\'ec}", r"{\rtf1 \fs80 Home last}"], "", true)),
+        ]
+        .concat();
+        let song = read_pro_file(&doc, "x").unwrap();
+        for slide in &song.groups[0].slides {
+            assert!(slide.text_for(&Role::primary()).is_some_and(|t| t.starts_with('Ä')), "{:?}", slide.texts());
+            assert!(slide.text_for(&Role::translation()).is_some_and(|t| t.starts_with("Home")));
+        }
+    }
+
+    #[test]
+    fn a_slide_with_its_languages_the_other_way_round_keeps_the_songs_main_language() {
+        let cyrillic = r"{\rtf1 {\fonttbl\f0\fcharset204 PT;}\f0 \fs100 \'c4\'ee\'ec}";
+        let swapped = r"{\rtf1 {\fonttbl\f0\fcharset204 PT;}\f0 \fs80 \'c4\'ee\'ec}";
+        let doc = [
+            field(12, &group("g", "", &["a", "b", "c"])),
+            field(13, &cue("a", &[cyrillic, r"{\rtf1 \fs80 Home}"], "", true)),
+            field(13, &cue("b", &[cyrillic, r"{\rtf1 \fs80 Home}"], "", true)),
+            // Here the big box holds the English and the small one the Russian.
+            field(13, &cue("c", &[r"{\rtf1 \fs100 Home}", swapped], "", true)),
+        ]
+        .concat();
+        let song = read_pro_file(&doc, "x").unwrap();
+        for slide in &song.groups[0].slides {
+            assert_eq!(slide.text_for(&Role::primary()), Some("Дом"));
+            assert_eq!(slide.text_for(&Role::translation()), Some("Home"));
+        }
     }
 
     #[test]
