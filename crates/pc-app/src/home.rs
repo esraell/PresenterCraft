@@ -15,14 +15,31 @@ use crate::icons::{self, Icon};
 
 /// The one accent colour: the live slide's outline and selections.
 pub const ACCENT: Color32 = Color32::from_rgb(64, 156, 255);
-const BAR: Color32 = Color32::from_rgb(44, 44, 47);
-const SIDE: Color32 = Color32::from_rgb(40, 40, 43);
-const CANVAS: Color32 = Color32::from_rgb(27, 27, 29);
-const ON: Color32 = Color32::from_rgb(70, 200, 110);
+/// Bars around the slide area and the media bin.
+const BAR: Color32 = Color32::from_rgb(18, 18, 18);
+/// The toolbar across the top.
+const TOOLBAR: Color32 = Color32::from_rgb(34, 40, 44);
+/// The pills that hold toolbar items, and text fields.
+const FIELD: Color32 = Color32::from_rgb(36, 43, 45);
+const PILL: Color32 = Color32::from_rgb(28, 33, 36);
+/// The darkest strips and the lines between buttons.
+const DEEP: Color32 = Color32::from_rgb(18, 18, 18);
+/// The area behind the preview and the playback controls.
+const WELL: Color32 = Color32::from_rgb(46, 46, 46);
+/// A layer that is on screen, and the strip beside the preview while anything is.
+const LIVE_RED: Color32 = Color32::from_rgb(87, 26, 27);
+const TAB: Color32 = Color32::from_rgb(85, 85, 85);
+const TAB_BLUE: Color32 = Color32::from_rgb(1, 121, 255);
+const SCRUB_EMPTY: Color32 = Color32::from_rgb(63, 63, 63);
+/// A selected row in a list.
+const ROW_SELECTED: Color32 = Color32::from_rgb(88, 88, 88);
+const SIDE: Color32 = Color32::from_rgb(70, 70, 70);
+const CANVAS: Color32 = Color32::from_rgb(30, 30, 30);
+const ON: Color32 = Color32::from_rgb(83, 194, 43);
 const OFF: Color32 = Color32::from_rgb(210, 70, 70);
-const DIM: Color32 = Color32::from_gray(120);
+const DIM: Color32 = Color32::from_gray(150);
 /// The strip that names what the slide area is showing.
-const TITLE_STRIP: Color32 = Color32::from_rgb(120, 120, 126);
+const TITLE_STRIP: Color32 = Color32::from_rgb(127, 127, 127);
 /// Height of the media bin, shared by its list (left column) and its thumbnails (middle).
 const MEDIA_BIN: f32 = 190.0;
 
@@ -125,13 +142,13 @@ fn list_row(ui: &mut egui::Ui, icon: Icon, name: &str, right: &str, selected: bo
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
     let painter = ui.painter();
     if selected {
-        painter.rect_filled(rect, 5.0, ACCENT.gamma_multiply(0.55));
+        painter.rect_filled(rect, 4.0, ROW_SELECTED);
     } else if response.hovered() {
-        painter.rect_filled(rect, 5.0, Color32::from_gray(44));
+        painter.rect_filled(rect, 4.0, Color32::from_gray(80));
     }
     let ink = if selected { Color32::WHITE } else { Color32::from_gray(215) };
     let icon_rect = Rect::from_center_size(rect.left_center() + vec2(15.0, 0.0), vec2(14.0, 14.0));
-    icons::paint(painter, icon, icon_rect, if selected { Color32::WHITE } else { ACCENT });
+    icons::paint(painter, icon, icon_rect, Color32::from_rgb(236, 122, 60));
     let right_width = if right.is_empty() { 0.0 } else { 52.0 };
     let text_clip = Rect::from_min_max(rect.min + vec2(30.0, 0.0), rect.max - vec2(right_width + 6.0, 0.0));
     painter.with_clip_rect(text_clip).text(
@@ -178,7 +195,7 @@ fn tool_group(ui: &mut egui::Ui, tools: &[Tool]) -> Option<usize> {
     let width = TOOL_WIDTH * tools.len() as f32;
     let (rect, _) = ui.allocate_exact_size(vec2(width, TOOL_HEIGHT), Sense::hover());
     let pill = Rect::from_min_size(rect.min + vec2(0.0, 2.0), vec2(width, PILL_HEIGHT));
-    ui.painter().rect_filled(pill, 9.0, Color32::from_gray(70));
+    ui.painter().rect_filled(pill, 9.0, PILL);
     let mut clicked = None;
     for (index, tool) in tools.iter().enumerate() {
         let cell = Rect::from_min_size(rect.min + vec2(TOOL_WIDTH * index as f32, 0.0), vec2(TOOL_WIDTH, TOOL_HEIGHT));
@@ -187,9 +204,9 @@ fn tool_group(ui: &mut egui::Ui, tools: &[Tool]) -> Option<usize> {
         let response = ui.interact(cell, id, if tool.built { Sense::click() } else { Sense::hover() });
         let painter = ui.painter();
         if tool.selected {
-            painter.rect_filled(segment.shrink(2.0), 7.0, Color32::from_gray(118));
+            painter.rect_filled(segment.shrink(2.0), 7.0, Color32::from_rgb(86, 94, 99));
         } else if response.hovered() {
-            painter.rect_filled(segment.shrink(2.0), 7.0, Color32::from_gray(86));
+            painter.rect_filled(segment.shrink(2.0), 7.0, Color32::from_rgb(48, 56, 60));
         }
         let ink = if tool.selected {
             Color32::WHITE
@@ -226,7 +243,7 @@ fn screen_light(ui: &mut egui::Ui, label: &str, on: Option<bool>) -> egui::Respo
         ui.allocate_exact_size(vec2(58.0, TOOL_HEIGHT), if built { Sense::click() } else { Sense::hover() });
     let chip = Rect::from_min_size(rect.min + vec2(6.0, 2.0), vec2(TOOL_WIDTH, PILL_HEIGHT));
     let painter = ui.painter();
-    painter.rect_filled(chip, 9.0, if response.hovered() { Color32::from_gray(86) } else { Color32::from_gray(70) });
+    painter.rect_filled(chip, 9.0, if response.hovered() { Color32::from_rgb(48, 56, 60) } else { PILL });
     let light = match on {
         Some(true) => ON,
         Some(false) => OFF,
@@ -250,6 +267,8 @@ pub fn home_ui(
     preview: Option<TextureId>,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
+    // Text boxes are dark wells in the lighter side columns.
+    ui.visuals_mut().extreme_bg_color = FIELD;
     toolbar(ui, show, &mut commands);
     library(ui, show, state, &mut commands);
     live_panel(ui, show, state.output_stopped, preview, &mut commands);
@@ -260,7 +279,7 @@ pub fn home_ui(
 
 /// The strip along the top: tools and views on the left, media and screens on the right.
 fn toolbar(ui: &mut egui::Ui, show: &Show, commands: &mut Vec<Command>) {
-    egui::Panel::top("toolbar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
+    egui::Panel::top("toolbar").resizable(false).frame(panel_frame(TOOLBAR, 6)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             tool_group(ui, &[Tool::ghost(Icon::Search, "Search")]);
@@ -353,32 +372,31 @@ fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
 }
 
 /// One button in the column beside the preview. Each clears one layer from the screen and is
-/// lit while that layer is showing. Returns true when a working one is clicked.
-fn layer_button(ui: &mut egui::Ui, icon: Icon, lit: bool, built: bool, hint: &str) -> bool {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(26.0, 19.0), if built { Sense::click() } else { Sense::hover() });
+/// lit while that layer is showing. The buttons sit flush against each other with a thin dark
+/// line between them. Returns true when a working one is clicked.
+fn layer_button(ui: &mut egui::Ui, rect: Rect, icon: Icon, lit: bool, built: bool, hint: &str) -> bool {
+    let id = ui.scope_id().with(("layer", hint));
+    let response = ui.interact(rect, id, if built { Sense::click() } else { Sense::hover() });
     let fill = if lit {
-        Color32::from_rgb(120, 34, 34)
+        LIVE_RED
     } else if response.hovered() {
-        Color32::from_gray(58)
+        Color32::from_rgb(52, 60, 63)
     } else {
-        Color32::from_gray(42)
+        FIELD
     };
-    ui.painter().rect_filled(rect, 4.0, fill);
-    let ink = if lit {
-        Color32::WHITE
-    } else if built {
-        Color32::from_gray(180)
-    } else {
-        DIM
-    };
-    icons::paint(ui.painter(), icon, Rect::from_center_size(rect.center(), vec2(13.0, 13.0)), ink);
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, fill);
+    painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, DEEP));
+    painter.line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(1.0, DEEP));
+    let ink = if lit || built { Color32::from_gray(225) } else { Color32::from_gray(170) };
+    icons::paint(painter, icon, Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), ink);
     let hint = if built { hint.to_owned() } else { not_built(hint) };
     response.on_hover_text(hint).clicked() && built
 }
 
-/// The right column: the preview with the clear column beside it, the screen it shows, the
-/// playback controls, and the tabs with the stage section.
+/// The right column, top to bottom: the preview with the clear strip and the layer column
+/// beside it, the bar naming the screen, the playback controls, the tab strip, the stage
+/// section, and the stage message at the bottom.
 fn live_panel(
     ui: &mut egui::Ui,
     show: &Show,
@@ -386,97 +404,172 @@ fn live_panel(
     preview: Option<TextureId>,
     commands: &mut Vec<Command>,
 ) {
-    egui::Panel::right("live").resizable(false).exact_size(320.0).frame(panel_frame(SIDE, 8)).show(ui, |ui| {
+    egui::Panel::right("live").resizable(false).exact_size(300.0).frame(panel_frame(SIDE, 0)).show(ui, |ui| {
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let live = show.live().is_some();
-        let (strip, gap) = (26.0, 6.0);
-        let width = ui.available_width() - strip - gap;
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing = vec2(gap, 1.5);
-            let (rect, _) = ui.allocate_exact_size(vec2(width, width * 9.0 / 16.0), Sense::hover());
-            ui.painter().rect_filled(rect, 4.0, Color32::BLACK);
-            if let Some(texture) = preview {
-                egui::Image::from_texture((texture, rect.size())).paint_at(ui, rect);
-            }
-            if !show.output_enabled() {
-                ui.painter().rect_filled(rect, 4.0, Color32::from_black_alpha(190));
-                ui.painter().text(
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    "Audience output is off",
-                    FontId::proportional(14.0),
-                    OFF,
-                );
-            }
-            let edge = if !show.output_enabled() {
-                OFF
-            } else if live {
-                ON
-            } else {
-                Color32::from_gray(70)
-            };
-            ui.painter().rect_stroke(rect, 4.0, Stroke::new(2.0, edge), StrokeKind::Outside);
+        let full_width = ui.available_width();
 
-            ui.vertical(|ui| {
-                if layer_button(ui, Icon::Close, live, true, "Clear everything from the screen (F1)") {
-                    commands.push(Command::ClearAll);
-                }
-                layer_button(ui, Icon::Note, false, false, "Clear audio");
-                layer_button(ui, Icon::Message, false, false, "Clear messages");
-                layer_button(ui, Icon::Layers, false, false, "Clear props");
-                layer_button(ui, Icon::Megaphone, false, false, "Clear announcements");
-                if layer_button(ui, Icon::Slide, live, true, "Clear the slide: take the words off the screen (C)") {
-                    commands.push(Command::Clear(Layer::Slides));
-                }
-                layer_button(ui, Icon::Picture, false, false, "Clear media");
-                layer_button(ui, Icon::Camera, false, false, "Clear video input");
-            });
-        });
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Audience screen").size(11.5).color(Color32::from_gray(150)))
-                .on_hover_text(not_built("Choose which screen the preview shows"));
-            let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            icons::paint(ui.painter(), Icon::ChevronDown, rect, Color32::from_gray(150));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| match show.live_slide() {
-                Some((presentation, _)) => {
-                    let at = show.live().map_or(0, |l| l.slide + 1);
-                    ui.label(egui::RichText::new(format!("{at} / {}", presentation.slide_count())).size(11.5));
-                }
-                None => {
-                    ui.label(egui::RichText::new("Nothing on screen").size(11.5).color(DIM));
-                }
-            });
-        });
-        if output_stopped {
-            ui.label(egui::RichText::new("The output has stopped. Quit and start again.").strong().color(OFF));
+        // The preview block: preview, then the clear strip, then seven layer buttons.
+        let layer_height = 29.0;
+        let block_height = layer_height * 7.0;
+        let (layer_width, strip_width) = (44.0, 28.0);
+        let (block, _) = ui.allocate_exact_size(vec2(full_width, block_height), Sense::hover());
+        let preview_area = Rect::from_min_max(block.min, pos2(block.max.x - layer_width - strip_width, block.max.y));
+        let strip =
+            Rect::from_min_max(pos2(preview_area.max.x, block.min.y), pos2(block.max.x - layer_width, block.max.y));
+        ui.painter().rect_filled(preview_area, 0.0, WELL);
+        let picture_height = preview_area.width() * 9.0 / 16.0;
+        let picture = Rect::from_center_size(preview_area.center(), vec2(preview_area.width(), picture_height));
+        ui.painter().rect_filled(picture, 0.0, Color32::BLACK);
+        if let Some(texture) = preview {
+            egui::Image::from_texture((texture, picture.size())).paint_at(ui, picture);
         }
-        ui.separator();
+        if !show.output_enabled() {
+            ui.painter().rect_filled(picture, 0.0, Color32::from_black_alpha(190));
+            ui.painter().text(
+                picture.center(),
+                Align2::CENTER_CENTER,
+                "Audience output is off",
+                FontId::proportional(13.0),
+                OFF,
+            );
+        }
 
-        // Playback: which layer's media the controls drive, then the transport.
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.add_space(ui.available_width() / 2.0 - 36.0);
-            ghost(ui, Icon::Slide, "Presentation playback");
-            ghost(ui, Icon::Megaphone, "Announcement playback");
-            ghost(ui, Icon::Note, "Audio playback");
-        });
-        ui.vertical_centered(|ui| ui.label(egui::RichText::new("No media playing").size(11.5).color(DIM)));
-        let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 10.0), Sense::hover());
-        ui.painter().rect_filled(bar.shrink2(vec2(0.0, 3.5)), 2.0, Color32::from_gray(60));
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.label(egui::RichText::new("--:--").size(11.0).color(DIM));
-            ui.add_space((ui.available_width() - 150.0 - 30.0).max(0.0) / 2.0);
-            ghost(ui, Icon::Back, "Back 15 seconds");
-            ghost(ui, Icon::Pause, "Play or pause");
-            ghost(ui, Icon::Forward, "Forward 15 seconds");
-            ghost(ui, Icon::ToEnd, "Jump to the last 30 seconds");
-            ghost(ui, Icon::Flag, "Markers");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(egui::RichText::new("--:--").size(11.0).color(DIM));
+        // The strip is red while anything is on screen; its round button clears everything.
+        ui.painter().rect_filled(strip, 0.0, if live { LIVE_RED } else { WELL });
+        let clear_all = ui.interact(strip, ui.scope_id().with("clear all"), Sense::click());
+        let knob = strip.center();
+        let knob_fill = if clear_all.hovered() || live { Color32::WHITE } else { Color32::from_gray(150) };
+        ui.painter().circle_filled(knob, 9.0, knob_fill);
+        icons::paint(
+            ui.painter(),
+            Icon::Close,
+            Rect::from_center_size(knob, vec2(11.0, 11.0)),
+            if live { LIVE_RED } else { WELL },
+        );
+        if clear_all.on_hover_text("Clear everything from the screen (F1)").clicked() {
+            commands.push(Command::ClearAll);
+        }
+
+        let layers: [(Icon, &str, bool, bool); 7] = [
+            (Icon::Note, "Clear audio", false, false),
+            (Icon::Message, "Clear messages", false, false),
+            (Icon::Layers, "Clear props", false, false),
+            (Icon::Megaphone, "Clear announcements", false, false),
+            (Icon::Slide, "Clear the slide: take the words off the screen (C)", live, true),
+            (Icon::Picture, "Clear media", false, false),
+            (Icon::Camera, "Clear video input", false, false),
+        ];
+        for (index, (icon, hint, lit, built)) in layers.into_iter().enumerate() {
+            let rect = Rect::from_min_size(
+                pos2(block.max.x - layer_width, block.min.y + layer_height * index as f32),
+                vec2(layer_width, layer_height),
+            );
+            if layer_button(ui, rect, icon, lit, built, hint) && icon == Icon::Slide {
+                commands.push(Command::Clear(Layer::Slides));
+            }
+        }
+
+        // The bar that names the screen the preview shows.
+        let (bar, bar_response) = ui.allocate_exact_size(vec2(full_width, 24.0), Sense::hover());
+        ui.painter().rect_filled(bar, 0.0, DEEP);
+        let name = ui.painter().text(
+            bar.left_center() + vec2(22.0, 0.0),
+            Align2::LEFT_CENTER,
+            "Audience screen",
+            FontId::proportional(12.0),
+            Color32::from_gray(170),
+        );
+        icons::paint(
+            ui.painter(),
+            Icon::ChevronDown,
+            Rect::from_center_size(pos2(name.max.x + 10.0, bar.center().y), vec2(9.0, 9.0)),
+            Color32::from_gray(200),
+        );
+        let (status, status_ink) = if output_stopped {
+            ("Output stopped: quit and start again".to_owned(), OFF)
+        } else {
+            match show.live_slide() {
+                Some((presentation, _)) => (
+                    format!("{} / {}", show.live().map_or(0, |l| l.slide + 1), presentation.slide_count()),
+                    Color32::from_gray(170),
+                ),
+                None => (String::new(), DIM),
+            }
+        };
+        ui.painter().text(
+            bar.right_center() - vec2(10.0, 0.0),
+            Align2::RIGHT_CENTER,
+            status,
+            FontId::proportional(11.5),
+            status_ink,
+        );
+        bar_response.on_hover_text(not_built("Choose which screen the preview shows"));
+        let (line, _) = ui.allocate_exact_size(vec2(full_width, 1.0), Sense::hover());
+        ui.painter().rect_filled(line, 0.0, Color32::BLACK);
+
+        // Playback: which layer the controls drive, what is playing, the scrub bar, the buttons.
+        Frame::new().fill(WELL).inner_margin(egui::Margin { left: 22, right: 22, top: 6, bottom: 10 }).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
+            let width = ui.available_width();
+            let (row, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
+            for (index, (icon, what)) in [
+                (Icon::Slide, "Presentation playback"),
+                (Icon::Megaphone, "Announcement playback"),
+                (Icon::Note, "Audio playback"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let centre = row.center() + vec2((index as f32 - 1.0) * 26.0, 0.0);
+                let ink = if index == 0 { TAB_BLUE } else { Color32::from_gray(170) };
+                icons::paint(ui.painter(), icon, Rect::from_center_size(centre, vec2(15.0, 15.0)), ink);
+                ui.interact(
+                    Rect::from_center_size(centre, vec2(22.0, 20.0)),
+                    ui.scope_id().with(("playback", index)),
+                    Sense::hover(),
+                )
+                .on_hover_text(not_built(what));
+            }
+            ui.add_space(4.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new("No media playing").size(12.0).color(Color32::from_gray(150)))
             });
+            ui.add_space(4.0);
+            let (scrub, _) = ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
+            ui.painter().rect_filled(scrub.shrink2(vec2(0.0, 1.0)), 4.0, SCRUB_EMPTY);
+            ui.add_space(2.0);
+            let (row, _) = ui.allocate_exact_size(vec2(width, 26.0), Sense::hover());
+            let time = FontId::proportional(11.5);
+            ui.painter().text(row.left_top(), Align2::LEFT_TOP, "--:--", time.clone(), Color32::from_gray(130));
+            ui.painter().text(row.right_top(), Align2::RIGHT_TOP, "--:--", time, Color32::from_gray(130));
+            for (index, (icon, what)) in [
+                (Icon::Back, "Back 15 seconds"),
+                (Icon::Pause, "Play or pause"),
+                (Icon::Forward, "Forward 15 seconds"),
+                (Icon::ToEnd, "Jump to the last 30 seconds"),
+                (Icon::Flag, "Markers"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let centre = pos2(row.center().x + (index as f32 - 2.0) * 29.0, row.max.y - 9.0);
+                icons::paint(
+                    ui.painter(),
+                    icon,
+                    Rect::from_center_size(centre, vec2(17.0, 17.0)),
+                    Color32::from_gray(190),
+                );
+                ui.interact(
+                    Rect::from_center_size(centre, vec2(26.0, 22.0)),
+                    ui.scope_id().with(("transport", index)),
+                    Sense::hover(),
+                )
+                .on_hover_text(not_built(what));
+            }
         });
-        ui.add_space(4.0);
+        let (line, _) = ui.allocate_exact_size(vec2(full_width, 1.0), Sense::hover());
+        ui.painter().rect_filled(line, 0.0, Color32::BLACK);
 
         // The tabs: audio, stage, timers, messages, props, macros. Stage is the one shown.
         let tabs: [(Face, &str); 6] = [
@@ -487,48 +580,93 @@ fn live_panel(
             (Face::Icon(Icon::Layers), "Props"),
             (Face::Text("[M]"), "Macros"),
         ];
-        let tab_width = ui.available_width() / tabs.len() as f32;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            for (index, (face, name)) in tabs.iter().enumerate() {
-                let (rect, response) = ui.allocate_exact_size(vec2(tab_width, 28.0), Sense::hover());
-                let selected = index == 1;
-                ui.painter().rect_filled(
-                    rect,
-                    0.0,
-                    if selected { ACCENT.gamma_multiply(0.75) } else { Color32::from_gray(46) },
-                );
-                let ink = if selected { Color32::WHITE } else { Color32::from_gray(150) };
-                paint_face(ui, *face, Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), 12.0, ink);
-                response.on_hover_text(not_built(name));
+        let (strip, _) = ui.allocate_exact_size(vec2(full_width, 25.0), Sense::hover());
+        let tab_width = full_width / tabs.len() as f32;
+        for (index, (face, name)) in tabs.iter().enumerate() {
+            let rect = Rect::from_min_size(
+                pos2(strip.min.x + tab_width * index as f32, strip.min.y),
+                vec2(tab_width, strip.height()),
+            );
+            let selected = index == 1;
+            ui.painter().rect_filled(rect, 0.0, if selected { TAB_BLUE } else { TAB });
+            if index > 0 {
+                ui.painter()
+                    .line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(1.0, Color32::from_gray(60)));
             }
-        });
-        ui.add_space(6.0);
+            paint_face(
+                ui,
+                *face,
+                Rect::from_center_size(rect.center(), vec2(15.0, 15.0)),
+                12.0,
+                Color32::from_gray(235),
+            );
+            ui.interact(rect, ui.scope_id().with(("tab", index)), Sense::hover()).on_hover_text(not_built(name));
+        }
 
-        egui::Panel::bottom("stage message").resizable(false).frame(Frame::new()).show(ui, |ui| {
-            section_label(ui, "STAGE MESSAGE");
-            ui.add_space(2.0);
-            let mut nothing = String::new();
-            ui.add_enabled(false, egui::TextEdit::multiline(&mut nothing).desired_rows(3).desired_width(f32::INFINITY));
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Shown on the stage screen").size(10.5).color(DIM));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_enabled(false, egui::Button::new("Show"))
-                        .on_disabled_hover_text(not_built("Show the stage message"));
+        // The stage message sits at the bottom of the column.
+        egui::Panel::bottom("stage message").resizable(false).frame(panel_frame(SIDE, 0)).show(ui, |ui| {
+            let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+            ui.painter().rect_filled(line, 0.0, Color32::from_gray(48));
+            Frame::new().inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 8 }).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
+                ui.label(egui::RichText::new("STAGE MESSAGE").size(11.0).strong().color(Color32::from_gray(160)));
+                let (boxed, _) = ui.allocate_exact_size(vec2(ui.available_width(), 84.0), Sense::hover());
+                ui.painter().rect_filled(boxed, 5.0, FIELD);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Shown on the stage screen").size(10.5).color(Color32::from_gray(150)),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let (button, response) = ui.allocate_exact_size(vec2(52.0, 20.0), Sense::hover());
+                        ui.painter().rect_filled(button, 5.0, Color32::from_gray(110));
+                        ui.painter().text(
+                            button.center(),
+                            Align2::CENTER_CENTER,
+                            "Show",
+                            FontId::proportional(12.0),
+                            Color32::from_gray(200),
+                        );
+                        response.on_hover_text(not_built("Show the stage message"));
+                    });
                 });
             });
         });
 
-        heading_with(ui, "STAGE", &[(Icon::Plus, "Add a stage screen"), (Icon::Pencil, "Edit stage layouts")]);
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(egui::RichText::new("Stage screen").size(12.5).color(DIM));
-                ui.label(egui::RichText::new("No layout").size(11.5).color(DIM));
+        // The stage section.
+        Frame::new().inner_margin(egui::Margin { left: 10, right: 8, top: 5, bottom: 6 }).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(4.0, 6.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("STAGE").size(11.0).strong().color(Color32::from_gray(160)));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ghost(ui, Icon::Plus, "Add a stage screen");
+                    ghost(ui, Icon::Pencil, "Edit stage layouts");
+                });
             });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(72.0, 40.0), Sense::hover());
-                ui.painter().rect_filled(rect, 3.0, Color32::BLACK);
-                ui.painter().rect_stroke(rect, 3.0, Stroke::new(1.0, Color32::from_gray(60)), StrokeKind::Inside);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(egui::RichText::new("Stage screen").size(13.5).color(Color32::from_gray(235)));
+                    ui.label(egui::RichText::new("No layout").size(12.5).color(Color32::from_gray(160)));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let (chevrons, _) = ui.allocate_exact_size(vec2(12.0, 26.0), Sense::hover());
+                    icons::paint(
+                        ui.painter(),
+                        Icon::ChevronUp,
+                        Rect::from_center_size(chevrons.center() - vec2(0.0, 5.0), vec2(8.0, 8.0)),
+                        Color32::from_gray(190),
+                    );
+                    icons::paint(
+                        ui.painter(),
+                        Icon::ChevronDown,
+                        Rect::from_center_size(chevrons.center() + vec2(0.0, 5.0), vec2(8.0, 8.0)),
+                        Color32::from_gray(190),
+                    );
+                    let (thumb, _) = ui.allocate_exact_size(vec2(88.0, 50.0), Sense::hover());
+                    ui.painter().rect_filled(thumb, 0.0, Color32::BLACK);
+                    ui.painter().rect_stroke(thumb, 0.0, Stroke::new(1.0, Color32::from_gray(40)), StrokeKind::Inside);
+                });
             });
         });
     });
@@ -653,64 +791,71 @@ fn slide_area(
         let cell = vec2(width, image_size.y + bar_height);
         egui::ScrollArea::vertical().id_salt("slide grid").auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(12.0);
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(14.0, 14.0);
-                ui.add_space(0.0);
-                for (index, (group, slide)) in presentation.slides().enumerate() {
-                    let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
-                    let here = SlideRef { presentation: show.selected(), slide: index };
-                    if response.clicked() {
-                        commands.push(Command::GoTo(here));
-                    }
-                    // Slides scrolled out of view cost nothing: no thumbnail is asked for.
-                    if !ui.is_rect_visible(rect) {
-                        continue;
-                    }
-                    let image = Rect::from_min_size(rect.min, image_size);
-                    let painter = ui.painter();
-                    painter.rect_filled(image, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, Color32::BLACK);
-                    match thumb(slide) {
-                        Some((texture, overflow)) => {
-                            egui::Image::from_texture((texture, image_size)).paint_at(ui, image);
-                            if overflow {
-                                let mark = image.right_top() + vec2(-14.0, 14.0);
-                                painter.circle_filled(mark, 9.0, Color32::from_rgb(240, 190, 40));
-                                painter.text(
-                                    mark,
-                                    Align2::CENTER_CENTER,
-                                    "!",
-                                    FontId::proportional(14.0),
-                                    Color32::BLACK,
-                                );
-                            }
+            Frame::new().inner_margin(egui::Margin::symmetric(20, 0)).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(14.0, 14.0);
+                    ui.add_space(0.0);
+                    for (index, (group, slide)) in presentation.slides().enumerate() {
+                        let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
+                        let here = SlideRef { presentation: show.selected(), slide: index };
+                        if response.clicked() {
+                            commands.push(Command::GoTo(here));
                         }
-                        None => ui.ctx().request_repaint(),
-                    }
-                    // The bar under the slide: its number and its group, in the group's colour.
-                    let bar = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
-                    painter.rect_filled(bar, CornerRadius { nw: 0, ne: 0, sw: 3, se: 3 }, color32(group.color));
-                    let ink = text_on(group.color);
-                    painter.text(
-                        bar.left_center() + vec2(7.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        (index + 1).to_string(),
-                        FontId::proportional(13.0),
-                        ink,
-                    );
-                    painter.text(
-                        bar.right_center() - vec2(7.0, 0.0),
-                        Align2::RIGHT_CENTER,
-                        group.name.as_str(),
-                        FontId::proportional(12.0),
-                        ink,
-                    );
+                        // Slides scrolled out of view cost nothing: no thumbnail is asked for.
+                        if !ui.is_rect_visible(rect) {
+                            continue;
+                        }
+                        let image = Rect::from_min_size(rect.min, image_size);
+                        let painter = ui.painter();
+                        painter.rect_filled(image, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, Color32::BLACK);
+                        match thumb(slide) {
+                            Some((texture, overflow)) => {
+                                egui::Image::from_texture((texture, image_size)).paint_at(ui, image);
+                                if overflow {
+                                    let mark = image.right_top() + vec2(-14.0, 14.0);
+                                    painter.circle_filled(mark, 9.0, Color32::from_rgb(240, 190, 40));
+                                    painter.text(
+                                        mark,
+                                        Align2::CENTER_CENTER,
+                                        "!",
+                                        FontId::proportional(14.0),
+                                        Color32::BLACK,
+                                    );
+                                }
+                            }
+                            None => ui.ctx().request_repaint(),
+                        }
+                        // The bar under the slide: its number and its group, in the group's colour.
+                        let bar = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
+                        painter.rect_filled(bar, CornerRadius { nw: 0, ne: 0, sw: 3, se: 3 }, color32(group.color));
+                        let ink = text_on(group.color);
+                        painter.text(
+                            bar.left_center() + vec2(7.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            (index + 1).to_string(),
+                            FontId::proportional(13.0),
+                            ink,
+                        );
+                        painter.text(
+                            bar.right_center() - vec2(7.0, 0.0),
+                            Align2::RIGHT_CENTER,
+                            group.name.as_str(),
+                            FontId::proportional(12.0),
+                            ink,
+                        );
 
-                    if show.live() == Some(here) {
-                        painter.rect_stroke(rect, 3.0, Stroke::new(3.0, ACCENT), StrokeKind::Outside);
-                    } else if response.hovered() {
-                        painter.rect_stroke(rect, 3.0, Stroke::new(1.0, Color32::from_gray(150)), StrokeKind::Outside);
+                        if show.live() == Some(here) {
+                            painter.rect_stroke(rect, 3.0, Stroke::new(3.0, ACCENT), StrokeKind::Outside);
+                        } else if response.hovered() {
+                            painter.rect_stroke(
+                                rect,
+                                3.0,
+                                Stroke::new(1.0, Color32::from_gray(150)),
+                                StrokeKind::Outside,
+                            );
+                        }
                     }
-                }
+                });
             });
             ui.add_space(12.0);
         });
