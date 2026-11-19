@@ -62,7 +62,7 @@ ProPresenter.
 - Pictures dropped on the window, or added with the media bin's +, go into the media bin, are
   kept between runs, and can be shown behind the words; right-click one to remove it.
 - A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
-  or bridge starts), Label (Blank Slide, Instrumental, Repeat, Spoken Word), Transition (its own,
+  or bridge starts), Copy and Paste Text Style, Label (Blank Slide, Instrumental, Repeat, Spoken Word), Transition (its own,
   or as all slides), Hot Key (a letter or digit that puts the slide on screen, shown on its
   picture), Go to Next (after a number of seconds, shown on its picture), Disable, Template.
   A song's menu has Loop to First Slide, for a loop of announcements. Undo and Redo (Command-Z, Shift-Command-Z) step back through

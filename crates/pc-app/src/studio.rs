@@ -1031,6 +1031,26 @@ pub fn program_panel(
                 commands.push(Command::Clear(Layer::Media));
             }
         });
+        // The other layers, each on its own.
+        ui.horizontal(|ui| {
+            let third = (width - 16.0) / 3.0;
+            let emphasis = |live: bool| if live { Emphasis::Plain } else { Emphasis::Idle };
+            let layers = [
+                ("Props", "Clear Props: take the props off (F4)", !state.props_live.is_empty(), Layer::Props),
+                (
+                    "Messages",
+                    "Clear Messages: take the message off (F6)",
+                    state.message_live.is_some(),
+                    Layer::Messages,
+                ),
+                ("Audio", "Clear Audio: stop the audio (F5)", state.audio_playing.track.is_some(), Layer::Audio),
+            ];
+            for (name, hint, live, layer) in layers {
+                if block_button(ui, vec2(third, 26.0), name, "", emphasis(live)).on_hover_text(hint).clicked() {
+                    commands.push(Command::Clear(layer));
+                }
+            }
+        });
         ui.add_space(6.0);
 
         // Stepping through the song, with where we are between the buttons.

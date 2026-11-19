@@ -1150,6 +1150,12 @@ fn edit_view(
             EditRequest::SendToBack => {
                 draft.move_to_end_of_stack(false);
             }
+            EditRequest::AlignObjects(edge) => {
+                draft.align_to_slide(theme, edge);
+            }
+            EditRequest::Flip(across) => {
+                draft.flip(across);
+            }
             EditRequest::Lock => {
                 draft.lock(true);
             }
@@ -2199,6 +2205,10 @@ pub enum EditRequest {
     DeselectAll,
     AddText,
     AddShape(pc_model::Shape),
+    /// Line the selection up with the slide: 0 left, 1 centre, 2 right, 3 top, 4 middle, 5 bottom.
+    AlignObjects(u8),
+    /// Mirror the selection: true left to right, false top to bottom.
+    Flip(bool),
 }
 
 /// Each word with a capital first letter, the rest as they are.
@@ -4254,6 +4264,30 @@ fn slide_grid(
                                     }
                                 });
                             });
+                            // The look of the slide's text, to give another slide.
+                            if ui.button("Copy Text Style").clicked() {
+                                state.inspector.copied_style =
+                                    slide.objects.iter().find_map(|object| object.text_style().cloned());
+                                ui.close();
+                            }
+                            if ui
+                                .add_enabled(
+                                    state.inspector.copied_style.is_some(),
+                                    egui::Button::new("Paste Text Style"),
+                                )
+                                .on_hover_text("Give every text box on this slide the look that was copied")
+                                .clicked()
+                                && let Some(copied) = state.inspector.copied_style.clone()
+                            {
+                                let mut styled = slide.clone();
+                                for object in &mut styled.objects {
+                                    if let Some(style) = object.text_style_mut() {
+                                        *style = copied.clone();
+                                    }
+                                }
+                                state.pending_edit = Some((here, styled));
+                                ui.close();
+                            }
                             ui.menu_button("Label", |ui| {
                                 if ui.add(egui::Button::selectable(slide.label.is_none(), "None")).clicked() {
                                     state.slide_request = Some((here, SlideRequest::Label(None)));

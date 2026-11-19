@@ -2713,6 +2713,14 @@ impl App {
                 });
             }
             A::InsertText => state.edit_request = Some(home::EditRequest::AddText),
+            A::AlignObjects(edge) => state.edit_request = Some(home::EditRequest::AlignObjects(edge)),
+            A::Flip(across) => state.edit_request = Some(home::EditRequest::Flip(across)),
+            A::NewWindowedOutput => {
+                // A new audience screen in a window of its own.
+                let name = screens::next_name(&state.screens, screens::Kind::Audience);
+                state.screens.push(screens::Screen::new(name, screens::Output::Window));
+                state.screens_changed = true;
+            }
             A::InsertShape(at) => {
                 if let Some(shape) = pc_model::Shape::ALL.get(usize::from(at)) {
                     state.edit_request = Some(home::EditRequest::AddShape(*shape));
@@ -2757,7 +2765,7 @@ impl App {
             A::Delete => press(egui::Key::Delete, egui::Modifiers::NONE),
             A::Cut => running.egui_state.egui_input_mut().events.push(egui::Event::Cut),
             A::Copy => running.egui_state.egui_input_mut().events.push(egui::Event::Copy),
-            A::Paste => {
+            A::Paste | A::PasteMatchStyle => {
                 if let Some(text) = running.egui_state.clipboard_text().filter(|text| !text.is_empty()) {
                     running.egui_state.egui_input_mut().events.push(egui::Event::Paste(text.replace("\r\n", "\n")));
                 }

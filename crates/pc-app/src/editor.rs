@@ -708,6 +708,49 @@ impl EditDraft {
         self.move_in_stack(id, slot)
     }
 
+    /// Lines the selected objects up with the slide's sides or middle: 0 left, 1 centre, 2
+    /// right across; 3 top, 4 middle, 5 bottom down. Locked objects stay put.
+    pub fn align_to_slide(&mut self, theme: &Theme, edge: u8) -> bool {
+        let ids = self.selection();
+        if ids.is_empty() {
+            return false;
+        }
+        self.record();
+        let slide = self.slide.clone();
+        let mut changed = false;
+        for object in self.slide.objects.iter_mut().filter(|o| ids.contains(&o.id) && !o.locked) {
+            let mut frame = object_frame(&slide, object, theme);
+            match edge {
+                0 => frame.x = 0.0,
+                1 => frame.x = (SLIDE_WIDTH - frame.w) / 2.0,
+                2 => frame.x = SLIDE_WIDTH - frame.w,
+                3 => frame.y = 0.0,
+                4 => frame.y = (SLIDE_HEIGHT - frame.h) / 2.0,
+                _ => frame.y = SLIDE_HEIGHT - frame.h,
+            }
+            changed |= object.frame != Some(frame);
+            object.frame = Some(frame);
+        }
+        changed
+    }
+
+    /// Mirrors the selected objects left to right, or top to bottom.
+    pub fn flip(&mut self, across: bool) -> bool {
+        let ids = self.selection();
+        if ids.is_empty() {
+            return false;
+        }
+        self.record();
+        for object in self.slide.objects.iter_mut().filter(|o| ids.contains(&o.id) && !o.locked) {
+            if across {
+                object.flip_h = !object.flip_h;
+            } else {
+                object.flip_v = !object.flip_v;
+            }
+        }
+        true
+    }
+
     /// Locks the selected objects, or unlocks every object on the slide.
     pub fn lock(&mut self, lock: bool) -> bool {
         let ids = self.selection();
@@ -1171,6 +1214,23 @@ mod tests {
         assert!(d.slide.objects.iter().any(|o| o.id == front && !o.locked));
         assert!(d.lock(false));
         assert!(d.slide.objects.iter().all(|o| !o.locked));
+    }
+
+    #[test]
+    fn the_selection_lines_up_with_the_slide_and_flips() {
+        let mut d = draft();
+        d.add_shape(pc_model::Shape::Star);
+        let theme = Theme::builtin();
+        let frame = |d: &EditDraft| d.selected_object().and_then(|o| o.frame).unwrap();
+        assert!(d.align_to_slide(&theme, 2));
+        assert_eq!(frame(&d).x + frame(&d).w, SLIDE_WIDTH);
+        assert!(d.align_to_slide(&theme, 3));
+        assert_eq!(frame(&d).y, 0.0);
+        assert!(!d.align_to_slide(&theme, 3), "already there");
+        d.flip(true);
+        assert!(d.selected_object().is_some_and(|o| o.flip_h && !o.flip_v));
+        d.undo();
+        assert!(d.selected_object().is_some_and(|o| !o.flip_h));
     }
 
     #[test]

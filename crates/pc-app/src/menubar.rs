@@ -43,6 +43,10 @@ pub enum Action {
     Lock,
     UnlockAll,
     InsertText,
+    AlignObjects(u8),
+    Flip(bool),
+    NewWindowedOutput,
+    PasteMatchStyle,
     InsertPicture,
     /// A shape, by its place in the list of shapes.
     InsertShape(u8),
@@ -185,6 +189,7 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Do(Action::Cut, "Cut", cmd('X')),
             Do(Action::Copy, "Copy", cmd('C')),
             Do(Action::Paste, "Paste", cmd('V')),
+            Do(Action::PasteMatchStyle, "Paste and Match Style", option_shift_cmd('V')),
             Do(Action::Duplicate, "Duplicate", cmd('D')),
             Do(Action::Delete, "Delete", None),
             Do(Action::SelectAll, "Select All", cmd('A')),
@@ -223,6 +228,17 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Do(Action::BringToFront, "Bring to Front", shift_cmd('F')),
             Do(Action::SendBackward, "Send Backward", option_shift_cmd('B')),
             Do(Action::SendToBack, "Send to Back", shift_cmd('B')),
+            Line,
+            Line,
+            Do(Action::AlignObjects(0), "Align Left", None),
+            Do(Action::AlignObjects(1), "Align Centre", None),
+            Do(Action::AlignObjects(2), "Align Right", None),
+            Do(Action::AlignObjects(3), "Align Top", None),
+            Do(Action::AlignObjects(4), "Align Middle", None),
+            Do(Action::AlignObjects(5), "Align Bottom", None),
+            Line,
+            Do(Action::Flip(true), "Flip Horizontally", None),
+            Do(Action::Flip(false), "Flip Vertically", None),
             Line,
             Do(Action::Lock, "Lock", None),
             Do(Action::UnlockAll, "Unlock All", None),
@@ -307,7 +323,14 @@ pub const MENUS: &[(&str, &[Entry])] = &[
     ),
     (
         "Window",
-        &[Entry::System(System::Minimize), Entry::System(System::Zoom), Line, Entry::System(System::BringAllToFront)],
+        &[
+            Entry::System(System::Minimize),
+            Entry::System(System::Zoom),
+            Line,
+            Do(Action::NewWindowedOutput, "New Windowed Output", None),
+            Line,
+            Entry::System(System::BringAllToFront),
+        ],
     ),
     (
         "Help",
@@ -450,6 +473,8 @@ pub fn needs_editor(action: Action) -> bool {
             | A::InsertText
             | A::InsertPicture
             | A::InsertShape(_)
+            | A::AlignObjects(_)
+            | A::Flip(_)
     )
 }
 
