@@ -151,6 +151,10 @@ pub struct EditDraft {
     pub at: SlideRef,
     pub slide: Slide,
     pub selected: Option<Uuid>,
+    /// The text object whose words are being typed on the slide itself, and whether that has
+    /// only just begun (so its field can take the keyboard once).
+    pub typing: Option<Uuid>,
+    pub typing_started: bool,
     pub drag: Option<Drag>,
     undo: Vec<Slide>,
     redo: Vec<Slide>,
@@ -169,6 +173,8 @@ impl EditDraft {
             at,
             slide: slide.clone(),
             selected: None,
+            typing: None,
+            typing_started: false,
             drag: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -184,6 +190,8 @@ impl EditDraft {
             at: SlideRef { presentation: usize::MAX, slide: which },
             slide,
             selected: None,
+            typing: None,
+            typing_started: false,
             drag: None,
             undo: Vec::new(),
             redo: Vec::new(),

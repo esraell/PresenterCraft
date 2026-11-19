@@ -1137,11 +1137,23 @@ fn edit_view(
         let to_slide = |p: egui::Pos2| ((p.x - slide.min.x) / scale, (p.y - slide.min.y) / scale);
         let to_screen = |f: SlideRect| Rect::from_min_size(slide.min + vec2(f.x, f.y) * scale, vec2(f.w, f.h) * scale);
         let response = ui.interact(area, ui.scope_id().with("canvas"), Sense::click_and_drag());
+        let for_theme = state.theme_edit.is_some();
         if let Some(draft) = state.editing.as_mut() {
+            // A press anywhere on the canvas ends typing; the field itself is in front of the
+            // canvas, so presses inside it never reach here.
+            if response.drag_started() || response.clicked() {
+                draft.typing = None;
+            }
             if let Some(pointer) = response.interact_pointer_pos() {
                 let point = to_slide(pointer);
                 if response.drag_started() || response.clicked() {
                     draft.press(theme, point, (HANDLE + 3.0) / scale);
+                }
+                // A double click on a text box starts typing its words right there. A theme's
+                // boxes only ever say "Text", so there is nothing to type in them.
+                if response.double_clicked() && !for_theme && draft.selected.is_some() {
+                    draft.typing = draft.selected;
+                    draft.typing_started = true;
                 }
                 if response.dragged() {
                     let keep_shape = ui.input(|input| input.modifiers.shift);
@@ -1170,7 +1182,7 @@ fn edit_view(
                 let stroke =
                     if selected { Stroke::new(1.5, TAB_BLUE) } else { Stroke::new(1.0, Color32::from_white_alpha(45)) };
                 ui.painter().add(egui::Shape::closed_line(corners, stroke));
-                if selected && object.rotation == 0.0 {
+                if selected && object.rotation == 0.0 && draft.typing != Some(object.id) {
                     for handle in crate::editor::Handle::ALL {
                         let (x, y) = handle.position(frame);
                         let at = slide.min + vec2(x, y) * scale;
@@ -1182,42 +1194,58 @@ fn edit_view(
             }
         }
 
-        // The floating row of object tools. Text works; the rest are in place for later.
-        let tools = [
-            (Face::Text("T"), "Text"),
-            (Face::Icon(Icon::Layers), "Shape"),
-            (Face::Icon(Icon::Pencil), "Draw"),
-            (Face::Icon(Icon::Picture), "Picture"),
-            (Face::Icon(Icon::Camera), "Video"),
-            (Face::Icon(Icon::Live), "Web page"),
-            (Face::Icon(Icon::Look), "Mask"),
-        ];
-        let bar =
-            Rect::from_center_size(pos2(slide.center().x, slide.min.y - 22.0), vec2(tools.len() as f32 * 40.0, 30.0));
-        ui.painter().rect_filled(bar, 6.0, Color32::from_rgb(35, 35, 35));
-        ui.painter().rect_stroke(bar, 6.0, Stroke::new(1.0, Color32::from_gray(70)), StrokeKind::Inside);
-        for (index, (face, name)) in tools.into_iter().enumerate() {
-            let cell = Rect::from_min_size(pos2(bar.min.x + 40.0 * index as f32, bar.min.y), vec2(40.0, 30.0));
-            let built = index == 0;
-            let cell_response = ui.interact(
-                cell,
-                ui.scope_id().with(("object tool", index)),
-                if built { Sense::click() } else { Sense::hover() },
-            );
-            if built && cell_response.hovered() {
-                ui.painter().rect_filled(cell.shrink(3.0), 4.0, Color32::from_gray(70));
-            }
-            let ink = if built { Color32::from_gray(235) } else { Color32::from_gray(130) };
-            paint_face(ui, face, Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), 15.0, ink);
-            if built {
-                if cell_response.on_hover_text("Add a text box").clicked()
-                    && let Some(draft) = state.editing.as_mut()
-                {
-                    draft.add_text();
+        // Typing on the slide: a field over the box being edited, in the box's own place.
+        if let Some(draft) = state.editing.as_mut()
+            && let Some(id) = draft.typing
+        {
+            let started = std::mem::take(&mut draft.typing_started);
+            let placed = draft.slide.objects.iter().find(|o| o.id == id).map(|object| {
+                let pc_model::ObjectKind::Text { style, .. } = &object.kind;
+                let look = theme.text_style(object.role.as_ref(), style);
+                (to_screen(object_frame(&draft.slide, object, theme)), look)
+            });
+            let object = draft.slide.objects.iter_mut().find(|o| o.id == id);
+            match (placed, object) {
+                (Some((rect, look)), Some(object)) => {
+                    let pc_model::ObjectKind::Text { text, .. } = &mut object.kind;
+                    // The box is covered while it is typed in, so only the words being typed
+                    // are read; the slide shows them in its own look as soon as typing ends.
+                    ui.painter().rect_filled(rect, 4.0, Color32::from_rgb(8, 9, 11));
+                    ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.5, crate::studio::ACCENT), StrokeKind::Outside);
+                    let size = look.map_or(20.0, |look| (look.size * scale).clamp(13.0, 34.0));
+                    let field = egui::TextEdit::multiline(text)
+                        .frame(Frame::NONE)
+                        .font(FontId::proportional(size))
+                        .align(Align2::CENTER_TOP)
+                        .desired_width(rect.width() - 16.0);
+                    let field = ui.put(rect.shrink(8.0), field);
+                    if started {
+                        field.request_focus();
+                    }
+                    if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                        draft.typing = None;
+                    }
                 }
-            } else {
-                cell_response.on_hover_text(not_built(name));
+                // The object went away while it was being typed in.
+                _ => draft.typing = None,
             }
+        }
+
+        // The one object tool that works: a text box.
+        let bar = Rect::from_center_size(pos2(slide.center().x, slide.min.y - 22.0), vec2(96.0, 28.0));
+        let add = ui.interact(bar, ui.scope_id().with("add text"), Sense::click());
+        ui.painter().rect_filled(bar, 8.0, if add.hovered() { crate::studio::HOVER } else { crate::studio::CARD });
+        ui.painter().text(
+            bar.center(),
+            Align2::CENTER_CENTER,
+            "Add Text",
+            crate::studio::semibold(12.5),
+            crate::studio::TEXT,
+        );
+        if add.on_hover_text("Add a text box to the slide").clicked()
+            && let Some(draft) = state.editing.as_mut()
+        {
+            draft.add_text();
         }
     });
 

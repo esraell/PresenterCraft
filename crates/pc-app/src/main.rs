@@ -876,6 +876,11 @@ impl App {
                 running.home_state.editing = EditDraft::of(&self.show, at);
                 if let Some(draft) = running.home_state.editing.as_mut() {
                     draft.selected = draft.slide.objects.first().map(|object| object.id);
+                    // Testing aid: as if the box had been double-clicked.
+                    if std::env::var("PRESENTERCRAFT_CAPTURE_EDITOR").as_deref() == Ok("typing") {
+                        draft.typing = draft.selected;
+                        draft.typing_started = true;
+                    }
                 }
                 // Testing aid: which tab of the inspector to show.
                 running.home_state.inspector.tab = match std::env::var("PRESENTERCRAFT_INSPECTOR_TAB").as_deref() {
