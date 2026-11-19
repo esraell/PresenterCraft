@@ -285,7 +285,7 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                     Rect::from_center_size(gear.center(), vec2(15.0, 15.0)),
                     TEXT_DIM,
                 );
-                if response.on_hover_text("Settings (Command-comma)").clicked() {
+                if response.on_hover_text("Screens (Command-comma)").clicked() {
                     state.settings_open = !state.settings_open;
                 }
                 // The audience output: a tally light, its name, and whether it is on.

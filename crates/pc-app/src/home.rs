@@ -10,9 +10,9 @@ use pc_engine::{Command, Show, SlideRef};
 use pc_model::{Rgba, Slide, SlideRect, Theme};
 use pc_render::object_frame;
 
-use crate::displays::{DisplayInfo, Placement};
+use crate::displays::DisplayInfo;
 use crate::editor::EditDraft;
-use crate::output::NdiStatus;
+use crate::screens::{Output, Screen};
 
 use crate::icons::{self, Icon};
 
@@ -98,23 +98,25 @@ pub struct HomeState {
     pub fonts: std::sync::Arc<Vec<String>>,
     /// True while the Bible page is showing in place of the slide grid.
     pub bible_open: bool,
-    /// True while the Settings window is open, and which of its panes is showing.
+    /// True while the Screens window is open.
     pub settings_open: bool,
-    pub settings_pane: usize,
-    /// The displays connected now, kept up to date by the app while Settings is open.
+    /// The displays connected now, kept up to date by the app.
     pub displays: Vec<DisplayInfo>,
-    /// Where the audience output is now.
-    pub output_placement: Placement,
-    /// Where the operator has just asked for the audience output to go. The app takes this
-    /// and moves the output.
-    pub requested_placement: Option<Placement>,
-    /// The name the audience screen is sent under over NDI, and what NDI is doing now.
-    pub ndi_name: String,
-    pub ndi_status: NdiStatus,
+    /// The audience screens, in order. The Screens window changes this list and sets
+    /// `screens_changed`; the app then saves it and moves the pictures.
+    pub screens: Vec<Screen>,
+    pub screens_changed: bool,
+    /// What each screen is doing now, in words, and whether it is being shown somewhere.
+    pub screen_status: Vec<(String, bool)>,
+    /// The screen chosen in the Screens window.
+    pub screen_selected: usize,
+    /// True while every screen shows its own name instead of the show.
+    pub identify: bool,
+    /// An NDI name being typed in the Screens window, and the screen it is for. It is used
+    /// when the field is left, so NDI is not restarted at every letter.
+    pub ndi_draft: Option<(pc_model::Uuid, String)>,
     /// True when this build includes NDI.
     pub ndi_available: bool,
-    /// The operator has just switched NDI on (with a name) or off. The app takes this.
-    pub requested_ndi: Option<Option<String>>,
     /// The Edit view's right-hand panel.
     pub inspector: crate::inspector::InspectorState,
     /// The Theme Editor, while it is open. The layout being worked on is the draft in `editing`.
@@ -552,14 +554,14 @@ impl Default for HomeState {
             fonts: std::sync::Arc::default(),
             bible_open: false,
             settings_open: false,
-            settings_pane: 1,
             displays: Vec::new(),
-            output_placement: Placement::Windowed,
-            requested_placement: None,
-            ndi_name: "PresenterCraft Audience".to_owned(),
-            ndi_status: NdiStatus::Off,
+            screens: crate::screens::starting(None),
+            screens_changed: false,
+            screen_status: Vec::new(),
+            screen_selected: 0,
+            identify: false,
+            ndi_draft: None,
             ndi_available: pc_ndi::NdiOutput::AVAILABLE,
-            requested_ndi: None,
             inspector: crate::inspector::InspectorState::default(),
             theme_edit: None,
             theme_names: Vec::new(),
@@ -590,13 +592,12 @@ impl HomeState {
                 SlideView::Table => "table",
             }
             .to_owned(),
-            ndi_name: self.ndi_name.clone(),
-            ndi_on: !matches!(self.ndi_status, NdiStatus::Off),
             service_height: self.service_height.map(f32::round),
+            ..crate::service::Prefs::default()
         }
     }
 
-    /// Sets the small choices as they were saved. NDI is only asked for here; the app starts it.
+    /// Sets the small choices as they were saved.
     pub fn apply_prefs(&mut self, prefs: &crate::service::Prefs) {
         self.dissolve = prefs.dissolve;
         self.dissolve_time = prefs.dissolve_time.clamp(0.1, 5.0);
@@ -607,12 +608,6 @@ impl HomeState {
             _ => SlideView::Grid,
         };
         self.service_height = prefs.service_height;
-        if !prefs.ndi_name.trim().is_empty() {
-            self.ndi_name = prefs.ndi_name.clone();
-        }
-        if prefs.ndi_on && self.ndi_available {
-            self.requested_ndi = Some(Some(self.ndi_name.clone()));
-        }
     }
 
     /// How long a new picture takes to fade in on the output; zero when slides cut.
@@ -1663,115 +1658,187 @@ fn edit_view(
 }
 
 /// The panes of the Settings window, in order.
-const SETTINGS_PANES: [&str; 10] =
-    ["General", "Screens", "Audio", "Network", "Inputs", "Devices", "Media", "Import", "Groups", "Slide Labels"];
+/// What an output is called in the Screens window's menus.
+fn output_label(output: &Output, displays: &[DisplayInfo]) -> String {
+    match output {
+        Output::Automatic => "Automatic".to_owned(),
+        Output::Display(name) => match displays.iter().find(|display| display.name == *name) {
+            Some(display) => format!("{}   {} x {}", display.name, display.w, display.h),
+            None => format!("{name}   (disconnected)"),
+        },
+        Output::Window => "A window".to_owned(),
+        Output::Ndi(_) => "NDI".to_owned(),
+        Output::Off => "Off".to_owned(),
+    }
+}
 
-/// The Settings window. The Screens pane works: it chooses the display the audience output
-/// is shown on. The other panes are in place and say they are not built yet.
+/// The outputs a screen can be given: automatic, each connected display, a window, NDI, off.
+fn output_choices(current: &Output, screen_name: &str, displays: &[DisplayInfo]) -> Vec<Output> {
+    let mut choices = vec![Output::Automatic];
+    choices.extend(displays.iter().map(|display| Output::Display(display.name.clone())));
+    choices.push(Output::Window);
+    // Choosing NDI again keeps the name already given.
+    choices.push(match current {
+        Output::Ndi(name) => Output::Ndi(name.clone()),
+        _ => Output::Ndi(format!("PresenterCraft {screen_name}")),
+    });
+    choices.push(Output::Off);
+    choices
+}
+
+/// The Screens window: the audience screens, and where each one's picture goes. Every screen
+/// shows the same picture. Changes take effect, and are saved, as they are made.
 fn settings_window(ui: &mut egui::Ui, state: &mut HomeState) {
     if !state.settings_open {
         return;
     }
     let mut open = true;
-    egui::Window::new("Settings")
+    let mut changed = false;
+    egui::Window::new("Screens")
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .fade_in(false)
         .fade_out(false)
-        .default_size([640.0, 420.0])
+        .default_size([640.0, 360.0])
         .anchor(Align2::CENTER_CENTER, [0.0, -20.0])
         .show(ui.ctx(), |ui| {
+            state.screen_selected = state.screen_selected.min(state.screens.len().saturating_sub(1));
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(150.0);
-                    for (index, name) in SETTINGS_PANES.into_iter().enumerate() {
-                        if ui.selectable_label(state.settings_pane == index, name).clicked() {
-                            state.settings_pane = index;
+                    ui.set_width(180.0);
+                    ui.set_min_height(300.0);
+                    section_label(ui, "AUDIENCE");
+                    for index in 0..state.screens.len() {
+                        let shown = state.screen_status.get(index).is_some_and(|(_, shown)| *shown);
+                        let (row, response) = ui.allocate_exact_size(vec2(180.0, 28.0), Sense::click());
+                        let selected = state.screen_selected == index;
+                        if selected {
+                            ui.painter().rect_filled(row, 6.0, crate::studio::ACCENT.gamma_multiply(0.3));
+                        } else if response.hovered() {
+                            ui.painter().rect_filled(row, 6.0, crate::studio::HOVER);
+                        }
+                        // A green light when the screen is being shown somewhere.
+                        let light = if shown { ON } else { Color32::from_gray(90) };
+                        ui.painter().circle_filled(row.left_center() + vec2(12.0, 0.0), 4.0, light);
+                        ui.painter().with_clip_rect(row).text(
+                            row.left_center() + vec2(24.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            state.screens[index].name.as_str(),
+                            FontId::proportional(13.5),
+                            crate::studio::TEXT,
+                        );
+                        if response.clicked() {
+                            state.screen_selected = index;
+                            state.ndi_draft = None;
                         }
                     }
+                    ui.add_space(6.0);
+                    if ui.button("+  Add Screen").on_hover_text("Add a screen. Choose where it goes on the right.").clicked() {
+                        let name = crate::screens::next_name(&state.screens);
+                        // A new screen goes nowhere until it is told where, so nothing
+                        // changes on any display by surprise.
+                        state.screens.push(Screen::new(name, Output::Off));
+                        state.screen_selected = state.screens.len() - 1;
+                        state.ndi_draft = None;
+                        changed = true;
+                    }
+                    ui.add_space(12.0);
+                    ui.checkbox(&mut state.identify, "Identify Screens")
+                        .on_hover_text("Show each screen's name on it, in place of the show, to tell them apart");
                 });
                 ui.separator();
                 ui.vertical(|ui| {
-                    ui.set_width(450.0);
-                    ui.set_min_height(360.0);
-                    let name = SETTINGS_PANES.get(state.settings_pane).copied().unwrap_or("General");
-                    ui.heading(name);
-                    ui.add_space(6.0);
-                    if name == "Screens" {
-                        screens_pane(ui, state);
-                    } else {
-                        ui.label(egui::RichText::new(format!("{name} settings are not built yet.")).color(DIM));
+                    ui.set_width(410.0);
+                    let index = state.screen_selected;
+                    let Some(screen) = state.screens.get(index).cloned() else { return };
+                    egui::Grid::new("screen settings").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                        ui.label("Name");
+                        let mut name = screen.name.clone();
+                        if ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0)).changed() {
+                            state.screens[index].name = name;
+                            changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Output");
+                        egui::ComboBox::from_id_salt("screen output")
+                            .selected_text(output_label(&screen.output, &state.displays))
+                            .width(260.0)
+                            .show_ui(ui, |ui| {
+                                for choice in output_choices(&screen.output, &screen.name, &state.displays) {
+                                    let is_ndi = matches!(choice, Output::Ndi(_));
+                                    let label = output_label(&choice, &state.displays);
+                                    let on = std::mem::discriminant(&choice) == std::mem::discriminant(&screen.output)
+                                        && (is_ndi || choice == screen.output);
+                                    let entry = ui.add_enabled(
+                                        !is_ndi || state.ndi_available,
+                                        egui::Button::selectable(on, label),
+                                    );
+                                    let entry = entry.on_disabled_hover_text("This build of PresenterCraft does not include NDI.");
+                                    if entry.clicked() && choice != screen.output {
+                                        state.screens[index].output = choice;
+                                        state.ndi_draft = None;
+                                        changed = true;
+                                    }
+                                }
+                            });
+                        ui.end_row();
+
+                        if let Output::Ndi(current) = &screen.output {
+                            ui.label("NDI name");
+                            let mut typed = match &state.ndi_draft {
+                                Some((id, typed)) if *id == screen.id => typed.clone(),
+                                _ => current.clone(),
+                            };
+                            let field = ui.add(egui::TextEdit::singleline(&mut typed).desired_width(260.0));
+                            if field.changed() {
+                                state.ndi_draft = Some((screen.id, typed.clone()));
+                            }
+                            // The name is used once the field is left, or Return is pressed.
+                            if field.lost_focus() && state.ndi_draft.take().is_some() && typed != *current {
+                                state.screens[index].output = Output::Ndi(typed);
+                                changed = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(10.0);
+                    if let Some((status, shown)) = state.screen_status.get(index) {
+                        ui.label(egui::RichText::new(status.as_str()).color(if *shown { ON } else { DIM }));
+                    }
+                    let about = match &screen.output {
+                        Output::Automatic => {
+                            "Automatic fills the first display this window is not on. With one display it uses a window."
+                        }
+                        Output::Display(_) => {
+                            "If this display is unplugged the screen shows nowhere until it is back; it never moves to another display."
+                        }
+                        Output::Window => "An ordinary window, for trying things out or for capturing in other software.",
+                        Output::Ndi(_) => {
+                            "Other computers on the network can show this screen, at 1920 x 1080. NDI® is a registered trademark of Vizrt NDI AB."
+                        }
+                        Output::Off => "This screen is kept in the list and shows nowhere.",
+                    };
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(about).size(11.5).color(DIM));
+                    ui.add_space(14.0);
+                    let only = state.screens.len() <= 1;
+                    let remove = ui.add_enabled(!only, egui::Button::new("Remove Screen"));
+                    if remove.on_disabled_hover_text("There is always one screen. Set its output to Off to show nothing.").clicked() {
+                        state.screens.remove(index);
+                        state.screen_selected = index.saturating_sub(1);
+                        state.ndi_draft = None;
+                        changed = true;
                     }
                 });
             });
         });
+    state.screens_changed |= changed;
     if !open {
         state.settings_open = false;
+        state.identify = false;
     }
-}
-
-/// The Screens pane: the audience screen and where it is shown.
-fn screens_pane(ui: &mut egui::Ui, state: &mut HomeState) {
-    section_label(ui, "AUDIENCE SCREEN");
-    ui.label("Show the audience output on:");
-    ui.add_space(2.0);
-    let mut wanted = state.output_placement;
-    for display in &state.displays {
-        let label = format!("Display {}:  {}   {} x {}", display.index + 1, display.name, display.w, display.h);
-        ui.radio_value(&mut wanted, Placement::Fullscreen(display.index), label)
-            .on_hover_text("Fill this display with the audience output");
-    }
-    ui.radio_value(&mut wanted, Placement::Windowed, "A window")
-        .on_hover_text("Show the audience output in an ordinary window, for trying things out");
-    if state.displays.is_empty() {
-        ui.label(egui::RichText::new("No displays were found.").color(DIM));
-    }
-    if wanted != state.output_placement {
-        state.requested_placement = Some(wanted);
-    }
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(
-            "Choosing the display this window is on covers this window. Press Cmd+, to open Settings again.",
-        )
-        .size(11.5)
-        .color(DIM),
-    );
-    ui.add_space(12.0);
-    section_label(ui, "STAGE SCREEN");
-    ui.label(egui::RichText::new("The stage screen is not built yet.").color(DIM));
-    ui.add_space(12.0);
-    section_label(ui, "NDI OUTPUT");
-    if !state.ndi_available {
-        ui.label(egui::RichText::new("This build of PresenterCraft does not include NDI.").color(DIM));
-    } else {
-        let on = !matches!(state.ndi_status, NdiStatus::Off);
-        let mut wanted = on;
-        ui.checkbox(&mut wanted, "Send the audience screen over NDI")
-            .on_hover_text("Other computers on the network can then show the audience screen");
-        ui.horizontal(|ui| {
-            ui.label("Name");
-            let name = ui.add_enabled(!on, egui::TextEdit::singleline(&mut state.ndi_name).desired_width(240.0));
-            name.on_disabled_hover_text("Switch NDI off to change the name");
-        });
-        if wanted != on {
-            state.requested_ndi = Some(wanted.then(|| state.ndi_name.clone()));
-        }
-        match &state.ndi_status {
-            NdiStatus::Off => {
-                ui.label(egui::RichText::new("Off").color(DIM));
-            }
-            NdiStatus::On(name) => {
-                ui.label(egui::RichText::new(format!("Sending as \"{name}\" at 1920 x 1080")).color(ON));
-            }
-            NdiStatus::Failed(reason) => {
-                ui.label(egui::RichText::new(reason.as_str()).color(Color32::from_rgb(255, 150, 120)));
-            }
-        }
-    }
-    ui.add_space(8.0);
-    ui.label(egui::RichText::new("NDI® is a registered trademark of Vizrt NDI AB.").size(10.5).color(DIM));
 }
 
 /// Says which of a song's fonts this computer does not have, and offers a place to look for
@@ -2885,24 +2952,34 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_window_draws_every_pane() {
+    fn the_screens_window_draws_every_kind_of_screen_and_changes_nothing_by_itself() {
         let show = show(2);
         let ctx = egui::Context::default();
-        for pane in 0..SETTINGS_PANES.len() + 1 {
+        let screens = vec![
+            Screen::new("A".to_owned(), Output::Automatic),
+            Screen::new("B".to_owned(), Output::Display("Projector".to_owned())),
+            Screen::new("C".to_owned(), Output::Display("Gone".to_owned())),
+            Screen::new("D".to_owned(), Output::Window),
+            Screen::new("E".to_owned(), Output::Ndi("Main".to_owned())),
+            Screen::new("F".to_owned(), Output::Off),
+        ];
+        for selected in 0..screens.len() + 1 {
             let mut state = HomeState {
                 settings_open: true,
-                settings_pane: pane,
+                screen_selected: selected,
+                screens: screens.clone(),
                 displays: vec![
                     DisplayInfo { index: 0, name: "Built-in".into(), x: 0, y: 0, w: 3024, h: 1964 },
                     DisplayInfo { index: 1, name: "Projector".into(), x: 3024, y: 0, w: 1920, h: 1080 },
                 ],
-                output_placement: Placement::Fullscreen(1),
                 ..HomeState::default()
             };
             count_thumbs(&ctx, &show, &mut state);
-            assert!(state.settings_open, "drawing must not close Settings");
-            assert_eq!(state.requested_placement, None, "nothing was clicked, so nothing is asked for");
+            assert!(state.settings_open, "drawing must not close the window");
+            assert!(!state.screens_changed, "nothing was clicked, so nothing is changed");
+            assert_eq!(state.screens, screens);
         }
+        assert_eq!(output_label(&screens[2].output, &[]), "Gone   (disconnected)");
     }
 
     #[test]

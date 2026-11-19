@@ -10,6 +10,7 @@ mod inspector;
 mod load;
 mod media;
 mod output;
+mod screens;
 mod service;
 mod studio;
 mod theme_store;
@@ -31,10 +32,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::displays::{DisplayInfo, Placement, choose_output};
+use crate::displays::{DisplayInfo, choose_output};
 use crate::editor::EditDraft;
 use crate::home::{HomeState, ThumbOf, home_ui};
 use crate::output::{Frame, OutputHandle, OutputMsg};
+use crate::screens::Placed;
 use crate::thumbs::Thumbs;
 
 /// The GPU device and its queue: one per process, shared with the output thread.
@@ -204,7 +206,15 @@ struct Running {
     home_window: Arc<Window>,
     home_surface: wgpu::Surface<'static>,
     home_config: wgpu::SurfaceConfiguration,
-    output_window: Arc<Window>,
+    /// The windows audience screens are drawn in, one per screen that has one.
+    screen_windows: Vec<ScreenWindow>,
+    /// Windows of screens that were moved elsewhere or switched off, hidden, and dropped a
+    /// little later once the output thread has let go of them.
+    retired: Vec<(Arc<Window>, Instant)>,
+    /// The NDI names the output thread was last told to send under, by screen.
+    ndi_sent: Vec<(Uuid, String)>,
+    /// The names the screens were last told to show while being identified.
+    identify_sent: Option<Vec<(Uuid, String)>>,
     output: Option<OutputHandle>,
     gpu: Gpu,
     egui_ctx: egui::Context,
@@ -222,8 +232,18 @@ struct Running {
     canvas: Option<egui::TextureId>,
     canvas_for: Option<(pc_engine::SlideRef, Slide)>,
     frames: u32,
-    // Kept so the GPU instance outlives its surfaces.
-    _context: RenderContext,
+    /// The GPU instance, which outlives its surfaces and makes the surfaces of new screens,
+    /// and which of its devices is in use.
+    context: RenderContext,
+    device_id: usize,
+}
+
+/// A window an audience screen is drawn in.
+struct ScreenWindow {
+    screen: Uuid,
+    window: Arc<Window>,
+    placed: Placed,
+    name: String,
 }
 
 struct App {
@@ -299,21 +319,9 @@ impl App {
         let home_display =
             home_window.current_monitor().and_then(|home| monitors.iter().position(|m| *m == home)).unwrap_or(0);
 
-        let placement = choose_output(&displays, home_display, self.options.output_display)?;
-        let output_attrs = Window::default_attributes().with_title("PresenterCraft Output");
-        let output_attrs = match placement {
-            Placement::Fullscreen(index) => {
-                output_attrs.with_fullscreen(Some(Fullscreen::Borderless(monitors.get(index).cloned())))
-            }
-            Placement::Windowed => output_attrs.with_inner_size(winit::dpi::LogicalSize::new(960.0, 540.0)),
-        };
-        let output_attrs = behind(output_attrs);
-        let output_window =
-            Arc::new(el.create_window(output_attrs).map_err(|e| format!("Could not open the output window: {e}"))?);
-        output_window.set_cursor_visible(false);
-        if !quiet {
-            home_window.focus_window();
-        }
+        // A display asked for on the command line must exist. The screens' windows are opened
+        // once the app has started.
+        choose_output(&displays, home_display, self.options.output_display)?;
 
         let mut context = RenderContext::new();
         let home_surface = context
@@ -328,21 +336,7 @@ impl App {
         gpu.device.on_uncaptured_error(Arc::new(|error| eprintln!("Graphics error: {error}")));
         let home_format = surface_format(&home_surface, handle.adapter())?;
 
-        let output_surface = context
-            .instance
-            .create_surface(output_window.clone())
-            .map_err(|e| format!("Could not draw to the output window: {e}"))?;
-        let output_format = surface_format(&output_surface, handle.adapter())?;
-        let output_size = output_window.inner_size();
-        let output = OutputHandle::spawn(
-            gpu.device.clone(),
-            gpu.queue.clone(),
-            output_surface,
-            output_format,
-            output_size.width,
-            output_size.height,
-            self.theme.clone(),
-        )?;
+        let output = OutputHandle::spawn(gpu.device.clone(), gpu.queue.clone(), self.theme.clone())?;
 
         let size = home_window.inner_size();
         let home_config = wgpu::SurfaceConfiguration {
@@ -377,7 +371,10 @@ impl App {
             home_window,
             home_surface,
             home_config,
-            output_window,
+            screen_windows: Vec::new(),
+            retired: Vec::new(),
+            ndi_sent: Vec::new(),
+            identify_sent: None,
             output: Some(output),
             gpu,
             egui_ctx,
@@ -389,7 +386,6 @@ impl App {
             preview_changed: Instant::now(),
             home_state: HomeState {
                 fonts: Arc::new(pc_render::Fonts::new().family_names()),
-                output_placement: placement,
                 theme_names: self.themes.iter().map(|theme| theme.name.clone()).collect(),
                 theme_for_songs: self.songs_theme,
                 theme_layouts: self.theme_layouts(),
@@ -422,7 +418,8 @@ impl App {
             canvas: None,
             canvas_for: None,
             frames: 0,
-            _context: context,
+            context,
+            device_id,
         }))
     }
 
@@ -856,45 +853,193 @@ impl App {
         running.home_window.request_redraw();
     }
 
-    /// Switches the NDI output on or off as asked in Settings.
-    fn switch_ndi(&mut self) {
-        let Some(running) = self.running.as_mut() else {
-            return;
-        };
-        let Some(wanted) = running.home_state.requested_ndi.take() else {
-            return;
-        };
-        if let Some(output) = &running.output {
-            output.send(OutputMsg::Ndi(wanted));
-            // NDI needs the current picture as soon as it starts.
-            output.send(OutputMsg::Redraw);
-        }
-        // Starting NDI takes a moment on the output thread; look again shortly to show how it went.
-        running.next_repaint = Some(Instant::now() + Duration::from_millis(400));
+    /// True for a run that only saves a picture, or is asked to stay out of the way.
+    fn quiet(&self) -> bool {
+        self.options.capture_home.is_some() || std::env::var_os("PRESENTERCRAFT_QUIET").is_some()
     }
 
-    /// Moves the audience output to the display chosen in Settings, or into a window.
-    fn move_output(&mut self) {
+    /// Brings the screens' windows and NDI sources in line with the list of screens and the
+    /// displays connected now: opens, moves and closes windows, starts, renames and stops NDI,
+    /// and says what each screen is doing. Cheap when nothing has changed, so it runs every
+    /// frame and notices a display being plugged in or out.
+    fn sync_screens(&mut self, el: &ActiveEventLoop) {
+        let quiet = self.quiet();
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        let Some(wanted) = running.home_state.requested_placement.take() else {
-            return;
-        };
-        match wanted {
-            Placement::Fullscreen(index) => {
-                // The display may have been unplugged since the list was drawn.
-                let Some(monitor) = running.output_window.available_monitors().nth(index) else {
-                    running.home_state.notice = Some(format!("Display {} is no longer connected.", index + 1));
-                    return;
-                };
-                running.output_window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor))));
-            }
-            Placement::Windowed => running.output_window.set_fullscreen(None),
+        let monitors: Vec<_> = el.available_monitors().collect();
+        let displays = display_list(monitors.iter().cloned());
+        let home = running
+            .home_window
+            .current_monitor()
+            .and_then(|home| monitors.iter().position(|m| *m == home))
+            .unwrap_or(0);
+        if displays != running.home_state.displays {
+            running.home_state.displays = displays.clone();
         }
-        running.home_state.output_placement = wanted;
-        // The output's size changes with its display; the window tells the output thread.
-        running.home_window.request_redraw();
+        if std::mem::take(&mut running.home_state.screens_changed)
+            && !quiet
+            && let Err(problem) = screens::save(&running.home_state.screens)
+        {
+            running.home_state.notice = Some(problem);
+        }
+        let list = running.home_state.screens.clone();
+        let mut placed = screens::place_all(&list, &displays, home);
+        // A capture never fills a display or sends over the network, whatever the list says.
+        if quiet {
+            let ndi_aid = std::env::var_os("PRESENTERCRAFT_NDI").is_some();
+            for place in &mut placed {
+                match place {
+                    Placed::Fullscreen(_) => *place = Placed::Window,
+                    Placed::Ndi(_) if !ndi_aid => *place = Placed::Nothing("Not sent during a capture.".to_owned()),
+                    _ => {}
+                }
+            }
+        }
+        running.retired.retain(|(_, since)| since.elapsed() < Duration::from_secs(2));
+        let Running { output, screen_windows, retired, context, device_id, home_state, .. } = running;
+        let Some(output) = output.as_ref() else { return };
+
+        // Windows: keep, move, open or close each one.
+        let mut old = std::mem::take(screen_windows);
+        let mut opened = false;
+        for (screen, place) in list.iter().zip(&placed) {
+            if !matches!(place, Placed::Fullscreen(_) | Placed::Window) {
+                continue;
+            }
+            if let Some(at) = old.iter().position(|have| have.screen == screen.id) {
+                let mut kept = old.remove(at);
+                if kept.placed != *place {
+                    match place {
+                        Placed::Fullscreen(index) => {
+                            kept.window.set_fullscreen(Some(Fullscreen::Borderless(monitors.get(*index).cloned())));
+                        }
+                        _ => kept.window.set_fullscreen(None),
+                    }
+                    kept.window.set_cursor_visible(!matches!(place, Placed::Fullscreen(_)));
+                    kept.placed = place.clone();
+                }
+                if kept.name != screen.name {
+                    kept.window.set_title(&format!("{} — PresenterCraft", screen.name));
+                    kept.name = screen.name.clone();
+                }
+                screen_windows.push(kept);
+                continue;
+            }
+            let attrs = Window::default_attributes().with_title(format!("{} — PresenterCraft", screen.name));
+            let attrs = match place {
+                Placed::Fullscreen(index) => {
+                    attrs.with_fullscreen(Some(Fullscreen::Borderless(monitors.get(*index).cloned())))
+                }
+                _ => attrs.with_inner_size(winit::dpi::LogicalSize::new(960.0, 540.0)),
+            };
+            let attrs = if quiet {
+                attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom)
+            } else {
+                attrs
+            };
+            let window = match el.create_window(attrs) {
+                Ok(window) => Arc::new(window),
+                Err(e) => {
+                    home_state.notice = Some(format!("Could not open a window for \"{}\": {e}", screen.name));
+                    continue;
+                }
+            };
+            window.set_cursor_visible(!matches!(place, Placed::Fullscreen(_)));
+            let surface = match context.instance.create_surface(window.clone()) {
+                Ok(surface) => surface,
+                Err(e) => {
+                    home_state.notice = Some(format!("Could not draw to \"{}\": {e}", screen.name));
+                    continue;
+                }
+            };
+            let format = match surface_format(&surface, context.devices[*device_id].adapter()) {
+                Ok(format) => format,
+                Err(e) => {
+                    home_state.notice = Some(e);
+                    continue;
+                }
+            };
+            let size = window.inner_size();
+            output.send(OutputMsg::AddSurface { id: screen.id, surface, format, w: size.width, h: size.height });
+            screen_windows.push(ScreenWindow {
+                screen: screen.id,
+                window,
+                placed: place.clone(),
+                name: screen.name.clone(),
+            });
+            opened = true;
+        }
+        for gone in old {
+            output.send(OutputMsg::RemoveSurface(gone.screen));
+            gone.window.set_visible(false);
+            retired.push((gone.window, Instant::now()));
+        }
+        // A new window takes the keyboard; give it back to the operator.
+        if opened && !quiet {
+            running.home_window.focus_window();
+        }
+        let Some(running) = self.running.as_mut() else { return };
+        let Running { output, ndi_sent, identify_sent, home_state, .. } = running;
+        let Some(output) = output.as_ref() else { return };
+
+        // NDI: start, rename and stop sources.
+        let wanted: Vec<(Uuid, String)> = list
+            .iter()
+            .zip(&placed)
+            .filter_map(|(screen, place)| match place {
+                Placed::Ndi(name) => Some((screen.id, name.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut ndi_moved = false;
+        for (id, name) in &wanted {
+            if !ndi_sent.contains(&(*id, name.clone())) {
+                output.send(OutputMsg::SetNdi { id: *id, name: Some(name.clone()) });
+                ndi_moved = true;
+            }
+        }
+        for (id, _) in ndi_sent.iter() {
+            if !wanted.iter().any(|(still, _)| still == id) {
+                output.send(OutputMsg::SetNdi { id: *id, name: None });
+                ndi_moved = true;
+            }
+        }
+        *ndi_sent = wanted;
+        if ndi_moved {
+            // A new source needs the current picture at once.
+            output.send(OutputMsg::Redraw);
+        }
+
+        // Identify Screens: every screen shows its own name while it is ticked.
+        let names = home_state.identify.then(|| list.iter().map(|screen| (screen.id, screen.name.clone())).collect());
+        if names != *identify_sent {
+            output.send(OutputMsg::Identify(names.clone().unwrap_or_default()));
+            *identify_sent = names;
+        }
+
+        // What each screen is doing, for the Screens window.
+        let mut starting = false;
+        home_state.screen_status = list
+            .iter()
+            .zip(&placed)
+            .map(|(screen, place)| match place {
+                Placed::Ndi(_) => match output.ndi_status(screen.id) {
+                    output::NdiStatus::On(name) => (format!("Sending as \"{name}\" at 1920 x 1080"), true),
+                    output::NdiStatus::Failed(reason) => (reason, false),
+                    output::NdiStatus::Off => {
+                        starting = true;
+                        ("Starting NDI…".to_owned(), false)
+                    }
+                },
+                Placed::Fullscreen(_) | Placed::Window => (screens::describe(place, &displays), true),
+                Placed::Nothing(_) => (screens::describe(place, &displays), false),
+            })
+            .collect();
+        // Starting NDI takes a moment on the output thread; look again shortly.
+        if starting || ndi_moved {
+            running.next_repaint = Some(Instant::now() + Duration::from_millis(400));
+        }
     }
 
     /// Redraws the Edit view's picture of the slide when the slide being edited changes.
@@ -929,12 +1074,6 @@ impl App {
         } = running;
         let raw_input = egui_state.take_egui_input(home_window);
         thumbs.begin_frame();
-        if running.home_state.settings_open {
-            running.home_state.displays = display_list(home_window.available_monitors());
-        }
-        if let Some(output) = &running.output {
-            running.home_state.ndi_status = output.ndi_status();
-        }
         if running.output.as_ref().is_none_or(OutputHandle::is_finished) {
             running.home_state.output_stopped = true;
         }
@@ -1155,14 +1294,34 @@ impl ApplicationHandler for App {
                 self.bible_page_saved = running.home_state.bible.choices();
                 let prefs = service::load_prefs();
                 running.home_state.apply_prefs(&prefs);
-                // NDI counts as on from the moment it is asked for, so the saved choice is kept.
+                // The screens, as they were left. The first start after screens could be
+                // listed makes the list from how the output was set up before: one screen
+                // placed automatically, and one sent over NDI if NDI was on.
+                let quiet = self.quiet();
+                running.home_state.screens = screens::load().unwrap_or_else(|| {
+                    let ndi = (prefs.ndi_on && running.home_state.ndi_available).then_some(prefs.ndi_name.as_str());
+                    let made = screens::starting(ndi);
+                    if !quiet {
+                        let _ = screens::save(&made);
+                    }
+                    made
+                });
                 self.prefs_saved = Some(prefs);
-                // Testing aid: start with NDI on under this name.
+                // A display asked for on the command line takes the first screen, this run only.
+                if let Some(index) = self.options.output_display
+                    && let Some(display) = display_list(el.available_monitors()).into_iter().find(|d| d.index == index)
+                    && let Some(first) = running.home_state.screens.first_mut()
+                {
+                    first.output = screens::Output::Display(display.name);
+                }
+                // Testing aid: also send over NDI under this name, this run only.
                 if let Ok(name) = std::env::var("PRESENTERCRAFT_NDI") {
-                    running.home_state.requested_ndi = Some(Some(name));
+                    let screen = screens::Screen::new("NDI".to_owned(), screens::Output::Ndi(name));
+                    running.home_state.screens.push(screen);
                 }
                 running.home_window.request_redraw();
                 self.running = Some(running);
+                self.sync_screens(el);
                 // Testing aid: start with the first slide on screen.
                 if std::env::var_os("PRESENTERCRAFT_GO_LIVE").is_some() {
                     self.apply(vec![Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 0 })]);
@@ -1184,12 +1343,21 @@ impl ApplicationHandler for App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        if id == running.output_window.id() {
+        if let Some(screen) = running.screen_windows.iter().find(|have| have.window.id() == id).map(|have| have.screen)
+        {
             match event {
                 WindowEvent::Resized(size) => {
                     if let Some(output) = &running.output {
-                        output.send(OutputMsg::Resized(size.width, size.height));
+                        output.send(OutputMsg::Resized(screen, size.width, size.height));
                     }
+                }
+                // Closing a screen's window switches that screen off; it stays in the list.
+                WindowEvent::CloseRequested => {
+                    if let Some(closed) = running.home_state.screens.iter_mut().find(|have| have.id == screen) {
+                        closed.output = screens::Output::Off;
+                    }
+                    running.home_state.screens_changed = true;
+                    running.home_window.request_redraw();
                 }
                 // Uncovered again: a frame skipped while the window was hidden must not leave old
                 // words on screen. Do not also redraw on RedrawRequested: presenting a frame makes
@@ -1291,11 +1459,9 @@ impl ApplicationHandler for App {
                         self.bible_page_saved = now;
                     }
                 }
-                // So are the small choices: transition, view, slide size, NDI.
+                // So are the small choices: transition, view, slide size.
                 if let Some(running) = self.running.as_mut() {
-                    let mut now = running.home_state.prefs();
-                    // While NDI is being started it is not "on" yet; keep what was asked for.
-                    now.ndi_on |= running.home_state.requested_ndi.as_ref().is_some_and(Option::is_some);
+                    let now = running.home_state.prefs();
                     if self.prefs_saved.as_ref() != Some(&now) && self.frames_since_start > 10 {
                         if let Err(problem) = service::save_prefs(&now) {
                             running.home_state.notice = Some(problem);
@@ -1312,8 +1478,7 @@ impl ApplicationHandler for App {
                     running.home_state.notice = Some(problem);
                 }
                 self.update_canvas();
-                self.move_output();
-                self.switch_ndi();
+                self.sync_screens(el);
                 // Leaving the Edit view writes the songs changed there straight away.
                 let editing = self.running.as_ref().is_some_and(|r| r.home_state.editing.is_some());
                 if !editing && !self.unsaved.is_empty() {

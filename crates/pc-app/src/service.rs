@@ -220,8 +220,11 @@ pub struct Prefs {
     /// How many slides fit across the grid, and the view: `grid`, `easy` or `table`.
     pub columns: usize,
     pub slide_view: String,
-    /// The name the audience screen is sent under over NDI, and whether it was on.
+    /// From before screens were listed: the name the screen was sent under over NDI, and
+    /// whether it was on. Read once, to make that screen; no longer written.
+    #[serde(skip_serializing)]
     pub ndi_name: String,
+    #[serde(skip_serializing)]
     pub ndi_on: bool,
     /// How tall the service's part of the left column was dragged to be. `None` until it is.
     pub service_height: Option<f32>,
@@ -384,7 +387,7 @@ mod tests {
 
     #[test]
     fn preferences_read_back_and_a_missing_one_takes_its_usual_value() {
-        let prefs = Prefs { dissolve: false, columns: 6, ndi_on: true, ..Prefs::default() };
+        let prefs = Prefs { dissolve: false, columns: 6, service_height: Some(300.0), ..Prefs::default() };
         let again: Prefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
         assert_eq!(again, prefs);
         // A file from an older version, with fewer choices in it, still reads.
