@@ -229,7 +229,15 @@ fn render_layers(media: Option<&pc_render::Picture>, slide: Option<&Slide>, w: u
     let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
     let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
     let mut painter = Painter::new(device).expect("painter");
-    let layers = pc_render::Layers { media, slide, overlay: None, time: 0.0, backdrop: None, mask: [0.0; 4] };
+    let layers = pc_render::Layers {
+        media_fit: pc_model::ImageFit::Fill,
+        media,
+        slide,
+        overlay: None,
+        time: 0.0,
+        backdrop: None,
+        mask: [0.0; 4],
+    };
     let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), w, h);
     let texture = target_texture(device, w, h);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -513,8 +521,15 @@ fn scrolling_text_starts_in_its_box_and_moves_with_time() {
         let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
         let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
         let mut painter = Painter::new(device).expect("painter");
-        let layers =
-            pc_render::Layers { media: None, slide: Some(&s), overlay: None, time, backdrop: None, mask: [0.0; 4] };
+        let layers = pc_render::Layers {
+            media_fit: pc_model::ImageFit::Fill,
+            media: None,
+            slide: Some(&s),
+            overlay: None,
+            time,
+            backdrop: None,
+            mask: [0.0; 4],
+        };
         let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), 640, 360);
         let texture = target_texture(device, 640, 360);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -543,8 +558,15 @@ fn a_themes_picture_is_behind_its_slides_until_media_shows() {
         let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
         let mut painter = Painter::new(device).expect("painter");
         let empty = Slide::new(Vec::new());
-        let layers =
-            pc_render::Layers { media, slide: Some(&empty), overlay: None, time: 0.0, backdrop: None, mask: [0.0; 4] };
+        let layers = pc_render::Layers {
+            media_fit: pc_model::ImageFit::Fill,
+            media,
+            slide: Some(&empty),
+            overlay: None,
+            time: 0.0,
+            backdrop: None,
+            mask: [0.0; 4],
+        };
         let built = pc_render::build_layers(&mut Fonts::new(), &layers, &theme, 160, 90);
         let texture = target_texture(device, 160, 90);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -567,6 +589,7 @@ fn a_screens_colour_fills_the_empty_room_and_its_covered_edges() {
     let teal = Rgba::rgb(0, 128, 128);
     // A 4:3 target: the slide is letterboxed, with room above and below it.
     let layers = pc_render::Layers {
+        media_fit: pc_model::ImageFit::Fill,
         media: Some(&white),
         slide: None,
         overlay: None,

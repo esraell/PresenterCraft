@@ -31,21 +31,98 @@ fn list_file() -> Option<PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("media.json"))
 }
 
-/// The pictures that were in the media bin when the app last closed, by their files.
-pub fn load_list() -> Vec<PathBuf> {
-    list_file()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|text| serde_json::from_str(&text).ok())
+/// A file in the media bin and how it is shown.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Entry {
+    pub path: PathBuf,
+    #[serde(default = "filled")]
+    pub fit: pc_model::ImageFit,
+    #[serde(default = "yes")]
+    pub looping: bool,
+}
+
+fn filled() -> pc_model::ImageFit {
+    pc_model::ImageFit::Fill
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// A named group of the media bin's files, such as "Backgrounds" or "Announcements". A file
+/// can be in any number of them.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Playlist {
+    pub id: pc_model::Uuid,
+    pub name: String,
+    pub files: Vec<PathBuf>,
+}
+
+impl Playlist {
+    pub fn new(name: String) -> Playlist {
+        Playlist { id: pc_model::Uuid::new_v4(), name, files: Vec::new() }
+    }
+
+    pub fn has(&self, path: &Path) -> bool {
+        self.files.iter().any(|have| have == path)
+    }
+
+    /// Puts a file in, or takes it out if it is in.
+    pub fn toggle(&mut self, path: &Path) {
+        if self.has(path) {
+            self.files.retain(|have| have != path);
+        } else {
+            self.files.push(path.to_owned());
+        }
+    }
+}
+
+/// A name no media playlist has: "New Playlist", "New Playlist 2", and so on.
+pub fn new_playlist_name(playlists: &[Playlist]) -> String {
+    let taken = |name: &str| playlists.iter().any(|playlist| playlist.name == name);
+    std::iter::once("New Playlist".to_owned())
+        .chain((2..).map(|n| format!("New Playlist {n}")))
+        .find(|name| !taken(name))
         .unwrap_or_default()
 }
 
-/// Remembers which pictures are in the media bin, for the next start.
-pub fn save_list(paths: &[PathBuf]) -> Result<(), String> {
+/// What `media.json` keeps: the files in the media bin with how each is shown, and the
+/// media playlists.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct List {
+    pub entries: Vec<Entry>,
+    #[serde(default)]
+    pub playlists: Vec<Playlist>,
+}
+
+impl List {
+    /// Reads the file's words. A file from before media settings is a plain list of files.
+    pub fn from_json(text: &str) -> Option<List> {
+        if let Ok(paths) = serde_json::from_str::<Vec<PathBuf>>(text) {
+            let entries = paths.into_iter().map(|path| Entry { path, fit: filled(), looping: true }).collect();
+            return Some(List { entries, playlists: Vec::new() });
+        }
+        serde_json::from_str(text).ok()
+    }
+}
+
+/// The media bin as it was when the app last closed.
+pub fn load_list() -> List {
+    list_file()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| List::from_json(&text))
+        .unwrap_or_default()
+}
+
+/// Remembers the media bin, for the next start.
+pub fn save_list(list: &List) -> Result<(), String> {
     let path = list_file().ok_or_else(|| "Could not find where to keep settings on this computer.".to_owned())?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("Could not make the app's folder: {e}"))?;
     }
-    std::fs::write(&path, serde_json::to_string_pretty(paths).unwrap_or_default())
+    let partial = path.with_extension("json.part");
+    std::fs::write(&partial, serde_json::to_string_pretty(list).unwrap_or_default())
+        .and_then(|()| std::fs::rename(&partial, &path))
         .map_err(|e| format!("Could not save the media list: {e}"))
 }
 /// Videos by their names: the ones the system plays, and others it doesn't.
@@ -115,6 +192,21 @@ mod tests {
 
     fn write_png(path: &Path, width: u32, height: u32) {
         image::RgbaImage::from_pixel(width, height, image::Rgba([10, 200, 30, 255])).save(path).unwrap();
+    }
+
+    #[test]
+    fn an_old_media_list_still_loads_and_a_new_one_keeps_settings_and_playlists() {
+        let old = List::from_json(r#"["/a/sky.png", "/a/loop.mp4"]"#).unwrap();
+        assert_eq!(old.entries.len(), 2);
+        assert!(old.entries.iter().all(|entry| entry.fit == pc_model::ImageFit::Fill && entry.looping));
+        let mut backgrounds = Playlist::new(new_playlist_name(&[]));
+        backgrounds.toggle(Path::new("/a/sky.png"));
+        assert_eq!(new_playlist_name(std::slice::from_ref(&backgrounds)), "New Playlist 2");
+        let list = List {
+            entries: vec![Entry { path: "/a/sky.png".into(), fit: pc_model::ImageFit::Fit, looping: false }],
+            playlists: vec![backgrounds],
+        };
+        assert_eq!(List::from_json(&serde_json::to_string(&list).unwrap()), Some(list));
     }
 
     #[test]

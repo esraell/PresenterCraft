@@ -69,7 +69,10 @@ ProPresenter.
   Pictures can be PNG, JPEG, WebP, GIF, BMP, and on the Mac also HEIC (iPhone photos), TIFF,
   Photoshop, AVIF and JPEG 2000. Videos (MP4, MOV and M4V, including HEVC and ProRes) play on
   the Mac with their sound, through macOS's own player, and loop; under the Program preview
-  they can be paused, started again, moved through, looped or not, and muted.
+  they can be paused, started again, moved through, looped or not, and muted. An item's
+  right-click menu sets its Scaling (Scale to Fill, Scale to Fit, Stretch to Fill), whether a
+  video loops, and the media playlists it is in; the menu beside MEDIA shows All Media or one
+  playlist, and makes, renames and deletes them.
 - A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
   or bridge starts), Copy and Paste Text Style, Label (Blank Slide, Instrumental, Repeat, Spoken Word), Transition (its own,
   or as all slides), Hot Key (a letter or digit that puts the slide on screen, shown on its
@@ -188,8 +191,7 @@ Among the things PresenterCraft can't do yet:
   time, and a song can loop).
 - ProPresenter's other transitions, chiefly the 3D ones (Cube, Page Curl, Swing and the like),
   and transitions for props of their own.
-- Media playlists and settings for each media item (scaling, looping, in and out points); audio
-  playlists, shuffle and crossfade.
+- In and out points for media; audio playlists, shuffle and crossfade.
 - The Announcements layer, Clear Groups, and Show Slide on Stage Screens Only.
 - Saved looks to switch between, masks other than covered edges, corner pin, alpha and NDI
   modes, and a theme for each screen.

@@ -195,6 +195,17 @@ impl Show {
         self.media.len() - 1
     }
 
+    /// Changes how a media item is shown. If it is on screen, the screens show the change.
+    pub fn set_media_look(&mut self, index: usize, fit: pc_model::ImageFit, looping: bool) -> Changes {
+        let Some(item) = self.media.get_mut(index) else { return Changes::default() };
+        if item.fit == fit && item.looping == looping {
+            return Changes::default();
+        }
+        item.fit = fit;
+        item.looping = looping;
+        Changes { media: self.live_media == Some(index), ..Changes::default() }
+    }
+
     /// Takes a picture out of the media bin. If it was on screen it is taken off.
     pub fn remove_media(&mut self, index: usize) -> Changes {
         if index >= self.media.len() {

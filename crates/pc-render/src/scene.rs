@@ -29,8 +29,9 @@ pub fn fit_rect(target_w: u32, target_h: u32) -> (f64, f64, f64, f64) {
 /// What is on screen, bottom layer first. A layer that is `None` is clear.
 #[derive(Clone, Copy, Default)]
 pub struct Layers<'a> {
-    /// A picture behind the words. It fills the slide, cropped at the edges if its shape differs.
+    /// A picture behind the words, placed on the slide as `media_fit` says.
     pub media: Option<&'a Picture>,
+    pub media_fit: ImageFit,
     pub slide: Option<&'a Slide>,
     /// Words over everything else, such as a message. Its objects carry their own places and
     /// looks.
@@ -49,7 +50,15 @@ pub struct Layers<'a> {
 pub fn build_scene(fonts: &mut Fonts, slide: Option<&Slide>, theme: &Theme, target_w: u32, target_h: u32) -> Built {
     build_layers(
         fonts,
-        &Layers { media: None, slide, overlay: None, time: 0.0, backdrop: None, mask: [0.0; 4] },
+        &Layers {
+            media_fit: pc_model::ImageFit::Fill,
+            media: None,
+            slide,
+            overlay: None,
+            time: 0.0,
+            backdrop: None,
+            mask: [0.0; 4],
+        },
         theme,
         target_w,
         target_h,
@@ -80,11 +89,25 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
     if let Some(picture) = layers.media.or(theme_picture.as_ref()) {
         let (slide_w, slide_h) = (f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
         let (pic_w, pic_h) = (f64::from(picture.width()), f64::from(picture.height()));
-        // Scale the picture to cover the slide, centre it, and cut off what hangs over.
-        let cover = (slide_w / pic_w).max(slide_h / pic_h);
-        let offset = ((slide_w - pic_w * cover) / 2.0, (slide_h - pic_h * cover) / 2.0);
+        // The theme's picture always covers the slide; media as it is set to.
+        let fit = if layers.media.is_some() { layers.media_fit } else { ImageFit::Fill };
+        let (scale_x, scale_y) = match fit {
+            ImageFit::Fill => {
+                let cover = (slide_w / pic_w).max(slide_h / pic_h);
+                (cover, cover)
+            }
+            ImageFit::Fit => {
+                let inside = (slide_w / pic_w).min(slide_h / pic_h);
+                (inside, inside)
+            }
+            ImageFit::Stretch => (slide_w / pic_w, slide_h / pic_h),
+        };
+        let offset = ((slide_w - pic_w * scale_x) / 2.0, (slide_h - pic_h * scale_y) / 2.0);
         scene.push_clip_layer(Fill::NonZero, to_target, &Rect::new(0.0, 0.0, slide_w, slide_h));
-        scene.draw_image(&picture.image, to_target * Affine::translate(offset) * Affine::scale(cover));
+        scene.draw_image(
+            &picture.image,
+            to_target * Affine::translate(offset) * Affine::scale_non_uniform(scale_x, scale_y),
+        );
         scene.pop_layer();
     }
 

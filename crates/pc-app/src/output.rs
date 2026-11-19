@@ -22,6 +22,8 @@ pub struct Frame {
     pub media: Option<Picture>,
     /// The video playing behind the words, where its pictures are taken from.
     pub video: Option<pc_video::Frames>,
+    /// How the media fills the screen.
+    pub media_fit: pc_model::ImageFit,
     pub slide: Option<Arc<Slide>>,
     pub theme: Arc<Theme>,
     /// When false the output is black whatever the slide is.
@@ -213,6 +215,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         frame: Frame {
             media: None,
             video: None,
+            media_fit: pc_model::ImageFit::Fill,
             slide: None,
             theme,
             enabled: true,
@@ -553,6 +556,7 @@ impl Output {
         };
         let backdrop = (look.color != pc_model::Rgba::BLACK).then_some(look.color);
         let layers = Layers {
+            media_fit: frame.media_fit,
             media: media.as_ref(),
             slide: slide.as_deref(),
             overlay: overlay.as_deref(),
@@ -646,16 +650,19 @@ impl Output {
         }
     }
 
-    /// Testing aid: saves what the audience screens show, once, a few seconds after the start,
-    /// to the file PRESENTERCRAFT_CAPTURE_OUTPUT names (PRESENTERCRAFT_CAPTURE_OUTPUT_AFTER
-    /// seconds, 3 if not given).
+    /// Testing aid: saves what the audience screens show, once, when something is on them a few
+    /// seconds after the start, to the file PRESENTERCRAFT_CAPTURE_OUTPUT names
+    /// (PRESENTERCRAFT_CAPTURE_OUTPUT_AFTER seconds, 3 if not given).
     fn capture(&mut self, frame: &Frame) {
         static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let Some(path) = std::env::var_os("PRESENTERCRAFT_CAPTURE_OUTPUT") else { return };
         let after = std::env::var("PRESENTERCRAFT_CAPTURE_OUTPUT_AFTER").ok().and_then(|s| s.parse().ok());
         let started = *STARTED.get_or_init(Instant::now);
+        // Taken once something is on screen.
+        let showing = frame.slide.is_some() || frame.media.is_some();
         if started.elapsed().as_secs_f32() < after.unwrap_or(3.0)
+            || !showing
             || DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             return;

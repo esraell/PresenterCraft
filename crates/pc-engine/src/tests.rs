@@ -172,7 +172,7 @@ fn a_song_without_slides_is_skipped() {
 }
 
 fn picture(name: &str) -> pc_model::MediaItem {
-    pc_model::MediaItem { id: pc_model::Uuid::new_v4(), name: name.to_owned(), path: name.into() }
+    pc_model::MediaItem::new(name.to_owned(), name.into())
 }
 
 #[test]
@@ -302,7 +302,7 @@ fn removing_or_adding_a_slide_before_the_live_one_keeps_it_live() {
 fn removing_a_picture_keeps_the_one_on_screen_or_takes_it_off() {
     let mut s = show();
     for name in ["a", "b", "c"] {
-        s.add_media(pc_model::MediaItem { id: pc_model::Uuid::new_v4(), name: name.to_owned(), path: name.into() });
+        s.add_media(pc_model::MediaItem::new(name.to_owned(), name.into()));
     }
     s.apply(Command::ShowMedia(2));
     s.remove_media(0);

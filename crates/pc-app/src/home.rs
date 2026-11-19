@@ -180,6 +180,11 @@ pub struct HomeState {
     pub library_collapsed: bool,
     /// The left column lists a playlist's items, not a library's songs.
     pub playlist_open: bool,
+    /// The media bin's playlists, the one shown (all media when none), and whether they changed
+    /// since they were last saved.
+    pub media_playlists: Vec<crate::media::Playlist>,
+    pub media_playlist_shown: Option<pc_model::Uuid>,
+    pub media_playlists_changed: bool,
     /// The PLAYLISTS rows are folded away.
     pub playlists_collapsed: bool,
     /// A library being renamed in its row, and the name typed so far.
@@ -769,6 +774,9 @@ impl Default for HomeState {
             library_collapsed: false,
             playlist_open: false,
             playlists_collapsed: false,
+            media_playlists: Vec::new(),
+            media_playlist_shown: None,
+            media_playlists_changed: false,
             renaming_library: None,
             renaming_header: None,
             continuous: false,
@@ -2313,6 +2321,8 @@ pub enum AudioRequest {
 pub enum MediaRequest {
     Choose,
     Remove(usize),
+    /// How an item fills the screen, and whether a video loops.
+    Look(usize, pc_model::ImageFit, bool),
 }
 
 /// A change to a song asked for from its right-click menu in the library.
@@ -4722,7 +4732,7 @@ mod tests {
     fn show_with_media() -> Show {
         let mut show = show(3);
         for name in ["a.png", "b.png"] {
-            show.add_media(pc_model::MediaItem { id: pc_model::Uuid::new_v4(), name: name.into(), path: name.into() });
+            show.add_media(pc_model::MediaItem::new(name.into(), name.into()));
         }
         show.apply(Command::ShowMedia(1));
         show

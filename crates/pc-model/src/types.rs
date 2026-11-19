@@ -773,14 +773,25 @@ impl Presentation {
     }
 }
 
-/// A picture (later a video) that can be shown behind the words. Only what identifies it is
-/// kept here; the pixels are loaded by the app.
+/// A picture or video that can be shown behind the words, and how it is shown. Only what
+/// identifies it is kept here; the pixels are loaded by the app.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MediaItem {
     pub id: Uuid,
     /// The file's name, shown under its thumbnail.
     pub name: String,
     pub path: std::path::PathBuf,
+    /// How it fills the screen: cropped to fill it (the usual), fitted inside it, or stretched.
+    pub fit: ImageFit,
+    /// A video starts again at its end; one that doesn't stays on its last picture.
+    pub looping: bool,
+}
+
+impl MediaItem {
+    /// A file in the media bin, filling the screen and, for a video, looping.
+    pub fn new(name: String, path: std::path::PathBuf) -> MediaItem {
+        MediaItem { id: Uuid::new_v4(), name, path, fit: ImageFit::Fill, looping: true }
+    }
 }
 
 #[cfg(test)]

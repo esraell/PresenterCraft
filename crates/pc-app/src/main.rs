@@ -622,6 +622,8 @@ struct App {
     started: Instant,
     /// The video on screen, by its media item, playing.
     video: Option<(Uuid, pc_video::Player)>,
+    /// The media playlists read at the start, handed to the window's state once it is made.
+    media_playlists: Vec<media::Playlist>,
     unsaved_since: Option<Instant>,
     /// The theme songs are drawn with, and the one Bible slides are drawn with: copies of
     /// the themes at `songs_theme` and `bible_theme` in `themes`.
@@ -879,6 +881,14 @@ impl App {
         }
     }
 
+    /// How the media on screen fills the screen.
+    fn live_media_fit(&self) -> pc_model::ImageFit {
+        self.show
+            .live_media()
+            .and_then(|index| self.show.media().get(index))
+            .map_or(pc_model::ImageFit::Fill, |m| m.fit)
+    }
+
     /// Plays the video on screen, if the media on screen is one, and stops the one that was.
     fn sync_video(&mut self) {
         let live = self
@@ -888,6 +898,14 @@ impl App {
             .filter(|item| media::is_video(&item.path))
             .cloned();
         if self.video.as_ref().map(|(id, _)| *id) == live.as_ref().map(|item| item.id) {
+            // The same video: it may have been told to loop or not.
+            if let (Some((_, player)), Some(item), Some(running)) = (self.video.as_mut(), &live, self.running.as_mut())
+                && let Some(shown) = running.home_state.video_live.as_mut()
+                && shown.looping != item.looping
+            {
+                player.set_looping(item.looping);
+                shown.looping = item.looping;
+            }
             return;
         }
         self.video = None;
@@ -896,14 +914,14 @@ impl App {
         let Some(item) = live else { return };
         match pc_video::Player::open(&item.path) {
             Ok(mut player) => {
-                player.set_looping(true);
+                player.set_looping(item.looping);
                 player.play();
                 running.home_state.video_live = Some(home::VideoLive {
                     name: item.name.clone(),
                     position: 0.0,
                     duration: None,
                     playing: true,
-                    looping: true,
+                    looping: item.looping,
                     muted: false,
                 });
                 self.video = Some((item.id, player));
@@ -1086,6 +1104,7 @@ impl App {
     fn refresh_output(&mut self) {
         self.sync_video();
         let video = self.video.as_ref().map(|(_, player)| player.frames());
+        let media_fit = self.live_media_fit();
         let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
         let about = self.stage_about();
         let Some(running) = self.running.as_mut() else {
@@ -1103,6 +1122,7 @@ impl App {
             let frame = Frame {
                 media: media.clone(),
                 video,
+                media_fit,
                 slide: slide.clone(),
                 theme: theme.clone(),
                 enabled: self.show.output_enabled(),
@@ -1139,6 +1159,7 @@ impl App {
     /// Redraws the Program preview: what the audience sees, or what the stage sees. `fade` lets
     /// it fade from the last picture as the screens do; a clock's tick doesn't fade.
     fn refresh_preview(&mut self, fade: bool) {
+        let media_fit = self.live_media_fit();
         let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
         let about = self.stage_about();
         let Some(running) = self.running.as_mut() else {
@@ -1179,8 +1200,15 @@ impl App {
                 state.screens.iter().find(|screen| screen.kind == screens::Kind::Stage).and_then(|s| s.stage_layout);
             let template = stage::layout_for(&state.stage_layouts, wanted);
             let picture = stage::slide(slide.as_deref(), next.as_ref(), &overlay, &about, &template);
-            let layers =
-                Layers { media: None, slide: Some(&picture), overlay: None, time: 0.0, backdrop: None, mask: [0.0; 4] };
+            let layers = Layers {
+                media_fit: pc_model::ImageFit::Fill,
+                media: None,
+                slide: Some(&picture),
+                overlay: None,
+                time: 0.0,
+                backdrop: None,
+                mask: [0.0; 4],
+            };
             let layout = stage::theme_for(&template);
             let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &layout);
             running.preview = now;
@@ -1208,6 +1236,7 @@ impl App {
         );
         let over = props::overlay(&live_props, message.as_ref());
         let layers = Layers {
+            media_fit,
             media: media.as_ref(),
             slide: slide.as_deref(),
             overlay: over.as_ref().filter(|_| self.show.output_enabled()),
@@ -1248,7 +1277,7 @@ impl App {
         match result {
             Ok(picture) => {
                 let name = path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
-                self.show.add_media(MediaItem { id: Uuid::new_v4(), name, path: path.to_owned() });
+                self.show.add_media(MediaItem::new(name, path.to_owned()));
                 self.pictures.push(picture);
                 running.home_state.notice = None;
                 self.save_media_list();
@@ -1260,10 +1289,16 @@ impl App {
         }
     }
 
-    /// Remembers which pictures are in the media bin.
+    /// Remembers what is in the media bin, how each item is shown, and the media playlists.
     fn save_media_list(&mut self) {
-        let paths: Vec<PathBuf> = self.show.media().iter().map(|item| item.path.clone()).collect();
-        if let Err(problem) = media::save_list(&paths)
+        let entries = self
+            .show
+            .media()
+            .iter()
+            .map(|item| media::Entry { path: item.path.clone(), fit: item.fit, looping: item.looping })
+            .collect();
+        let playlists = self.running.as_ref().map(|r| r.home_state.media_playlists.clone()).unwrap_or_default();
+        if let Err(problem) = media::save_list(&media::List { entries, playlists })
             && let Some(running) = self.running.as_mut()
         {
             running.home_state.notice = Some(problem);
@@ -1474,6 +1509,9 @@ impl App {
 
     fn handle_media_request(&mut self) {
         use home::MediaRequest;
+        if self.running.as_mut().is_some_and(|r| std::mem::take(&mut r.home_state.media_playlists_changed)) {
+            self.save_media_list();
+        }
         let Some(request) = self.running.as_mut().and_then(|r| r.home_state.media_request.take()) else { return };
         match request {
             MediaRequest::Choose => {
@@ -1485,6 +1523,16 @@ impl App {
                     .unwrap_or_default();
                 for path in chosen {
                     self.add_dropped_file(&path);
+                }
+            }
+            MediaRequest::Look(index, fit, looping) => {
+                let changes = self.show.set_media_look(index, fit, looping);
+                if changes.media {
+                    self.refresh_output();
+                }
+                self.save_media_list();
+                if let Some(running) = self.running.as_mut() {
+                    running.home_window.request_redraw();
                 }
             }
             MediaRequest::Remove(index) => {
@@ -3079,6 +3127,7 @@ impl ApplicationHandler<String> for App {
                 running.home_state.props = props::load();
                 running.home_state.macros = macros::load();
                 running.home_state.libraries = libraries::load();
+                running.home_state.media_playlists = std::mem::take(&mut self.media_playlists);
                 running.home_state.stage_layouts = stage::load_layouts();
                 running.home_state.audio_tracks = audio::load();
                 // Macros set to run when PresenterCraft starts.
@@ -3556,6 +3605,7 @@ fn main() -> ExitCode {
         advanced: false,
         started: Instant::now(),
         video: None,
+        media_playlists: Vec::new(),
         unsaved_since: None,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),
@@ -3579,17 +3629,24 @@ fn main() -> ExitCode {
         capture_done: false,
     };
     // The pictures that were in the media bin last time, then any named on the command line.
-    let mut pictures_to_load = media::load_list();
+    let saved = media::load_list();
+    app.media_playlists = saved.playlists;
+    let mut pictures_to_load = saved.entries;
     for path in &media_paths {
-        if !pictures_to_load.contains(path) {
-            pictures_to_load.push(path.clone());
+        if !pictures_to_load.iter().any(|entry| &entry.path == path) {
+            pictures_to_load.push(media::Entry { path: path.clone(), fit: pc_model::ImageFit::Fill, looping: true });
         }
     }
-    for path in &pictures_to_load {
+    for entry in &pictures_to_load {
+        let path = &entry.path;
         match media::load_picture(path) {
             Ok(picture) => {
                 let name = path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
-                app.show.add_media(MediaItem { id: Uuid::new_v4(), name, path: path.clone() });
+                app.show.add_media(MediaItem {
+                    fit: entry.fit,
+                    looping: entry.looping,
+                    ..MediaItem::new(name, path.clone())
+                });
                 app.pictures.push(picture);
             }
             Err(message) => eprintln!("{message}"),
@@ -3671,7 +3728,7 @@ mod tests {
         assert_eq!(action_commands(&show, &state, &gone), Some(Vec::new()));
         // A media action shows its picture from the media bin, found by its id.
         let mut show = show;
-        let picture = pc_model::MediaItem { id: Uuid::new_v4(), name: "Sky".to_owned(), path: "/sky.png".into() };
+        let picture = pc_model::MediaItem::new("Sky".to_owned(), "/sky.png".into());
         let at = show.add_media(picture.clone());
         let media = pc_model::ShowAction::Media { id: picture.id };
         assert_eq!(action_commands(&show, &state, &media), Some(vec![Command::ShowMedia(at)]));

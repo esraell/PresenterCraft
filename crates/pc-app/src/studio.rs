@@ -1313,6 +1313,7 @@ pub fn media_strip(
         let area = ui.max_rect().expand2(vec2(16.0, 10.0));
         ui.horizontal(|ui| {
             caption(ui, "MEDIA");
+            media_playlist_picker(ui, state);
             let note = match &state.notice {
                 Some(notice) => egui::RichText::new(notice.as_str()).size(12.0).color(Color32::from_rgb(255, 170, 120)),
                 None if empty => egui::RichText::new("Drop pictures or videos on the window to add backgrounds")
@@ -1350,7 +1351,15 @@ pub fn media_strip(
             egui::ScrollArea::horizontal().id_salt("media row").auto_shrink([false, false]).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 12.0;
+                    // A media playlist shows only its own files.
+                    let shown = state
+                        .media_playlist_shown
+                        .and_then(|id| state.media_playlists.iter().find(|playlist| playlist.id == id))
+                        .cloned();
                     for (index, item) in show.media().iter().enumerate() {
+                        if shown.as_ref().is_some_and(|playlist| !playlist.has(&item.path)) {
+                            continue;
+                        }
                         let (rect, response) = ui.allocate_exact_size(image_size + vec2(0.0, 18.0), Sense::click());
                         if response.clicked() {
                             commands.push(Command::ShowMedia(index));
@@ -1393,10 +1402,7 @@ pub fn media_strip(
                             TEXT_DIM,
                         );
                         response.on_hover_text(item.name.as_str()).context_menu(|ui| {
-                            if ui.button("Remove").clicked() {
-                                state.media_request = Some(crate::home::MediaRequest::Remove(index));
-                                ui.close();
-                            }
+                            media_item_menu(ui, state, index, item);
                         });
                     }
                 });
@@ -1613,4 +1619,102 @@ fn video_controls(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home:
             });
         });
     });
+}
+
+/// The menu beside MEDIA: all media or one media playlist, a new playlist, and renaming or
+/// deleting the one shown.
+fn media_playlist_picker(ui: &mut egui::Ui, state: &mut HomeState) {
+    let shown = state.media_playlist_shown.and_then(|id| state.media_playlists.iter().find(|p| p.id == id));
+    if shown.is_none() {
+        state.media_playlist_shown = None;
+    }
+    let label = shown.map_or_else(|| "All Media ▾".to_owned(), |playlist| format!("{} ▾", playlist.name));
+    let picker = ui
+        .add(egui::Label::new(egui::RichText::new(label).font(semibold(11.5)).color(TEXT_DIM)).sense(Sense::click()))
+        .on_hover_text("Choose a media playlist");
+    egui::Popup::from_toggle_button_response(&picker)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(200.0);
+            if ui.add(egui::Button::selectable(state.media_playlist_shown.is_none(), "All Media")).clicked() {
+                state.media_playlist_shown = None;
+                ui.close();
+            }
+            for playlist in &state.media_playlists {
+                let on = state.media_playlist_shown == Some(playlist.id);
+                let name = if playlist.name.trim().is_empty() { "Untitled" } else { playlist.name.as_str() };
+                if ui.add(egui::Button::selectable(on, name)).clicked() {
+                    state.media_playlist_shown = Some(playlist.id);
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button("New Playlist").on_hover_text("Add media to it from an item's right-click menu").clicked() {
+                let made = crate::media::Playlist::new(crate::media::new_playlist_name(&state.media_playlists));
+                state.media_playlist_shown = Some(made.id);
+                state.media_playlists.push(made);
+                state.media_playlists_changed = true;
+            }
+            if let Some(at) =
+                state.media_playlist_shown.and_then(|id| state.media_playlists.iter().position(|p| p.id == id))
+            {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Name").color(TEXT_DIM));
+                    let field =
+                        ui.add(egui::TextEdit::singleline(&mut state.media_playlists[at].name).desired_width(140.0));
+                    state.media_playlists_changed |= field.changed();
+                });
+                if ui.button("Delete Playlist").on_hover_text("The media stays in All Media").clicked() {
+                    state.media_playlists.remove(at);
+                    state.media_playlist_shown = None;
+                    state.media_playlists_changed = true;
+                    ui.close();
+                }
+            }
+        });
+}
+
+/// A media item's right-click menu: how it fills the screen, whether a video loops, the media
+/// playlists it is in, and Remove.
+fn media_item_menu(ui: &mut egui::Ui, state: &mut HomeState, index: usize, item: &pc_model::MediaItem) {
+    use crate::home::MediaRequest;
+    ui.menu_button("Scaling", |ui| {
+        for (fit, name, hint) in [
+            (pc_model::ImageFit::Fill, "Scale to Fill", "Fill the screen, cutting off what hangs over"),
+            (pc_model::ImageFit::Fit, "Scale to Fit", "Show all of it, with bars where its shape differs"),
+            (pc_model::ImageFit::Stretch, "Stretch to Fill", "Stretch it to the screen's shape"),
+        ] {
+            if ui.add(egui::Button::selectable(item.fit == fit, name)).on_hover_text(hint).clicked() {
+                state.media_request = Some(MediaRequest::Look(index, fit, item.looping));
+                ui.close();
+            }
+        }
+    });
+    if crate::media::is_video(&item.path)
+        && ui
+            .add(egui::Button::selectable(item.looping, "Loop"))
+            .on_hover_text("Start again at the end; otherwise stay on the last picture")
+            .clicked()
+    {
+        state.media_request = Some(MediaRequest::Look(index, item.fit, !item.looping));
+        ui.close();
+    }
+    ui.menu_button("Playlists", |ui| {
+        if state.media_playlists.is_empty() {
+            ui.label(
+                egui::RichText::new("No media playlists yet. Make one from the menu beside MEDIA.").color(TEXT_DIM),
+            );
+        }
+        for playlist in &mut state.media_playlists {
+            if ui.add(egui::Button::selectable(playlist.has(&item.path), playlist.name.as_str())).clicked() {
+                playlist.toggle(&item.path);
+                state.media_playlists_changed = true;
+            }
+        }
+    });
+    ui.separator();
+    if ui.button("Remove").clicked() {
+        state.media_request = Some(MediaRequest::Remove(index));
+        ui.close();
+    }
 }
