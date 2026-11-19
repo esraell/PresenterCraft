@@ -14,6 +14,8 @@ app=target/release/PresenterCraft.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/presentercraft "$app/Contents/MacOS/PresenterCraft"
+# NSAppSleepDisabled: macOS must not slow the app down (App Nap) while its windows are hidden;
+# timed slides and timers run by the clock during a service.
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -38,6 +40,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSAppSleepDisabled</key>
     <true/>
 </dict>
 </plist>

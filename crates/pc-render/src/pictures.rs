@@ -1,5 +1,7 @@
 //! Pictures that slide objects show, by the file they name. The app says how a file becomes a
-//! picture; each is read once and kept, so every screen and thumbnail shares it.
+//! picture; each is read once and kept, so every screen and thumbnail shares it. What is kept is
+//! held to a size: past it, the pictures drawn longest ago are let go, and read again if they
+//! are drawn again.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -9,8 +11,11 @@ use crate::Picture;
 /// Reads the picture a file names, or `None` if it can't.
 pub type Loader = fn(&str) -> Option<Picture>;
 
+/// How many bytes of pixels are kept at most: room for about sixty full-screen 1080p pictures.
+const KEEP_BYTES: usize = 512 * 1024 * 1024;
+
 static LOADER: OnceLock<Loader> = OnceLock::new();
-static KEPT: OnceLock<Mutex<HashMap<String, Option<Picture>>>> = OnceLock::new();
+static KEPT: OnceLock<Mutex<Kept>> = OnceLock::new();
 
 /// Says how a picture object's file is read. Set once, when the app starts.
 pub fn set_picture_loader(loader: Loader) {
@@ -20,14 +25,14 @@ pub fn set_picture_loader(loader: Loader) {
 /// The picture a file names: read the first time it is asked for, then kept. A file that
 /// can't be read is remembered as missing, so it is not tried again on every frame.
 pub(crate) fn picture(file: &str) -> Option<Picture> {
-    let kept = KEPT.get_or_init(Mutex::default);
-    if let Some(found) = kept.lock().ok().and_then(|kept| kept.get(file).cloned()) {
+    let kept = KEPT.get_or_init(|| Mutex::new(Kept::new(KEEP_BYTES)));
+    if let Some(found) = kept.lock().ok().and_then(|mut kept| kept.get(file)) {
         return found;
     }
     // Read without holding the lock, so another screen isn't kept waiting.
     let read = LOADER.get().and_then(|load| load(file));
     if let Ok(mut kept) = kept.lock() {
-        kept.insert(file.to_owned(), read.clone());
+        kept.insert(file, read.clone());
     }
     read
 }
@@ -36,5 +41,91 @@ pub(crate) fn picture(file: &str) -> Option<Picture> {
 pub fn forget_picture(file: &str) {
     if let Some(Ok(mut kept)) = KEPT.get().map(Mutex::lock) {
         kept.remove(file);
+    }
+}
+
+/// The pictures kept, each with when it was last asked for, and how many bytes they come to.
+struct Kept {
+    limit: usize,
+    bytes: usize,
+    clock: u64,
+    pictures: HashMap<String, (Option<Picture>, u64)>,
+}
+
+fn bytes_of(picture: Option<&Picture>) -> usize {
+    picture.map_or(0, |p| (p.width() as usize) * (p.height() as usize) * 4)
+}
+
+impl Kept {
+    fn new(limit: usize) -> Kept {
+        Kept { limit, bytes: 0, clock: 0, pictures: HashMap::new() }
+    }
+
+    /// The picture kept for a file (`Some(None)` for one known to be missing), marked as just used.
+    fn get(&mut self, file: &str) -> Option<Option<Picture>> {
+        self.clock += 1;
+        let clock = self.clock;
+        self.pictures.get_mut(file).map(|(picture, used)| {
+            *used = clock;
+            picture.clone()
+        })
+    }
+
+    /// Keeps a picture, letting go of the ones used longest ago while there are too many bytes.
+    /// The one just kept always stays, however big it is.
+    fn insert(&mut self, file: &str, picture: Option<Picture>) {
+        self.remove(file);
+        self.clock += 1;
+        self.bytes += bytes_of(picture.as_ref());
+        self.pictures.insert(file.to_owned(), (picture, self.clock));
+        while self.bytes > self.limit {
+            let oldest = self
+                .pictures
+                .iter()
+                .filter(|(name, (picture, _))| name.as_str() != file && picture.is_some())
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(name, _)| name.clone());
+            let Some(oldest) = oldest else { break };
+            self.remove(&oldest);
+        }
+    }
+
+    fn remove(&mut self, file: &str) {
+        if let Some((picture, _)) = self.pictures.remove(file) {
+            self.bytes -= bytes_of(picture.as_ref());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn square(side: u32) -> Option<Picture> {
+        Picture::from_rgba(side, side, vec![0; (side * side * 4) as usize])
+    }
+
+    #[test]
+    fn the_pictures_used_longest_ago_are_let_go_past_the_limit() {
+        // Room for two 10×10 pictures (400 bytes each).
+        let mut kept = Kept::new(800);
+        kept.insert("a", square(10));
+        kept.insert("b", square(10));
+        kept.insert("missing", None);
+        assert_eq!(kept.bytes, 800);
+        // "a" is drawn again, so "b" is now the one used longest ago.
+        assert!(kept.get("a").is_some_and(|p| p.is_some()));
+        kept.insert("c", square(10));
+        assert_eq!(kept.bytes, 800);
+        assert!(kept.get("b").is_none(), "b was let go");
+        assert!(kept.get("a").is_some() && kept.get("c").is_some());
+        // A missing file is still remembered as missing; it takes no room.
+        assert!(matches!(kept.get("missing"), Some(None)));
+        // One picture bigger than the limit is kept on its own.
+        kept.insert("huge", square(20));
+        assert_eq!(kept.bytes, 1600);
+        assert!(kept.get("huge").is_some() && kept.get("a").is_none() && kept.get("c").is_none());
+        kept.remove("huge");
+        assert_eq!(kept.bytes, 0);
     }
 }

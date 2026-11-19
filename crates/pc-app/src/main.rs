@@ -110,6 +110,10 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
     Ok(Some(options))
 }
 
+/// The shortest time between two drawings of a window for an animation: one refresh of a
+/// 60 Hz screen.
+const FRAME: Duration = Duration::from_micros(16_667);
+
 /// The id of the sample song the app starts with.
 const SAMPLE_SONG_ID: Uuid = Uuid::from_u128(0x7361_6d70_6c65_5f73_6f6e_6700_0000_0001);
 
@@ -614,6 +618,8 @@ struct App {
     /// since when, for a slide that goes on to the next by itself; and true once it has.
     live_since: Option<(AdvanceAt, Instant)>,
     advanced: bool,
+    /// When the app started.
+    started: Instant,
     unsaved_since: Option<Instant>,
     /// The theme songs are drawn with, and the one Bible slides are drawn with: copies of
     /// the themes at `songs_theme` and `bible_theme` in `themes`.
@@ -847,6 +853,12 @@ impl App {
         // the play order (a group an arrangement plays twice in a row).
         let here = self.show.live().map(|at| (at, self.show.build_step(), self.show.position()));
         if here != self.live_since.map(|(at, _)| at) {
+            // Testing aid: say when each slide went on screen.
+            if std::env::var_os("PRESENTERCRAFT_TRACE_LIVE").is_some() {
+                let drawn = self.running.as_ref().map_or(0, |r| r.frames);
+                let slide = here.map(|(at, _, _)| at.slide);
+                eprintln!("live {slide:?} at {:?}, operator window drawn {drawn} times", self.started.elapsed());
+            }
             self.live_since = here.map(|at| (at, Instant::now()));
             self.advanced = false;
         }
@@ -2100,6 +2112,14 @@ impl App {
         egui_state.handle_platform_output(home_window, std::mem::take(&mut full.platform_output));
 
         let delay = full.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
+        // An animation is drawn at most a frame a screen refresh apart. A window macOS isn't
+        // showing does not wait for the screen, and would otherwise be drawn thousands of times
+        // a second while the preview fades.
+        let delay = delay.max(FRAME);
+        // Testing aid: say what keeps asking the window to be drawn again.
+        if std::env::var_os("PRESENTERCRAFT_TRACE_REPAINT").is_some() && running.frames % 100 == 0 {
+            eprintln!("frame {}: delay {delay:?}, causes {:?}", running.frames, egui_ctx.repaint_causes());
+        }
         // Testing aid: redraw continuously, to check that memory stays flat under load.
         let delay = if std::env::var_os("PRESENTERCRAFT_STRESS").is_some() { Duration::ZERO } else { delay };
         running.next_repaint = Instant::now().checked_add(delay);
@@ -2370,7 +2390,7 @@ impl App {
         });
         panel.state.handle_platform_output(&panel.window, std::mem::take(&mut full.platform_output));
         let delay = full.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
-        panel.next_repaint = Instant::now().checked_add(delay);
+        panel.next_repaint = Instant::now().checked_add(delay.max(FRAME));
         let target = UiTarget {
             window: &panel.window,
             surface: &panel.surface,
@@ -3141,6 +3161,13 @@ impl ApplicationHandler<String> for App {
                 }
                 running.home_window.request_redraw();
             }
+            // Testing aid: stop drawing the operator window after a few seconds, as macOS does
+            // when it is minimised, to check that what runs by the clock goes on without it.
+            WindowEvent::RedrawRequested
+                if std::env::var("PRESENTERCRAFT_STOP_DRAWING_AFTER")
+                    .ok()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .is_some_and(|after| self.started.elapsed().as_secs_f32() >= after) => {}
             WindowEvent::RedrawRequested => {
                 let commands = self.draw_home();
                 self.apply(commands);
@@ -3232,6 +3259,12 @@ impl ApplicationHandler<String> for App {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        // What runs by the clock is done here too, not only when the operator window draws:
+        // macOS stops drawing a window that is minimised or covered, and a timed slide, a
+        // slide's actions, or a message that leaves by itself must not wait for it.
+        self.run_actions();
+        self.tick_advance();
+        self.sync_overlay();
         // Songs changed in the Edit view are written once typing has paused for a second.
         const SAVE_AFTER: Duration = Duration::from_secs(1);
         let save_at = self.unsaved_since.map(|since| since + SAVE_AFTER);
@@ -3382,6 +3415,7 @@ fn main() -> ExitCode {
         action_depth: None,
         live_since: None,
         advanced: false,
+        started: Instant::now(),
         unsaved_since: None,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),
