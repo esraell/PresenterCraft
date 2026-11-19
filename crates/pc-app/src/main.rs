@@ -1344,6 +1344,16 @@ impl App {
             {
                 draft.selected = draft.slide.objects.first().map(|object| object.id);
             }
+            // Testing aid: as if the theme's name and its first template's name had been
+            // clicked to rename them.
+            if running.frames == GO_LIVE_AT + 4
+                && std::env::var("PRESENTERCRAFT_CAPTURE_THEMES").as_deref() == Ok("rename")
+                && let Some(edit) = running.home_state.theme_edit.as_ref()
+            {
+                let template = edit.theme.templates.first().map(|t| t.name.clone()).unwrap_or_default();
+                running.home_state.renaming_theme = Some(edit.theme.name.clone());
+                running.home_state.renaming_template = Some((0, template));
+            }
             // Testing aid: also open the slide editor, to check how it looks.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_EDITOR").is_some() {
                 let at = pc_engine::SlideRef { presentation: 0, slide: 2 };

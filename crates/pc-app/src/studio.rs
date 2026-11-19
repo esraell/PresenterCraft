@@ -142,16 +142,42 @@ fn load_fonts(ctx: &egui::Context) {
 /// A field for renaming something in place. It keeps the look of the text it stands in for
 /// (same font, same colour, no filled box) and adds only a thin outline, so the words stay
 /// where they were and it is plain that they can now be typed over.
-pub fn rename_field<'t>(text: &'t mut String, font: FontId, ink: Color32, outline: Color32) -> egui::TextEdit<'t> {
+fn rename_field<'t>(text: &'t mut String, font: FontId, ink: Color32, outline: Color32) -> egui::TextEdit<'t> {
     egui::TextEdit::singleline(text)
         .font(font)
         .text_color(ink)
         .background_color(Color32::TRANSPARENT)
-        // No taller than the line of text it replaces, so nothing around it moves.
         .min_size(egui::Vec2::ZERO)
         .frame(
             Frame::new().stroke(Stroke::new(1.0, outline)).corner_radius(4).inner_margin(egui::Margin::symmetric(4, 0)),
         )
+}
+
+/// Puts a field for retyping a name exactly over the name, so nothing around it moves. `start`
+/// is where the name's text begins, at the middle of its line; the field's text begins there
+/// too, the field is one line of the font tall, and it reaches `right`. It takes no room in
+/// the layout.
+pub fn rename_field_at(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    font: FontId,
+    ink: Color32,
+    outline: Color32,
+    start: egui::Pos2,
+    right: f32,
+) -> egui::Response {
+    let height = ui.fonts_mut(|fonts| fonts.row_height(&font)) + 2.0;
+    // The field's frame is a line of 1 and a margin of 4, so its text lines up with the name's.
+    let rect = Rect::from_min_max(
+        egui::pos2(start.x - 5.0, start.y - height / 2.0),
+        egui::pos2(right.max(start.x + 40.0), start.y + height / 2.0),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new().max_rect(rect).layout(Layout::centered_and_justified(egui::Direction::TopDown)),
+    );
+    // The theme gives fields a least height taller than a line of text; not here.
+    child.spacing_mut().interact_size = egui::Vec2::ZERO;
+    child.add(rename_field(text, font, ink, outline))
 }
 
 /// A small heading in capitals, as each section starts with.
@@ -405,8 +431,17 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
             });
             ui.add_space(2.0);
             if let Some(name) = state.renaming_service.as_mut() {
-                let field = ui.add(
-                    rename_field(name, FontId::proportional(13.5), TEXT, ACCENT).desired_width(f32::INFINITY),
+                // The field sits where the service menu was, in a space of the menu's height.
+                let (place, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), ui.spacing().interact_size.y), Sense::hover());
+                let field = rename_field_at(
+                    ui,
+                    name,
+                    FontId::proportional(13.5),
+                    TEXT,
+                    ACCENT,
+                    place.left_center() + vec2(8.0, 0.0),
+                    place.max.x,
                 );
                 field.request_focus();
                 let done = ui.input(|input| input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Escape));

@@ -934,18 +934,14 @@ fn edit_view(
                                 // The name, or a field in its place while it is being retyped.
                                 let being_renamed = draft.renaming.as_ref().is_some_and(|(id, _)| *id == object.id);
                                 if being_renamed && let Some((_, name)) = draft.renaming.as_mut() {
-                                    let place = Rect::from_min_max(
-                                        pos2(row.min.x + 28.0, row.min.y + 2.0),
-                                        pos2(row.max.x - 46.0, row.max.y - 2.0),
-                                    );
-                                    let field = ui.put(
-                                        place,
-                                        crate::studio::rename_field(
-                                            name,
-                                            FontId::proportional(13.0),
-                                            crate::studio::TEXT,
-                                            crate::studio::ACCENT,
-                                        ),
+                                    let field = crate::studio::rename_field_at(
+                                        ui,
+                                        name,
+                                        FontId::proportional(13.0),
+                                        crate::studio::TEXT,
+                                        crate::studio::ACCENT,
+                                        row.left_center() + vec2(32.0, 0.0),
+                                        row.max.x - 46.0,
                                     );
                                     if std::mem::take(&mut rename_started) {
                                         field.request_focus();
@@ -1165,9 +1161,14 @@ fn edit_view(
                         let being_renamed =
                             state.renaming_template.as_ref().is_some_and(|(which, _)| *which == template);
                         if being_renamed && let Some((_, typed)) = state.renaming_template.as_mut() {
-                            let field = ui.put(
-                                name_area,
-                                crate::studio::rename_field(typed, FontId::proportional(11.5), ink, ink),
+                            let field = crate::studio::rename_field_at(
+                                ui,
+                                typed,
+                                FontId::proportional(11.5),
+                                ink,
+                                ink,
+                                pos2(number.max.x + 6.0, image.max.y + 10.0),
+                                name_area.max.x,
                             );
                             if std::mem::take(&mut rename_started) {
                                 field.request_focus();
@@ -1311,10 +1312,15 @@ fn edit_view(
                         // The group's name; a click turns it into a field to retype it.
                         let renaming = state.renaming_group.as_ref().is_some_and(|(at, _)| *at == group_index);
                         if renaming && let Some((_, typed)) = state.renaming_group.as_mut() {
-                            let place =
-                                Rect::from_min_max(pos2(bar.min.x + 14.0, bar.min.y + 1.0), bar.max - vec2(4.0, 1.0));
-                            let field =
-                                ui.put(place, crate::studio::rename_field(typed, FontId::proportional(12.5), ink, ink));
+                            let field = crate::studio::rename_field_at(
+                                ui,
+                                typed,
+                                FontId::proportional(12.5),
+                                ink,
+                                ink,
+                                bar.left_center() + vec2(18.0, 0.0),
+                                bar.max.x - 4.0,
+                            );
                             if std::mem::take(&mut state.rename_started) {
                                 field.request_focus();
                             }
@@ -1700,6 +1706,9 @@ fn output_choices(current: &Output, screen_name: &str, displays: &[DisplayInfo])
     choices.push(Output::Off);
     choices
 }
+
+/// Room after a song's title, for the field it turns into when renamed to fit in.
+const TITLE_ROOM: f32 = 12.0;
 
 /// A switch drawn the way the Mac draws one: a capsule, green with the knob at the right when
 /// on. Returns true when it was clicked.
@@ -2100,9 +2109,14 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                     let name_area =
                         Rect::from_min_max(pos2(row.min.x + 6.0, row.min.y + 3.0), pos2(right - 2.0, row.max.y - 3.0));
                     if open && let Some(typed) = state.renaming_theme.as_mut() {
-                        let field = ui.put(
-                            name_area,
-                            crate::studio::rename_field(typed, FontId::proportional(13.5), TEXT, ACCENT),
+                        let field = crate::studio::rename_field_at(
+                            ui,
+                            typed,
+                            FontId::proportional(13.5),
+                            TEXT,
+                            ACCENT,
+                            pos2(row.min.x + 10.0, row.center().y),
+                            name_area.max.x,
                         );
                         if std::mem::take(&mut state.rename_started) {
                             field.request_focus();
@@ -2563,14 +2577,20 @@ fn slide_area(
             ui.horizontal(|ui| {
                 // The title; a double click, or a new song, turns it into a field to retype it.
                 if let Some(title) = state.renaming_song.as_mut() {
-                    let field = ui.add(
-                        crate::studio::rename_field(
-                            title,
-                            crate::studio::semibold(18.0),
-                            crate::studio::TEXT,
-                            crate::studio::ACCENT,
-                        )
-                        .desired_width(320.0),
+                    // The field takes the title's own room, growing as it is typed, as a file
+                    // name does in the Finder.
+                    let font = crate::studio::semibold(18.0);
+                    let width = ui.painter().layout_no_wrap(title.clone(), font.clone(), Color32::WHITE).size().x;
+                    let line = ui.fonts_mut(|fonts| fonts.row_height(&font));
+                    let (place, _) = ui.allocate_exact_size(vec2(width + TITLE_ROOM, line), Sense::hover());
+                    let field = crate::studio::rename_field_at(
+                        ui,
+                        title,
+                        font,
+                        crate::studio::TEXT,
+                        crate::studio::ACCENT,
+                        place.left_center(),
+                        place.max.x,
                     );
                     if std::mem::take(&mut state.rename_started) {
                         field.request_focus();
@@ -2594,6 +2614,8 @@ fn slide_area(
                             .sense(Sense::click()),
                         )
                         .on_hover_text("Double-click to rename");
+                    // The same room the field takes, so renaming moves nothing.
+                    ui.add_space(TITLE_ROOM);
                     if title.double_clicked() {
                         state.renaming_song = Some(presentation.title.clone());
                         state.rename_started = true;
