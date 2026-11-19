@@ -845,11 +845,7 @@ fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         }
     });
     ui.add_space(2.0);
-    // A theme's box only ever says "Text": there are no words to type.
-    if !for_theme {
-        ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY).hint_text("Text"));
-        ui.add_space(2.0);
-    }
+    // The words are typed on the slide itself (double-click the box), not here.
 
     let shown = style.over(&base);
     let mut wanted = shown.clone();
