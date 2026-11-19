@@ -134,7 +134,11 @@ ProPresenter.
 **Bible**
 - Scripture Lookup in English and Russian (`John 3:16-18`, `jn 3:16`, `Psalm 23`,
   `Пс 22:1-3`) and word search.
-- Two translations on one slide, lined up by verse using the standard versification tables.
+- Up to four translations on one slide, lined up by verse using the standard versification
+  tables; each row picks its Bible (or None) and the boxes its verse and reference go in.
+- Options for verse numbers, a new slide for each verse, the translation's name, and where the
+  reference goes; ‹ Verse and Verse › make the passage a verse longer at either end; Books picks
+  a book, chapter and verse; search results open a verse or its whole chapter.
 - Four Bibles ship with the app (King James, World English, Berean Standard, Russian Synodal)
   and fifteen more can be downloaded from Options › Bibles.
 - One click keeps a passage: Add to "Sunday Morning" puts it in the playlist in front (the ▾
@@ -231,27 +235,86 @@ ProPresenter.
 
 ## Not built yet
 
-Among the things PresenterCraft can't do yet:
+What is planned, roughly in the order it matters for a Sunday service. Sizes and details are
+worked out as each is built; nothing here is promised by a date.
 
-- FFmpeg included in the app (videos beyond MP4 and MOV need it installed for now), videos on
-  Windows and Linux, and live video inputs.
-- Formatting one word differently from the rest of its box.
-- Slide sizes other than 1920 × 1080.
-- A timeline that times slides, media and audio together (a slide can go on by itself after a
-  time, and a song can loop).
-- Transitions that need effects of their own (3D, ripples, burns and the like), and
-  transitions for props of their own.
-- In and out points for media and audio.
-- Clear Groups, and Show Slide on Stage Screens Only.
-- Saved looks to switch between, masks other than covered edges, corner pin, alpha and NDI
-  modes, and a theme for each screen.
-- Media and cut-out text as fills, feathering, objects shown only under conditions, and pen,
-  web and sticker objects.
-- Importing songs from other presentation apps or from CCLI SongSelect; exporting and printing.
-- Undo that names what it undoes, editable key mappings, and a Slide Labels settings pane.
-- Tested builds for Windows and Linux.
-- An API over the network, a stream of changes as they happen, and MCP (the command line
+**Coming first**
+- Importing songs: from text, rich text and Word files and the clipboard (with how slides are
+  split and groups recognised), from CCLI SongSelect lyric files, and from a church's existing
+  presentation software, so a library can move over in one go.
+- Importing PowerPoint slides, as pictures first and editable later.
+- FFmpeg included in the app, so every video format plays on a stock Mac.
+- Media, countdown and placeholder items in playlists ("sermon slides to come").
+- Fixing a slide's words from the Show view, in a small pop-up, without opening the editor.
+- Corner pin (keystone) for off-axis projectors.
+- More slide and macro actions: audio tracks and playlists, clearing audio and announcements,
+  changing a stage layout or a saved screen setup, running another macro, media playlists.
+- A whole song that moves on by itself every few seconds (announcement loops), set once.
+- Clear buttons of your own that each clear a chosen set of layers.
+- Slides shown on the stage screens only, while the audience keeps its picture.
+- Saved screen setups (which layers each screen shows) switched live, and a theme for each
+  screen (lower thirds on the stream, full words in the room).
+- Fill-in fields in messages, typed at show time ("Parents of child {Number}…").
+- What a video does when it ends, in and out points, and whether a video's sound stops the
+  background music.
+- A fuller stage layout editor: free text, timers by name, a video countdown, slide pictures.
+
+**Running a service**
+- A timeline that times slides, media and audio together, and can follow timecode.
+- Notes kept with a whole song; a text format pop-over for many slides at once; time added to
+  or taken off a running timer; timer and clock formats, and colours as time runs out.
+- An audio level meter, more show shortcuts, and warnings on macros and playlists whose target
+  has gone.
+
+**Slides and editing**
+- Formatting one word differently from the rest of its box; spell check.
+- Slide sizes other than 1920 × 1080 (LED walls, 4:3 projectors).
+- More linked text (slide number and slides left, next playlist item, time left in a video).
+- Media and cut-out text as fills, web pages, custom shapes, feathering, objects shown only
+  under conditions, dashed outlines, and richer builds (by letter, word or line, chained).
+- Transitions with effects of their own (3D, ripples, burns), favourite transitions, and
+  transitions for props.
+- Groups and slide labels of your own, with colours and keys; undo that names what it undoes.
+
+**Media and audio**
+- Choosing the audio output device; what each track does at its end; in and out points and
+  fades per track; sound effects over the main track; markers with a countdown on stage.
+- Media kept with the library (copied in, found again when moved, unused copies cleaned up);
+  a filter, a list view and a size slider for the media bin; fit-with-blur for portrait photos;
+  crop, rotation and play rate per item; video effects.
+- Live video inputs (cameras, capture cards, NDI sources), and video and audio streams by web
+  address.
+- Audio in the NDI stream; channel routing; live audio inputs.
+
+**Bible**
+- Modern licensed translations, more free Bibles in more languages, red-letter text, importing
+  Bible files a church already has, and a transition of its own for Bible slides.
+
+**Screens and stage**
+- Transparent output over NDI (and key and fill) for video switchers; other screen sizes and
+  NDI frame rates; colour correction and delay per screen; part of a display per screen;
+  screens grouped across a video wall, with edge blending; masks other than covered edges.
+- Recording or streaming a screen; Syphon output; Blackmagic SDI/HDMI outputs.
+- Stage screens on phones, tablets and browsers; chord charts for the band; more stage items
+  (slide count, next playlist item, group colour, playback markers).
+
+**Library, playlists and sharing**
+- Playlist templates; an arrangement chosen per playlist item; exporting a playlist with its
+  songs and media; CCLI usage reporting; printing lyrics, slides and playlists.
+- OpenLyrics, ChordPro, OpenSong and other formats in and out; Planning Center Services plans
+  as playlists; TimelyChurch songs and schedules; a Canva announcement loop downloaded by itself.
+- Folders for playlists and libraries; more song and playlist menu items.
+
+**Remote control and integrations**
+- An API over the network with a stream of changes, a phone and tablet remote, a control page
+  in a browser, Stream Deck and Companion support, and MCP for AI agents (the command line
   already controls the running app; see [docs/cli.md](docs/cli.md)).
+- MIDI, DMX and switcher protocols; several computers following one show; a calendar that
+  starts things on schedule; VoxLive live translation shown on a screen.
+
+**The app**
+- Tested builds for Windows and Linux; editable key mappings and groups; the app in Russian and
+  Ukrainian; an updates pane; a first-run guide with sample songs and media.
 
 ## Build and run
 
