@@ -236,8 +236,21 @@ pub fn snapped_resize(frame: SlideRect, handle: Handle, others: &[SlideRect]) ->
 /// What a drag on the canvas is doing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Drag {
-    Move { id: Uuid, from: SlideRect, start: (f32, f32) },
-    Resize { id: Uuid, handle: Handle, from: SlideRect, start: (f32, f32) },
+    Move {
+        id: Uuid,
+        from: SlideRect,
+        start: (f32, f32),
+    },
+    Resize {
+        id: Uuid,
+        handle: Handle,
+        from: SlideRect,
+        start: (f32, f32),
+    },
+    /// Dragging out a rectangle from empty slide: everything it touches is selected.
+    Select {
+        start: (f32, f32),
+    },
 }
 
 /// The slide being edited: a working copy, what is selected, and the changes that can be undone.
@@ -251,6 +264,11 @@ pub struct EditDraft {
     pub also: Vec<Uuid>,
     /// Where the other selected objects were when a drag began, so they move with it.
     drag_others: Vec<(Uuid, SlideRect)>,
+    /// The rectangle being dragged out to select with, as two opposite corners, for the canvas
+    /// to draw; and where every object was, and what was selected, when it began.
+    pub marquee: Option<((f32, f32), (f32, f32))>,
+    marquee_frames: Vec<(Uuid, SlideRect)>,
+    marquee_kept: Vec<Uuid>,
     /// The lines a dragged object is lined up with right now, for the canvas to draw.
     pub guides: Vec<Guide>,
     /// The object being renamed in the Objects list, and the name as typed so far.
@@ -279,6 +297,9 @@ impl EditDraft {
             selected: None,
             also: Vec::new(),
             drag_others: Vec::new(),
+            marquee: None,
+            marquee_frames: Vec::new(),
+            marquee_kept: Vec::new(),
             guides: Vec::new(),
             renaming: None,
             typing: None,
@@ -300,6 +321,9 @@ impl EditDraft {
             selected: None,
             also: Vec::new(),
             drag_others: Vec::new(),
+            marquee: None,
+            marquee_frames: Vec::new(),
+            marquee_kept: Vec::new(),
             guides: Vec::new(),
             renaming: None,
             typing: None,
@@ -489,6 +513,57 @@ impl EditDraft {
         self.also = ids.into_iter().skip(1).collect();
     }
 
+    /// Makes the change just made to the first selected object to every other selected one:
+    /// the same change of look, of opacity, turn and fill, and the same move and change of
+    /// size. `before` is the first selected object as it was. Words and names are not shared.
+    pub fn share_change(&mut self, theme: &Theme, before: &Object) {
+        let Some(after) = self.selected_object().cloned() else { return };
+        if self.also.is_empty() || after == *before {
+            return;
+        }
+        let looks = |object: &Object| {
+            let ObjectKind::Text { style, .. } = &object.kind;
+            theme.text_style(object.role.as_ref(), style)
+        };
+        let (look_before, look_after) = (looks(before), looks(&after));
+        let (was, now) = (object_frame(&self.slide, before, theme), object_frame(&self.slide, &after, theme));
+        let moved_by = (now.x - was.x, now.y - was.y, now.w - was.w, now.h - was.h);
+        for id in self.also.clone() {
+            let frame = self.slide.objects.iter().find(|o| o.id == id).map(|o| object_frame(&self.slide, o, theme));
+            let Some(object) = self.slide.objects.iter_mut().find(|o| o.id == id) else { continue };
+            if before.opacity != after.opacity {
+                object.opacity = after.opacity;
+            }
+            if before.rotation != after.rotation {
+                object.rotation = after.rotation;
+            }
+            if before.fill != after.fill {
+                object.fill = after.fill;
+            }
+            if moved_by != (0.0, 0.0, 0.0, 0.0)
+                && let Some(frame) = frame
+            {
+                object.frame = Some(SlideRect {
+                    x: frame.x + moved_by.0,
+                    y: frame.y + moved_by.1,
+                    w: (frame.w + moved_by.2).max(MIN_SIDE),
+                    h: (frame.h + moved_by.3).max(MIN_SIDE),
+                });
+            }
+            if let (Some(look_before), Some(look_after)) = (&look_before, &look_after)
+                && look_before != look_after
+            {
+                let role = object.role.clone();
+                let ObjectKind::Text { style, .. } = &mut object.kind;
+                if let Some(base) = theme.text_style(role.as_ref(), &TextStyle::default()) {
+                    let mut look = style.over(&base);
+                    look.follow_change(look_before, look_after);
+                    *style = TextStyle::between(&base, &look);
+                }
+            }
+        }
+    }
+
     /// Moves every selected object by an amount, as the arrow keys do.
     pub fn nudge(&mut self, theme: &Theme, by: (f32, f32)) {
         for id in self.selection() {
@@ -534,6 +609,23 @@ impl EditDraft {
         self.drag = None;
         self.drag_others.clear();
         let hit = object_at(&self.slide, theme, point);
+        // A press on empty slide starts dragging out a rectangle. With Shift or Command held
+        // what is already selected is kept, and the rectangle adds to it.
+        if hit.is_none() {
+            self.marquee_kept = if extend { self.selection() } else { Vec::new() };
+            if !extend {
+                self.select_only(None);
+            }
+            self.marquee_frames = self
+                .slide
+                .objects
+                .iter()
+                .filter(|o| !o.hidden && !o.locked)
+                .map(|o| (o.id, object_frame(&self.slide, o, theme)))
+                .collect();
+            self.drag = Some(Drag::Select { start: point });
+            return;
+        }
         if extend {
             if let Some(id) = hit {
                 self.toggle_selected(id);
@@ -576,6 +668,26 @@ impl EditDraft {
     pub fn drag_to(&mut self, point: (f32, f32), keep_shape: bool, snap: bool) -> bool {
         let Some(drag) = self.drag else { return false };
         self.guides.clear();
+        if let Drag::Select { start } = drag {
+            // Everything the rectangle touches is selected, along with what was kept.
+            let (left, right) = (start.0.min(point.0), start.0.max(point.0));
+            let (top, bottom) = (start.1.min(point.1), start.1.max(point.1));
+            let touched = self
+                .marquee_frames
+                .iter()
+                .filter(|(_, f)| f.x < right && f.x + f.w > left && f.y < bottom && f.y + f.h > top)
+                .map(|(id, _)| *id);
+            let mut ids = self.marquee_kept.clone();
+            for id in touched {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            self.selected = ids.first().copied();
+            self.also = ids.into_iter().skip(1).collect();
+            self.marquee = Some((start, point));
+            return false;
+        }
         let (id, frame) = match drag {
             Drag::Move { id, from, start } => {
                 let free = moved(from, (point.0 - start.0, point.1 - start.1));
@@ -596,6 +708,7 @@ impl EditDraft {
                     (id, free)
                 }
             }
+            Drag::Select { .. } => return false,
             Drag::Resize { id, handle, from, start } => {
                 let free = resized(from, handle, (point.0 - start.0, point.1 - start.1));
                 if keep_shape {
@@ -619,7 +732,7 @@ impl EditDraft {
         // The first movement of a drag is the moment to remember where things were.
         let before = self.slide.clone();
         self.slide.objects[index].frame = Some(frame);
-        let (Drag::Move { from, .. } | Drag::Resize { from, .. }) = drag;
+        let (Drag::Move { from, .. } | Drag::Resize { from, .. }) = drag else { return false };
         // The rest of the selection moves by exactly as much as the object being dragged.
         if matches!(drag, Drag::Move { .. }) {
             let by = (frame.x - from.x, frame.y - from.y);
@@ -639,6 +752,9 @@ impl EditDraft {
         self.drag = None;
         self.drag_others.clear();
         self.guides.clear();
+        self.marquee = None;
+        self.marquee_frames.clear();
+        self.marquee_kept.clear();
     }
 }
 
@@ -767,6 +883,55 @@ mod tests {
 
         d.select_all();
         assert_eq!(d.selection().len(), 4);
+    }
+
+    #[test]
+    fn dragging_a_rectangle_over_objects_selects_them() {
+        let mut d = draft();
+        let theme = Theme::builtin();
+        let (main, translation) = (d.slide.objects[0].id, d.slide.objects[1].id);
+        // From empty slide at the top left, down across the main box only.
+        d.press(&theme, (10.0, 10.0), 5.0, false);
+        d.drag_to((400.0, 300.0), false, true);
+        assert_eq!(d.selection(), [main]);
+        assert!(d.marquee.is_some());
+        // Further down it reaches the translation too; drawing back lets it go again.
+        d.drag_to((400.0, 800.0), false, true);
+        assert_eq!(d.selection(), [main, translation]);
+        d.drag_to((400.0, 300.0), false, true);
+        assert_eq!(d.selection(), [main]);
+        d.release();
+        assert!(d.marquee.is_none());
+        assert_eq!(d.selection(), [main]);
+        // Nothing moved, and nothing was recorded to undo.
+        assert!(!d.can_undo());
+        // A plain click on empty slide still clears the selection.
+        d.press(&theme, (10.0, 10.0), 5.0, false);
+        d.release();
+        assert!(d.selection().is_empty());
+    }
+
+    #[test]
+    fn a_change_to_the_first_selected_object_reaches_the_others() {
+        let mut d = draft();
+        let theme = Theme::builtin();
+        d.select_all();
+        let before = d.selected_object().unwrap().clone();
+        // Make the first italic, half faded, and 30 units lower.
+        let frame = object_frame(&d.slide, &before, &theme);
+        let first = d.selected_object_mut().unwrap();
+        first.opacity = 0.5;
+        first.frame = Some(SlideRect { y: frame.y + 30.0, ..frame });
+        let ObjectKind::Text { style, .. } = &mut first.kind;
+        style.italic = Some(true);
+        let other_before = object_frame(&d.slide, &d.slide.objects[1], &theme);
+        d.share_change(&theme, &before);
+        let other = &d.slide.objects[1];
+        let ObjectKind::Text { style, .. } = &other.kind;
+        assert_eq!((style.italic, other.opacity), (Some(true), 0.5));
+        assert_eq!(other.frame.unwrap().y, other_before.y + 30.0);
+        // Its own colour and size were not touched.
+        assert_eq!((style.fill, style.size), (None, None));
     }
 
     #[test]

@@ -355,10 +355,15 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
                         if theme_slide {
                     theme_slide_panel(ui, state);
                 } else {
+                    // With several objects selected, a change made here is made to them all.
+                    let before = state.editing.as_ref().and_then(|draft| draft.selected_object().cloned());
                     match state.inspector.tab {
                         InspectorTab::Shape => shape_tab(ui, state, theme),
                         InspectorTab::Text => text_tab(ui, state, theme),
                         InspectorTab::Build => build_tab(ui),
+                    }
+                    if let (Some(before), Some(draft)) = (before, state.editing.as_mut()) {
+                        draft.share_change(theme, &before);
                     }
                 }
                         if let Some(notice) = &state.notice {

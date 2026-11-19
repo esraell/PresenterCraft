@@ -1035,7 +1035,14 @@ fn edit_view(
                 });
 
             if let Some(edit) = state.theme_edit.as_ref() {
-                // A theme's two layouts, each drawn as it will look.
+                // A theme's two templates, each drawn as it will look. A tag says what is
+                // linked to each: Bible slides use one template; songs use both, the first
+                // for slides with two languages and the second for slides with one.
+                let theme_index = edit.index;
+                let (songs_here, bible_here) =
+                    (state.theme_for_songs == theme_index, state.theme_for_bible == theme_index);
+                let bible_template = state.bible_layout;
+                let mut link_bible = None;
                 let layouts = [(Template::Full, "Two languages"), (Template::Alone, "One language")];
                 let slides: Vec<Slide> =
                     layouts.iter().map(|(template, _)| edit.theme.template_slide(*template)).collect();
@@ -1074,11 +1081,43 @@ fn edit_view(
                             FontId::proportional(11.5),
                             Color32::from_gray(230),
                         );
+                        // What is linked to this template, at the right of its name.
+                        let mut right = cell.max.x - 8.0;
+                        for (linked, tag) in
+                            [(bible_here && bible_template == template, "Bible"), (songs_here, "Songs")]
+                        {
+                            if !linked {
+                                continue;
+                            }
+                            let ink = Color32::from_gray(225);
+                            let text = ui.painter().layout_no_wrap(tag.to_owned(), FontId::proportional(10.0), ink);
+                            let pill = Rect::from_min_size(
+                                pos2(right - text.size().x - 10.0, image.max.y + 2.0),
+                                vec2(text.size().x + 10.0, 16.0),
+                            );
+                            ui.painter().rect_filled(pill, 8.0, Color32::from_white_alpha(32));
+                            ui.painter().galley(
+                                pos2(pill.min.x + 5.0, pill.center().y - text.size().y / 2.0),
+                                text,
+                                ink,
+                            );
+                            right = pill.min.x - 4.0;
+                        }
                         if response.clicked() && !selected {
                             chosen_template = Some(template);
                         }
+                        response.context_menu(|ui| {
+                            let linked = bible_here && bible_template == template;
+                            if ui.add_enabled(!linked, egui::Button::new("Use for Bible Slides")).clicked() {
+                                link_bible = Some(template);
+                                ui.close();
+                            }
+                        });
                     }
                 });
+                if let Some(template) = link_bible {
+                    state.theme_request = Some(ThemeRequest::UseForBible(theme_index, template));
+                }
             } else {
                 egui::ScrollArea::vertical().id_salt("edit slide list").auto_shrink([false, false]).show(ui, |ui| {
                     let width = ui.available_width();
@@ -1312,6 +1351,13 @@ fn edit_view(
                     }
                 }
             }
+        }
+
+        // The rectangle being dragged out to select with.
+        if let Some(((ax, ay), (bx, by))) = state.editing.as_ref().and_then(|draft| draft.marquee) {
+            let rect = Rect::from_two_pos(slide.min + vec2(ax, ay) * scale, slide.min + vec2(bx, by) * scale);
+            ui.painter().rect_filled(rect, 0.0, crate::studio::ACCENT.gamma_multiply(0.15));
+            ui.painter().rect_stroke(rect, 0.0, Stroke::new(1.0, crate::studio::ACCENT), StrokeKind::Inside);
         }
 
         // The lines a dragged box is sitting on: the slide's middle or edges, or another box's.
@@ -1610,7 +1656,7 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                     // Tags at the right say what uses this theme.
                     let mut right = row.max.x - 6.0;
                     for (used, tag) in
-                        [(state.theme_for_bible == index, "Bible"), (state.theme_for_songs == index, "Songs")]
+                        [(state.theme_for_songs == index, "Songs"), (state.theme_for_bible == index, "Bible")]
                     {
                         if !used {
                             continue;
@@ -1671,13 +1717,6 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                             state.theme_request = Some(ThemeRequest::UseForSongs(index));
                             ui.close();
                         }
-                        if ui
-                            .add_enabled(state.theme_for_bible != index, egui::Button::new("Use for Bible Slides"))
-                            .clicked()
-                        {
-                            state.theme_request = Some(ThemeRequest::UseForBible(index, state.bible_layout));
-                            ui.close();
-                        }
                         if open {
                             ui.separator();
                             if ui.button("Rename").clicked() {
@@ -1704,7 +1743,7 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
             }
         }
         ui.add_space(8.0);
-        crate::studio::caption(ui, "LAYOUTS");
+        crate::studio::caption(ui, "TEMPLATES");
     });
 }
 

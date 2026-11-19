@@ -110,6 +110,38 @@ impl LineTransform {
 }
 
 impl BoxStyle {
+    /// Makes the same change to this look as was made between `before` and `after`: whatever
+    /// differs between those two is copied from `after`; the rest of this look is left alone.
+    /// Its role, name and place are never touched.
+    pub fn follow_change(&mut self, before: &BoxStyle, after: &BoxStyle) {
+        macro_rules! follow {
+            ($($field:ident),*) => {
+                $(if before.$field != after.$field {
+                    self.$field = after.$field.clone();
+                })*
+            };
+        }
+        follow!(
+            font_family,
+            weight,
+            italic,
+            size,
+            fill,
+            align,
+            outline_width,
+            outline_color,
+            shadow,
+            shadow_look,
+            valign,
+            caps,
+            underline,
+            strike,
+            scaling,
+            line_transform
+        );
+        self.min_size = self.min_size.min(self.size);
+    }
+
     /// What the box is called: its own name if it has one, otherwise its role's.
     pub fn label(&self) -> String {
         self.name.clone().unwrap_or_else(|| self.role.label())
@@ -614,6 +646,24 @@ mod tests {
         // Deleting the main box in the editor does not take it out of the theme.
         slide.objects.remove(0);
         assert!(theme.with_template(Template::Full, &slide).style_for(&Role::primary()).is_some());
+    }
+
+    #[test]
+    fn a_change_to_one_look_is_followed_by_another_without_disturbing_the_rest() {
+        let theme = Theme::builtin();
+        let main = theme.style_for(&Role::primary()).unwrap().clone();
+        let mut translation = theme.style_for(&Role::translation()).unwrap().clone();
+        let orange = translation.fill;
+        let mut changed = main.clone();
+        changed.italic = true;
+        changed.size = 120.0;
+        translation.follow_change(&main, &changed);
+        // What changed is taken; its own colour, place and role are kept.
+        assert!(translation.italic);
+        assert_eq!(translation.size, 120.0);
+        assert_eq!(translation.fill, orange);
+        assert_eq!(translation.role, Role::translation());
+        assert_eq!(translation.rect, theme.style_for(&Role::translation()).unwrap().rect);
     }
 
     #[test]
