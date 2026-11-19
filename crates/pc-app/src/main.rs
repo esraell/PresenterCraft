@@ -337,7 +337,7 @@ impl App {
             egui_renderer,
             thumbs,
             preview,
-            home_state: HomeState::default(),
+            home_state: HomeState { fonts: Arc::new(pc_render::Fonts::new().family_names()), ..HomeState::default() },
             next_repaint: None,
             canvas: None,
             canvas_for: None,

@@ -8,7 +8,7 @@ mod types;
 
 pub use format::{FORMAT_VERSION, from_json, to_json};
 pub use song_text::{clean_box_text, group_color, parse_song_text, to_song_text};
-pub use theme::{Align, BoxStyle, SlideRect, Theme};
+pub use theme::{Align, BoxStyle, SlideRect, TextStyle, Theme};
 pub use types::{Group, MediaItem, Object, ObjectKind, Presentation, Rgba, Role, Slide};
 pub use uuid::Uuid;
 

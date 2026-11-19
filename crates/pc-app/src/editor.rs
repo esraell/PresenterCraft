@@ -2,7 +2,7 @@
 //! under the pointer, moving and resizing it, adding and deleting objects, and undo.
 
 use pc_engine::{Show, SlideRef};
-use pc_model::{Object, ObjectKind, SLIDE_HEIGHT, SLIDE_WIDTH, Slide, SlideRect, Theme, Uuid};
+use pc_model::{Object, ObjectKind, SLIDE_HEIGHT, SLIDE_WIDTH, Slide, SlideRect, TextStyle, Theme, Uuid};
 use pc_render::object_frame;
 
 /// An object cannot be made smaller than this on either side, in slide units.
@@ -236,7 +236,7 @@ impl EditDraft {
             frame: Some(SlideRect { x: (SLIDE_WIDTH - w) / 2.0, y: (SLIDE_HEIGHT - h) / 2.0, w, h }),
             rotation: 0.0,
             opacity: 1.0,
-            kind: ObjectKind::Text { text: "Text".to_owned() },
+            kind: ObjectKind::Text { text: "Text".to_owned(), style: TextStyle::default() },
         };
         self.selected = Some(object.id);
         self.slide.objects.push(object);
@@ -484,12 +484,12 @@ mod tests {
         let first = d.slide.clone();
         for (i, now) in [10.0, 10.3, 10.6, 10.9].into_iter().enumerate() {
             let before = d.slide.clone();
-            d.slide.objects[0].kind = ObjectKind::Text { text: "a".repeat(i + 1) };
+            d.slide.objects[0].kind = ObjectKind::Text { text: "a".repeat(i + 1), style: TextStyle::default() };
             d.record_run(before, now);
         }
         // A pause, then more typing: a second step.
         let before = d.slide.clone();
-        d.slide.objects[0].kind = ObjectKind::Text { text: "later".to_owned() };
+        d.slide.objects[0].kind = ObjectKind::Text { text: "later".to_owned(), style: TextStyle::default() };
         d.record_run(before, 13.0);
         assert!(d.undo());
         assert_eq!(d.slide.objects[0].as_text(), Some("aaaa"));

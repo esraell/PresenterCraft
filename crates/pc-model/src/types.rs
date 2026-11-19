@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::theme::SlideRect;
+use crate::theme::{SlideRect, TextStyle};
 
 /// A colour with straight (not premultiplied) alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +42,13 @@ impl Role {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObjectKind {
-    /// A block of text. Line breaks in `text` are kept.
-    Text { text: String },
+    /// A block of text. Line breaks in `text` are kept. `style` holds what this object sets
+    /// for itself; the rest of its look comes from the theme.
+    Text {
+        text: String,
+        #[serde(default, skip_serializing_if = "TextStyle::is_default")]
+        style: TextStyle,
+    },
 }
 
 fn full_opacity() -> f32 {
@@ -101,14 +106,14 @@ impl Object {
             frame: None,
             rotation: 0.0,
             opacity: 1.0,
-            kind: ObjectKind::Text { text: text.into() },
+            kind: ObjectKind::Text { text: text.into(), style: TextStyle::default() },
         }
     }
 
     /// The object's words, if it is a text object.
     pub fn as_text(&self) -> Option<&str> {
         match &self.kind {
-            ObjectKind::Text { text } => Some(text),
+            ObjectKind::Text { text, .. } => Some(text),
         }
     }
 }
@@ -199,7 +204,11 @@ impl Presentation {
                         (Some(at), true) => {
                             slide.objects.remove(at);
                         }
-                        (Some(at), false) => slide.objects[at].kind = ObjectKind::Text { text },
+                        (Some(at), false) => {
+                            // Only the words change; the object keeps the look it was given.
+                            let ObjectKind::Text { text: words, .. } = &mut slide.objects[at].kind;
+                            *words = text;
+                        }
                         (None, false) => {
                             let at = position.min(slide.objects.len());
                             slide.objects.insert(at, Object::text(role, text));

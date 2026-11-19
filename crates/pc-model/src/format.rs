@@ -63,6 +63,10 @@ mod tests {
         object.frame = Some(SlideRect { x: 100.0, y: 700.5, w: 1720.0, h: 250.0 });
         object.rotation = -3.5;
         object.opacity = 0.8;
+        let crate::ObjectKind::Text { style, .. } = &mut object.kind;
+        style.fill = Some(crate::Rgba::rgb(10, 200, 30));
+        style.align = Some(crate::Align::Left);
+        style.size = Some(48.0);
         p.groups[0].slides[1].notes = Some("Wait for the band".to_owned());
         p.groups[1].slides[0].enabled = false;
         p
@@ -81,7 +85,7 @@ mod tests {
         assert!(text.contains(r#""version": 1"#));
         assert!(text.contains(r#""kind": "text""#));
         assert!(text.contains(r#""role": "primary""#));
-        for absent in ["frame", "rotation", "opacity", "notes", "label"] {
+        for absent in ["frame", "rotation", "opacity", "notes", "label", "style"] {
             assert!(!text.contains(absent), "{absent} should be left out when it is the default");
         }
     }

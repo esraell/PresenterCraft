@@ -322,3 +322,32 @@ fn a_faded_object_is_dimmer_and_a_turned_one_moves_its_ink() {
     let (narrow, tall) = extent(&px_turned);
     assert!(wide > short && tall > narrow, "upright {wide}x{short}, turned {narrow}x{tall}");
 }
+
+#[test]
+fn an_objects_own_colour_alignment_and_size_are_drawn() {
+    use pc_model::{Align, ObjectKind, Rgba};
+    let mut s = slide("IIII", None);
+    let plain = render(Some(&s), 640, 360);
+    let ObjectKind::Text { style, .. } = &mut s.objects[0].kind;
+    style.fill = Some(Rgba::rgb(255, 0, 0));
+    style.align = Some(Align::Left);
+    style.outline_width = Some(0.0);
+    style.shadow = Some(false);
+    let px = render(Some(&s), 640, 360);
+    let red: Vec<u32> = (0..360)
+        .flat_map(|y| (0..640).map(move |x| (x, y)))
+        .filter(|(x, y)| is_about(pixel(&px, 640, *x, *y), [255, 0, 0]))
+        .map(|p| p.0)
+        .collect();
+    assert!(red.len() > 100, "the letters should be red");
+    assert_eq!(count_lit(&px), 0, "and no longer white");
+    assert!(*red.iter().max().unwrap() < 320, "left-aligned letters stay in the left half");
+    assert!(count_lit(&plain) > 100, "the same slide in the theme's style is white");
+
+    // A much smaller size draws much less ink.
+    let ObjectKind::Text { style, .. } = &mut s.objects[0].kind;
+    style.size = Some(20.0);
+    let small = render(Some(&s), 640, 360);
+    let small_red = small.chunks(4).filter(|p| p[0] > 200 && p[1] < 60 && p[2] < 60).count();
+    assert!(small_red * 4 < red.len(), "{small_red} pixels at size 20 against {}", red.len());
+}

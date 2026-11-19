@@ -61,8 +61,7 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
     if let Some(slide) = layers.slide {
         let alone = slide.objects.len() == 1;
         for object in &slide.objects {
-            let (style, themed) = placement(theme, object.role.as_ref(), alone);
-            let Some(style) = style else { continue };
+            let (_, themed) = placement(theme, object.role.as_ref(), alone);
             let rect = object.frame.unwrap_or(themed);
             // Turn the object about its own centre.
             let centre = (f64::from(rect.x + rect.w / 2.0), f64::from(rect.y + rect.h / 2.0));
@@ -73,8 +72,10 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
                 scene.push_layer(Fill::NonZero, Mix::Normal, object.opacity.clamp(0.0, 1.0), to_target, &whole_slide);
             }
             match &object.kind {
-                ObjectKind::Text { text } => {
-                    overflow |= draw_text_box(&mut scene, fonts, placed, text, style, rect);
+                ObjectKind::Text { text, style } => {
+                    // The theme's style for the object's role, with the object's own settings over it.
+                    let Some(style) = theme.text_style(object.role.as_ref(), style) else { continue };
+                    overflow |= draw_text_box(&mut scene, fonts, placed, text, &style, rect);
                 }
             }
             if faded {
@@ -105,6 +106,9 @@ fn lay_out(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: f3
     let mut builder = fonts.layout_cx.ranged_builder(&mut fonts.font_cx, text, 1.0, true);
     builder.push_default(StyleProperty::FontSize(size));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(f32::from(style.weight))));
+    if style.italic {
+        builder.push_default(StyleProperty::FontStyle(parley::FontStyle::Italic));
+    }
     builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(1.25)));
     builder.push_default(StyleProperty::FontFamily(style.font_family.as_str().into()));
     let mut layout: Layout<()> = builder.build(text);

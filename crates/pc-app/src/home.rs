@@ -9,7 +9,7 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Rect, Sense, Stroke, StrokeKind, TextureId, pos2, vec2,
 };
 use pc_engine::{Command, Layer, Show, SlideRef};
-use pc_model::{ObjectKind, Rgba, Slide, SlideRect, Theme};
+use pc_model::{Align as TextAlign, ObjectKind, Rgba, Slide, SlideRect, TextStyle, Theme};
 use pc_render::object_frame;
 
 use crate::editor::EditDraft;
@@ -73,6 +73,8 @@ pub struct HomeState {
     pub pending_edit: Option<(SlideRef, Slide)>,
     /// When on, edits to a slide that is on screen go to the output as they are typed.
     pub live_edit: bool,
+    /// The font families installed on this computer, for the editor's font list.
+    pub fonts: std::sync::Arc<Vec<String>>,
 }
 
 /// Which thumbnail the window is asking for.
@@ -95,6 +97,7 @@ impl Default for HomeState {
             editing: None,
             pending_edit: None,
             live_edit: false,
+            fonts: std::sync::Arc::default(),
         }
     }
 }
@@ -915,6 +918,78 @@ fn edit_button(ui: &mut egui::Ui, label: &str, enabled: bool, hint: &str) -> boo
     ui.add_enabled(enabled, egui::Button::new(egui::RichText::new(label).size(12.0))).on_hover_text(hint).clicked()
 }
 
+fn to_color32(c: Rgba) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+}
+
+fn to_rgba(c: Color32) -> Rgba {
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    Rgba { r, g, b, a }
+}
+
+/// The inspector's controls for how a text object looks. They show the look it has now (the
+/// theme's, with the object's own settings over it) and keep only what differs from the theme.
+fn text_style_controls(ui: &mut egui::Ui, base: &pc_model::BoxStyle, style: &mut TextStyle, fonts: &[String]) {
+    let shown = style.over(base);
+    let mut wanted = shown.clone();
+    section_label(ui, "FONT");
+    egui::ComboBox::from_id_salt("font family")
+        .selected_text(wanted.font_family.as_str())
+        .width(ui.available_width())
+        .height(320.0)
+        .show_ui(ui, |ui| {
+            for family in fonts {
+                ui.selectable_value(&mut wanted.font_family, family.clone(), family.as_str());
+            }
+        });
+    ui.horizontal(|ui| {
+        ui.add(egui::DragValue::new(&mut wanted.size).speed(1.0).range(8.0..=600.0).max_decimals(0).suffix(" pt"))
+            .on_hover_text("Size, in slide units");
+        let mut bold = wanted.weight >= 600;
+        if ui.toggle_value(&mut bold, egui::RichText::new("B").strong()).on_hover_text("Bold").changed() {
+            wanted.weight = if bold { 700 } else { 400 };
+        }
+        ui.toggle_value(&mut wanted.italic, egui::RichText::new("I").italics()).on_hover_text("Italic");
+        let mut fill = to_color32(wanted.fill);
+        if ui.color_edit_button_srgba(&mut fill).on_hover_text("Text colour").changed() {
+            wanted.fill = to_rgba(fill);
+        }
+    });
+    ui.horizontal(|ui| {
+        for (align, label) in [(TextAlign::Left, "Left"), (TextAlign::Center, "Centre"), (TextAlign::Right, "Right")] {
+            ui.selectable_value(&mut wanted.align, align, label);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Outline");
+        ui.add(egui::DragValue::new(&mut wanted.outline_width).speed(0.25).range(0.0..=60.0).max_decimals(1));
+        let mut outline = to_color32(wanted.outline_color);
+        if ui.color_edit_button_srgba(&mut outline).on_hover_text("Outline colour").changed() {
+            wanted.outline_color = to_rgba(outline);
+        }
+        ui.checkbox(&mut wanted.shadow, "Shadow");
+    });
+    if wanted != shown {
+        *style = TextStyle::between(base, &wanted);
+    }
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(if style.is_default() {
+                "Looks as the theme has it"
+            } else {
+                "Styled by hand on this slide"
+            })
+            .size(11.5)
+            .color(DIM),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if edit_button(ui, "Reset style", !style.is_default(), "Give this text the theme's look again") {
+                *style = TextStyle::default();
+            }
+        });
+    });
+}
+
 /// The Edit view. It replaces the whole window below the toolbar: the song's slides down the
 /// left with the chosen slide's objects under them, a canvas in the middle where objects are
 /// selected, dragged and resized, and an inspector on the right for the selected object.
@@ -1147,6 +1222,7 @@ fn edit_view(
             Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 8 }).show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 7.0);
                 ui.visuals_mut().extreme_bg_color = Color32::from_rgb(23, 23, 23);
+                let fonts_owner = state.fonts.clone();
                 let Some(draft) = state.editing.as_mut() else { return };
                 ui.horizontal(|ui| {
                     if edit_button(ui, "Undo", draft.can_undo(), "Undo the last change (Cmd+Z)") {
@@ -1163,6 +1239,7 @@ fn edit_view(
                 });
                 ui.separator();
 
+                let fonts = fonts_owner;
                 let themed = draft.selected_object().map(|object| object_frame(&draft.slide, object, theme));
                 let Some(object) = draft.selected_object_mut() else {
                     ui.label(egui::RichText::new("Click something on the slide to select it.").size(12.5).color(Color32::from_gray(190)));
@@ -1173,10 +1250,14 @@ fn edit_view(
 
                 section_label(ui, "NAME");
                 ui.add(egui::TextEdit::singleline(&mut object.name).desired_width(f32::INFINITY));
+                let role = object.role.clone();
                 match &mut object.kind {
-                    ObjectKind::Text { text } => {
+                    ObjectKind::Text { text, style } => {
                         section_label(ui, "TEXT");
                         ui.add(egui::TextEdit::multiline(text).desired_rows(4).desired_width(f32::INFINITY));
+                        if let Some(base) = theme.text_style(role.as_ref(), &TextStyle::default()) {
+                            text_style_controls(ui, &base, style, &fonts);
+                        }
                     }
                 }
 

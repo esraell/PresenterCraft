@@ -14,6 +14,16 @@ impl Fonts {
     }
 }
 
+impl Fonts {
+    /// The names of the font families installed on this computer, sorted.
+    pub fn family_names(&mut self) -> Vec<String> {
+        let mut names: Vec<String> = self.font_cx.collection.family_names().map(str::to_owned).collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup();
+        names
+    }
+}
+
 impl Default for Fonts {
     fn default() -> Fonts {
         Fonts::new()
