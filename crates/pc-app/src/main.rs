@@ -466,10 +466,12 @@ fn paint_ui(
     };
     let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let extra = renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &jobs, &screen);
-    let frame = match surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
-        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-            surface.configure(&gpu.device, config);
+    let frame = match output::next_texture(surface) {
+        Some(wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame)) => {
+            Some(frame)
+        }
+        Some(wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost) | None => {
+            output::configure(&gpu.device, surface, config);
             window.request_redraw();
             None
         }
@@ -595,6 +597,11 @@ struct Running {
     egui_renderer: egui_wgpu::Renderer,
     thumbs: Thumbs,
     preview: Option<egui::TextureId>,
+    /// The live preview's two textures, as the window knows them; how many drawings of it the
+    /// window has shown; and until when it is looked at often (a fade just set going).
+    live_preview_ids: Vec<egui::TextureId>,
+    live_preview_seen: u64,
+    live_preview_until: Instant,
     /// The preview picture before the last change, and when that change was, so the preview
     /// fades as the output does.
     preview_before: Option<egui::TextureId>,
@@ -649,8 +656,6 @@ struct App {
     video: Option<(Uuid, pc_video::Player)>,
     /// A video in a box on the slide on screen, by the file the box names, playing.
     slide_video: Option<(String, pc_video::Player)>,
-    /// When the Program preview was last drawn for a playing video.
-    video_preview_at: Instant,
     /// The song on the Announcements layer: which, the slide shown, since when, and what was
     /// sent to the screens.
     announcing: Option<Announcing>,
@@ -789,6 +794,19 @@ impl App {
             egui_wgpu::Renderer::new(&gpu.device, home_format, egui_wgpu::RendererOptions::default());
         let mut thumbs = Thumbs::new(&gpu.device)?;
         let (preview, _) = thumbs.preview(&gpu, &mut egui_renderer, &Layers::default(), &self.theme);
+        // The live preview: two small textures the output thread draws the audience picture
+        // into, turn about, for the Program preview to show what the screens show.
+        let (live_w, live_h) = output::LIVE_PREVIEW_SIZE;
+        let live_textures: Vec<wgpu::Texture> =
+            (0..2).map(|_| pc_render::target_texture(&gpu.device, live_w, live_h)).collect();
+        let live_preview_ids: Vec<egui::TextureId> = live_textures
+            .iter()
+            .map(|texture| {
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                egui_renderer.register_native_texture(&gpu.device, &view, wgpu::FilterMode::Linear)
+            })
+            .collect();
+        output.send(OutputMsg::PreviewTargets(live_textures));
 
         Ok(Some(Running {
             home_window,
@@ -809,6 +827,9 @@ impl App {
             egui_renderer,
             thumbs,
             preview,
+            live_preview_ids,
+            live_preview_seen: 0,
+            live_preview_until: Instant::now(),
             preview_before: None,
             preview_changed: Instant::now(),
             preview_shows_stage: false,
@@ -1210,21 +1231,18 @@ impl App {
         }
     }
 
-    /// While a video plays (as the media or in a box), the Program preview is drawn again a few
-    /// times a second, so it moves as the screens do.
-    fn tick_video_preview(&mut self) -> Option<Instant> {
-        if self.video.is_none() && self.slide_video.is_none() {
-            return None;
+    /// Draws the window again whenever the output thread has drawn a new live preview, so the
+    /// Program preview shows what the screens show. It is looked at often only while something
+    /// moves: a video playing, or a fade just set going. Says when to look again.
+    fn tick_live_preview(&mut self) -> Option<Instant> {
+        let moving = self.video.is_some() || self.slide_video.is_some();
+        let running = self.running.as_mut()?;
+        let (_, drawn) = running.output.as_ref()?.live_preview();
+        if drawn != running.live_preview_seen {
+            running.live_preview_seen = drawn;
+            running.home_window.request_redraw();
         }
-        let every = Duration::from_millis(200);
-        if self.video_preview_at.elapsed() >= every {
-            self.video_preview_at = Instant::now();
-            self.refresh_preview(false);
-            if let Some(running) = self.running.as_ref() {
-                running.home_window.request_redraw();
-            }
-        }
-        Some(self.video_preview_at + every)
+        (moving || Instant::now() < running.live_preview_until).then(|| Instant::now() + Duration::from_millis(16))
     }
 
     /// Keeps the video in a box on the slide going; if the system's player can't play it,
@@ -1528,6 +1546,9 @@ impl App {
                 about,
                 build_step: self.show.build_step(),
             };
+            // The live preview follows the screens: watched closely while their fade runs.
+            let watch = Duration::from_secs_f32(frame.transition.duration().max(frame.media_transition.duration()));
+            running.live_preview_until = Instant::now() + watch + Duration::from_millis(300);
             if !output.send(OutputMsg::Show(frame)) {
                 running.home_state.output_stopped = true;
             }
@@ -1556,10 +1577,8 @@ impl App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        // The preview is small: it takes the small copy, or the playing video's newest picture.
-        let playing = self.video.as_ref().and(running.output.as_ref()).and_then(OutputHandle::video_preview);
-        let media = playing
-            .or_else(|| self.show.live_media().and_then(|index| self.pictures.get(index)).map(|p| p.small.clone()));
+        // The preview is small: it takes the small copy.
+        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).map(|p| p.small.clone());
         let state = &running.home_state;
         // The slide as far as its builds have got, with nothing moving, and its linked text filled in.
         let step = self.show.build_step();
@@ -1787,6 +1806,7 @@ impl App {
         if let Some(running) = self.running.as_mut() {
             if let Some(output) = &running.output {
                 output.send(OutputMsg::Announcement(Some(shown.clone())));
+                running.live_preview_until = Instant::now() + Duration::from_millis(900);
             }
             running.home_state.announcement_live = Some(song);
             running.home_window.request_redraw();
@@ -2783,7 +2803,15 @@ impl App {
         } else {
             1.0
         };
-        let preview = home::Preview { now: running.preview, before: running.preview_before, amount };
+        // The Program preview is what the screens show: the live preview the output thread draws,
+        // once it has drawn one. (The stage picture, and the start, use the window's own.)
+        let live = running.output.as_ref().map(OutputHandle::live_preview).filter(|(_, drawn)| *drawn > 0);
+        let preview = match live.and_then(|(front, _)| running.live_preview_ids.get(front)) {
+            Some(texture) if !running.home_state.preview_stage => {
+                home::Preview { now: Some(*texture), before: None, amount: 1.0 }
+            }
+            _ => home::Preview { now: running.preview, before: running.preview_before, amount },
+        };
         let (show, pictures) = (&self.show, &self.pictures);
         let (songs_theme, bible_theme): (&Theme, &Theme) = (&front_theme, &self.theme_for_bible);
         running.home_state.song_templates = song_templates(songs_theme);
@@ -3376,6 +3404,7 @@ impl App {
         });
         if let Some(output) = &running.output {
             output.send(OutputMsg::Overlay(overlay.clone()));
+            running.live_preview_until = Instant::now() + Duration::from_millis(500);
         }
         running.overlay_sent = Some(overlay);
         if message_changed {
@@ -3794,7 +3823,7 @@ impl ApplicationHandler<String> for App {
                     if size.width > 0 && size.height > 0 {
                         panel.config.width = size.width;
                         panel.config.height = size.height;
-                        panel.surface.configure(&running.gpu.device, &panel.config);
+                        output::configure(&running.gpu.device, &panel.surface, &panel.config);
                     }
                     panel.window.request_redraw();
                 }
@@ -3900,7 +3929,7 @@ impl ApplicationHandler<String> for App {
                 if size.width > 0 && size.height > 0 {
                     running.home_config.width = size.width;
                     running.home_config.height = size.height;
-                    running.home_surface.configure(&running.gpu.device, &running.home_config);
+                    output::configure(&running.gpu.device, &running.home_surface, &running.home_config);
                 }
                 running.home_window.request_redraw();
             }
@@ -4037,7 +4066,7 @@ impl ApplicationHandler<String> for App {
         self.sync_overlay();
         let video_at = self.tick_video();
         let box_video_at = self.tick_slide_video();
-        let preview_at = self.tick_video_preview();
+        let preview_at = self.tick_live_preview();
         let audio_at = self.tick_audio();
         let announce_at = self.tick_announcements();
         let cycle_at = self.tick_media_cycle();
@@ -4214,7 +4243,6 @@ fn main() -> ExitCode {
         started: Instant::now(),
         video: None,
         slide_video: None,
-        video_preview_at: Instant::now(),
         media_playlists: Vec::new(),
         announcing: None,
         media_cycle: None,
