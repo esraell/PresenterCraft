@@ -1,6 +1,7 @@
 //! PresenterCraft: a home window with a slide grid, and a separate output for the audience.
 
 mod displays;
+mod editor;
 mod home;
 mod icons;
 mod load;
@@ -14,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pc_engine::{Command, Layer, Show};
-use pc_model::{MediaItem, Object, Role, Slide, Theme, Uuid, clean_box_text, parse_song_text};
+use pc_model::{MediaItem, Slide, Theme, Uuid, parse_song_text};
 use pc_render::vello::util::RenderContext;
 use pc_render::wgpu;
 use pc_render::{Layers, Picture};
@@ -25,7 +26,8 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::displays::{DisplayInfo, Placement, choose_output};
-use crate::home::{EditDraft, HomeState, ThumbOf, home_ui};
+use crate::editor::EditDraft;
+use crate::home::{HomeState, ThumbOf, home_ui};
 use crate::output::{Frame, OutputHandle, OutputMsg};
 use crate::thumbs::Thumbs;
 
@@ -193,7 +195,7 @@ struct Running {
     next_repaint: Option<Instant>,
     /// The Edit view's picture of the slide being edited, and the words it was drawn from.
     canvas: Option<egui::TextureId>,
-    canvas_for: Option<EditDraft>,
+    canvas_for: Option<(pc_engine::SlideRef, Slide)>,
     frames: u32,
     // Kept so the GPU instance outlives its surfaces.
     _context: RenderContext,
@@ -410,28 +412,25 @@ impl App {
         running.home_window.request_redraw();
     }
 
-    /// Puts the words typed in the Edit view into their song. The song's file is written a
+    /// Puts a slide changed in the Edit view into its song. The song's file is written a
     /// moment later (see `save_unsaved`). The output is left alone unless Live Edit is on, so
-    /// typing never changes what the audience sees by surprise.
-    fn apply_edit(&mut self, edit: EditDraft) {
-        let Some(song) = self.show.presentations().get(edit.at.presentation).cloned() else {
+    /// editing never changes what the audience sees by surprise.
+    fn apply_edit(&mut self, at: pc_engine::SlideRef, slide: Slide) {
+        let Some(song) = self.show.presentations().get(at.presentation).cloned() else {
             return;
         };
-        // A slide with no words at all is not put into the song; the Edit view says so.
-        let Some(edited) = song.with_slide_text(edit.at.slide, &edit.primary, &edit.translation) else {
+        let slide_id = slide.id;
+        let Some(edited) = song.with_slide(at.slide, slide) else {
             return;
         };
-        let slide_id = edited.slide(edit.at.slide).map(|(_, slide)| slide.id);
-        let changes = self.show.replace_presentation(edit.at.presentation, Arc::new(edited));
-        if !self.unsaved.contains(&edit.at.presentation) {
-            self.unsaved.push(edit.at.presentation);
+        let changes = self.show.replace_presentation(at.presentation, Arc::new(edited));
+        if !self.unsaved.contains(&at.presentation) {
+            self.unsaved.push(at.presentation);
         }
         self.unsaved_since = Some(Instant::now());
         let mut live_edit = false;
         if let Some(running) = self.running.as_mut() {
-            if let Some(id) = slide_id {
-                running.thumbs.forget(id, &mut running.egui_renderer);
-            }
+            running.thumbs.forget(slide_id, &mut running.egui_renderer);
             live_edit = running.home_state.live_edit;
             running.home_window.request_redraw();
         }
@@ -460,27 +459,19 @@ impl App {
         }
     }
 
-    /// Redraws the Edit view's picture of the slide when the words being edited change.
+    /// Redraws the Edit view's picture of the slide when the slide being edited changes.
     fn update_canvas(&mut self) {
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        let draft = running.home_state.editing.clone();
-        if draft == running.canvas_for {
+        let editing = running.home_state.editing.as_ref().map(|draft| (draft.at, draft.slide.clone()));
+        if editing == running.canvas_for {
             return;
         }
-        if let Some(draft) = &draft {
-            let mut boxes = Vec::new();
-            for (role, text) in [(Role::primary(), &draft.primary), (Role::translation(), &draft.translation)] {
-                let text = clean_box_text(text);
-                if !text.is_empty() {
-                    boxes.push(Object::text(role, text));
-                }
-            }
-            running.canvas =
-                running.thumbs.canvas(&running.gpu, &mut running.egui_renderer, &Slide::new(boxes), &self.theme);
+        if let Some((_, slide)) = &editing {
+            running.canvas = running.thumbs.canvas(&running.gpu, &mut running.egui_renderer, slide, &self.theme);
         }
-        running.canvas_for = draft;
+        running.canvas_for = editing;
         running.home_window.request_redraw();
     }
 
@@ -511,7 +502,7 @@ impl App {
                     thumbs.get_media(gpu, egui_renderer, item.id, picture, theme).map(|texture| (texture, false))
                 }
             };
-            commands.extend(home_ui(ui, show, home_state, &mut thumb, preview, canvas));
+            commands.extend(home_ui(ui, show, home_state, theme, &mut thumb, preview, canvas));
         });
         egui_state.handle_platform_output(home_window, full.platform_output);
 
@@ -590,6 +581,9 @@ impl App {
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_EDITOR").is_some() {
                 let at = pc_engine::SlideRef { presentation: 0, slide: 2 };
                 running.home_state.editing = EditDraft::of(&self.show, at);
+                if let Some(draft) = running.home_state.editing.as_mut() {
+                    draft.selected = draft.slide.objects.first().map(|object| object.id);
+                }
             }
             if running.frames == CAPTURE_AT {
                 match capture(gpu, egui_renderer, &jobs, &screen, home_config.format, path) {
@@ -706,8 +700,8 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let commands = self.draw_home();
                 self.apply(commands);
-                if let Some(edit) = self.running.as_mut().and_then(|r| r.home_state.pending_edit.take()) {
-                    self.apply_edit(edit);
+                if let Some((at, slide)) = self.running.as_mut().and_then(|r| r.home_state.pending_edit.take()) {
+                    self.apply_edit(at, slide);
                 }
                 self.update_canvas();
                 // Leaving the Edit view writes the songs changed there straight away.

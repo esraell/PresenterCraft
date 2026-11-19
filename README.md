@@ -35,15 +35,27 @@ picture button beside the preview takes it off again. Videos are not supported y
 ## Editing
 
 Press Edit in the toolbar, or right-click a slide and choose "Edit words…". The window changes
-to the Edit view: the song's slides down the left, a large picture of the chosen slide in the
-middle, and its two text boxes on the right. The picture follows what you type. Changes are
-written to the song's text file a second after you stop typing, and when you press Show to go
-back. What is on the audience screen does not change while you type unless Live Edit is ticked.
+to the Edit view: the song's slides down the left with the chosen slide's objects under them, a
+canvas in the middle, and an inspector on the right.
+
+- Click an object on the canvas (or in the Objects list) to select it. Drag it to move it, drag
+  a handle to resize it, use the arrow keys to nudge it (Shift for bigger steps), press Delete
+  to remove it.
+- The inspector changes the selected object's name, words, position, size, rotation and
+  opacity, moves it forward or back, and puts it back where the theme has it.
+- "Add text" (or the T above the canvas) adds a text box.
+- Cmd+Z undoes, Shift+Cmd+Z redoes.
+
+Changes are saved a second after you stop, and when you press Show to go back, as a
+PresenterCraft song file (`.pcpres`) beside the song's text file; the text file is left as it
+was. What is on the audience screen does not change while you edit unless Live Edit is ticked.
 The bundled sample is not a file, so edits to it last until the app closes.
 
 ## Song files
 
-Plain text, UTF-8:
+A song is either a plain text file or a PresenterCraft song file (`.pcpres`, a JSON document
+that also holds where each object sits and how it looks). Where both exist with the same name,
+the PresenterCraft file is the one opened. The text format, UTF-8:
 
     [Verse 1]
     Light rises over the quiet hills

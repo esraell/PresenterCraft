@@ -256,6 +256,18 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_slide_can_be_replaced() {
+        let p = parse_song_text("T", "[V]\nA\n\nB\n\n[C]\nD\n");
+        let mut edited = p.slide(2).unwrap().1.clone();
+        edited.objects.clear();
+        let q = p.with_slide(2, edited.clone()).unwrap();
+        assert_eq!(q.slide(2).unwrap().1, &edited);
+        assert_eq!(q.slide(0).unwrap().1, p.slide(0).unwrap().1);
+        assert_eq!(q.slide_count(), 3, "an empty slide is still a slide");
+        assert!(p.with_slide(3, edited).is_none());
+    }
+
+    #[test]
     fn flat_slide_index_crosses_groups() {
         let p = parse_song_text("T", SONG);
         assert_eq!(p.slide(2).unwrap().0.name, "Chorus");

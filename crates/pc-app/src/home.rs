@@ -9,7 +9,10 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Rect, Sense, Stroke, StrokeKind, TextureId, pos2, vec2,
 };
 use pc_engine::{Command, Layer, Show, SlideRef};
-use pc_model::{Rgba, Role, Slide};
+use pc_model::{ObjectKind, Rgba, Slide, SlideRect, Theme};
+use pc_render::object_frame;
+
+use crate::editor::EditDraft;
 
 use crate::icons::{self, Icon};
 
@@ -65,36 +68,11 @@ pub struct HomeState {
     pub notice: Option<String>,
     /// The slide being edited. While this is set the window shows the Edit view.
     pub editing: Option<EditDraft>,
-    /// The words as they were just changed in the Edit view. The app takes this and puts it
-    /// into the song.
-    pub pending_edit: Option<EditDraft>,
+    /// The slide as it was just changed in the Edit view. The app takes this and puts it into
+    /// the song.
+    pub pending_edit: Option<(SlideRef, Slide)>,
     /// When on, edits to a slide that is on screen go to the output as they are typed.
     pub live_edit: bool,
-}
-
-/// The words of one slide as they are being edited.
-#[derive(Clone, Debug, PartialEq)]
-pub struct EditDraft {
-    pub at: SlideRef,
-    pub primary: String,
-    pub translation: String,
-}
-
-impl EditDraft {
-    /// Starts an edit of a slide with its current words.
-    pub fn of(show: &Show, at: SlideRef) -> Option<EditDraft> {
-        let (_, slide) = show.presentations().get(at.presentation)?.slide(at.slide)?;
-        Some(EditDraft {
-            at,
-            primary: slide.text_for(&Role::primary()).unwrap_or_default().to_owned(),
-            translation: slide.text_for(&Role::translation()).unwrap_or_default().to_owned(),
-        })
-    }
-
-    /// A slide needs words in at least one box.
-    pub fn can_save(&self) -> bool {
-        !self.primary.trim().is_empty() || !self.translation.trim().is_empty()
-    }
 }
 
 /// Which thumbnail the window is asking for.
@@ -328,6 +306,7 @@ pub fn home_ui(
     ui: &mut egui::Ui,
     show: &Show,
     state: &mut HomeState,
+    theme: &Theme,
     thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
     preview: Option<TextureId>,
     canvas: Option<TextureId>,
@@ -337,7 +316,7 @@ pub fn home_ui(
     ui.visuals_mut().extreme_bg_color = FIELD;
     toolbar(ui, show, state, &mut commands);
     if state.editing.is_some() {
-        edit_view(ui, show, state, thumb, canvas);
+        edit_view(ui, show, state, theme, thumb, canvas);
         return commands;
     }
     library(ui, show, state, &mut commands);
@@ -928,14 +907,22 @@ const EDIT_SURROUND: Color32 = Color32::from_rgb(113, 117, 122);
 const EDIT_STATUS: Color32 = Color32::from_rgb(52, 54, 55);
 const EDIT_SELECTED: Color32 = Color32::from_rgb(49, 115, 185);
 const EDIT_OUTLINE: Color32 = Color32::from_rgb(220, 194, 87);
+/// Half the side of a resize handle, in screen points.
+const HANDLE: f32 = 4.5;
+
+/// A small working button in the Edit view.
+fn edit_button(ui: &mut egui::Ui, label: &str, enabled: bool, hint: &str) -> bool {
+    ui.add_enabled(enabled, egui::Button::new(egui::RichText::new(label).size(12.0))).on_hover_text(hint).clicked()
+}
 
 /// The Edit view. It replaces the whole window below the toolbar: the song's slides down the
-/// left with the objects of the chosen slide under them, a large canvas showing that slide in
-/// the middle, and an inspector on the right where its words are changed.
+/// left with the chosen slide's objects under them, a canvas in the middle where objects are
+/// selected, dragged and resized, and an inspector on the right for the selected object.
 fn edit_view(
     ui: &mut egui::Ui,
     show: &Show,
     state: &mut HomeState,
+    theme: &Theme,
     thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
     canvas: Option<TextureId>,
 ) {
@@ -944,6 +931,50 @@ fn edit_view(
         state.editing = None;
         return;
     };
+    let before = state.editing.as_ref().map(|draft| draft.slide.clone());
+    let now = ui.input(|input| input.time);
+    let typing = ui.ctx().text_edit_focused();
+
+    // Keys: undo and redo always; delete and nudging when not typing in a box.
+    let (undo, redo, delete, nudge) = ui.input(|input| {
+        let command = input.modifiers.command;
+        let undo = command && !input.modifiers.shift && input.key_pressed(egui::Key::Z);
+        let redo = command && input.modifiers.shift && input.key_pressed(egui::Key::Z);
+        let delete = !typing && (input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace));
+        let step = if input.modifiers.shift { 10.0 } else { 1.0 };
+        let mut nudge = (0.0, 0.0);
+        if !typing {
+            for (key, by) in [
+                (egui::Key::ArrowLeft, (-step, 0.0)),
+                (egui::Key::ArrowRight, (step, 0.0)),
+                (egui::Key::ArrowUp, (0.0, -step)),
+                (egui::Key::ArrowDown, (0.0, step)),
+            ] {
+                if input.key_pressed(key) {
+                    nudge = (nudge.0 + by.0, nudge.1 + by.1);
+                }
+            }
+        }
+        (undo, redo, delete, nudge)
+    });
+    if let Some(draft) = state.editing.as_mut() {
+        if undo && !typing {
+            draft.undo();
+        } else if redo && !typing {
+            draft.redo();
+        } else if delete {
+            draft.delete_selected();
+        } else if nudge != (0.0, 0.0)
+            && let Some(object) = draft.selected_object()
+        {
+            let snapshot = draft.slide.clone();
+            let frame = crate::editor::moved(object_frame(&draft.slide, object, theme), nudge);
+            if let Some(object) = draft.selected_object_mut() {
+                object.frame = Some(frame);
+            }
+            draft.record_run(snapshot, now);
+        }
+    }
 
     // Left: the slide navigator, with the slide's objects below it.
     let mut chosen = None;
@@ -962,7 +993,7 @@ fn edit_view(
 
             egui::Panel::bottom("edit objects")
                 .resizable(false)
-                .exact_size(190.0)
+                .exact_size(200.0)
                 .frame(panel_frame(EDIT_PANEL, 0))
                 .show(ui, |ui| {
                     Frame::new().fill(EDIT_HEADER).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
@@ -971,21 +1002,48 @@ fn edit_view(
                             ui.add_space(ui.available_width());
                         });
                     });
-                    Frame::new().inner_margin(8).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        let draft = state.editing.as_ref();
-                        for (name, has) in [
-                            ("Main", draft.is_some_and(|d| !d.primary.trim().is_empty())),
-                            ("Translation", draft.is_some_and(|d| !d.translation.trim().is_empty())),
-                        ] {
-                            ui.horizontal(|ui| {
-                                let ink = if has { Color32::from_gray(225) } else { Color32::from_gray(110) };
-                                ui.label(egui::RichText::new("T").strong().size(16.0).color(ink));
-                                ui.add_space(6.0);
-                                ui.label(egui::RichText::new(name).size(13.0).color(ink));
-                            });
-                        }
-                    });
+                    egui::ScrollArea::vertical().id_salt("edit object list").auto_shrink([false, false]).show(
+                        ui,
+                        |ui| {
+                            ui.add_space(4.0);
+                            let Some(draft) = state.editing.as_mut() else { return };
+                            // The top of the stack is listed first, as it is in front on the slide.
+                            let mut pick = None;
+                            for object in draft.slide.objects.iter().rev() {
+                                let selected = draft.selected == Some(object.id);
+                                let (row, response) =
+                                    ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
+                                if selected {
+                                    ui.painter().rect_filled(row, 0.0, EDIT_SELECTED);
+                                } else if response.hovered() {
+                                    ui.painter().rect_filled(row, 0.0, Color32::from_gray(46));
+                                }
+                                ui.painter().text(
+                                    row.left_center() + vec2(12.0, 0.0),
+                                    Align2::LEFT_CENTER,
+                                    "T",
+                                    FontId::proportional(15.0),
+                                    Color32::from_gray(230),
+                                );
+                                ui.painter().with_clip_rect(row).text(
+                                    row.left_center() + vec2(32.0, 0.0),
+                                    Align2::LEFT_CENTER,
+                                    object.name.as_str(),
+                                    FontId::proportional(13.0),
+                                    Color32::from_gray(230),
+                                );
+                                if response.clicked() {
+                                    pick = Some(object.id);
+                                }
+                            }
+                            if draft.slide.objects.is_empty() {
+                                ui.label(egui::RichText::new("   This slide is empty").size(12.0).color(DIM));
+                            }
+                            if pick.is_some() {
+                                draft.selected = pick;
+                            }
+                        },
+                    );
                 });
 
             egui::ScrollArea::vertical().id_salt("edit slide list").auto_shrink([false, false]).show(ui, |ui| {
@@ -993,7 +1051,6 @@ fn edit_view(
                 let image_size = vec2(width - 16.0, (width - 16.0) * 9.0 / 16.0);
                 let mut index = 0;
                 for group in &presentation.groups {
-                    // The group's name on a bar in its colour.
                     let (bar, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
                     ui.painter().rect_filled(bar, 0.0, color32(group.color).gamma_multiply(0.8));
                     let ink = text_on(group.color);
@@ -1058,95 +1115,129 @@ fn edit_view(
 
     // Right: the inspector.
     let mut leave = false;
-    egui::Panel::right("edit inspector").resizable(false).exact_size(292.0).frame(panel_frame(EDIT_PANEL, 0)).show(
-        ui,
-        |ui| {
-            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            let (tabs, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
-            let tab_width = tabs.width() / 3.0;
-            for (index, name) in ["Presentation", "Slide", "Build"].into_iter().enumerate() {
-                let rect = Rect::from_min_size(
-                    pos2(tabs.min.x + tab_width * index as f32, tabs.min.y),
-                    vec2(tab_width, tabs.height()),
-                );
-                let selected = index == 1;
-                ui.painter().rect_filled(
-                    rect.shrink2(vec2(0.5, 0.0)),
-                    0.0,
-                    if selected { TAB_BLUE } else { Color32::from_gray(62) },
-                );
-                ui.painter().text(
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    name,
-                    FontId::proportional(12.0),
-                    Color32::from_gray(235),
-                );
-                if !selected {
-                    ui.interact(rect, ui.scope_id().with(("inspector tab", index)), Sense::hover())
-                        .on_hover_text(not_built(name));
-                }
+    egui::Panel::right("edit inspector").resizable(false).exact_size(292.0).frame(panel_frame(EDIT_PANEL, 0)).show(ui, |ui| {
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+        let (tabs, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+        let tab_width = tabs.width() / 3.0;
+        for (index, name) in ["Presentation", "Slide", "Build"].into_iter().enumerate() {
+            let rect = Rect::from_min_size(pos2(tabs.min.x + tab_width * index as f32, tabs.min.y), vec2(tab_width, tabs.height()));
+            let selected = index == 1;
+            ui.painter().rect_filled(rect.shrink2(vec2(0.5, 0.0)), 0.0, if selected { TAB_BLUE } else { Color32::from_gray(62) });
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, name, FontId::proportional(12.0), Color32::from_gray(235));
+            if !selected {
+                ui.interact(rect, ui.scope_id().with(("inspector tab", index)), Sense::hover()).on_hover_text(not_built(name));
             }
+        }
 
-            egui::Panel::bottom("edit footer").resizable(false).frame(panel_frame(EDIT_PANEL, 8)).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.add_enabled(false, egui::Button::new("Slide Notes"))
-                        .on_disabled_hover_text(not_built("Slide Notes"));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("Show").on_hover_text("Go back to the Show view").clicked() {
-                            leave = true;
-                        }
-                        ui.checkbox(&mut state.live_edit, "Live Edit").on_hover_text(
-                            "When on, changes to a slide that is on screen appear on the output as you type",
-                        );
-                    });
+        egui::Panel::bottom("edit footer").resizable(false).frame(panel_frame(EDIT_PANEL, 8)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.add_enabled(false, egui::Button::new("Slide Notes")).on_disabled_hover_text(not_built("Slide Notes"));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Show").on_hover_text("Go back to the Show view").clicked() {
+                        leave = true;
+                    }
+                    ui.checkbox(&mut state.live_edit, "Live Edit")
+                        .on_hover_text("When on, changes to a slide that is on screen appear on the output as they are made");
                 });
             });
+        });
 
+        egui::ScrollArea::vertical().id_salt("inspector body").auto_shrink([false, false]).show(ui, |ui| {
             Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 8 }).show(ui, |ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 7.0);
                 ui.visuals_mut().extreme_bg_color = Color32::from_rgb(23, 23, 23);
-                let before = state.editing.clone();
-                if let Some(draft) = state.editing.as_mut() {
-                    ui.label(egui::RichText::new("Main").strong().size(12.5).color(Color32::from_gray(225)));
-                    ui.add(egui::TextEdit::multiline(&mut draft.primary).desired_rows(4).desired_width(f32::INFINITY));
-                    ui.label(egui::RichText::new("Translation").strong().size(12.5).color(Color32::from_gray(225)));
-                    ui.add(
-                        egui::TextEdit::multiline(&mut draft.translation).desired_rows(4).desired_width(f32::INFINITY),
-                    );
-                    if !draft.can_save() {
-                        ui.label(
-                            egui::RichText::new("A slide needs words in at least one box.")
-                                .size(11.5)
-                                .color(Color32::from_rgb(255, 150, 120)),
-                        );
+                let Some(draft) = state.editing.as_mut() else { return };
+                ui.horizontal(|ui| {
+                    if edit_button(ui, "Undo", draft.can_undo(), "Undo the last change (Cmd+Z)") {
+                        draft.undo();
                     }
-                }
-                if state.editing != before {
-                    state.pending_edit = state.editing.clone();
-                }
-                ui.separator();
-                // The rest of the Slide tab, in place for when it is built.
-                let dim = Color32::from_gray(120);
-                for name in
-                    ["Enabled", "Hot Key", "Label", "Background", "Chord Chart", "Media Action", "Video Input Action"]
-                {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(name).size(12.5).color(dim)).on_hover_text(not_built(name));
-                        if name.ends_with("Action") {
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Plus, name));
+                    if edit_button(ui, "Redo", draft.can_redo(), "Redo (Shift+Cmd+Z)") {
+                        draft.redo();
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if edit_button(ui, "Add text", true, "Add a text box to the slide") {
+                            draft.add_text();
                         }
                     });
-                    ui.add_space(2.0);
+                });
+                ui.separator();
+
+                let themed = draft.selected_object().map(|object| object_frame(&draft.slide, object, theme));
+                let Some(object) = draft.selected_object_mut() else {
+                    ui.label(egui::RichText::new("Click something on the slide to select it.").size(12.5).color(Color32::from_gray(190)));
+                    ui.label(egui::RichText::new("Drag to move it, drag a handle to resize it, press Delete to remove it. Arrow keys nudge.").size(11.5).color(DIM));
+                    return;
+                };
+                let frame = themed.unwrap_or(SlideRect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
+
+                section_label(ui, "NAME");
+                ui.add(egui::TextEdit::singleline(&mut object.name).desired_width(f32::INFINITY));
+                match &mut object.kind {
+                    ObjectKind::Text { text } => {
+                        section_label(ui, "TEXT");
+                        ui.add(egui::TextEdit::multiline(text).desired_rows(4).desired_width(f32::INFINITY));
+                    }
                 }
+
+                section_label(ui, "POSITION AND SIZE");
+                let mut edited = frame;
+                egui::Grid::new("frame").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+                    ui.label("X");
+                    ui.add(egui::DragValue::new(&mut edited.x).speed(1.0).max_decimals(0));
+                    ui.label("Y");
+                    ui.add(egui::DragValue::new(&mut edited.y).speed(1.0).max_decimals(0));
+                    ui.end_row();
+                    ui.label("W");
+                    ui.add(egui::DragValue::new(&mut edited.w).speed(1.0).range(crate::editor::MIN_SIDE..=10_000.0).max_decimals(0));
+                    ui.label("H");
+                    ui.add(egui::DragValue::new(&mut edited.h).speed(1.0).range(crate::editor::MIN_SIDE..=10_000.0).max_decimals(0));
+                    ui.end_row();
+                });
+                if edited != frame {
+                    object.frame = Some(edited);
+                }
+                egui::Grid::new("turn and fade").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                    ui.label("Rotation");
+                    ui.add(egui::DragValue::new(&mut object.rotation).speed(0.5).range(-360.0..=360.0).suffix("°").max_decimals(1));
+                    ui.end_row();
+                    ui.label("Opacity");
+                    ui.add(egui::Slider::new(&mut object.opacity, 0.0..=1.0).show_value(true).max_decimals(2));
+                    ui.end_row();
+                });
+                let follows_theme = object.frame.is_none() && object.rotation == 0.0 && object.opacity == 1.0;
+                ui.label(
+                    egui::RichText::new(if follows_theme {
+                        "Follows the theme"
+                    } else {
+                        "Set by hand on this slide"
+                    })
+                    .size(11.5)
+                    .color(DIM),
+                );
+
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    if edit_button(ui, "Reset to theme", !follows_theme, "Put this object back where the theme has it") {
+                        draft.reset_to_theme();
+                    }
+                    if edit_button(ui, "Forward", true, "Move in front of the next object") {
+                        draft.restack(true);
+                    }
+                    if edit_button(ui, "Back", true, "Move behind the previous object") {
+                        draft.restack(false);
+                    }
+                    if edit_button(ui, "Delete", true, "Remove this object from the slide (Delete)") {
+                        draft.delete_selected();
+                    }
+                });
                 if let Some(notice) = &state.notice {
                     ui.separator();
                     ui.label(egui::RichText::new(notice.as_str()).size(12.0).color(Color32::from_rgb(255, 150, 120)));
                 }
             });
-        },
-    );
+        });
+    });
 
     // Middle: the canvas.
     egui::CentralPanel::default().frame(panel_frame(EDIT_SURROUND, 0)).show(ui, |ui| {
@@ -1154,8 +1245,18 @@ fn edit_view(
         egui::Panel::bottom("edit status").resizable(false).frame(panel_frame(EDIT_STATUS, 4)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
-                for label in ["X: ----", "Y: ----", "W: ----", "H: ----"] {
-                    ui.label(egui::RichText::new(label).size(11.5).color(Color32::from_gray(200)));
+                let frame = state
+                    .editing
+                    .as_ref()
+                    .and_then(|draft| draft.selected_object().map(|object| object_frame(&draft.slide, object, theme)));
+                for (name, value) in [
+                    ("X", frame.map(|f| f.x)),
+                    ("Y", frame.map(|f| f.y)),
+                    ("W", frame.map(|f| f.w)),
+                    ("H", frame.map(|f| f.h)),
+                ] {
+                    let text = value.map_or_else(|| format!("{name}: ----"), |v| format!("{name}: {v:.0}"));
+                    ui.label(egui::RichText::new(text).size(11.5).color(Color32::from_gray(200)));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
@@ -1165,7 +1266,6 @@ fn edit_view(
                 });
             });
         });
-        // Rulers along the top and left edges.
         let area = ui.available_rect_before_wrap();
         let ruler = 14.0;
         ui.painter().rect_filled(
@@ -1180,8 +1280,10 @@ fn edit_view(
         );
         let inner = Rect::from_min_max(area.min + vec2(ruler, ruler), area.max).shrink(28.0);
         let width = inner.width().min(inner.height() * 16.0 / 9.0).max(1.0);
-        let slide =
-            Rect::from_min_size(pos2(inner.center().x - width / 2.0, inner.min.y), vec2(width, width * 9.0 / 16.0));
+        let slide = Rect::from_min_size(
+            pos2(inner.center().x - width / 2.0, inner.min.y + 44.0),
+            vec2(width, width * 9.0 / 16.0),
+        );
         ui.painter().rect_filled(slide.expand(1.0), 0.0, Color32::from_black_alpha(90));
         ui.painter().rect_filled(slide, 0.0, Color32::BLACK);
         if let Some(texture) = canvas {
@@ -1194,7 +1296,56 @@ fn edit_view(
             );
         }
 
-        // The floating row of object tools.
+        // Pointer on the canvas: select, move, resize. Positions are turned into slide units.
+        let scale = slide.width() / pc_model::SLIDE_WIDTH;
+        let to_slide = |p: egui::Pos2| ((p.x - slide.min.x) / scale, (p.y - slide.min.y) / scale);
+        let to_screen = |f: SlideRect| Rect::from_min_size(slide.min + vec2(f.x, f.y) * scale, vec2(f.w, f.h) * scale);
+        let response = ui.interact(area, ui.scope_id().with("canvas"), Sense::click_and_drag());
+        if let Some(draft) = state.editing.as_mut() {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let point = to_slide(pointer);
+                if response.drag_started() || response.clicked() {
+                    draft.press(theme, point, (HANDLE + 3.0) / scale);
+                }
+                if response.dragged() {
+                    draft.drag_to(point);
+                }
+            }
+            if response.drag_stopped() || response.clicked() {
+                draft.release();
+            }
+
+            // Outlines: every object faintly, the selected one with handles.
+            for object in &draft.slide.objects {
+                let frame = object_frame(&draft.slide, object, theme);
+                let rect = to_screen(frame);
+                let selected = draft.selected == Some(object.id);
+                let centre = rect.center();
+                let (sin, cos) = object.rotation.to_radians().sin_cos();
+                let corners: Vec<egui::Pos2> =
+                    [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()]
+                        .into_iter()
+                        .map(|c| {
+                            let d = c - centre;
+                            centre + vec2(d.x * cos - d.y * sin, d.x * sin + d.y * cos)
+                        })
+                        .collect();
+                let stroke =
+                    if selected { Stroke::new(1.5, TAB_BLUE) } else { Stroke::new(1.0, Color32::from_white_alpha(45)) };
+                ui.painter().add(egui::Shape::closed_line(corners, stroke));
+                if selected && object.rotation == 0.0 {
+                    for handle in crate::editor::Handle::ALL {
+                        let (x, y) = handle.position(frame);
+                        let at = slide.min + vec2(x, y) * scale;
+                        let knob = Rect::from_center_size(at, vec2(HANDLE * 2.0, HANDLE * 2.0));
+                        ui.painter().rect_filled(knob, 1.5, Color32::WHITE);
+                        ui.painter().rect_stroke(knob, 1.5, Stroke::new(1.0, TAB_BLUE), StrokeKind::Inside);
+                    }
+                }
+            }
+        }
+
+        // The floating row of object tools. Text works; the rest are in place for later.
         let tools = [
             (Face::Text("T"), "Text"),
             (Face::Icon(Icon::Layers), "Shape"),
@@ -1205,24 +1356,47 @@ fn edit_view(
             (Face::Icon(Icon::Look), "Mask"),
         ];
         let bar =
-            Rect::from_center_size(pos2(slide.center().x, slide.min.y + 22.0), vec2(tools.len() as f32 * 40.0, 30.0));
+            Rect::from_center_size(pos2(slide.center().x, slide.min.y - 22.0), vec2(tools.len() as f32 * 40.0, 30.0));
         ui.painter().rect_filled(bar, 6.0, Color32::from_rgb(35, 35, 35));
         ui.painter().rect_stroke(bar, 6.0, Stroke::new(1.0, Color32::from_gray(70)), StrokeKind::Inside);
         for (index, (face, name)) in tools.into_iter().enumerate() {
             let cell = Rect::from_min_size(pos2(bar.min.x + 40.0 * index as f32, bar.min.y), vec2(40.0, 30.0));
-            paint_face(
-                ui,
-                face,
-                Rect::from_center_size(cell.center(), vec2(15.0, 15.0)),
-                15.0,
-                Color32::from_gray(220),
+            let built = index == 0;
+            let cell_response = ui.interact(
+                cell,
+                ui.scope_id().with(("object tool", index)),
+                if built { Sense::click() } else { Sense::hover() },
             );
-            ui.interact(cell, ui.scope_id().with(("object tool", index)), Sense::hover())
-                .on_hover_text(not_built(name));
+            if built && cell_response.hovered() {
+                ui.painter().rect_filled(cell.shrink(3.0), 4.0, Color32::from_gray(70));
+            }
+            let ink = if built { Color32::from_gray(235) } else { Color32::from_gray(130) };
+            paint_face(ui, face, Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), 15.0, ink);
+            if built {
+                if cell_response.on_hover_text("Add a text box").clicked()
+                    && let Some(draft) = state.editing.as_mut()
+                {
+                    draft.add_text();
+                }
+            } else {
+                cell_response.on_hover_text(not_built(name));
+            }
         }
-        ui.allocate_rect(area, Sense::hover());
     });
 
+    // Whatever changed this frame (a drag, typing, a button) is handed to the app, and typing
+    // or dragging numbers is gathered into single undo steps.
+    if let (Some(draft), Some(before)) = (state.editing.as_mut(), before)
+        && draft.slide != before
+    {
+        if draft.drag.is_none() && !draft.stepped {
+            draft.record_run(before, now);
+        }
+        state.pending_edit = Some((draft.at, draft.slide.clone()));
+    }
+    if let Some(draft) = state.editing.as_mut() {
+        draft.stepped = false;
+    }
     if leave {
         state.editing = None;
     } else if let Some(here) = chosen {
@@ -1414,6 +1588,7 @@ mod tests {
                 ui,
                 show,
                 &mut state,
+                &Theme::builtin(),
                 &mut |_| {
                     asked += 1;
                     None
@@ -1446,24 +1621,6 @@ mod tests {
         assert_eq!(text_on(Rgba::rgb(20, 40, 120)), Color32::WHITE);
     }
 
-    #[test]
-    fn an_edit_draft_starts_with_the_slides_words() {
-        let show = Show::new(vec![Arc::new(parse_song_text("S", "One\n--\nОдин\n\nTwo\n"))]);
-        let both = EditDraft::of(&show, SlideRef { presentation: 0, slide: 0 }).unwrap();
-        assert_eq!((both.primary.as_str(), both.translation.as_str()), ("One", "Один"));
-        let one = EditDraft::of(&show, SlideRef { presentation: 0, slide: 1 }).unwrap();
-        assert_eq!((one.primary.as_str(), one.translation.as_str()), ("Two", ""));
-        assert!(EditDraft::of(&show, SlideRef { presentation: 0, slide: 9 }).is_none());
-        assert!(EditDraft::of(&show, SlideRef { presentation: 3, slide: 0 }).is_none());
-    }
-
-    #[test]
-    fn a_draft_with_no_words_cannot_be_saved() {
-        let at = SlideRef { presentation: 0, slide: 0 };
-        assert!(!EditDraft { at, primary: " \n".into(), translation: String::new() }.can_save());
-        assert!(EditDraft { at, primary: String::new(), translation: "Слова".into() }.can_save());
-    }
-
     /// Runs two frames and returns how many slide and media thumbnails the last one asked for.
     fn count_thumbs(ctx: &egui::Context, show: &Show, state: &mut HomeState) -> (usize, usize) {
         let (mut slides, mut media) = (0, 0);
@@ -1474,6 +1631,7 @@ mod tests {
                     ui,
                     show,
                     state,
+                    &Theme::builtin(),
                     &mut |which| {
                         match which {
                             ThumbOf::Slide(_) => slides += 1,
@@ -1527,8 +1685,10 @@ mod tests {
     #[test]
     fn the_edit_view_closes_if_its_song_is_gone() {
         let show = show(2);
-        let at = SlideRef { presentation: 5, slide: 0 };
-        let editing = Some(EditDraft { at, primary: "x".into(), translation: String::new() });
+        let mut editing = EditDraft::of(&show, SlideRef { presentation: 0, slide: 0 });
+        if let Some(draft) = editing.as_mut() {
+            draft.at = SlideRef { presentation: 5, slide: 0 };
+        }
         let mut state = HomeState { editing, ..HomeState::default() };
         count_thumbs(&egui::Context::default(), &show, &mut state);
         assert!(state.editing.is_none());

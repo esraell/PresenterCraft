@@ -214,6 +214,21 @@ impl Presentation {
         None
     }
 
+    /// A copy with one slide replaced by an edited version of it. Returns `None` if there is no
+    /// slide at that position.
+    pub fn with_slide(&self, index: usize, slide: Slide) -> Option<Presentation> {
+        let mut copy = self.clone();
+        let mut remaining = index;
+        for group in &mut copy.groups {
+            if let Some(slot) = group.slides.get_mut(remaining) {
+                *slot = slide;
+                return Some(copy);
+            }
+            remaining -= group.slides.len();
+        }
+        None
+    }
+
     /// Every slide with its group, in order.
     pub fn slides(&self) -> impl Iterator<Item = (&Group, &Slide)> {
         self.groups.iter().flat_map(|g| g.slides.iter().map(move |s| (g, s)))
