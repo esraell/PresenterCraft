@@ -47,8 +47,11 @@ ProPresenter.
   once, the stage screens and the NEXT card show what comes next in it, and a row of its
   groups shows the one on screen; click one to go to it, right-click to move, repeat or
   remove it, + to add a group.
-- Transitions between slides: Cut, Dissolve, Fade Black, Fade White, Push, Move In, Reveal,
-  Wipe (each from any side), Iris and Zoom In, with their time, from the bar under the slides.
+- Nineteen transitions: Cut, Dissolve, Fade Black, Fade White, Push, Move In, Reveal, Zoom In,
+  Zoom Out, Doors, Flip, Wipe, Iris, Clock, Blinds, Bars, Checkerboard, Split and Diamond, with
+  their direction and time. One is chosen for all slides from the bar under the slides; a song
+  (its right-click menu) and a slide can each have their own, and the media bin has its own for
+  changing from one picture or video to the next.
 - New Song (Command-N, or + over the song list) asks for the song's title and theme, and takes
   its words pasted in (a line in square brackets starts a group, a blank line a new slide).
 - The left column, as in ProPresenter: **LIBRARY** rows (All Songs and libraries of your own,
@@ -183,8 +186,8 @@ Among the things PresenterCraft can't do yet:
 - Slide sizes other than 1920 × 1080.
 - A timeline that times slides, media and audio together (a slide can go on by itself after a
   time, and a song can loop).
-- Most of ProPresenter's 37 transitions (ten are built), and a transition for the media bin or
-  props of their own.
+- ProPresenter's other transitions, chiefly the 3D ones (Cube, Page Curl, Swing and the like),
+  and transitions for props of their own.
 - Media playlists and settings for each media item (scaling, looping, in and out points); audio
   playlists, shuffle and crossfade.
 - The Announcements layer, Clear Groups, and Show Slide on Stage Screens Only.

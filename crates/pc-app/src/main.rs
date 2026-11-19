@@ -1106,12 +1106,14 @@ impl App {
                 slide: slide.clone(),
                 theme: theme.clone(),
                 enabled: self.show.output_enabled(),
-                // A slide's own transition, if it has one; otherwise the one chosen for all.
+                // A slide's own transition, if it has one; then its song's; otherwise the one
+                // chosen for all.
                 transition: self
                     .show
                     .live_slide()
-                    .and_then(|(_, slide)| slide.transition)
+                    .and_then(|(song, slide)| slide.transition.or(song.transition))
                     .unwrap_or(running.home_state.transition),
+                media_transition: running.home_state.media_transition,
                 next,
                 about,
                 build_step: self.show.build_step(),
@@ -1297,6 +1299,25 @@ impl App {
     }
 
     /// Turns a song's looping on or off, from its menu.
+    /// Gives a song a transition of its own, or takes it away.
+    fn handle_song_transition(&mut self) {
+        let Some((index, transition)) = self.running.as_mut().and_then(|r| r.home_state.song_transition_request.take())
+        else {
+            return;
+        };
+        let Some(song) = self.show.presentations().get(index).cloned() else { return };
+        if song.transition == transition {
+            return;
+        }
+        let changed = pc_model::Presentation { transition, ..(*song).clone() };
+        self.history.remember(index, song);
+        self.show.replace_presentation(index, Arc::new(changed));
+        if !self.unsaved.contains(&index) {
+            self.unsaved.push(index);
+        }
+        self.save_unsaved();
+    }
+
     fn handle_song_loop(&mut self) {
         let Some(index) = self.running.as_mut().and_then(|r| r.home_state.song_loop_request.take()) else { return };
         let Some(song) = self.show.presentations().get(index).cloned() else { return };
@@ -1635,6 +1656,7 @@ impl App {
             arrangements: Vec::new(),
             arrangement: None,
             loops: false,
+            transition: None,
         };
         self.add_new_song(song);
     }
@@ -3294,6 +3316,7 @@ impl ApplicationHandler<String> for App {
                 self.handle_slide_request();
                 self.handle_song_theme();
                 self.handle_song_loop();
+                self.handle_song_transition();
                 self.handle_arrangement();
                 self.handle_copyright();
                 self.handle_reflow();
@@ -3484,6 +3507,7 @@ fn main() -> ExitCode {
             arrangements: Vec::new(),
             arrangement: None,
             loops: false,
+            transition: None,
         });
         sources.push(None);
     }

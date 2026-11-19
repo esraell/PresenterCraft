@@ -3,7 +3,7 @@ use pc_model::{
     Align, BoxStyle, ImageFit, Object, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, Shape, Slide, SlideRect,
     Theme, VAlign,
 };
-use vello::kurbo::{Affine, BezPath, Ellipse, Join, Rect, RoundedRect, Shape as _, Stroke};
+use vello::kurbo::{Affine, BezPath, CircleSegment, Ellipse, Join, Rect, RoundedRect, Shape as _, Stroke};
 use vello::peniko::{Color, Fill, Mix};
 use vello::{Glyph, Scene};
 
@@ -340,15 +340,160 @@ pub fn transition(
         }
         K::ZoomIn => {
             scene.append(from, None);
-            let grow = Affine::translate((w / 2.0, h / 2.0))
-                * Affine::scale(0.6 + 0.4 * a)
-                * Affine::translate((-w / 2.0, -h / 2.0));
+            let grow = about_middle(w, h, Affine::scale(0.6 + 0.4 * a));
             scene.push_layer(Fill::NonZero, Mix::Normal, a as f32, Affine::IDENTITY, &whole);
             scene.append(to, Some(grow));
             scene.pop_layer();
         }
+        K::ZoomOut => {
+            scene.append(to, None);
+            let shrink = about_middle(w, h, Affine::scale(1.0 - 0.4 * a));
+            scene.push_layer(Fill::NonZero, Mix::Normal, (1.0 - a) as f32, Affine::IDENTITY, &whole);
+            scene.append(from, Some(shrink));
+            scene.pop_layer();
+        }
+        K::Doors => {
+            scene.append(to, None);
+            let across = dx != 0.0;
+            let (first, second, apart) = if across {
+                (Rect::new(0.0, 0.0, w / 2.0, h), Rect::new(w / 2.0, 0.0, w, h), (w / 2.0 * a, 0.0))
+            } else {
+                (Rect::new(0.0, 0.0, w, h / 2.0), Rect::new(0.0, h / 2.0, w, h), (0.0, h / 2.0 * a))
+            };
+            for (half, sign) in [(first, -1.0), (second, 1.0)] {
+                let moved = Affine::translate((apart.0 * sign, apart.1 * sign));
+                scene.push_clip_layer(Fill::NonZero, moved, &half);
+                scene.append(from, Some(moved));
+                scene.pop_layer();
+            }
+        }
+        K::Flip => {
+            // Edge-on halfway: the old picture narrows to a line, then the new one widens from it.
+            let (picture, open) = if a < 0.5 { (from, 1.0 - a * 2.0) } else { (to, a * 2.0 - 1.0) };
+            let squeeze = if dx != 0.0 {
+                Affine::scale_non_uniform(open.max(0.0001), 1.0)
+            } else {
+                Affine::scale_non_uniform(1.0, open.max(0.0001))
+            };
+            scene.append(picture, Some(about_middle(w, h, squeeze)));
+        }
+        K::Clock => {
+            scene.append(from, None);
+            let reach = (w * w + h * h).sqrt();
+            let hand = CircleSegment::new(
+                (w / 2.0, h / 2.0),
+                reach,
+                0.0,
+                -std::f64::consts::FRAC_PI_2,
+                a * std::f64::consts::TAU,
+            );
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &hand.to_path(0.1));
+            scene.append(to, None);
+            scene.pop_layer();
+        }
+        K::Diamond => {
+            scene.append(from, None);
+            let (cx, cy, rx, ry) = (w / 2.0, h / 2.0, w * a, h * a);
+            let mut diamond = BezPath::new();
+            diamond.move_to((cx, cy - ry));
+            diamond.line_to((cx + rx, cy));
+            diamond.line_to((cx, cy + ry));
+            diamond.line_to((cx - rx, cy));
+            diamond.close_path();
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &diamond);
+            scene.append(to, None);
+            scene.pop_layer();
+        }
+        K::Split => {
+            scene.append(from, None);
+            let open = if dx != 0.0 {
+                Rect::new(w / 2.0 * (1.0 - a), 0.0, w / 2.0 * (1.0 + a), h)
+            } else {
+                Rect::new(0.0, h / 2.0 * (1.0 - a), w, h / 2.0 * (1.0 + a))
+            };
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &open);
+            scene.append(to, None);
+            scene.pop_layer();
+        }
+        K::Blinds | K::Bars | K::Checkerboard => {
+            scene.append(from, None);
+            let uncovered = strips(kind, direction, a, w, h);
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &uncovered);
+            scene.append(to, None);
+            scene.pop_layer();
+        }
     }
     scene
+}
+
+/// A change made about the middle of a target of this size, not its corner.
+fn about_middle(w: f64, h: f64, change: Affine) -> Affine {
+    Affine::translate((w / 2.0, h / 2.0)) * change * Affine::translate((-w / 2.0, -h / 2.0))
+}
+
+/// The part uncovered so far by Blinds, Bars or Checkerboard, `a` of the way through.
+fn strips(kind: pc_model::TransitionKind, direction: pc_model::Direction, a: f64, w: f64, h: f64) -> BezPath {
+    use pc_model::TransitionKind as K;
+    let (dx, dy) = direction.travel();
+    let across = dx != 0.0;
+    let mut path = BezPath::new();
+    // A rectangle that is `t` of the way to covering `cell`, growing the way the picture travels;
+    // `flip` grows it from the other side.
+    let mut grow = |cell: Rect, t: f64, flip: bool| {
+        let t = t.clamp(0.0, 1.0);
+        if t <= 0.0 {
+            return;
+        }
+        let forward = if across { dx > 0.0 } else { dy > 0.0 } != flip;
+        let part = match (across, forward) {
+            (true, true) => Rect::new(cell.x0, cell.y0, cell.x0 + cell.width() * t, cell.y1),
+            (true, false) => Rect::new(cell.x1 - cell.width() * t, cell.y0, cell.x1, cell.y1),
+            (false, true) => Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + cell.height() * t),
+            (false, false) => Rect::new(cell.x0, cell.y1 - cell.height() * t, cell.x1, cell.y1),
+        };
+        path.extend(part.path_elements(0.1));
+    };
+    match kind {
+        K::Blinds => {
+            // Strips side by side, each opening the way the picture travels.
+            const COUNT: usize = 8;
+            for at in 0..COUNT {
+                let f = at as f64 / COUNT as f64;
+                let g = (at + 1) as f64 / COUNT as f64;
+                let cell = if across { Rect::new(w * f, 0.0, w * g, h) } else { Rect::new(0.0, h * f, w, h * g) };
+                grow(cell, a, false);
+            }
+        }
+        K::Bars => {
+            // Long bars across the way of travel, coming in from each side in turn.
+            const COUNT: usize = 12;
+            for at in 0..COUNT {
+                let f = at as f64 / COUNT as f64;
+                let g = (at + 1) as f64 / COUNT as f64;
+                let cell = if across { Rect::new(0.0, h * f, w, h * g) } else { Rect::new(w * f, 0.0, w * g, h) };
+                grow(cell, a, at % 2 == 1);
+            }
+        }
+        _ => {
+            // Squares: every other one in the first half of the time, the rest in the second.
+            const COLUMNS: usize = 8;
+            const ROWS: usize = 6;
+            for row in 0..ROWS {
+                for column in 0..COLUMNS {
+                    let cell = Rect::new(
+                        w * column as f64 / COLUMNS as f64,
+                        h * row as f64 / ROWS as f64,
+                        w * (column + 1) as f64 / COLUMNS as f64,
+                        h * (row + 1) as f64 / ROWS as f64,
+                    );
+                    let second = (row + column) % 2 == 1;
+                    let t = if second { a * 2.0 - 1.0 } else { a * 2.0 };
+                    grow(cell, t, false);
+                }
+            }
+        }
+    }
+    path
 }
 
 /// Where an object sits on its slide, in slide units: its own place if it has one, otherwise

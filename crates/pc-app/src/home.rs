@@ -47,6 +47,8 @@ pub struct HomeState {
     /// Whether one slide fades into the next, and over how many seconds.
     /// How one slide gives way to the next on the screens.
     pub transition: pc_model::Transition,
+    /// How one picture or video in the media bin gives way to the next.
+    pub media_transition: pc_model::Transition,
     /// True on the frame a rename began in the Objects list, so its field takes the keyboard.
     pub rename_started: bool,
     /// Set when a new song is asked for (Command-N). The app makes it and clears this.
@@ -118,6 +120,8 @@ pub struct HomeState {
     pub libraries_changed: bool,
     /// A song whose looping is to be turned on or off, from its menu.
     pub song_loop_request: Option<usize>,
+    /// A song given a transition of its own (or none, to follow the one for all).
+    pub song_transition_request: Option<(usize, Option<pc_model::Transition>)>,
     /// A theme chosen for a song from its menu: the song, and the theme by its place (`None`
     /// puts it back on the songs theme).
     pub song_theme_request: Option<(usize, Option<usize>)>,
@@ -699,6 +703,7 @@ impl Default for HomeState {
             columns: 4,
             selected_slide: None,
             transition: pc_model::Transition::default(),
+            media_transition: pc_model::Transition::default(),
             rename_started: false,
             new_song: false,
             new_song_sheet: None,
@@ -744,6 +749,7 @@ impl Default for HomeState {
             song_request: None,
             song_theme_request: None,
             song_loop_request: None,
+            song_transition_request: None,
             libraries: Vec::new(),
             library_shown: None,
             libraries_changed: false,
@@ -834,6 +840,7 @@ impl HomeState {
             dissolve: self.transition.kind != pc_model::TransitionKind::Cut,
             dissolve_time: self.transition.seconds,
             transition: Some(self.transition),
+            media_transition: Some(self.media_transition),
             columns: self.columns,
             slide_view: match self.slide_view {
                 SlideView::Grid => "grid",
@@ -860,6 +867,7 @@ impl HomeState {
                 pc_model::Transition::of(pc_model::TransitionKind::Cut)
             }
         });
+        self.media_transition = prefs.media_transition.unwrap_or_default();
         self.columns = prefs.columns.clamp(2, 7);
         self.slide_view = match prefs.slide_view.as_str() {
             "easy" => SlideView::Easy,

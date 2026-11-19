@@ -28,6 +28,8 @@ pub struct Frame {
     pub enabled: bool,
     /// How the picture before gives way to this one.
     pub transition: pc_model::Transition,
+    /// How the media before gives way to this, when only the media changed.
+    pub media_transition: pc_model::Transition,
     /// The slide after the one on screen, for stage screens.
     pub next: Option<Arc<Slide>>,
     /// The song on screen's title and the slide's group, for stage screens.
@@ -195,6 +197,9 @@ struct Output {
     overlay: Overlay,
     /// The playing video's latest picture.
     video_picture: Option<Picture>,
+    /// How the next new picture fades in: the slides' transition, or the media's when only the
+    /// media changed.
+    look: pc_model::Transition,
 }
 
 fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver<OutputMsg>, ndi_status: NdiStatuses) {
@@ -212,6 +217,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             theme,
             enabled: true,
             transition: pc_model::Transition::of(pc_model::TransitionKind::Cut),
+            media_transition: pc_model::Transition::of(pc_model::TransitionKind::Cut),
             next: None,
             about: crate::stage::About::default(),
             build_step: 0,
@@ -230,6 +236,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         step_at: Instant::now(),
         overlay: Overlay::default(),
         video_picture: None,
+        look: pc_model::Transition::of(pc_model::TransitionKind::Cut),
         device,
         queue,
     };
@@ -343,6 +350,13 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                     if !same_video {
                         output.video_picture = None;
                     }
+                    let same_media = match (&output.frame.media, &frame.media) {
+                        (Some(was), Some(now)) => was.same(now),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    // Only the media changed: it gives way by the media's own transition.
+                    output.look = if same_slide && !same_media { frame.media_transition } else { frame.transition };
                     output.frame = frame;
                 }
                 OutputMsg::AddSurface { id, surface, format, w, h } => output.add_surface(id, surface, format, w, h),
@@ -616,7 +630,7 @@ impl Output {
             };
             // Stage screens change at once: the people on stage need the words now.
             match before {
-                Some(from) if new_picture && frame.transition.duration() > 0.0 && !stage => {
+                Some(from) if new_picture && self.look.duration() > 0.0 && !stage => {
                     target.fade = Some((from, scene));
                     fading = true;
                 }
@@ -626,7 +640,7 @@ impl Output {
                 }
             }
         }
-        self.fading = fading.then(|| (Instant::now(), frame.transition));
+        self.fading = fading.then(|| (Instant::now(), self.look));
         if fading {
             self.step_fade();
         }

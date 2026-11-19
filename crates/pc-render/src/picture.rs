@@ -33,6 +33,11 @@ impl Picture {
         })
     }
 
+    /// True when both are the same picture (not merely alike).
+    pub fn same(&self, other: &Picture) -> bool {
+        self.image.data.id() == other.image.data.id()
+    }
+
     pub fn width(&self) -> u32 {
         self.image.width
     }

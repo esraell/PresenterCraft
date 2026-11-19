@@ -474,6 +474,10 @@ pub struct Presentation {
     /// Next on the last slide goes back to the first, for a loop of announcements.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub loops: bool,
+    /// How each slide gives way to the next, unless a slide has its own; `None` for the one
+    /// chosen for all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<crate::Transition>,
 }
 
 /// An order to play a song's groups in. A group can come more than once, and a group left out
@@ -637,6 +641,7 @@ impl Presentation {
             arrangements: self.arrangements.clone(),
             arrangement: self.arrangement,
             loops: self.loops,
+            transition: self.transition,
         }
     }
 
@@ -870,6 +875,7 @@ mod tests {
             arrangements: Vec::new(),
             arrangement: None,
             loops: false,
+            transition: None,
         };
         let (first, at) = empty.with_slide_added();
         assert_eq!((first.slide_count(), at), (1, 0));

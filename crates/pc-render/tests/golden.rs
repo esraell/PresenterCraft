@@ -413,6 +413,37 @@ fn transitions_put_each_picture_where_it_belongs() {
     assert_eq!(shade_at(TransitionKind::Iris, 1.0, 1), 255);
 }
 
+#[test]
+fn every_transition_starts_on_the_old_picture_and_ends_on_the_new() {
+    use pc_model::{Direction, Rgba, TransitionKind};
+    let (w, h) = (160, 90);
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let black = build_scene(&mut Fonts::new(), Some(&Slide::new(Vec::new())), &Theme::builtin(), w, h).scene;
+    let mut white_theme = Theme::builtin();
+    white_theme.background = Some(Rgba::WHITE);
+    let white = build_scene(&mut Fonts::new(), Some(&Slide::new(Vec::new())), &white_theme, w, h).scene;
+    // Points in from the edges: the middle and near each corner.
+    let points = [(w / 2, h / 2), (w / 8, h / 8), (w * 7 / 8, h / 8), (w / 8, h * 7 / 8), (w * 7 / 8, h * 7 / 8)];
+    for direction in [Direction::FromLeft, Direction::FromTop] {
+        for kind in TransitionKind::ALL.into_iter().filter(|kind| *kind != TransitionKind::Cut) {
+            for (amount, want) in [(0.0, 0), (1.0, 255)] {
+                let texture = target_texture(device, w, h);
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let scene = pc_render::transition(kind, direction, &black, &white, amount, w, h);
+                painter.paint(device, queue, &scene, &view, w, h).expect("paint");
+                let pixels = read_pixels(device, queue, &texture).expect("read back");
+                for (x, y) in points {
+                    let red = pixels[((y * w + x) * 4) as usize];
+                    assert_eq!(red, want, "{kind:?} {direction:?} at {amount}: ({x}, {y})");
+                }
+            }
+        }
+    }
+}
+
 /// A wide red picture for any file but "missing.png", which can't be read.
 fn wide_red(file: &str) -> Option<pc_render::Picture> {
     (file != "missing.png").then(|| flat(200, 100, [230, 30, 30]))
@@ -551,4 +582,34 @@ fn a_screens_colour_fills_the_empty_room_and_its_covered_edges() {
     assert!(is_about(pixel(&px, 160, 80, 4), [0, 128, 128]), "the room above the slide is the screen's colour");
     assert!(is_about(pixel(&px, 160, 10, 60), [0, 128, 128]), "the covered left edge is too");
     assert!(is_about(pixel(&px, 160, 120, 60), [255, 255, 255]), "the rest of the slide shows");
+}
+
+/// Writes each transition 40% of the way through, from a red slide to a blue one, to the folder
+/// SHEET_DIR names, to look at by hand:
+/// `SHEET_DIR=/tmp/sheet cargo test -p pc-render --test golden transition_sheet -- --ignored`.
+#[test]
+#[ignore = "writes files, for looking at by hand"]
+fn transition_sheet() {
+    use pc_model::{Direction, Rgba, TransitionKind};
+    let Ok(dir) = std::env::var("SHEET_DIR") else { return };
+    let (w, h) = (320, 180);
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let coloured = |rgba: Rgba, words: &str| {
+        let mut theme = Theme::builtin();
+        theme.background = Some(rgba);
+        build_scene(&mut Fonts::new(), Some(&slide(words, None)), &theme, w, h).scene
+    };
+    let from = coloured(Rgba { r: 200, g: 40, b: 40, a: 255 }, "Old");
+    let to = coloured(Rgba { r: 40, g: 80, b: 220, a: 255 }, "New");
+    for kind in TransitionKind::ALL {
+        let texture = target_texture(device, w, h);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let scene = pc_render::transition(kind, Direction::FromLeft, &from, &to, 0.4, w, h);
+        painter.paint(device, queue, &scene, &view, w, h).expect("paint");
+        let pixels = read_pixels(device, queue, &texture).expect("read back");
+        write_png(&PathBuf::from(&dir).join(format!("{kind:?}.png")), &pixels, w, h);
+    }
 }

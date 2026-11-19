@@ -27,10 +27,28 @@ pub enum TransitionKind {
     Iris,
     /// The new picture grows from the middle as it fades in.
     ZoomIn,
+    /// The old picture shrinks away and fades, showing the new one under it.
+    ZoomOut,
+    /// The new picture is uncovered by a hand sweeping round like a clock's.
+    Clock,
+    /// The new picture is uncovered in strips, like blinds opening.
+    Blinds,
+    /// Bars come in from both sides in turn, uncovering the new picture.
+    Bars,
+    /// The new picture is uncovered square by square, in two passes.
+    Checkerboard,
+    /// The new picture opens out from a line through the middle.
+    Split,
+    /// The new picture is uncovered by a diamond growing from the middle.
+    Diamond,
+    /// The old picture parts in the middle like two doors, showing the new one behind it.
+    Doors,
+    /// The old picture turns edge-on and the new one turns to face the room.
+    Flip,
 }
 
 impl TransitionKind {
-    pub const ALL: [TransitionKind; 10] = [
+    pub const ALL: [TransitionKind; 19] = [
         TransitionKind::Cut,
         TransitionKind::Dissolve,
         TransitionKind::FadeBlack,
@@ -38,9 +56,18 @@ impl TransitionKind {
         TransitionKind::Push,
         TransitionKind::MoveIn,
         TransitionKind::Reveal,
+        TransitionKind::ZoomIn,
+        TransitionKind::ZoomOut,
+        TransitionKind::Doors,
+        TransitionKind::Flip,
         TransitionKind::Wipe,
         TransitionKind::Iris,
-        TransitionKind::ZoomIn,
+        TransitionKind::Clock,
+        TransitionKind::Blinds,
+        TransitionKind::Bars,
+        TransitionKind::Checkerboard,
+        TransitionKind::Split,
+        TransitionKind::Diamond,
     ];
 
     pub fn name(self) -> &'static str {
@@ -55,6 +82,15 @@ impl TransitionKind {
             TransitionKind::Wipe => "Wipe",
             TransitionKind::Iris => "Iris",
             TransitionKind::ZoomIn => "Zoom In",
+            TransitionKind::ZoomOut => "Zoom Out",
+            TransitionKind::Clock => "Clock",
+            TransitionKind::Blinds => "Blinds",
+            TransitionKind::Bars => "Bars",
+            TransitionKind::Checkerboard => "Checkerboard",
+            TransitionKind::Split => "Split",
+            TransitionKind::Diamond => "Diamond",
+            TransitionKind::Doors => "Doors",
+            TransitionKind::Flip => "Flip",
         }
     }
 
@@ -63,16 +99,39 @@ impl TransitionKind {
         match self {
             TransitionKind::Cut => "None",
             TransitionKind::Dissolve | TransitionKind::FadeBlack | TransitionKind::FadeWhite => "Dissolves",
-            TransitionKind::Push | TransitionKind::MoveIn | TransitionKind::Reveal | TransitionKind::ZoomIn => {
-                "Movements"
-            }
-            TransitionKind::Wipe | TransitionKind::Iris => "Wipes",
+            TransitionKind::Push
+            | TransitionKind::MoveIn
+            | TransitionKind::Reveal
+            | TransitionKind::ZoomIn
+            | TransitionKind::ZoomOut
+            | TransitionKind::Doors
+            | TransitionKind::Flip => "Movements",
+            TransitionKind::Wipe
+            | TransitionKind::Iris
+            | TransitionKind::Clock
+            | TransitionKind::Blinds
+            | TransitionKind::Bars
+            | TransitionKind::Checkerboard
+            | TransitionKind::Split
+            | TransitionKind::Diamond => "Wipes",
         }
     }
 
     /// True for the kinds that move in a direction.
     pub fn has_direction(self) -> bool {
-        matches!(self, TransitionKind::Push | TransitionKind::MoveIn | TransitionKind::Reveal | TransitionKind::Wipe)
+        matches!(
+            self,
+            TransitionKind::Push
+                | TransitionKind::MoveIn
+                | TransitionKind::Reveal
+                | TransitionKind::Wipe
+                | TransitionKind::Blinds
+                | TransitionKind::Bars
+                | TransitionKind::Checkerboard
+                | TransitionKind::Split
+                | TransitionKind::Doors
+                | TransitionKind::Flip
+        )
     }
 
     /// How long it takes unless it is given another time, in seconds.

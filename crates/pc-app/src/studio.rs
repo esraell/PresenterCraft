@@ -822,6 +822,25 @@ fn song_menu(
         state.song_loop_request = Some(index);
         ui.close();
     }
+    // How its slides give way to each other, unless a slide has its own.
+    let own_transition = show.presentations().get(index).and_then(|song| song.transition);
+    ui.menu_button("Transition", |ui| {
+        if ui
+            .add(egui::Button::selectable(own_transition.is_none(), "As All Slides"))
+            .on_hover_text("The transition chosen under the slides")
+            .clicked()
+        {
+            state.song_transition_request = Some((index, None));
+            ui.close();
+        }
+        ui.separator();
+        let mut look = own_transition.unwrap_or(state.transition);
+        let before = look;
+        transition_picker(ui, &mut look, "song");
+        if look != before || (own_transition.is_none() && ui.button("Use This for the Song").clicked()) {
+            state.song_transition_request = Some((index, Some(look)));
+        }
+    });
     // The theme this song is drawn with.
     let own = show.presentations().get(index).and_then(|song| song.theme);
     ui.menu_button("Theme", |ui| {
@@ -1306,9 +1325,23 @@ pub fn media_strip(
             ui.add_space(6.0);
             ui.label(note);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("+").on_hover_text("Add pictures from a folder").clicked() {
+                if ui.small_button("+").on_hover_text("Add pictures and videos").clicked() {
                     state.media_request = Some(crate::home::MediaRequest::Choose);
                 }
+                // How one picture or video gives way to the next, as ProPresenter's media bin has.
+                let label = ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(format!("{} ▾", state.media_transition.label()))
+                                .size(12.0)
+                                .color(TEXT_DIM),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_text("How one picture or video gives way to the next");
+                egui::Popup::from_toggle_button_response(&label)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| transition_picker(ui, &mut state.media_transition, "media"));
             });
         });
         if !empty {
@@ -1430,7 +1463,7 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
             .on_hover_text("Choose how long it takes, and its direction");
         egui::Popup::from_toggle_button_response(&label)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| transition_settings(ui, state));
+            .show(|ui| transition_settings(ui, &mut state.transition, "slides"));
     }
     // Laid out right to left: the last cell here is the leftmost.
     let others =
@@ -1466,46 +1499,42 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
     if let Some(more) = more {
         egui::Popup::from_toggle_button_response(&more)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| transition_picker(ui, state));
+            .show(|ui| transition_picker(ui, &mut state.transition, "slides"));
     }
 }
 
 /// The transition picker: every transition, grouped as ProPresenter groups them, with the
 /// chosen one's settings under them.
-fn transition_picker(ui: &mut egui::Ui, state: &mut HomeState) {
+pub fn transition_picker(ui: &mut egui::Ui, look: &mut pc_model::Transition, id: &str) {
     use pc_model::TransitionKind as K;
     ui.set_width(330.0);
     for category in ["Dissolves", "Movements", "Wipes", "None"] {
         caption(ui, &category.to_uppercase());
         ui.horizontal_wrapped(|ui| {
             for kind in K::ALL.into_iter().filter(|kind| kind.category() == category) {
-                let on = state.transition.kind == kind;
+                let on = look.kind == kind;
                 if ui.add(egui::Button::selectable(on, kind.name()).min_size(vec2(100.0, 28.0))).clicked() && !on {
                     // A newly chosen kind keeps the direction, and takes its usual time.
-                    state.transition = pc_model::Transition {
-                        direction: state.transition.direction,
-                        ..pc_model::Transition::of(kind)
-                    };
+                    *look = pc_model::Transition { direction: look.direction, ..pc_model::Transition::of(kind) };
                 }
             }
         });
         ui.add_space(4.0);
     }
     ui.separator();
-    transition_settings(ui, state);
+    transition_settings(ui, look, id);
 }
 
 /// The chosen transition's settings: its direction, if it moves, and how long it takes.
-fn transition_settings(ui: &mut egui::Ui, state: &mut HomeState) {
-    let look = &mut state.transition;
+fn transition_settings(ui: &mut egui::Ui, look: &mut pc_model::Transition, id: &str) {
     if look.kind == pc_model::TransitionKind::Cut {
         ui.label(egui::RichText::new("Cut switches at once.").color(TEXT_DIM));
         return;
     }
-    egui::Grid::new("transition settings").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+    egui::Grid::new(("transition settings", id)).num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
         if look.kind.has_direction() {
             ui.label(egui::RichText::new("Direction").color(TEXT_DIM));
-            egui::ComboBox::from_id_salt("transition direction").selected_text(look.direction.name()).show_ui(
+            egui::ComboBox::from_id_salt(("transition direction", id)).selected_text(look.direction.name()).show_ui(
                 ui,
                 |ui| {
                     for direction in pc_model::Direction::ALL {
