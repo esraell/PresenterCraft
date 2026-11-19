@@ -800,6 +800,20 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
     }
 }
 
+/// The song a playlist names, among the open songs: found by the name its file gave it, or by
+/// its title for one saved before it had a file. `None` when it isn't open (or is hidden).
+pub fn playlist_song(show: &Show, state: &HomeState, key: &str) -> Option<usize> {
+    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+    let listed = |index: usize| !hidden.contains(&index) && !state.removed_songs.contains(&index);
+    let by_title = key.strip_prefix("title:");
+    state
+        .song_keys
+        .iter()
+        .position(|have| have == key)
+        .or_else(|| by_title.and_then(|title| show.presentations().iter().position(|song| song.title == title)))
+        .filter(|index| listed(*index))
+}
+
 /// A song's right-click menu in the library.
 fn song_menu(
     ui: &mut egui::Ui,

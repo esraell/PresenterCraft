@@ -2974,6 +2974,23 @@ impl App {
             {
                 running.home_state.announcement_request = Some(Some(song));
             }
+            // Testing aid: open an item of the playlist in front, by its place, as a click on it
+            // in the left column does.
+            if running.frames == GO_LIVE_AT + 3
+                && let Some(item) = std::env::var("PRESENTERCRAFT_OPEN_ITEM").ok().and_then(|s| s.parse::<usize>().ok())
+            {
+                let state = &mut running.home_state;
+                state.playlist_open = true;
+                let key = match state.services.front().items.get(item) {
+                    Some(service::Item::Song { key, .. }) => Some(key.clone()),
+                    _ => None,
+                };
+                if let Some(at) = key.and_then(|key| studio::playlist_song(&self.show, state, &key)) {
+                    state.services.chosen = Some(item);
+                    state.bible_open = false;
+                    commands.push(Command::Select(at));
+                }
+            }
             // Testing aid: list the playlist in front in the left column.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_PLAYLIST").is_some() {
                 running.home_state.playlist_open = true;

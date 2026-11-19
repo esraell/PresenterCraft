@@ -135,6 +135,10 @@ pub struct HomeState {
     /// A change to a song asked for from its menu, and a song waiting to be confirmed deleted.
     pub song_request: Option<(usize, SongRequest)>,
     pub confirm_delete_song: Option<usize>,
+    /// The playlist item whose slides the slide area last scrolled to, and whether the song
+    /// was just picked in the slide area itself (so it isn't scrolled away from).
+    pub slides_scrolled_to: Option<usize>,
+    pub slides_picked_here: bool,
     /// The Reflow editor, while it is open: the song being reflowed and its words as text.
     pub reflow: Option<(usize, String)>,
     /// Words finished in the Reflow editor, for the app to rebuild the song from.
@@ -777,6 +781,8 @@ impl Default for HomeState {
             arrangement_request: None,
             theme_ids: Vec::new(),
             confirm_delete_song: None,
+            slides_scrolled_to: None,
+            slides_picked_here: false,
             removed_songs: Vec::new(),
             media_request: None,
             library_search: None,
@@ -4335,8 +4341,13 @@ fn slide_grid(
     thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
     commands: &mut Vec<Command>,
 ) {
-    let Some(presentation) = show.presentations().get(which) else { return };
+    if show.presentations().get(which).is_none() {
+        return;
+    }
     let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&which));
+    // A song opened from a playlist is shown with the playlist's other songs above and below
+    // it, in the playlist's order, so scrolling down goes on into the next song.
+    let sections = if from_bible { Vec::new() } else { playlist_sections(show, state, which) };
     let view = state.slide_view;
     let gap = 16.0;
     let bar_height = 22.0;
@@ -4357,457 +4368,15 @@ fn slide_grid(
             } else {
                 vec2(width, image_size.y + bar_height)
             };
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = if view == SlideView::Table { vec2(0.0, 2.0) } else { vec2(gap, gap) };
-                let mut last_group = None;
-                for (index, (group, slide)) in presentation.slides().enumerate() {
-                    // A group's name is shown on its first slide only.
-                    let starts_group = last_group != Some(group.id);
-                    last_group = Some(group.id);
-                    let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
-                    let here = SlideRef { presentation: which, slide: index };
-                    if response.clicked() {
-                        state.selected_slide = None;
-                        commands.push(Command::GoTo(here));
-                    }
-                    // A media item dragged from the bin onto a slide becomes what the slide shows.
-                    if !from_bible {
-                        if response.dnd_hover_payload::<MediaDrag>().is_some() {
-                            ui.painter().rect_stroke(
-                                rect,
-                                6.0,
-                                Stroke::new(2.0, crate::studio::ACCENT),
-                                StrokeKind::Outside,
-                            );
-                        }
-                        if let Some(dropped) = response.dnd_release_payload::<MediaDrag>()
-                            && let Some(item) = show.media().get(dropped.0)
-                        {
-                            state.pending_edit = Some((here, slide_with_media(slide, Some(item.id))));
-                        }
-                    }
-                    if response.secondary_clicked() {
-                        state.selected_slide = Some(here);
-                    }
-                    // Editing is on the right-click menu, so reaching for it never puts a
-                    // slide on screen by accident.
-                    response.context_menu(|ui| {
-                        if ui.button("Edit Slide").clicked() {
-                            state.editing = EditDraft::of(show, here);
-                            ui.close();
-                        }
-                        if !from_bible {
-                            ui.separator();
-                            if ui.button("Cut").clicked() {
-                                state.slide_clip = Some(slide.clone());
-                                state.slide_request = Some((here, SlideRequest::Delete));
-                                ui.close();
-                            }
-                            if ui.button("Copy").clicked() {
-                                state.slide_clip = Some(slide.clone());
-                                ui.close();
-                            }
-                            let clip = state.slide_clip.clone();
-                            if ui.add_enabled(clip.is_some(), egui::Button::new("Paste")).clicked()
-                                && let Some(clip) = clip
-                            {
-                                state.slide_request = Some((here, SlideRequest::PasteAfter(clip)));
-                                ui.close();
-                            }
-                            if ui.button("Delete").clicked() {
-                                state.slide_request = Some((here, SlideRequest::Delete));
-                                ui.close();
-                            }
-                            ui.separator();
-                            // Where a group starts: this slide and the rest of its group take the name.
-                            ui.menu_button("Group", |ui| {
-                                for name in GROUP_NAMES {
-                                    if ui.button(name).clicked() {
-                                        state.slide_request = Some((here, SlideRequest::Group(name.to_owned())));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                            // The media the slide puts behind its words when it goes on screen.
-                            ui.menu_button("Media", |ui| {
-                                let own = media_of(slide);
-                                if ui.add(egui::Button::selectable(own.is_none(), "No Media")).clicked() {
-                                    state.pending_edit = Some((here, slide_with_media(slide, None)));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if show.media().is_empty() {
-                                    ui.label(egui::RichText::new("The media bin is empty.").color(DIM));
-                                }
-                                for item in show.media() {
-                                    if ui
-                                        .add(egui::Button::selectable(own == Some(item.id), item.name.as_str()))
-                                        .clicked()
-                                    {
-                                        state.pending_edit = Some((here, slide_with_media(slide, Some(item.id))));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                            ui.menu_button("Transition", |ui| {
-                                if ui
-                                    .add(egui::Button::selectable(slide.transition.is_none(), "As All Slides"))
-                                    .clicked()
-                                {
-                                    state.pending_edit = Some((here, Slide { transition: None, ..slide.clone() }));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                for kind in pc_model::TransitionKind::ALL {
-                                    let on = slide.transition.is_some_and(|own| own.kind == kind);
-                                    if ui.add(egui::Button::selectable(on, kind.name())).clicked() {
-                                        let own = pc_model::Transition::of(kind);
-                                        state.pending_edit =
-                                            Some((here, Slide { transition: Some(own), ..slide.clone() }));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                            // What the slide does when it goes on screen.
-                            ui.menu_button("Actions", |ui| {
-                                let names = crate::live_tabs::action_names(show, state);
-                                for (at, action) in slide.actions.iter().enumerate() {
-                                    let words = crate::live_tabs::describe_action(state, &names, action);
-                                    if ui.button(format!("Remove: {words}")).clicked() {
-                                        let mut kept = slide.clone();
-                                        kept.actions.remove(at);
-                                        state.pending_edit = Some((here, kept));
-                                        ui.close();
-                                    }
-                                }
-                                if !slide.actions.is_empty() {
-                                    ui.separator();
-                                }
-                                ui.menu_button("Add Action", |ui| {
-                                    if let Some(action) = crate::live_tabs::add_action_menu(ui, state, &names) {
-                                        let mut more = slide.clone();
-                                        more.actions.push(action);
-                                        state.pending_edit = Some((here, more));
-                                        ui.close();
-                                    }
-                                });
-                            });
-                            // Going on to the next slide by itself, after a time.
-                            ui.menu_button("Go to Next", |ui| {
-                                if ui.add(egui::Button::selectable(slide.advance.is_none(), "Off")).clicked() {
-                                    state.pending_edit = Some((here, Slide { advance: None, ..slide.clone() }));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                for seconds in [3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0] {
-                                    let on = slide.advance == Some(seconds);
-                                    let label = format!("After {seconds:.0} Seconds");
-                                    if ui.add(egui::Button::selectable(on, label)).clicked() {
-                                        state.pending_edit =
-                                            Some((here, Slide { advance: Some(seconds), ..slide.clone() }));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                            // A key that puts this slide on screen in the Show view.
-                            ui.menu_button("Hot Key", |ui| {
-                                if ui.add(egui::Button::selectable(slide.hot_key.is_none(), "None")).clicked() {
-                                    state.pending_edit = Some((here, Slide { hot_key: None, ..slide.clone() }));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                egui::Grid::new("hot keys").spacing(vec2(2.0, 2.0)).show(ui, |ui| {
-                                    for (index, key) in ('A'..='Z').chain('0'..='9').enumerate() {
-                                        let on = slide.hot_key == Some(key);
-                                        let button =
-                                            egui::Button::selectable(on, key.to_string()).min_size(vec2(26.0, 22.0));
-                                        if ui.add(button).clicked() {
-                                            state.pending_edit =
-                                                Some((here, Slide { hot_key: Some(key), ..slide.clone() }));
-                                            ui.close();
-                                        }
-                                        if index % 6 == 5 {
-                                            ui.end_row();
-                                        }
-                                    }
-                                });
-                            });
-                            // The look of the slide's text, to give another slide.
-                            if ui.button("Copy Text Style").clicked() {
-                                state.inspector.copied_style =
-                                    slide.objects.iter().find_map(|object| object.text_style().cloned());
-                                ui.close();
-                            }
-                            if ui
-                                .add_enabled(
-                                    state.inspector.copied_style.is_some(),
-                                    egui::Button::new("Paste Text Style"),
-                                )
-                                .on_hover_text("Give every text box on this slide the look that was copied")
-                                .clicked()
-                                && let Some(copied) = state.inspector.copied_style.clone()
-                            {
-                                let mut styled = slide.clone();
-                                for object in &mut styled.objects {
-                                    if let Some(style) = object.text_style_mut() {
-                                        *style = copied.clone();
-                                    }
-                                }
-                                state.pending_edit = Some((here, styled));
-                                ui.close();
-                            }
-                            ui.menu_button("Label", |ui| {
-                                if ui.add(egui::Button::selectable(slide.label.is_none(), "None")).clicked() {
-                                    state.slide_request = Some((here, SlideRequest::Label(None)));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                for name in SLIDE_LABELS {
-                                    let on = slide.label.as_deref() == Some(name);
-                                    if ui.add(egui::Button::selectable(on, name)).clicked() {
-                                        state.slide_request = Some((here, SlideRequest::Label(Some(name.to_owned()))));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                        }
-                        // A disabled slide stays in the song but is stepped over and never shown.
-                        if !from_bible {
-                            let label = if slide.enabled { "Disable Slide" } else { "Enable Slide" };
-                            if ui.button(label).clicked() {
-                                state.pending_edit = Some((here, Slide { enabled: !slide.enabled, ..slide.clone() }));
-                                ui.close();
-                            }
-                        }
-                        // Which of the theme's templates the slide is drawn with. Automatic
-                        // lets the theme pick the one that suits what is on the slide.
-                        if !from_bible && !state.song_templates.is_empty() {
-                            ui.menu_button("Template", |ui| {
-                                let current =
-                                    slide.template.filter(|id| state.song_templates.iter().any(|(t, _)| t == id));
-                                if ui.add(egui::Button::selectable(current.is_none(), "Automatic")).clicked() {
-                                    state.pending_template = Some((here, None));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                for (id, name) in &state.song_templates {
-                                    if ui.add(egui::Button::selectable(current == Some(*id), name.as_str())).clicked() {
-                                        state.pending_template = Some((here, Some(*id)));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                        }
-                    });
-                    // Slides scrolled out of view cost nothing: no thumbnail is asked for.
-                    if !ui.is_rect_visible(rect) {
-                        continue;
-                    }
-                    let painter = ui.painter().clone();
-                    let ink = text_on(group.color);
-                    let words = || slide.texts().into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n");
-                    let mut picture = |ui: &mut egui::Ui, image: Rect| {
-                        painter.rect_filled(image, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Color32::BLACK);
-                        let of = if from_bible { ThumbOf::BibleSlide(slide) } else { ThumbOf::Slide(slide) };
-                        match thumb(of) {
-                            Some((texture, overflow)) => {
-                                egui::Image::from_texture((texture, image.size()))
-                                    .corner_radius(egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 })
-                                    .paint_at(ui, image);
-                                if overflow {
-                                    let mark = image.right_top() + vec2(-14.0, 14.0);
-                                    painter.circle_filled(mark, 9.0, Color32::from_rgb(240, 190, 40));
-                                    painter.text(
-                                        mark,
-                                        Align2::CENTER_CENTER,
-                                        "!",
-                                        FontId::proportional(14.0),
-                                        Color32::BLACK,
-                                    );
-                                }
-                            }
-                            None => ui.ctx().request_repaint(),
-                        }
-                    };
-                    match view {
-                        SlideView::Table => {
-                            // A strip in the group's colour with the number, the thumbnail, the words.
-                            let strip = Rect::from_min_size(rect.min, vec2(34.0, rect.height()));
-                            painter.rect_filled(rect, 0.0, Color32::from_gray(38));
-                            painter.rect_filled(strip, 0.0, color32(group.color));
-                            painter.text(
-                                strip.center(),
-                                Align2::CENTER_CENTER,
-                                format!("{}.", index + 1),
-                                FontId::proportional(13.0),
-                                ink,
-                            );
-                            let image = Rect::from_min_size(rect.min + vec2(34.0, 0.0), image_size);
-                            picture(ui, image);
-                            let text_at = pos2(image.max.x + 14.0, rect.min.y + 8.0);
-                            let mut top = text_at.y;
-                            if starts_group && !group.name.is_empty() {
-                                painter.text(
-                                    text_at,
-                                    Align2::LEFT_TOP,
-                                    group.name.as_str(),
-                                    FontId::proportional(12.0),
-                                    Color32::from_gray(160),
-                                );
-                                top += 18.0;
-                            }
-                            let clip = Rect::from_min_max(pos2(text_at.x, rect.min.y), rect.max);
-                            painter.with_clip_rect(clip).text(
-                                pos2(text_at.x, top),
-                                Align2::LEFT_TOP,
-                                words(),
-                                FontId::proportional(13.0),
-                                Color32::from_gray(230),
-                            );
-                        }
-                        SlideView::Grid | SlideView::Easy => {
-                            let image = Rect::from_min_size(rect.min, image_size);
-                            if view == SlideView::Easy {
-                                // Only the words, plain, on black: quick to read at any size.
-                                painter.rect_filled(image, 0.0, Color32::BLACK);
-                                painter.with_clip_rect(image).text(
-                                    image.min + vec2(8.0, 6.0),
-                                    Align2::LEFT_TOP,
-                                    words(),
-                                    FontId::proportional((width / 15.0).clamp(10.0, 18.0)),
-                                    Color32::from_gray(235),
-                                );
-                            } else {
-                                picture(ui, image);
-                            }
-                            // Under the slide, a bar in its group's colour across the whole width:
-                            // the slide's number, the group's name on the group's first slide, and
-                            // the key that jumps to the group at the right.
-                            let foot = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
-                            let corners = egui::CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 };
-                            painter.rect_filled(foot, corners, color32(group.color));
-                            let number = painter.text(
-                                foot.left_center() + vec2(8.0, 0.0),
-                                Align2::LEFT_CENTER,
-                                (index + 1).to_string(),
-                                crate::studio::semibold(12.0),
-                                ink,
-                            );
-                            if starts_group && !group.name.is_empty() {
-                                let key = if from_bible { None } else { pc_model::key_for_group(&group.name) };
-                                let name_end = foot.max.x - if key.is_some() { 22.0 } else { 8.0 };
-                                let clip = Rect::from_min_max(
-                                    pos2(number.max.x + 6.0, foot.min.y),
-                                    pos2(name_end, foot.max.y),
-                                );
-                                painter.with_clip_rect(clip).text(
-                                    pos2(number.max.x + 8.0, foot.center().y),
-                                    Align2::LEFT_CENTER,
-                                    group.name.as_str(),
-                                    FontId::proportional(12.0),
-                                    ink,
-                                );
-                                if let Some(key) = key {
-                                    painter.text(
-                                        foot.right_center() - vec2(8.0, 0.0),
-                                        Align2::RIGHT_CENTER,
-                                        key,
-                                        FontId::monospace(10.5),
-                                        ink.gamma_multiply(0.7),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    // A slide's hot key, in a small badge at its top right.
-                    if let Some(key) = slide.hot_key {
-                        let badge =
-                            Rect::from_center_size(pos2(rect.max.x - 13.0, rect.min.y + 12.0), vec2(18.0, 16.0));
-                        painter.rect_filled(badge, 4.0, Color32::from_black_alpha(200));
-                        painter.text(
-                            badge.center(),
-                            Align2::CENTER_CENTER,
-                            key.to_string(),
-                            FontId::monospace(11.0),
-                            Color32::WHITE,
-                        );
-                    }
-                    // A slide with actions has a small mark at its top left.
-                    if !slide.actions.is_empty() {
-                        let mark = pos2(rect.min.x + 12.0, rect.min.y + 12.0);
-                        painter.circle_filled(mark, 8.0, Color32::from_black_alpha(190));
-                        painter.text(
-                            mark,
-                            Align2::CENTER_CENTER,
-                            "⚡",
-                            FontId::proportional(10.0),
-                            Color32::from_rgb(250, 200, 60),
-                        );
-                    }
-                    // A slide that goes on by itself shows after how long, beside that.
-                    if let Some(seconds) = slide.advance {
-                        let left = rect.min.x + if slide.actions.is_empty() { 4.0 } else { 24.0 };
-                        let badge = Rect::from_min_size(pos2(left, rect.min.y + 4.0), vec2(34.0, 16.0));
-                        painter.rect_filled(badge, 4.0, Color32::from_black_alpha(200));
-                        painter.text(
-                            badge.center(),
-                            Align2::CENTER_CENTER,
-                            format!("{seconds:.0}s ›"),
-                            FontId::proportional(10.5),
-                            Color32::WHITE,
-                        );
-                    }
-                    // A slide's label, in a small dark tab at the picture's bottom right.
-                    if let Some(label) = slide.label.as_deref().filter(|label| !label.is_empty()) {
-                        let ink = Color32::from_gray(225);
-                        let text = painter.layout_no_wrap(label.to_owned(), FontId::proportional(10.5), ink);
-                        let bottom =
-                            if view == SlideView::Table { rect.max.y - 6.0 } else { rect.max.y - bar_height - 6.0 };
-                        let tab = Rect::from_min_max(
-                            pos2(rect.max.x - text.size().x - 18.0, bottom - text.size().y - 4.0),
-                            pos2(rect.max.x - 6.0, bottom),
-                        );
-                        painter.rect_filled(tab, 4.0, Color32::from_black_alpha(190));
-                        painter.galley(pos2(tab.min.x + 6.0, tab.min.y + 2.0), text, ink);
-                    }
-                    // A disabled slide is dimmed and says so: it is never shown.
-                    if !slide.enabled {
-                        painter.rect_filled(rect, 6.0, Color32::from_black_alpha(170));
-                        painter.text(
-                            rect.center(),
-                            Align2::CENTER_CENTER,
-                            "Disabled",
-                            crate::studio::semibold(13.0),
-                            crate::studio::TEXT_DIM,
-                        );
-                    }
-                    // A hairline round the slide and its bar, so black slides do not melt into the background.
-                    if view != SlideView::Table {
-                        painter.rect_stroke(rect, 6.0, Stroke::new(1.0, crate::studio::LINE), StrokeKind::Outside);
-                    }
-                    // Tally red for the slide on screen; the accent for one picked
-                    // out; a dim red for the slide that was on screen before it was cleared.
-                    let framed = rect;
-                    let is_live = show.live() == Some(here);
-                    let outline = if is_live {
-                        Some(Stroke::new(2.5, LIVE_OUTLINE))
-                    } else if state.selected_slide == Some(here) {
-                        Some(Stroke::new(2.0, SELECTED_OUTLINE))
-                    } else if show.live().is_none() && show.cursor() == Some(here) {
-                        Some(Stroke::new(1.5, WAS_LIVE_OUTLINE))
-                    } else if response.hovered() {
-                        Some(Stroke::new(1.0, crate::studio::TEXT_FAINT))
-                    } else {
-                        None
-                    };
-                    if let Some(stroke) = outline {
-                        painter.rect_stroke(framed, 6.0, stroke, StrokeKind::Outside);
-                    }
-                }
-            });
+            let sizes = Cells { view, gap, bar_height, width, image_size, cell };
+            if sections.is_empty() {
+                song_slides(ui, show, which, None, state, thumb, commands, &sizes);
+            } else {
+                playlist_slides(ui, show, which, &sections, state, thumb, commands, &sizes);
+            }
             // Under the slides: a media item dragged from the bin and dropped here is added as a
             // slide of its own.
-            if !from_bible {
+            if !from_bible && sections.is_empty() {
                 let height = ui.available_height().max(90.0);
                 let (place, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
                 if response.dnd_hover_payload::<MediaDrag>().is_some() {
@@ -4827,6 +4396,606 @@ fn slide_grid(
             }
         });
         ui.add_space(12.0);
+    });
+}
+
+/// The sizes of the slides in the slide area.
+#[derive(Clone, Copy)]
+struct Cells {
+    view: SlideView,
+    gap: f32,
+    bar_height: f32,
+    width: f32,
+    image_size: egui::Vec2,
+    cell: egui::Vec2,
+}
+
+/// One part of a playlist shown in the slide area.
+enum Section {
+    /// A playlist header, grouping the items under it.
+    Header(String),
+    /// A song: its place in the playlist and among the songs.
+    Song { item: usize, at: usize },
+    /// A song the library doesn't have open, or a Bible passage: shown by name, and a click
+    /// on a passage opens it.
+    Other { item: usize, title: String, passage: bool },
+}
+
+/// What the slide area shows for the song `which` when it was opened from the playlist in
+/// front: every item of the playlist, in order. Empty when it wasn't (a song picked in a
+/// library, or the playlist no longer has it); then only its own slides are shown.
+fn playlist_sections(show: &Show, state: &mut HomeState, which: usize) -> Vec<Section> {
+    use crate::service::Item;
+    let Some(chosen) = state.services.chosen else { return Vec::new() };
+    let items = state.services.front().items.clone();
+    let songs: Vec<Option<usize>> = items
+        .iter()
+        .map(|item| match item {
+            Item::Song { key, .. } => crate::studio::playlist_song(show, state, key),
+            _ => None,
+        })
+        .collect();
+    // The playlist row lit up follows the song shown, as it changes by a click on another
+    // song's slide or by Next going on into the next song.
+    if songs.get(chosen).copied().flatten() != Some(which) {
+        let after = songs.iter().skip(chosen).position(|at| *at == Some(which)).map(|i| i + chosen);
+        match after.or_else(|| songs.iter().position(|at| *at == Some(which))) {
+            Some(item) => state.services.chosen = Some(item),
+            None => return Vec::new(),
+        }
+    }
+    items
+        .into_iter()
+        .zip(songs)
+        .enumerate()
+        .map(|(item, (entry, at))| match (entry, at) {
+            (Item::Header { name }, _) => Section::Header(name),
+            (_, Some(at)) => Section::Song { item, at },
+            (entry, None) => {
+                Section::Other { item, title: entry.title().to_owned(), passage: matches!(entry, Item::Passage(_)) }
+            }
+        })
+        .collect()
+}
+
+/// Every item of the playlist in front, one after another: each song under a bar with its
+/// name, then its slides. The song being shown is scrolled to when it changes.
+#[allow(clippy::too_many_arguments)]
+fn playlist_slides(
+    ui: &mut egui::Ui,
+    show: &Show,
+    which: usize,
+    sections: &[Section],
+    state: &mut HomeState,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
+    commands: &mut Vec<Command>,
+    sizes: &Cells,
+) {
+    let live_in = show.live().map(|at| at.presentation);
+    for (place, section) in sections.iter().enumerate() {
+        if place > 0 {
+            ui.add_space(14.0);
+        }
+        match section {
+            Section::Header(name) => {
+                let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
+                ui.painter().text(
+                    row.left_center(),
+                    Align2::LEFT_CENTER,
+                    name.to_uppercase(),
+                    crate::studio::semibold(11.5),
+                    crate::studio::TEXT_DIM,
+                );
+                ui.painter().hline(row.x_range(), row.max.y - 1.0, Stroke::new(1.0, crate::studio::LINE));
+            }
+            Section::Other { item, title, passage } => {
+                let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+                let fill = if response.hovered() && *passage { crate::studio::HOVER } else { crate::studio::PANEL };
+                ui.painter().rect_filled(row, 6.0, fill);
+                let words = if *passage {
+                    format!("{title}  ·  Bible passage, click to open it")
+                } else {
+                    format!("{title}  ·  not open in the library")
+                };
+                ui.painter().text(
+                    row.left_center() + vec2(12.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    words,
+                    FontId::proportional(13.0),
+                    crate::studio::TEXT_FAINT,
+                );
+                if *passage
+                    && response.clicked()
+                    && let Some(crate::service::Item::Passage(saved)) = state.services.front().items.get(*item).cloned()
+                {
+                    state.services.chosen = Some(*item);
+                    state.bible_open = true;
+                    state.bible.open_saved(&saved, live_in);
+                }
+            }
+            Section::Song { item, at } => {
+                let Some(song) = show.presentations().get(*at) else { continue };
+                let shown = *at == which && state.services.chosen == Some(*item);
+                let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+                let fill = if shown { crate::studio::SELECTED } else { crate::studio::PANEL };
+                ui.painter().rect_filled(row, 6.0, fill);
+                let title = ui.painter().text(
+                    row.left_center() + vec2(12.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    song.title.as_str(),
+                    crate::studio::semibold(14.0),
+                    crate::studio::TEXT,
+                );
+                let slides = song.slide_count();
+                let count = if slides == 1 { "1 slide".to_owned() } else { format!("{slides} slides") };
+                ui.painter().text(
+                    pos2(title.max.x + 10.0, row.center().y),
+                    Align2::LEFT_CENTER,
+                    count,
+                    FontId::proportional(11.5),
+                    crate::studio::TEXT_FAINT,
+                );
+                if live_in == Some(*at) {
+                    ui.painter().circle_filled(row.right_center() - vec2(14.0, 0.0), 4.0, crate::studio::TALLY);
+                }
+                if response.on_hover_text("Open this song").clicked() {
+                    state.services.chosen = Some(*item);
+                    state.slides_picked_here = true;
+                    commands.push(Command::Select(*at));
+                }
+                // When the song shown changes (a click in the playlist, or Next going on into
+                // it), its bar is scrolled to the top; not when it was picked here, in view.
+                if shown && state.slides_scrolled_to != Some(*item) {
+                    if !std::mem::take(&mut state.slides_picked_here) {
+                        ui.scroll_to_rect(row, Some(Align::TOP));
+                    }
+                    state.slides_scrolled_to = Some(*item);
+                }
+                ui.add_space(8.0);
+                song_slides(ui, show, *at, Some(*item), state, thumb, commands, sizes);
+            }
+        }
+    }
+}
+
+/// One song's slides, as the view chosen draws them. `item` is the song's place in the
+/// playlist in front when the playlist is shown; a click on a slide then lights that row.
+#[allow(clippy::too_many_arguments)]
+fn song_slides(
+    ui: &mut egui::Ui,
+    show: &Show,
+    which: usize,
+    item: Option<usize>,
+    state: &mut HomeState,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
+    commands: &mut Vec<Command>,
+    sizes: &Cells,
+) {
+    let Some(presentation) = show.presentations().get(which) else { return };
+    let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&which));
+    let Cells { view, gap, bar_height, width, image_size, cell } = *sizes;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = if view == SlideView::Table { vec2(0.0, 2.0) } else { vec2(gap, gap) };
+        let mut last_group = None;
+        for (index, (group, slide)) in presentation.slides().enumerate() {
+            // A group's name is shown on its first slide only.
+            let starts_group = last_group != Some(group.id);
+            last_group = Some(group.id);
+            let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
+            let here = SlideRef { presentation: which, slide: index };
+            if response.clicked() {
+                state.selected_slide = None;
+                commands.push(Command::GoTo(here));
+                // In the playlist, the song's row lights up; the view stays where it is.
+                if item.is_some() {
+                    state.services.chosen = item;
+                    state.slides_picked_here = true;
+                }
+            }
+            // A media item dragged from the bin onto a slide becomes what the slide shows.
+            if !from_bible {
+                if response.dnd_hover_payload::<MediaDrag>().is_some() {
+                    ui.painter().rect_stroke(rect, 6.0, Stroke::new(2.0, crate::studio::ACCENT), StrokeKind::Outside);
+                }
+                if let Some(dropped) = response.dnd_release_payload::<MediaDrag>()
+                    && let Some(item) = show.media().get(dropped.0)
+                {
+                    state.pending_edit = Some((here, slide_with_media(slide, Some(item.id))));
+                }
+            }
+            if response.secondary_clicked() {
+                state.selected_slide = Some(here);
+            }
+            // Editing is on the right-click menu, so reaching for it never puts a
+            // slide on screen by accident.
+            response.context_menu(|ui| {
+                if ui.button("Edit Slide").clicked() {
+                    state.editing = EditDraft::of(show, here);
+                    ui.close();
+                }
+                if !from_bible {
+                    ui.separator();
+                    if ui.button("Cut").clicked() {
+                        state.slide_clip = Some(slide.clone());
+                        state.slide_request = Some((here, SlideRequest::Delete));
+                        ui.close();
+                    }
+                    if ui.button("Copy").clicked() {
+                        state.slide_clip = Some(slide.clone());
+                        ui.close();
+                    }
+                    let clip = state.slide_clip.clone();
+                    if ui.add_enabled(clip.is_some(), egui::Button::new("Paste")).clicked()
+                        && let Some(clip) = clip
+                    {
+                        state.slide_request = Some((here, SlideRequest::PasteAfter(clip)));
+                        ui.close();
+                    }
+                    if ui.button("Delete").clicked() {
+                        state.slide_request = Some((here, SlideRequest::Delete));
+                        ui.close();
+                    }
+                    ui.separator();
+                    // Where a group starts: this slide and the rest of its group take the name.
+                    ui.menu_button("Group", |ui| {
+                        for name in GROUP_NAMES {
+                            if ui.button(name).clicked() {
+                                state.slide_request = Some((here, SlideRequest::Group(name.to_owned())));
+                                ui.close();
+                            }
+                        }
+                    });
+                    // The media the slide puts behind its words when it goes on screen.
+                    ui.menu_button("Media", |ui| {
+                        let own = media_of(slide);
+                        if ui.add(egui::Button::selectable(own.is_none(), "No Media")).clicked() {
+                            state.pending_edit = Some((here, slide_with_media(slide, None)));
+                            ui.close();
+                        }
+                        ui.separator();
+                        if show.media().is_empty() {
+                            ui.label(egui::RichText::new("The media bin is empty.").color(DIM));
+                        }
+                        for item in show.media() {
+                            if ui.add(egui::Button::selectable(own == Some(item.id), item.name.as_str())).clicked() {
+                                state.pending_edit = Some((here, slide_with_media(slide, Some(item.id))));
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.menu_button("Transition", |ui| {
+                        if ui.add(egui::Button::selectable(slide.transition.is_none(), "As All Slides")).clicked() {
+                            state.pending_edit = Some((here, Slide { transition: None, ..slide.clone() }));
+                            ui.close();
+                        }
+                        ui.separator();
+                        for kind in pc_model::TransitionKind::ALL {
+                            let on = slide.transition.is_some_and(|own| own.kind == kind);
+                            if ui.add(egui::Button::selectable(on, kind.name())).clicked() {
+                                let own = pc_model::Transition::of(kind);
+                                state.pending_edit = Some((here, Slide { transition: Some(own), ..slide.clone() }));
+                                ui.close();
+                            }
+                        }
+                    });
+                    // What the slide does when it goes on screen.
+                    ui.menu_button("Actions", |ui| {
+                        let names = crate::live_tabs::action_names(show, state);
+                        for (at, action) in slide.actions.iter().enumerate() {
+                            let words = crate::live_tabs::describe_action(state, &names, action);
+                            if ui.button(format!("Remove: {words}")).clicked() {
+                                let mut kept = slide.clone();
+                                kept.actions.remove(at);
+                                state.pending_edit = Some((here, kept));
+                                ui.close();
+                            }
+                        }
+                        if !slide.actions.is_empty() {
+                            ui.separator();
+                        }
+                        ui.menu_button("Add Action", |ui| {
+                            if let Some(action) = crate::live_tabs::add_action_menu(ui, state, &names) {
+                                let mut more = slide.clone();
+                                more.actions.push(action);
+                                state.pending_edit = Some((here, more));
+                                ui.close();
+                            }
+                        });
+                    });
+                    // Going on to the next slide by itself, after a time.
+                    ui.menu_button("Go to Next", |ui| {
+                        if ui.add(egui::Button::selectable(slide.advance.is_none(), "Off")).clicked() {
+                            state.pending_edit = Some((here, Slide { advance: None, ..slide.clone() }));
+                            ui.close();
+                        }
+                        ui.separator();
+                        for seconds in [3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0] {
+                            let on = slide.advance == Some(seconds);
+                            let label = format!("After {seconds:.0} Seconds");
+                            if ui.add(egui::Button::selectable(on, label)).clicked() {
+                                state.pending_edit = Some((here, Slide { advance: Some(seconds), ..slide.clone() }));
+                                ui.close();
+                            }
+                        }
+                    });
+                    // A key that puts this slide on screen in the Show view.
+                    ui.menu_button("Hot Key", |ui| {
+                        if ui.add(egui::Button::selectable(slide.hot_key.is_none(), "None")).clicked() {
+                            state.pending_edit = Some((here, Slide { hot_key: None, ..slide.clone() }));
+                            ui.close();
+                        }
+                        ui.separator();
+                        egui::Grid::new("hot keys").spacing(vec2(2.0, 2.0)).show(ui, |ui| {
+                            for (index, key) in ('A'..='Z').chain('0'..='9').enumerate() {
+                                let on = slide.hot_key == Some(key);
+                                let button = egui::Button::selectable(on, key.to_string()).min_size(vec2(26.0, 22.0));
+                                if ui.add(button).clicked() {
+                                    state.pending_edit = Some((here, Slide { hot_key: Some(key), ..slide.clone() }));
+                                    ui.close();
+                                }
+                                if index % 6 == 5 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    });
+                    // The look of the slide's text, to give another slide.
+                    if ui.button("Copy Text Style").clicked() {
+                        state.inspector.copied_style =
+                            slide.objects.iter().find_map(|object| object.text_style().cloned());
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(state.inspector.copied_style.is_some(), egui::Button::new("Paste Text Style"))
+                        .on_hover_text("Give every text box on this slide the look that was copied")
+                        .clicked()
+                        && let Some(copied) = state.inspector.copied_style.clone()
+                    {
+                        let mut styled = slide.clone();
+                        for object in &mut styled.objects {
+                            if let Some(style) = object.text_style_mut() {
+                                *style = copied.clone();
+                            }
+                        }
+                        state.pending_edit = Some((here, styled));
+                        ui.close();
+                    }
+                    ui.menu_button("Label", |ui| {
+                        if ui.add(egui::Button::selectable(slide.label.is_none(), "None")).clicked() {
+                            state.slide_request = Some((here, SlideRequest::Label(None)));
+                            ui.close();
+                        }
+                        ui.separator();
+                        for name in SLIDE_LABELS {
+                            let on = slide.label.as_deref() == Some(name);
+                            if ui.add(egui::Button::selectable(on, name)).clicked() {
+                                state.slide_request = Some((here, SlideRequest::Label(Some(name.to_owned()))));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+                // A disabled slide stays in the song but is stepped over and never shown.
+                if !from_bible {
+                    let label = if slide.enabled { "Disable Slide" } else { "Enable Slide" };
+                    if ui.button(label).clicked() {
+                        state.pending_edit = Some((here, Slide { enabled: !slide.enabled, ..slide.clone() }));
+                        ui.close();
+                    }
+                }
+                // Which of the theme's templates the slide is drawn with. Automatic
+                // lets the theme pick the one that suits what is on the slide.
+                if !from_bible && !state.song_templates.is_empty() {
+                    ui.menu_button("Template", |ui| {
+                        let current = slide.template.filter(|id| state.song_templates.iter().any(|(t, _)| t == id));
+                        if ui.add(egui::Button::selectable(current.is_none(), "Automatic")).clicked() {
+                            state.pending_template = Some((here, None));
+                            ui.close();
+                        }
+                        ui.separator();
+                        for (id, name) in &state.song_templates {
+                            if ui.add(egui::Button::selectable(current == Some(*id), name.as_str())).clicked() {
+                                state.pending_template = Some((here, Some(*id)));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            });
+            // Slides scrolled out of view cost nothing: no thumbnail is asked for.
+            if !ui.is_rect_visible(rect) {
+                continue;
+            }
+            let painter = ui.painter().clone();
+            let ink = text_on(group.color);
+            let words = || slide.texts().into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n");
+            let mut picture = |ui: &mut egui::Ui, image: Rect| {
+                painter.rect_filled(image, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Color32::BLACK);
+                let of = if from_bible { ThumbOf::BibleSlide(slide) } else { ThumbOf::Slide(slide) };
+                match thumb(of) {
+                    Some((texture, overflow)) => {
+                        egui::Image::from_texture((texture, image.size()))
+                            .corner_radius(egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 })
+                            .paint_at(ui, image);
+                        if overflow {
+                            let mark = image.right_top() + vec2(-14.0, 14.0);
+                            painter.circle_filled(mark, 9.0, Color32::from_rgb(240, 190, 40));
+                            painter.text(mark, Align2::CENTER_CENTER, "!", FontId::proportional(14.0), Color32::BLACK);
+                        }
+                    }
+                    None => ui.ctx().request_repaint(),
+                }
+            };
+            match view {
+                SlideView::Table => {
+                    // A strip in the group's colour with the number, the thumbnail, the words.
+                    let strip = Rect::from_min_size(rect.min, vec2(34.0, rect.height()));
+                    painter.rect_filled(rect, 0.0, Color32::from_gray(38));
+                    painter.rect_filled(strip, 0.0, color32(group.color));
+                    painter.text(
+                        strip.center(),
+                        Align2::CENTER_CENTER,
+                        format!("{}.", index + 1),
+                        FontId::proportional(13.0),
+                        ink,
+                    );
+                    let image = Rect::from_min_size(rect.min + vec2(34.0, 0.0), image_size);
+                    picture(ui, image);
+                    let text_at = pos2(image.max.x + 14.0, rect.min.y + 8.0);
+                    let mut top = text_at.y;
+                    if starts_group && !group.name.is_empty() {
+                        painter.text(
+                            text_at,
+                            Align2::LEFT_TOP,
+                            group.name.as_str(),
+                            FontId::proportional(12.0),
+                            Color32::from_gray(160),
+                        );
+                        top += 18.0;
+                    }
+                    let clip = Rect::from_min_max(pos2(text_at.x, rect.min.y), rect.max);
+                    painter.with_clip_rect(clip).text(
+                        pos2(text_at.x, top),
+                        Align2::LEFT_TOP,
+                        words(),
+                        FontId::proportional(13.0),
+                        Color32::from_gray(230),
+                    );
+                }
+                SlideView::Grid | SlideView::Easy => {
+                    let image = Rect::from_min_size(rect.min, image_size);
+                    if view == SlideView::Easy {
+                        // Only the words, plain, on black: quick to read at any size.
+                        painter.rect_filled(image, 0.0, Color32::BLACK);
+                        painter.with_clip_rect(image).text(
+                            image.min + vec2(8.0, 6.0),
+                            Align2::LEFT_TOP,
+                            words(),
+                            FontId::proportional((width / 15.0).clamp(10.0, 18.0)),
+                            Color32::from_gray(235),
+                        );
+                    } else {
+                        picture(ui, image);
+                    }
+                    // Under the slide, a bar in its group's colour across the whole width:
+                    // the slide's number, the group's name on the group's first slide, and
+                    // the key that jumps to the group at the right.
+                    let foot = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
+                    let corners = egui::CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 };
+                    painter.rect_filled(foot, corners, color32(group.color));
+                    let number = painter.text(
+                        foot.left_center() + vec2(8.0, 0.0),
+                        Align2::LEFT_CENTER,
+                        (index + 1).to_string(),
+                        crate::studio::semibold(12.0),
+                        ink,
+                    );
+                    if starts_group && !group.name.is_empty() {
+                        let key = if from_bible { None } else { pc_model::key_for_group(&group.name) };
+                        let name_end = foot.max.x - if key.is_some() { 22.0 } else { 8.0 };
+                        let clip = Rect::from_min_max(pos2(number.max.x + 6.0, foot.min.y), pos2(name_end, foot.max.y));
+                        painter.with_clip_rect(clip).text(
+                            pos2(number.max.x + 8.0, foot.center().y),
+                            Align2::LEFT_CENTER,
+                            group.name.as_str(),
+                            FontId::proportional(12.0),
+                            ink,
+                        );
+                        if let Some(key) = key {
+                            painter.text(
+                                foot.right_center() - vec2(8.0, 0.0),
+                                Align2::RIGHT_CENTER,
+                                key,
+                                FontId::monospace(10.5),
+                                ink.gamma_multiply(0.7),
+                            );
+                        }
+                    }
+                }
+            }
+            // A slide's hot key, in a small badge at its top right.
+            if let Some(key) = slide.hot_key {
+                let badge = Rect::from_center_size(pos2(rect.max.x - 13.0, rect.min.y + 12.0), vec2(18.0, 16.0));
+                painter.rect_filled(badge, 4.0, Color32::from_black_alpha(200));
+                painter.text(
+                    badge.center(),
+                    Align2::CENTER_CENTER,
+                    key.to_string(),
+                    FontId::monospace(11.0),
+                    Color32::WHITE,
+                );
+            }
+            // A slide with actions has a small mark at its top left.
+            if !slide.actions.is_empty() {
+                let mark = pos2(rect.min.x + 12.0, rect.min.y + 12.0);
+                painter.circle_filled(mark, 8.0, Color32::from_black_alpha(190));
+                painter.text(
+                    mark,
+                    Align2::CENTER_CENTER,
+                    "⚡",
+                    FontId::proportional(10.0),
+                    Color32::from_rgb(250, 200, 60),
+                );
+            }
+            // A slide that goes on by itself shows after how long, beside that.
+            if let Some(seconds) = slide.advance {
+                let left = rect.min.x + if slide.actions.is_empty() { 4.0 } else { 24.0 };
+                let badge = Rect::from_min_size(pos2(left, rect.min.y + 4.0), vec2(34.0, 16.0));
+                painter.rect_filled(badge, 4.0, Color32::from_black_alpha(200));
+                painter.text(
+                    badge.center(),
+                    Align2::CENTER_CENTER,
+                    format!("{seconds:.0}s ›"),
+                    FontId::proportional(10.5),
+                    Color32::WHITE,
+                );
+            }
+            // A slide's label, in a small dark tab at the picture's bottom right.
+            if let Some(label) = slide.label.as_deref().filter(|label| !label.is_empty()) {
+                let ink = Color32::from_gray(225);
+                let text = painter.layout_no_wrap(label.to_owned(), FontId::proportional(10.5), ink);
+                let bottom = if view == SlideView::Table { rect.max.y - 6.0 } else { rect.max.y - bar_height - 6.0 };
+                let tab = Rect::from_min_max(
+                    pos2(rect.max.x - text.size().x - 18.0, bottom - text.size().y - 4.0),
+                    pos2(rect.max.x - 6.0, bottom),
+                );
+                painter.rect_filled(tab, 4.0, Color32::from_black_alpha(190));
+                painter.galley(pos2(tab.min.x + 6.0, tab.min.y + 2.0), text, ink);
+            }
+            // A disabled slide is dimmed and says so: it is never shown.
+            if !slide.enabled {
+                painter.rect_filled(rect, 6.0, Color32::from_black_alpha(170));
+                painter.text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    "Disabled",
+                    crate::studio::semibold(13.0),
+                    crate::studio::TEXT_DIM,
+                );
+            }
+            // A hairline round the slide and its bar, so black slides do not melt into the background.
+            if view != SlideView::Table {
+                painter.rect_stroke(rect, 6.0, Stroke::new(1.0, crate::studio::LINE), StrokeKind::Outside);
+            }
+            // Tally red for the slide on screen; the accent for one picked
+            // out; a dim red for the slide that was on screen before it was cleared.
+            let framed = rect;
+            let is_live = show.live() == Some(here);
+            let outline = if is_live {
+                Some(Stroke::new(2.5, LIVE_OUTLINE))
+            } else if state.selected_slide == Some(here) {
+                Some(Stroke::new(2.0, SELECTED_OUTLINE))
+            } else if show.live().is_none() && show.cursor() == Some(here) {
+                Some(Stroke::new(1.5, WAS_LIVE_OUTLINE))
+            } else if response.hovered() {
+                Some(Stroke::new(1.0, crate::studio::TEXT_FAINT))
+            } else {
+                None
+            };
+            if let Some(stroke) = outline {
+                painter.rect_stroke(framed, 6.0, stroke, StrokeKind::Outside);
+            }
+        }
     });
 }
 
