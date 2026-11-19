@@ -64,10 +64,18 @@ ProPresenter.
   from its right-click menu; a new song made while a library is shown goes into it.
 - A playlist lists songs (with the library each is in) and saved Bible passages in running
   order; items can be dragged into a new order, and headers (+ over the items) group them.
-  With View, Continuous Playlist on, Next at the end of a song goes on to the next song in the
-  playlist.
+  A song opened from a playlist is shown with the playlist's other songs above and below it,
+  each under a bar with its name, so scrolling down goes on into the next song; clicking a slide
+  of another song puts it on screen. With View, Continuous Playlist on, Next at the end of a
+  song goes on to the next song in the playlist.
+- Songs and media items are picked out as in the Finder: Command-click adds or takes away one,
+  Shift-click picks a run, and dragging across the song list (or a box between media items)
+  picks everything it passes over. Picked songs dragged out of the list go into a playlist or
+  library together. Delete asks first, then deletes what is picked in the list last clicked
+  (or a slide picked out with a right-click).
 - Pictures and videos dropped on the window, or added with the media bin's +, go into the media
-  bin, are kept between runs, and can be shown behind the words; right-click one to remove it.
+  bin, are kept between runs, and can be shown behind the words; Delete, or Delete… on an item's
+  right-click menu, takes it out of the bin after asking (the file stays where it is).
   Pictures can be PNG, JPEG, WebP, GIF, BMP, and on the Mac also HEIC (iPhone photos), TIFF,
   Photoshop, AVIF and JPEG 2000. Videos play with their sound and loop: MP4, MOV and M4V
   (including HEVC and ProRes) through macOS's own player, and everything else (MKV, WebM, AVI,
@@ -114,8 +122,9 @@ ProPresenter.
   skip 15 seconds, volume, Play Through to the next track, Shuffle, and a crossfade of up to ten
   seconds from one track into the next; F5 or Clear All stops it), and a **Stage Message** for the people on
   stage, in tabs under the Program panel. A slide can carry the same actions, done when it goes on screen.
-- The Program preview shows what the audience sees, or (from the chooser beside PROGRAM) what
-  the stage screens show, with the time kept up to date.
+- The Program preview shows what the audience sees, drawn by the screens' own renderer, so a
+  playing video, a fade or a build moves in it as on the screens; or (from the chooser beside
+  PROGRAM) what the stage screens show, with the time kept up to date.
 - **Stage layouts**: each stage screen picks a layout in the Stage tab (Words and Next, Words
   Only, Words and Notes, Clock and Timer, or your own). Screens > Edit Stage Layouts… lays them
   out: the current and next slide, the next label, the clock, a timer, the slide's notes, the
@@ -145,7 +154,8 @@ ProPresenter.
 - Shapes (rectangle, rounded rectangle, ellipse, triangles, rhombus, polygon, star, arrows) from
   the Shapes menu or a single key; fill, stroke, shadow and flip for any object; spreading
   objects out evenly.
-- **Media** on slides (Media… above the slide, or Insert > Media…, Shift-Command-I): a picture,
+- **Media** on slides (Media… above the slide, Insert > Media…, Shift-Command-I, or dropped on
+  the editor from the Finder, several at once if you like): a picture,
   copied into the app's Images folder, or a video, which stays where it is and plays in its box,
   looping with its sound, while the slide is on screen; each can fit, fill or stretch to its
   box. The Insert
@@ -188,7 +198,9 @@ ProPresenter.
 - Stage screens for the people on stage: the words on screen now, the next slide's words, the
   time, a running timer and the stage message.
 - A screen whose display is unplugged waits for it instead of jumping to another display.
-  Identify Screens shows each screen's name on it, and the Screens menu puts a test pattern
+  Identify Screens marks each screen with its name, a border and a wash of its own colour that
+  breathes a few times to catch the eye (the Screens window shows each screen's colour beside
+  it), and the Screens menu puts a test pattern
   (colour bars, a grid, or white) on the audience screens.
 - Each audience screen has a look: which layers it shows (slides, media, props, messages; a
   lobby screen might show only the media), its colour where nothing is drawn, and how much of
