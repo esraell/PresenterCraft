@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use pc_engine::{Command, Layer, Show};
+use pc_engine::{Command, Show};
 use pc_model::{MediaItem, Slide, Theme, Uuid, parse_song_text};
 use pc_render::vello::util::RenderContext;
 use pc_render::wgpu;
@@ -96,15 +96,20 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
 }
 
 /// The keys that run the show. They are read straight from the window, before the interface
-/// draws, so a key press reaches the output without waiting for the home window.
-fn show_key_command(key: &Key) -> Option<Command> {
+/// draws, so a key press reaches the output without waiting for the home window. A letter
+/// jumps to the group it stands for (A for the first verse, C for the chorus, and so on).
+fn show_key_command(key: &Key, show: &Show) -> Option<Command> {
     match key {
         Key::Named(NamedKey::ArrowRight | NamedKey::Space) => Some(Command::Next),
         Key::Named(NamedKey::ArrowLeft) => Some(Command::Previous),
         Key::Named(NamedKey::Home) => Some(Command::First),
         Key::Named(NamedKey::End) => Some(Command::Last),
         Key::Named(NamedKey::F1) => Some(Command::ClearAll),
-        Key::Character(c) if c.eq_ignore_ascii_case("c") => Some(Command::Clear(Layer::Slides)),
+        Key::Character(typed) => {
+            let mut letters = typed.chars();
+            let (Some(letter), None) = (letters.next(), letters.next()) else { return None };
+            show.group_start(pc_model::groups_for_key(letter)).map(Command::GoTo)
+        }
         _ => None,
     }
 }
@@ -230,6 +235,9 @@ struct App {
     bible_theme: usize,
     /// The themes with changes not yet written to their files, by place.
     themes_unsaved: Vec<usize>,
+    /// The modifier keys held down now. A letter pressed with Command or Control is a
+    /// shortcut, not a jump to a group.
+    held: winit::keyboard::ModifiersState,
     /// Testing aid: select a box once the Theme Editor has opened.
     capture_selects_box: bool,
     running: Option<Running>,
@@ -927,6 +935,9 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let WindowEvent::ModifiersChanged(now) = &event {
+            self.held = now.state();
+        }
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -946,7 +957,10 @@ impl ApplicationHandler for App {
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                    if let Some(command) = show_key_command(&event.logical_key) {
+                    if !self.held.super_key()
+                        && !self.held.control_key()
+                        && let Some(command) = show_key_command(&event.logical_key, &self.show)
+                    {
                         self.apply(vec![command]);
                     }
                 }
@@ -963,7 +977,9 @@ impl ApplicationHandler for App {
             && key.state == ElementState::Pressed
             && !running.egui_ctx.text_edit_focused()
             && running.home_state.editing.is_none()
-            && let Some(command) = show_key_command(&key.logical_key)
+            && !self.held.super_key()
+            && !self.held.control_key()
+            && let Some(command) = show_key_command(&key.logical_key, &self.show)
         {
             self.apply(vec![command]);
             return;
@@ -1127,6 +1143,7 @@ fn main() -> ExitCode {
         songs_theme,
         bible_theme,
         themes_unsaved: Vec::new(),
+        held: winit::keyboard::ModifiersState::empty(),
         capture_selects_box: false,
         running: None,
         failed: false,
@@ -1180,15 +1197,23 @@ mod tests {
 
     #[test]
     fn show_keys() {
-        assert_eq!(show_key_command(&Key::Named(NamedKey::ArrowRight)), Some(Command::Next));
-        assert_eq!(show_key_command(&Key::Named(NamedKey::Space)), Some(Command::Next));
-        assert_eq!(show_key_command(&Key::Named(NamedKey::ArrowLeft)), Some(Command::Previous));
-        assert_eq!(show_key_command(&Key::Character("C".into())), Some(Command::Clear(Layer::Slides)));
-        assert_eq!(show_key_command(&Key::Character("x".into())), None);
-        assert_eq!(show_key_command(&Key::Named(NamedKey::Home)), Some(Command::First));
-        assert_eq!(show_key_command(&Key::Named(NamedKey::End)), Some(Command::Last));
-        assert_eq!(show_key_command(&Key::Named(NamedKey::F1)), Some(Command::ClearAll));
-        assert_eq!(show_key_command(&Key::Character("c".into())), Some(Command::Clear(Layer::Slides)));
-        assert_eq!(show_key_command(&Key::Named(NamedKey::Tab)), None);
+        let song = pc_model::parse_song_text("Song", "[Verse 1]\nOne\n\n[Chorus]\nTwo\n\nThree\n\n[Verse 2]\nFour\n");
+        let show = Show::new(vec![Arc::new(song)]);
+        let key = |key: Key| show_key_command(&key, &show);
+        let jump = |slide| Some(Command::GoTo(pc_engine::SlideRef { presentation: 0, slide }));
+        assert_eq!(key(Key::Named(NamedKey::ArrowRight)), Some(Command::Next));
+        assert_eq!(key(Key::Named(NamedKey::Space)), Some(Command::Next));
+        assert_eq!(key(Key::Named(NamedKey::ArrowLeft)), Some(Command::Previous));
+        assert_eq!(key(Key::Named(NamedKey::Home)), Some(Command::First));
+        assert_eq!(key(Key::Named(NamedKey::End)), Some(Command::Last));
+        assert_eq!(key(Key::Named(NamedKey::F1)), Some(Command::ClearAll));
+        assert_eq!(key(Key::Named(NamedKey::Tab)), None);
+        // Letters jump to the group they stand for, in either case.
+        assert_eq!(key(Key::Character("a".into())), jump(0));
+        assert_eq!(key(Key::Character("C".into())), jump(1));
+        assert_eq!(key(Key::Character("s".into())), jump(3));
+        // A group the song does not have, and a key that stands for none.
+        assert_eq!(key(Key::Character("b".into())), None);
+        assert_eq!(key(Key::Character("q".into())), None);
     }
 }

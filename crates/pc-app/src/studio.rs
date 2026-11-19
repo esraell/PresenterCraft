@@ -613,7 +613,7 @@ pub fn program_panel(
         ui.horizontal(|ui| {
             let half = (width - 8.0) / 2.0;
             let emphasis = |live: bool| if live { Emphasis::Plain } else { Emphasis::Idle };
-            if block_button(ui, vec2(half, 30.0), "Clear Slide", "C", emphasis(slide_live))
+            if block_button(ui, vec2(half, 30.0), "Clear Slide", "", emphasis(slide_live))
                 .on_hover_text("Take the words off the screen")
                 .clicked()
             {

@@ -1855,6 +1855,16 @@ fn slide_grid(
                                     name,
                                     ink,
                                 );
+                                // The key that jumps to this group, faint beside its chip.
+                                if !from_bible && let Some(key) = pc_model::key_for_group(&group.name) {
+                                    painter.text(
+                                        pos2(chip.max.x + 7.0, foot.center().y + 1.0),
+                                        Align2::LEFT_CENTER,
+                                        key,
+                                        FontId::monospace(10.5),
+                                        crate::studio::TEXT_FAINT,
+                                    );
+                                }
                             } else {
                                 painter.circle_filled(
                                     pos2(after + 3.0, foot.center().y + 1.0),

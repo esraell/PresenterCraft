@@ -127,6 +127,22 @@ impl Show {
         self.media.len() - 1
     }
 
+    /// The first slide of the first group, in the presentation in use, whose name is one of
+    /// those given (in lower case). The presentation in use is the one with the slide last on
+    /// screen, or the selected one if nothing has been shown.
+    pub fn group_start(&self, names: &[&str]) -> Option<SlideRef> {
+        let presentation = self.live.or(self.cursor).map_or(self.selected, |at| at.presentation);
+        let song = self.presentations.get(presentation)?;
+        let mut slide = 0;
+        for group in &song.groups {
+            if names.contains(&group.name.trim().to_lowercase().as_str()) && !group.slides.is_empty() {
+                return Some(SlideRef { presentation, slide });
+            }
+            slide += group.slides.len();
+        }
+        None
+    }
+
     /// True when any layer has something on screen.
     pub fn anything_live(&self) -> bool {
         self.live.is_some() || self.live_media.is_some()

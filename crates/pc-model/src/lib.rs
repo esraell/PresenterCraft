@@ -7,7 +7,7 @@ mod theme;
 mod types;
 
 pub use format::{FORMAT_VERSION, from_json, to_json};
-pub use song_text::{clean_box_text, group_color, parse_song_text, to_song_text};
+pub use song_text::{clean_box_text, group_color, groups_for_key, key_for_group, parse_song_text, to_song_text};
 pub use theme::{
     Align, BoxStyle, Caps, LineTransform, Scaling, Shadow, SlideRect, Template, TextStyle, Theme, VAlign, fonts_used,
     missing_fonts,

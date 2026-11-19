@@ -40,6 +40,40 @@ pub fn parse_song_text(title: &str, text: &str) -> Presentation {
     Presentation { id: Uuid::new_v4(), title: title.to_owned(), groups }
 }
 
+/// The keys that jump to a group, and the group names each one means. Pressing a key shows
+/// the first slide of the first group in the song with one of its names.
+const GROUP_KEYS: [(char, &[&str]); 17] = [
+    ('a', &["verse", "verse 1"]),
+    ('s', &["verse 2"]),
+    ('d', &["verse 3"]),
+    ('f', &["verse 4"]),
+    ('g', &["verse 5"]),
+    ('h', &["verse 6"]),
+    ('c', &["chorus", "chorus 1"]),
+    ('x', &["chorus 2"]),
+    ('z', &["chorus 3"]),
+    ('b', &["bridge", "bridge 1"]),
+    ('n', &["bridge 2"]),
+    ('m', &["bridge 3"]),
+    ('p', &["prechorus", "pre-chorus", "pre chorus"]),
+    ('t', &["tag"]),
+    ('i', &["intro"]),
+    ('e', &["ending"]),
+    ('o', &["outro"]),
+];
+
+/// The group names a key jumps to, in lower case; empty for a key that jumps nowhere.
+pub fn groups_for_key(key: char) -> &'static [&'static str] {
+    let key = key.to_ascii_lowercase();
+    GROUP_KEYS.iter().find(|(have, _)| *have == key).map_or(&[], |(_, names)| names)
+}
+
+/// The key that jumps to a group with this name, if there is one.
+pub fn key_for_group(name: &str) -> Option<char> {
+    let name = name.trim().to_lowercase();
+    GROUP_KEYS.iter().find(|(_, names)| names.contains(&name.as_str())).map(|(key, _)| key.to_ascii_uppercase())
+}
+
 /// The colour bar shown for a group, chosen from its name so that every "Chorus" matches.
 pub fn group_color(name: &str) -> Rgba {
     const PALETTE: [Rgba; 8] = [
@@ -144,6 +178,16 @@ fn push_group(groups: &mut Vec<Group>, group: Group) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_keys_name_their_groups_both_ways() {
+        assert_eq!(groups_for_key('A'), ["verse", "verse 1"]);
+        assert_eq!(groups_for_key('c'), ["chorus", "chorus 1"]);
+        assert!(groups_for_key('q').is_empty());
+        assert_eq!(key_for_group(" Verse 2 "), Some('S'));
+        assert_eq!(key_for_group("Chorus"), Some('C'));
+        assert_eq!(key_for_group("Sermon"), None);
+    }
 
     const SONG: &str =
         "[Verse 1]\nLine a\nLine b\n--\nСтрока а\nСтрока б\n\nSecond slide\n\n\n[Chorus]\nSing\n--\nПой\n";
