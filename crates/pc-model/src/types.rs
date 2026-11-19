@@ -346,11 +346,23 @@ pub struct Slide {
     /// How the screens change to this slide; `None` uses the transition chosen for all slides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<crate::Transition>,
+    /// What the slide does when it goes on screen, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<crate::ShowAction>,
 }
 
 impl Slide {
     pub fn new(objects: Vec<Object>) -> Slide {
-        Slide { id: Uuid::new_v4(), objects, label: None, notes: None, enabled: true, template: None, transition: None }
+        Slide {
+            id: Uuid::new_v4(),
+            objects,
+            label: None,
+            notes: None,
+            enabled: true,
+            template: None,
+            transition: None,
+            actions: Vec::new(),
+        }
     }
 
     /// The text of the first text object with this role.

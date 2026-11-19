@@ -1,12 +1,14 @@
 //! Data only: presentations, slides, text boxes, groups and themes, plus the plain-text song
 //! parser. No drawing, no windows.
 
+mod action;
 mod format;
 mod song_text;
 mod theme;
 mod transition;
 mod types;
 
+pub use action::{ClearWhat, ShowAction, TimerDo};
 pub use format::{FORMAT_VERSION, from_json, to_json};
 pub use song_text::{
     GROUP_KEYS, clean_box_text, group_color, groups_for_key, key_for_group, parse_song_text, to_song_text,

@@ -165,7 +165,14 @@ pub struct HomeState {
     pub props_live: Vec<(pc_model::Uuid, std::time::Instant)>,
     /// A prop being renamed, and its name as typed so far.
     pub prop_rename: Option<(pc_model::Uuid, String)>,
-    /// The tab open under the Program panel: 0 Timers, 1 Messages, 2 Props, 3 Stage.
+    /// The macros, and true when they have changed and are to be saved.
+    pub macros: Vec<crate::macros::Macro>,
+    pub macros_changed: bool,
+    /// A macro being renamed, and its name as typed so far.
+    pub macro_rename: Option<(pc_model::Uuid, String)>,
+    /// Actions to carry out, from a macro that was clicked. The app does them.
+    pub actions_to_run: Vec<pc_model::ShowAction>,
+    /// The tab open under the Program panel: 0 Timers, 1 Messages, 2 Props, 3 Macros, 4 Stage.
     pub live_tab: usize,
     /// The timers, and true when their settings have changed and are to be saved.
     pub timers: Vec<crate::timers::Timer>,
@@ -687,6 +694,10 @@ impl Default for HomeState {
             test_pattern: None,
             props: Vec::new(),
             props_changed: false,
+            macros: Vec::new(),
+            macros_changed: false,
+            macro_rename: None,
+            actions_to_run: Vec::new(),
             props_live: Vec::new(),
             prop_rename: None,
             live_tab: 0,
@@ -775,7 +786,7 @@ impl HomeState {
     }
 }
 
-fn color32(c: Rgba) -> Color32 {
+pub fn color32(c: Rgba) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
 }
 
@@ -3666,6 +3677,30 @@ fn slide_grid(
                                     }
                                 }
                             });
+                            // What the slide does when it goes on screen.
+                            ui.menu_button("Actions", |ui| {
+                                let songs = crate::live_tabs::song_list(show, state);
+                                for (at, action) in slide.actions.iter().enumerate() {
+                                    let words = crate::live_tabs::describe_action(state, &songs, action);
+                                    if ui.button(format!("Remove: {words}")).clicked() {
+                                        let mut kept = slide.clone();
+                                        kept.actions.remove(at);
+                                        state.pending_edit = Some((here, kept));
+                                        ui.close();
+                                    }
+                                }
+                                if !slide.actions.is_empty() {
+                                    ui.separator();
+                                }
+                                ui.menu_button("Add Action", |ui| {
+                                    if let Some(action) = crate::live_tabs::add_action_menu(ui, state, &songs) {
+                                        let mut more = slide.clone();
+                                        more.actions.push(action);
+                                        state.pending_edit = Some((here, more));
+                                        ui.close();
+                                    }
+                                });
+                            });
                             ui.menu_button("Label", |ui| {
                                 if ui.add(egui::Button::selectable(slide.label.is_none(), "None")).clicked() {
                                     state.slide_request = Some((here, SlideRequest::Label(None)));
@@ -3828,6 +3863,18 @@ fn slide_grid(
                                 }
                             }
                         }
+                    }
+                    // A slide with actions has a small mark at its top left.
+                    if !slide.actions.is_empty() {
+                        let mark = pos2(rect.min.x + 12.0, rect.min.y + 12.0);
+                        painter.circle_filled(mark, 8.0, Color32::from_black_alpha(190));
+                        painter.text(
+                            mark,
+                            Align2::CENTER_CENTER,
+                            "⚡",
+                            FontId::proportional(10.0),
+                            Color32::from_rgb(250, 200, 60),
+                        );
                     }
                     // A slide's label, in a small dark tab at the picture's bottom right.
                     if let Some(label) = slide.label.as_deref().filter(|label| !label.is_empty()) {

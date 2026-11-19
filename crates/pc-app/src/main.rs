@@ -9,6 +9,7 @@ mod icons;
 mod inspector;
 mod live_tabs;
 mod load;
+mod macros;
 mod media;
 mod menubar;
 mod messages;
@@ -635,6 +636,7 @@ impl App {
     /// Applies operator commands and tells the output and the home window what changed.
     fn apply(&mut self, commands: Vec<Command>) {
         let commands: Vec<Command> = commands.into_iter().map(|command| self.continue_playlist(command)).collect();
+        let live_before = self.show.live();
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -667,8 +669,76 @@ impl App {
         if output_changed {
             self.refresh_output();
         }
+        // A slide that has just gone on screen does what it says.
+        if self.show.live() != live_before
+            && let Some((_, slide)) = self.show.live_slide()
+            && !slide.actions.is_empty()
+            && let Some(running) = self.running.as_mut()
+        {
+            running.home_state.actions_to_run.extend(slide.actions.iter().cloned());
+        }
         if any && let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
+        }
+    }
+
+    /// Carries out the actions waiting to be done: a macro's, or a slide's.
+    fn run_actions(&mut self) {
+        use pc_model::{ClearWhat, ShowAction, TimerDo};
+        let Some(running) = self.running.as_mut() else { return };
+        let actions = std::mem::take(&mut running.home_state.actions_to_run);
+        if actions.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut commands = Vec::new();
+        for action in actions {
+            let Some(running) = self.running.as_mut() else { return };
+            let state = &mut running.home_state;
+            match action {
+                ShowAction::Clear { what } => commands.push(match what {
+                    ClearWhat::All => Command::ClearAll,
+                    ClearWhat::Slide => Command::Clear(pc_engine::Layer::Slides),
+                    ClearWhat::Media => Command::Clear(pc_engine::Layer::Media),
+                    ClearWhat::Props => Command::Clear(pc_engine::Layer::Props),
+                    ClearWhat::Messages => Command::Clear(pc_engine::Layer::Messages),
+                }),
+                ShowAction::Message { id, show } => {
+                    if show && state.messages.iter().any(|m| m.id == id) {
+                        state.message_live = Some((id, now));
+                    } else if !show && state.message_live.is_some_and(|(live, _)| live == id) {
+                        state.message_live = None;
+                    }
+                }
+                ShowAction::Prop { id, show } => {
+                    state.props_live.retain(|(live, _)| *live != id);
+                    if show && state.props.iter().any(|p| p.id == id) {
+                        state.props_live.push((id, now));
+                    }
+                }
+                ShowAction::Timer { id, act } => {
+                    if let Some(timer) = state.timers.iter_mut().find(|t| t.id == id) {
+                        match act {
+                            TimerDo::Start => timer.start(now),
+                            TimerDo::Stop => timer.stop(now),
+                            TimerDo::Reset => timer.reset(),
+                        }
+                    }
+                }
+                ShowAction::Audience { on } => commands.push(Command::SetOutputEnabled(on)),
+                ShowAction::Song { key } => {
+                    if let Some(at) = state.song_keys.iter().position(|have| *have == key) {
+                        commands.push(Command::Select(at));
+                        commands.push(Command::GoTo(pc_engine::SlideRef { presentation: at, slide: 0 }));
+                    }
+                }
+            }
+        }
+        if let Some(running) = self.running.as_ref() {
+            running.home_window.request_redraw();
+        }
+        if !commands.is_empty() {
+            self.apply(commands);
         }
     }
 
@@ -1603,7 +1673,8 @@ impl App {
                 state.live_tab = match tab.as_str() {
                     "messages" => 1,
                     "props" => 2,
-                    "stage" => 3,
+                    "macros" => 3,
+                    "stage" => 4,
                     _ => 0,
                 };
                 if let Some(first) = state.messages.first() {
@@ -1930,6 +2001,11 @@ impl App {
         {
             state.notice = Some(problem);
         }
+        if std::mem::take(&mut state.macros_changed)
+            && let Err(problem) = macros::save(&state.macros)
+        {
+            state.notice = Some(problem);
+        }
         // Props that clear themselves, once their time is up.
         let props = state.props.clone();
         state.props_live.retain(|(id, since)| {
@@ -2111,7 +2187,8 @@ impl App {
             A::TimersTab => state.live_tab = 0,
             A::MessagesTab => state.live_tab = 1,
             A::PropsTab => state.live_tab = 2,
-            A::StageTab => state.live_tab = 3,
+            A::MacrosTab => state.live_tab = 3,
+            A::StageTab => state.live_tab = 4,
             A::ClearProps => commands.push(Command::Clear(pc_engine::Layer::Props)),
             A::ClearMessages => commands.push(Command::Clear(pc_engine::Layer::Messages)),
             A::GridView => state.slide_view = home::SlideView::Grid,
@@ -2184,7 +2261,8 @@ impl App {
                 A::TimersTab => state.live_tab == 0,
                 A::MessagesTab => state.live_tab == 1,
                 A::PropsTab => state.live_tab == 2,
-                A::StageTab => state.live_tab == 3,
+                A::MacrosTab => state.live_tab == 3,
+                A::StageTab => state.live_tab == 4,
                 A::IdentifyScreens => state.identify,
                 _ => action == view || action == slide_view,
             });
@@ -2232,6 +2310,16 @@ impl ApplicationHandler<String> for App {
                 running.home_state.timers = timers::load();
                 running.home_state.messages = messages::load();
                 running.home_state.props = props::load();
+                running.home_state.macros = macros::load();
+                // Macros set to run when PresenterCraft starts.
+                let startup: Vec<pc_model::ShowAction> = running
+                    .home_state
+                    .macros
+                    .iter()
+                    .filter(|m| m.on_startup)
+                    .flat_map(|m| m.actions.iter().cloned())
+                    .collect();
+                running.home_state.actions_to_run.extend(startup);
                 // A display asked for on the command line takes the first screen, this run only.
                 if let Some(index) = self.options.output_display
                     && let Some(display) = display_list(el.available_monitors()).into_iter().find(|d| d.index == index)
@@ -2425,6 +2513,7 @@ impl ApplicationHandler<String> for App {
                 if let Some((at, slide)) = self.running.as_mut().and_then(|r| r.home_state.pending_edit.take()) {
                     self.apply_edit(at, slide);
                 }
+                self.run_actions();
                 self.handle_slide_request();
                 self.handle_song_theme();
                 self.handle_copyright();

@@ -59,8 +59,10 @@ ProPresenter.
 - **Timers** (count down, count down to a time of day, or count up), **Messages** shown over
   the slides (with the time or a timer in them, and an optional time to leave by themselves),
   **Props** (things that stay over the slides until taken off, made in the editor, with an
-  optional time to clear themselves), and a **Stage Message** for the people on stage, in tabs
-  under the Program panel.
+  optional time to clear themselves), **Macros** (coloured buttons that clear layers, show or
+  hide messages and props, start, stop or reset timers, switch the audience screens and go to
+  songs, optionally when the app starts), and a **Stage Message** for the people on stage, in
+  tabs under the Program panel. A slide can carry the same actions, done when it goes on screen.
 
 **Bible**
 - Scripture Lookup in English and Russian (`John 3:16-18`, `jn 3:16`, `Psalm 23`,
@@ -123,7 +125,7 @@ ProPresenter.
 Among the things PresenterCraft can't do yet:
 
 - Videos, audio, and live video inputs.
-- Stage layouts other than the built-in one; macros.
+- Stage layouts other than the built-in one.
 - Most of ProPresenter's 37 transitions (ten are built).
 - Formatting one word differently from the rest of its box.
 - Importing songs from other presentation apps or from CCLI SongSelect.

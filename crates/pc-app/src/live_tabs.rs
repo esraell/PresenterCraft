@@ -11,14 +11,14 @@ use crate::studio::{ACCENT, CARD, TALLY, TEXT, TEXT_DIM, TEXT_FAINT, caption, se
 use crate::timers::{self, Timer};
 
 /// Draws the tabs and the one that is open.
-pub fn live_tabs(ui: &mut egui::Ui, state: &mut HomeState) {
+pub fn live_tabs(ui: &mut egui::Ui, show: &pc_engine::Show, state: &mut HomeState) {
     ui.add_space(4.0);
     let width = ui.available_width();
     let picked = segmented(
         ui,
         "live tabs",
-        vec2((width - 8.0) / 4.0, 26.0),
-        &["Timers", "Messages", "Props", "Stage"],
+        vec2((width - 8.0) / 5.0, 26.0),
+        &["Timers", "Messages", "Props", "Macros", "Stage"],
         Some(state.live_tab),
     );
     if let Some(tab) = picked {
@@ -31,6 +31,7 @@ pub fn live_tabs(ui: &mut egui::Ui, state: &mut HomeState) {
             0 => timers_tab(ui, state),
             1 => messages_tab(ui, state),
             2 => props_tab(ui, state),
+            3 => macros_tab(ui, show, state),
             _ => stage_tab(ui, state),
         }
     });
@@ -513,6 +514,280 @@ fn props_tab(ui: &mut egui::Ui, state: &mut HomeState) {
     let clear = ui.add_enabled(!state.props_live.is_empty(), egui::Button::new("Clear Props"));
     if clear.on_hover_text("Take every prop off (F4)").clicked() {
         state.props_live.clear();
+    }
+}
+
+/// The songs in the library, by key and title, for actions that go to a song.
+pub fn song_list(show: &pc_engine::Show, state: &HomeState) -> Vec<(String, String)> {
+    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+    state
+        .song_keys
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !hidden.contains(index) && !state.removed_songs.contains(index))
+        .filter_map(|(index, key)| Some((key.clone(), show.presentations().get(index)?.title.clone())))
+        .collect()
+}
+
+/// An action in words.
+pub fn describe_action(state: &HomeState, songs: &[(String, String)], action: &pc_model::ShowAction) -> String {
+    crate::macros::describe(
+        action,
+        |id| state.messages.iter().find(|m| m.id == id).map(|m| m.name.clone()),
+        |id| state.props.iter().find(|p| p.id == id).map(|p| p.name.clone()),
+        |id| state.timers.iter().find(|t| t.id == id).map(|t| t.name.clone()),
+        |key| songs.iter().find(|(have, _)| have == key).map(|(_, title)| title.clone()),
+    )
+}
+
+/// The menu of actions to add: clearing, messages, props, timers, the audience screens, songs.
+/// Returns the one chosen.
+pub fn add_action_menu(
+    ui: &mut egui::Ui,
+    state: &HomeState,
+    songs: &[(String, String)],
+) -> Option<pc_model::ShowAction> {
+    use pc_model::{ClearWhat, ShowAction, TimerDo};
+    let mut chosen = None;
+    ui.menu_button("Clear", |ui| {
+        for what in ClearWhat::ALL {
+            if ui.button(what.name()).clicked() {
+                chosen = Some(ShowAction::Clear { what });
+            }
+        }
+    });
+    ui.menu_button("Message", |ui| {
+        if state.messages.is_empty() {
+            ui.label("No messages yet");
+        }
+        for message in &state.messages {
+            for show in [true, false] {
+                let label = format!("{} {}", if show { "Show" } else { "Hide" }, message.name);
+                if ui.button(label).clicked() {
+                    chosen = Some(ShowAction::Message { id: message.id, show });
+                }
+            }
+        }
+    });
+    ui.menu_button("Prop", |ui| {
+        if state.props.is_empty() {
+            ui.label("No props yet");
+        }
+        for prop in &state.props {
+            for show in [true, false] {
+                let label = format!("{} {}", if show { "Show" } else { "Hide" }, prop.name);
+                if ui.button(label).clicked() {
+                    chosen = Some(ShowAction::Prop { id: prop.id, show });
+                }
+            }
+        }
+    });
+    ui.menu_button("Timer", |ui| {
+        if state.timers.is_empty() {
+            ui.label("No timers yet");
+        }
+        for timer in &state.timers {
+            for act in TimerDo::ALL {
+                if ui.button(format!("{} {}", act.name(), timer.name)).clicked() {
+                    chosen = Some(ShowAction::Timer { id: timer.id, act });
+                }
+            }
+        }
+    });
+    ui.menu_button("Audience Screens", |ui| {
+        for on in [true, false] {
+            if ui.button(if on { "On" } else { "Off" }).clicked() {
+                chosen = Some(ShowAction::Audience { on });
+            }
+        }
+    });
+    ui.menu_button("Go to Song", |ui| {
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            for (key, title) in songs {
+                if ui.button(title.as_str()).clicked() {
+                    chosen = Some(ShowAction::Song { key: key.clone() });
+                }
+            }
+        });
+    });
+    chosen
+}
+
+fn macros_tab(ui: &mut egui::Ui, show: &pc_engine::Show, state: &mut HomeState) {
+    use crate::macros::Macro;
+    if heading_with_add(ui, "MACROS", "Add a macro") {
+        let taken = |name: &str| state.macros.iter().any(|m| m.name == name);
+        let name = (1..).map(|n| format!("Macro {n}")).find(|name| !taken(name)).unwrap_or_default();
+        let made = Macro::new(name.clone());
+        state.macro_rename = Some((made.id, name));
+        state.rename_started = true;
+        state.macros.push(made);
+        state.macros_changed = true;
+    }
+    if state.macros.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "No macros. A macro does several things at once, such as clearing the screen and starting a timer.",
+            )
+            .size(12.0)
+            .color(TEXT_FAINT),
+        );
+        return;
+    }
+    let songs = song_list(show, state);
+    enum Ask {
+        Run,
+        Rename,
+        Color(pc_model::Rgba),
+        Add(pc_model::ShowAction),
+        Remove(usize),
+        Startup,
+        Duplicate,
+        Delete,
+    }
+    let mut asked: Option<(usize, Ask)> = None;
+    let mut renamed: Option<Option<(pc_model::Uuid, String)>> = None;
+    let mut rename_started = std::mem::take(&mut state.rename_started);
+    let tile = vec2(96.0, 60.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+        for (index, made) in state.macros.iter().enumerate() {
+            let (rect, response) = ui.allocate_exact_size(tile, Sense::click());
+            let color = crate::home::color32(made.color);
+            ui.painter().rect_filled(rect, 8.0, if response.hovered() { color } else { color.gamma_multiply(0.85) });
+            match state.macro_rename.as_mut().filter(|(id, _)| *id == made.id) {
+                Some((_, typed)) => {
+                    let field = crate::studio::rename_field_at(
+                        ui,
+                        typed,
+                        FontId::proportional(12.0),
+                        Color32::WHITE,
+                        Color32::WHITE,
+                        rect.left_center() + vec2(8.0, 0.0),
+                        rect.max.x - 4.0,
+                    );
+                    if std::mem::take(&mut rename_started) {
+                        field.request_focus();
+                    }
+                    let (enter, escape) =
+                        ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+                    if escape {
+                        renamed = Some(None);
+                    } else if enter || field.lost_focus() {
+                        renamed = Some(Some((made.id, typed.clone())));
+                    }
+                }
+                None => {
+                    ui.painter().with_clip_rect(rect.shrink(4.0)).text(
+                        rect.center() - vec2(0.0, 6.0),
+                        egui::Align2::CENTER_CENTER,
+                        made.name.as_str(),
+                        FontId::proportional(12.5),
+                        Color32::WHITE,
+                    );
+                    let count = made.actions.len();
+                    let note = if count == 1 { "1 action".to_owned() } else { format!("{count} actions") };
+                    ui.painter().text(
+                        rect.center() + vec2(0.0, 12.0),
+                        egui::Align2::CENTER_CENTER,
+                        note,
+                        FontId::proportional(10.5),
+                        Color32::from_white_alpha(200),
+                    );
+                }
+            }
+            let summary: Vec<String> =
+                made.actions.iter().map(|action| describe_action(state, &songs, action)).collect();
+            let hint = if summary.is_empty() {
+                "No actions yet: right-click to add one".to_owned()
+            } else {
+                summary.join("\n")
+            };
+            if response.clicked() {
+                asked = Some((index, Ask::Run));
+            }
+            response.on_hover_text(hint).context_menu(|ui| {
+                ui.menu_button("Add Action", |ui| {
+                    if let Some(action) = add_action_menu(ui, state, &songs) {
+                        asked = Some((index, Ask::Add(action)));
+                        ui.close();
+                    }
+                });
+                if !made.actions.is_empty() {
+                    ui.menu_button("Remove Action", |ui| {
+                        for (at, words) in summary.iter().enumerate() {
+                            if ui.button(words.as_str()).clicked() {
+                                asked = Some((index, Ask::Remove(at)));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+                ui.separator();
+                if ui.button("Rename").clicked() {
+                    asked = Some((index, Ask::Rename));
+                    ui.close();
+                }
+                ui.menu_button("Change Color", |ui| {
+                    for (name, color) in crate::macros::COLORS {
+                        if ui.add(egui::Button::selectable(made.color == color, name)).clicked() {
+                            asked = Some((index, Ask::Color(color)));
+                            ui.close();
+                        }
+                    }
+                });
+                if ui.add(egui::Button::selectable(made.on_startup, "Trigger on Startup")).clicked() {
+                    asked = Some((index, Ask::Startup));
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Duplicate").clicked() {
+                    asked = Some((index, Ask::Duplicate));
+                    ui.close();
+                }
+                if ui.button("Delete").clicked() {
+                    asked = Some((index, Ask::Delete));
+                    ui.close();
+                }
+            });
+        }
+    });
+    state.rename_started = rename_started;
+    match renamed {
+        Some(Some((id, name))) => {
+            if let Some(made) = state.macros.iter_mut().find(|m| m.id == id)
+                && !name.trim().is_empty()
+            {
+                made.name = name.trim().to_owned();
+                state.macros_changed = true;
+            }
+            state.macro_rename = None;
+        }
+        Some(None) => state.macro_rename = None,
+        None => {}
+    }
+    if let Some((index, ask)) = asked {
+        match ask {
+            Ask::Run => state.actions_to_run.extend(state.macros[index].actions.iter().cloned()),
+            Ask::Rename => {
+                state.macro_rename = Some((state.macros[index].id, state.macros[index].name.clone()));
+                state.rename_started = true;
+            }
+            Ask::Color(color) => state.macros[index].color = color,
+            Ask::Add(action) => state.macros[index].actions.push(action),
+            Ask::Remove(at) => {
+                state.macros[index].actions.remove(at);
+            }
+            Ask::Startup => state.macros[index].on_startup = !state.macros[index].on_startup,
+            Ask::Duplicate => {
+                let copy = state.macros[index].duplicate();
+                state.macros.insert(index + 1, copy);
+            }
+            Ask::Delete => {
+                state.macros.remove(index);
+            }
+        }
+        state.macros_changed = true;
     }
 }
 

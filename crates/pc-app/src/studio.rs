@@ -947,7 +947,7 @@ pub fn program_panel(
             }
         });
         // Timers, messages and the stage, in tabs under the rest.
-        crate::live_tabs::live_tabs(ui, state);
+        crate::live_tabs::live_tabs(ui, show, state);
     });
 }
 
