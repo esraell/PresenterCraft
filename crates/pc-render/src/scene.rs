@@ -195,7 +195,14 @@ fn draw_objects(
             }
         }
         if let Some(fill) = object.fill {
-            scene.fill(Fill::NonZero, placed, color(fill), None, &outline);
+            match object.gradient.filter(pc_model::Gradient::on) {
+                Some(gradient) => {
+                    let (x, y) = (f64::from(rect.x), f64::from(rect.y));
+                    let area = Rect::new(x, y, x + f64::from(rect.w), y + f64::from(rect.h));
+                    scene.fill(Fill::NonZero, placed, &gradient_brush(&gradient, fill, area), None, &outline);
+                }
+                None => scene.fill(Fill::NonZero, placed, color(fill), None, &outline),
+            }
         }
         if let Some(line) = object.stroke.filter(|line| line.width > 0.0) {
             scene.stroke(&Stroke::new(f64::from(line.width)), placed, color(line.color), None, &outline);
@@ -206,7 +213,7 @@ fn draw_objects(
         if let ObjectKind::Text { text, style } = &object.kind {
             // The theme's style for the object's role, with the object's own settings over it.
             let Some(style) = template.text_style(object.role.as_ref(), style) else { continue };
-            overflow |= draw_text_box(scene, fonts, placed, text, &style, rect, time);
+            overflow |= draw_text_box(scene, fonts, placed, text, &style, rect, time, object.shown_paragraphs);
         }
         if faded {
             scene.pop_layer();
@@ -254,7 +261,8 @@ fn fitted_container(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: Slide
     let text = &*style.caps.apply(text);
     let [left, top, right, bottom] = style.margins.map(|margin| margin.max(0.0));
     let width = (rect.w - left - right).max(1.0);
-    let height = lay_out(fonts, text, style, style.size, width).height() + top + bottom;
+    let height =
+        lay_out(fonts, text, style, style.size, width).height() + gaps_total(text, style, style.size) + top + bottom;
     SlideRect { y: rect.y + (rect.h - height) / 2.0, h: height.max(1.0), ..rect }
 }
 
@@ -601,8 +609,10 @@ pub fn scrolls(slide: &Slide, theme: &Theme) -> bool {
 /// Lays the text out at the style's size, shrinking in small steps until it fits the box's
 /// height or reaches the smallest allowed size. Returns the layout and whether it still
 /// overflows.
-fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Layout<()>, bool) {
-    let too_big = |layout: &Layout<()>| layout.height() > rect.h || layout.width() > rect.w + 0.5;
+fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Layout<()>, bool, f32) {
+    let too_big = |layout: &Layout<()>, size: f32| {
+        layout.height() + gaps_total(text, style, size) > rect.h || layout.width() > rect.w + 0.5
+    };
     let (shrinks, grows) = match style.scaling {
         Scaling::None => (false, false),
         Scaling::TextDown => (true, false),
@@ -614,8 +624,8 @@ fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Lay
     let floor = style.min_size.min(style.size).max(1.0);
     let mut size = style.size.max(floor);
     let mut layout = lay_out(fonts, text, style, size, rect.w);
-    if too_big(&layout) {
-        while shrinks && too_big(&layout) && size > floor {
+    if too_big(&layout, size) {
+        while shrinks && too_big(&layout, size) && size > floor {
             size = (size * 0.96).max(floor);
             layout = lay_out(fonts, text, style, size, rect.w);
         }
@@ -623,15 +633,54 @@ fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Lay
         // Grow in small steps and keep the last size that still fitted.
         while size < LARGEST_GROWN {
             let bigger = lay_out(fonts, text, style, size * 1.04, rect.w);
-            if too_big(&bigger) {
+            if too_big(&bigger, size * 1.04) {
                 break;
             }
             size *= 1.04;
             layout = bigger;
         }
     }
-    let overflow = too_big(&layout);
-    (layout, overflow)
+    let overflow = too_big(&layout, size);
+    (layout, overflow, size)
+}
+
+/// The paragraph spacing at a size: set at the box's font size, kept in proportion when the
+/// text is shrunk or grown to fit.
+fn spacing_at(style: &BoxStyle, size: f32) -> f32 {
+    style.paragraph_spacing.max(0.0) * size / style.size.max(1.0)
+}
+
+/// How much paragraph spacing adds to the text's height: one gap for each line break.
+fn gaps_total(text: &str, style: &BoxStyle, size: f32) -> f32 {
+    spacing_at(style, size) * text.trim_end().matches('\n').count() as f32
+}
+
+/// Which paragraph a line of the layout starts in (0 for the first): the line breaks before it.
+fn paragraph_of(text: &str, line_start: usize) -> usize {
+    text.get(..line_start).map_or(0, |before| before.matches('\n').count())
+}
+
+/// A gradient over a box, as a brush, from `from` to the gradient's own colour.
+fn gradient_brush(gradient: &pc_model::Gradient, from: Rgba, area: Rect) -> vello::peniko::Brush {
+    let (from, to) = (color(from), color(gradient.to));
+    let centre = area.center();
+    let made = match gradient.kind {
+        pc_model::GradientKind::Radial => {
+            let radius = (area.width().max(area.height()) / 2.0) as f32;
+            vello::peniko::Gradient::new_radial(centre, radius.max(1.0))
+        }
+        _ => {
+            let angle = f64::from(gradient.angle).to_radians();
+            let (dx, dy) = (angle.cos(), angle.sin());
+            // Half the box's extent along the way the gradient runs.
+            let half = (area.width() * dx.abs() + area.height() * dy.abs()) / 2.0;
+            vello::peniko::Gradient::new_linear(
+                (centre.x - dx * half, centre.y - dy * half),
+                (centre.x + dx * half, centre.y + dy * half),
+            )
+        }
+    };
+    vello::peniko::Brush::Gradient(made.with_stops([from, to]))
 }
 
 /// Text made bigger to fill its box stops growing here, in slide units.
@@ -642,6 +691,7 @@ fn color(c: Rgba) -> Color {
 }
 
 /// Draws one box: soft shadow, then outline, then fill. Returns whether the text overflowed.
+#[allow(clippy::too_many_arguments)]
 fn draw_text_box(
     scene: &mut Scene,
     fonts: &mut Fonts,
@@ -650,6 +700,7 @@ fn draw_text_box(
     style: &BoxStyle,
     rect: SlideRect,
     time: f32,
+    paragraphs: Option<usize>,
 ) -> bool {
     let text = &*style.line_transform.apply(text);
     let text = &*style.list.apply(text);
@@ -672,13 +723,19 @@ fn draw_text_box(
     };
     // Scrolling text keeps its size: it moves instead of being made to fit.
     let scroll = style.scroll;
-    let (layout, overflow) = match scroll {
+    let (layout, overflow, size) = match scroll {
         pc_model::Scroll::None => fit(fonts, text, style, rect),
-        way if way.sideways() => (lay_out_within(fonts, text, style, style.size, None), false),
-        _ => (lay_out(fonts, text, style, style.size, rect.w), false),
+        way if way.sideways() => (lay_out_within(fonts, text, style, style.size, None), false, style.size),
+        _ => (lay_out(fonts, text, style, style.size, rect.w), false, style.size),
     };
+    // Paragraph spacing moves each line down by a gap for each line break above it.
+    let spacing = f64::from(spacing_at(style, size));
+    let block_height = layout.height() + gaps_total(text, style, size);
+    let gap_before = |line_start: usize| spacing * paragraph_of(text, line_start) as f64;
+    // A build delivered bullet by bullet shows only the paragraphs it has reached.
+    let shows = |line_start: usize| paragraphs.is_none_or(|shown| paragraph_of(text, line_start) < shown);
     // Place the text block in its box (in the middle it may spill both ways when it overflows).
-    let spare = f64::from(rect.h) - f64::from(layout.height());
+    let spare = f64::from(rect.h) - f64::from(block_height);
     let mut left = f64::from(rect.x);
     let mut top = f64::from(rect.y)
         + match style.valign {
@@ -689,8 +746,10 @@ fn draw_text_box(
     if scroll.sideways() {
         left += f64::from(scrolled(scroll, time, rect.w, layout.width()));
     } else if scroll != pc_model::Scroll::None {
-        top = f64::from(rect.y) + f64::from(scrolled(scroll, time, rect.h, layout.height()));
+        top = f64::from(rect.y) + f64::from(scrolled(scroll, time, rect.h, block_height));
     }
+    // The baseline raises (or lowers) the whole block, in proportion to the size it is drawn at.
+    top -= f64::from(style.baseline * size / style.size.max(1.0));
     // Scrolling text shows only inside its box.
     let clipped = scroll != pc_model::Scroll::None;
     if clipped {
@@ -700,7 +759,10 @@ fn draw_text_box(
     let origin = to_target * Affine::translate((left, top));
     let outline_width = f64::from(style.outline_width);
     let outline = Stroke::new(outline_width * 2.0).with_join(Join::Round);
-    let fill = color(style.fill);
+    // The text's colour, or a gradient over the whole block of text.
+    let block = Rect::new(0.0, 0.0, f64::from(rect.w), f64::from(block_height));
+    let fill: vello::peniko::Brush =
+        if style.gradient.on() { gradient_brush(&style.gradient, style.fill, block) } else { color(style.fill).into() };
     let outline_color = color(style.outline_color);
     let look = style.shadow_look;
     let fall = f64::from(look.angle).to_radians();
@@ -717,9 +779,10 @@ fn draw_text_box(
         let corner = f64::from(style.size) * 0.12;
         for line in layout.lines() {
             let m = line.metrics();
-            if m.advance - m.hanging_advance <= 0.0 {
+            if m.advance - m.hanging_advance <= 0.0 || !shows(line.text_range().start) {
                 continue;
             }
+            let origin = origin * Affine::translate((0.0, gap_before(line.text_range().start)));
             let (left, right) = if style.line_fill.full_width {
                 (0.0, f64::from(rect.w))
             } else {
@@ -741,6 +804,14 @@ fn draw_text_box(
             continue;
         }
         for line in layout.lines() {
+            let start = line.text_range().start;
+            if !shows(start) {
+                continue;
+            }
+            let gap = gap_before(start);
+            let origin = origin * Affine::translate((0.0, gap));
+            // The gradient stays put over the whole block, whichever line it is drawn on.
+            let brush_place = Some(Affine::translate((0.0, -gap)));
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(run) = item else {
                     continue;
@@ -778,8 +849,9 @@ fn draw_text_box(
                         .draw_glyphs(font)
                         .font_size(size)
                         .transform(origin)
+                        .brush_transform(brush_place)
                         .normalized_coords(&coords)
-                        .brush(fill)
+                        .brush(&fill)
                         .draw(Fill::NonZero, glyphs.iter().copied()),
                 }
                 // Underline and strike-through are bars across the run, in the text's colour.
@@ -795,7 +867,7 @@ fn draw_text_box(
                         if wanted {
                             let y = baseline - f64::from(offset);
                             let bar = Rect::new(left, y, right, y + f64::from(thickness.max(1.0)));
-                            scene.fill(Fill::NonZero, origin, fill, None, &bar);
+                            scene.fill(Fill::NonZero, origin, &fill, brush_place, &bar);
                         }
                     }
                 }

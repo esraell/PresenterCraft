@@ -458,6 +458,8 @@ impl EditDraft {
             build_in: None,
             build_out: None,
             link: None,
+            gradient: None,
+            shown_paragraphs: None,
             kind: ObjectKind::Text { text: "Text".to_owned(), style: TextStyle::default() },
         };
         self.selected = Some(object.id);

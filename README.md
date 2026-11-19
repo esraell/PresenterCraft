@@ -117,7 +117,10 @@ drawn with the Bible's theme.
 - An editor for a song's slides: move, resize and restyle text boxes, with alignment guides
   and a safe-area edge, multi-select (Shift or Command, or drag a box around them), copy and
   paste, undo, renaming by clicking a name, font search, and typing straight on the slide.
-- Character spacing, line height and margins for a text box, under the gear beside B I U S.
+- Character spacing, line height, paragraph spacing, baseline and margins for a text box, under
+  the gear beside B I U S.
+- Text and shape fills can be a colour or a linear (at any angle) or radial gradient to a second
+  colour. Every colour well opens a grid of swatches with the full colour picker under it.
 - Shapes (rectangle, rounded rectangle, ellipse, triangles, rhombus, polygon, star, arrows) from
   the Shapes menu or a single key; fill, stroke, shadow and flip for any object; spreading
   objects out evenly.
@@ -127,7 +130,8 @@ drawn with the Bible's theme.
 - **Builds** (the inspector's Build tab): an object can come on with a Dissolve, Fly In from
   any side, or Zoom, with the slide (after its transition and a delay) or on a click of Next,
   and leave with a Dissolve, Fly Out or Zoom on a click. Next sets a slide's click builds going
-  in order before it moves on; Previous takes them back.
+  in order before it moves on; Previous takes them back. Text can be delivered By Paragraph:
+  one paragraph each click, or one after another with the slide.
 - A plus tile after the last slide adds a slide laid out like the one before it.
 - Text can have a background colour behind its lines (under each line's words, or across the
   box), bullets or numbers before its lines, and can scroll through its box like a ticker
@@ -196,9 +200,8 @@ Among the things PresenterCraft can't do yet:
 - The Announcements layer, Clear Groups, and Show Slide on Stage Screens Only.
 - Saved looks to switch between, masks other than covered edges, corner pin, alpha and NDI
   modes, and a theme for each screen.
-- Fills other than a colour (gradients, media, cut-out text), feathering, objects shown only
-  under conditions, and pen, web and sticker objects; baseline and paragraph spacing; builds
-  delivered bullet by bullet.
+- Media and cut-out text as fills, feathering, objects shown only under conditions, and pen,
+  web and sticker objects.
 - Importing songs from other presentation apps or from CCLI SongSelect; exporting and printing.
 - Undo that names what it undoes, editable key mappings, and a Slide Labels settings pane.
 - Tested builds for Windows and Linux.

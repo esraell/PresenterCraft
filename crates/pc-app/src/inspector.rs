@@ -217,6 +217,14 @@ fn spacing_popup(ui: &mut egui::Ui, wanted: &mut pc_model::BoxStyle) {
         ui.add(egui::DragValue::new(&mut wanted.line_height).speed(0.01).range(0.5..=3.0).fixed_decimals(2))
             .on_hover_text("The distance from one line to the next, as a multiple of the font size");
         ui.end_row();
+        ui.label(egui::RichText::new("Paragraph Spacing").size(12.5).color(DIM));
+        ui.add(egui::DragValue::new(&mut wanted.paragraph_spacing).speed(0.5).range(0.0..=400.0).max_decimals(0))
+            .on_hover_text("Extra room after each paragraph (each line break typed), in points");
+        ui.end_row();
+        ui.label(egui::RichText::new("Baseline").size(12.5).color(DIM));
+        ui.add(egui::DragValue::new(&mut wanted.baseline).speed(0.5).range(-400.0..=400.0).max_decimals(0))
+            .on_hover_text("Raise the text by this many points (lower it with a minus)");
+        ui.end_row();
     });
     ui.add_space(8.0);
     ui.label(egui::RichText::new("Margins").size(12.5).color(DIM));
@@ -232,6 +240,8 @@ fn spacing_popup(ui: &mut egui::Ui, wanted: &mut pc_model::BoxStyle) {
     if ui.button("Reset Spacing").clicked() {
         wanted.letter_spacing = 0.0;
         wanted.line_height = pc_model::LINE_HEIGHT;
+        wanted.paragraph_spacing = 0.0;
+        wanted.baseline = 0.0;
         wanted.margins = [0.0; 4];
     }
 }
@@ -256,14 +266,106 @@ fn choice<T: PartialEq + Copy>(ui: &mut egui::Ui, salt: &str, width: f32, value:
     });
 }
 
+/// The colours in the grid at the top of every colour pop-up, as ProPresenter's has: greys,
+/// then rows of hues from deep to light.
+const SWATCHES: [[u8; 3]; 40] = [
+    [255, 255, 255],
+    [217, 217, 217],
+    [166, 166, 166],
+    [115, 115, 115],
+    [64, 64, 64],
+    [32, 32, 32],
+    [0, 0, 0],
+    [18, 24, 38],
+    [255, 59, 48],
+    [255, 149, 0],
+    [255, 204, 0],
+    [52, 199, 89],
+    [0, 199, 190],
+    [0, 122, 255],
+    [88, 86, 214],
+    [175, 82, 222],
+    [176, 30, 25],
+    [178, 98, 0],
+    [184, 146, 0],
+    [32, 128, 56],
+    [0, 128, 122],
+    [0, 74, 160],
+    [52, 50, 140],
+    [108, 44, 140],
+    [255, 160, 152],
+    [255, 204, 140],
+    [255, 232, 140],
+    [152, 230, 170],
+    [140, 232, 226],
+    [140, 190, 255],
+    [180, 178, 240],
+    [214, 170, 240],
+    [255, 45, 85],
+    [162, 132, 94],
+    [255, 214, 165],
+    [253, 246, 227],
+    [200, 230, 201],
+    [187, 222, 251],
+    [225, 190, 231],
+    [255, 255, 200],
+];
+
+/// A colour well that opens a pop-up: a grid of swatches to pick from, and the full colour
+/// picker under it for any other colour.
 fn colour(ui: &mut egui::Ui, value: &mut Rgba, hint: &str) {
-    let mut c = to_color32(*value);
-    ui.scope(|ui| {
-        ui.spacing_mut().interact_size = vec2(54.0, ROW - 2.0);
-        if ui.color_edit_button_srgba(&mut c).on_hover_text(hint).changed() {
-            *value = to_rgba(c);
+    let (well, response) = ui.allocate_exact_size(vec2(54.0, ROW - 2.0), Sense::click());
+    let painter = ui.painter();
+    painter.rect_filled(well, 4.0, to_color32(*value));
+    painter.rect_stroke(well, 4.0, egui::Stroke::new(1.0, Color32::from_gray(90)), egui::StrokeKind::Inside);
+    let response = response.on_hover_text(hint);
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+            for row in SWATCHES.chunks(8) {
+                ui.horizontal(|ui| {
+                    for [r, g, b] in row {
+                        let colour = Color32::from_rgb(*r, *g, *b);
+                        let (cell, chosen) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                        ui.painter().rect_filled(cell, 4.0, colour);
+                        if chosen.hovered() {
+                            ui.painter().rect_stroke(
+                                cell,
+                                4.0,
+                                egui::Stroke::new(2.0, Color32::WHITE),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                        if chosen.clicked() {
+                            *value = Rgba { r: *r, g: *g, b: *b, a: value.a };
+                        }
+                    }
+                });
+            }
+            ui.add_space(6.0);
+            let mut c = to_color32(*value);
+            if egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::OnlyBlend) {
+                *value = to_rgba(c);
+            }
+        });
+}
+
+/// A colour, or a gradient from it to a second colour: a choice of which, and the gradient's
+/// colour and angle when there is one.
+fn fill_kind(ui: &mut egui::Ui, salt: &str, gradient: &mut pc_model::Gradient) {
+    let options: Vec<(pc_model::GradientKind, &str)> =
+        pc_model::GradientKind::ALL.iter().map(|kind| (*kind, kind.name())).collect();
+    choice(ui, salt, 140.0, &mut gradient.kind, &options);
+    if gradient.on() {
+        ui.add_space(6.0);
+        colour(ui, &mut gradient.to, "The colour it runs to");
+        if gradient.kind == pc_model::GradientKind::Linear {
+            ui.add_space(6.0);
+            ui.add(egui::DragValue::new(&mut gradient.angle).speed(1.0).range(0.0..=359.0).suffix("°").max_decimals(0))
+                .on_hover_text("The way it runs: 0° left to right, 90° top to bottom");
         }
-    });
+    }
 }
 
 /// The whole panel. Returns true when the operator asks to go back to the Show view.
@@ -603,6 +705,12 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| colour(ui, fill, "Fill colour"));
         }
     });
+    if object.fill.is_some() {
+        ui.add_space(4.0);
+        let mut gradient = object.gradient.unwrap_or_default();
+        ui.horizontal(|ui| fill_kind(ui, "shape fill kind", &mut gradient));
+        object.gradient = gradient.on().then_some(gradient);
+    }
     rule(ui);
     // A line round the box or shape: 3 points of white to start with.
     ui.horizontal(|ui| {
@@ -930,6 +1038,8 @@ fn text_look(
         ui.label(egui::RichText::new("Text Color").size(13.0).color(INK));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| colour(ui, &mut wanted.fill, "Text colour"));
     });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| fill_kind(ui, "text fill kind", &mut wanted.gradient));
     rule(ui);
 
     labelled(ui, "Scaling", |ui, width| {
@@ -1110,6 +1220,7 @@ fn build_tab(ui: &mut egui::Ui, state: &mut HomeState) {
     let Some(object) = draft.selected_object_mut() else {
         return nothing_selected(ui);
     };
+    let is_text = object.as_text().is_some();
     let label = |ui: &mut egui::Ui, text: &str| {
         ui.allocate_ui_with_layout(vec2(72.0, ROW), Layout::left_to_right(Align::Center), |ui| {
             ui.set_min_width(72.0);
@@ -1160,6 +1271,21 @@ fn build_tab(ui: &mut egui::Ui, state: &mut HomeState) {
                     let starts = [(false, "With the Slide"), (true, "On a Click")];
                     choice(ui, "build in start", 150.0, &mut build.on_click, &starts);
                 });
+                if is_text {
+                    ui.horizontal(|ui| {
+                        label(ui, "Delivery");
+                        let ways = [(false, "All at Once"), (true, "By Paragraph")];
+                        choice(ui, "build in delivery", 150.0, &mut build.by_paragraph, &ways);
+                    });
+                    if build.by_paragraph {
+                        let hint = if build.on_click {
+                            "Each click shows the next paragraph."
+                        } else {
+                            "Each paragraph follows the last after its time in seconds."
+                        };
+                        ui.label(egui::RichText::new(hint).size(11.5).color(DIM));
+                    }
+                }
             } else {
                 ui.label(egui::RichText::new("Leaves when Next is clicked.").size(11.5).color(DIM));
             }

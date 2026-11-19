@@ -46,11 +46,15 @@ pub struct Build {
     /// always waits for a click.
     #[serde(default)]
     pub on_click: bool,
+    /// For a build in of text: one paragraph at a time (one each click, or one after another
+    /// with the slide) instead of all at once.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_paragraph: bool,
 }
 
 impl Build {
     pub fn of(effect: BuildEffect) -> Build {
-        Build { effect, direction: Direction::FromLeft, seconds: 0.6, delay: 0.0, on_click: false }
+        Build { effect, direction: Direction::FromLeft, seconds: 0.6, delay: 0.0, on_click: false, by_paragraph: false }
     }
 
     /// How far along it is, from 0 to 1, this long after it was set going; eased to start and
@@ -90,10 +94,13 @@ impl Slide {
     /// The builds that wait for a click on this slide, in the order clicks set them going: each
     /// object's build in, in the objects' order, then each build out. Each is the object's
     /// place among the objects, and true for a build in.
+    /// A text build delivered paragraph by paragraph takes a click for each paragraph.
     pub fn click_steps(&self) -> Vec<(usize, bool)> {
         let ins = self.objects.iter().enumerate().filter(|(_, o)| o.build_in.is_some_and(|b| b.on_click));
         let outs = self.objects.iter().enumerate().filter(|(_, o)| o.build_out.is_some());
-        ins.map(|(at, _)| (at, true)).chain(outs.map(|(at, _)| (at, false))).collect()
+        ins.flat_map(|(at, object)| std::iter::repeat_n((at, true), clicks_to_build(object)))
+            .chain(outs.map(|(at, _)| (at, false)))
+            .collect()
     }
 
     /// The slide as it looks at this point in its builds: objects not yet built in are hidden,
@@ -111,6 +118,29 @@ impl Slide {
         for (at, object) in slide.objects.iter_mut().enumerate() {
             // How much of the object shows, from 0 (none) to 1 (all), and the build doing it.
             let mut shown: Option<(f32, Build)> = None;
+            // Text delivered paragraph by paragraph: as many paragraphs show as clicks (or
+            // turns of its time, with the slide) have reached.
+            if let Some(build) = object.build_in.filter(|build| build.by_paragraph)
+                && let Some(count) = paragraphs(object)
+            {
+                let reached = if build.on_click {
+                    steps.iter().take(clock.step).filter(|step| **step == (at, true)).count()
+                } else {
+                    clock.since_on.map_or(0, |since| {
+                        let each = build.seconds.max(0.1);
+                        if since < build.delay { 0 } else { ((since - build.delay) / each) as usize + 1 }
+                    })
+                };
+                let reached = reached.min(count);
+                moving |= !build.on_click && clock.since_on.is_some() && reached < count;
+                moving |= !build.on_click && clock.since_on.is_none();
+                if reached == 0 {
+                    object.hidden = true;
+                } else if reached < count {
+                    object.shown_paragraphs = Some(reached);
+                }
+                continue;
+            }
             if let Some(build) = object.build_in {
                 let elapsed = if build.on_click {
                     let place = steps.iter().position(|step| *step == (at, true));
@@ -145,6 +175,20 @@ impl Slide {
             apply(object, build, amount, rect);
         }
         (slide, moving)
+    }
+}
+
+/// How many paragraphs a text object built paragraph by paragraph has: one more than its line
+/// breaks. `None` for an object that isn't text.
+fn paragraphs(object: &Object) -> Option<usize> {
+    object.as_text().map(|text| text.trim_end().matches('\n').count() + 1)
+}
+
+/// How many clicks an object's build in takes: one, or one for each paragraph.
+fn clicks_to_build(object: &Object) -> usize {
+    match object.build_in {
+        Some(build) if build.by_paragraph => paragraphs(object).unwrap_or(1),
+        _ => 1,
     }
 }
 
@@ -206,6 +250,28 @@ mod tests {
         // A slide without builds is left as it is.
         let plain = Slide::new(vec![Object::text(Role::primary(), "Hi")]);
         assert_eq!(plain.built(&theme, BuildClock::settled(0)), (plain.clone(), false));
+    }
+
+    #[test]
+    fn text_built_by_paragraph_shows_one_more_paragraph_each_click() {
+        let mut text = Object::text(Role::primary(), "One\nTwo\nThree");
+        text.build_in = Some(Build { on_click: true, by_paragraph: true, ..Build::of(BuildEffect::Dissolve) });
+        let slide = Slide::new(vec![text]);
+        assert_eq!(slide.click_steps(), [(0, true), (0, true), (0, true)]);
+        let theme = Theme::builtin();
+        let at = |step| slide.built(&theme, BuildClock::settled(step)).0.objects[0].clone();
+        assert!(at(0).hidden);
+        assert_eq!((at(1).hidden, at(1).shown_paragraphs), (false, Some(1)));
+        assert_eq!(at(2).shown_paragraphs, Some(2));
+        assert_eq!((at(3).hidden, at(3).shown_paragraphs), (false, None), "all three: shown whole");
+        // With the slide: one paragraph each turn of its time.
+        let mut timed = Object::text(Role::primary(), "One\nTwo");
+        timed.build_in = Some(Build { seconds: 1.0, by_paragraph: true, ..Build::of(BuildEffect::Dissolve) });
+        let slide = Slide::new(vec![timed]);
+        let after = |since| slide.built(&theme, BuildClock { step: 0, since_on: Some(since), since_step: 0.0 });
+        assert_eq!(after(0.5).0.objects[0].shown_paragraphs, Some(1));
+        assert!(after(0.5).1, "still to come");
+        assert_eq!((after(1.5).0.objects[0].shown_paragraphs, after(1.5).1), (None, false));
     }
 
     #[test]

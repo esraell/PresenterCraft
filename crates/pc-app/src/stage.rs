@@ -198,6 +198,9 @@ fn base_box() -> BoxStyle {
         line_fill: pc_model::LineFill::default(),
         list: Default::default(),
         scroll: Default::default(),
+        paragraph_spacing: 0.0,
+        baseline: 0.0,
+        gradient: pc_model::Gradient::default(),
     }
 }
 

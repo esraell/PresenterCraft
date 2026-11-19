@@ -246,6 +246,9 @@ pub struct Object {
     /// The colour the object's box is filled with behind its content. `None` leaves it clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<Rgba>,
+    /// The fill running from its colour to another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<crate::Gradient>,
     /// A line round the object's box or shape. `None` draws none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stroke: Option<StrokeLook>,
@@ -266,6 +269,10 @@ pub struct Object {
     /// For a text object: what it shows instead of its words, if it is linked to something.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<crate::TextLink>,
+    /// While a build delivers a text object bullet by bullet: how many of its paragraphs show.
+    /// Worked out as the slide is drawn, never saved.
+    #[serde(skip)]
+    pub shown_paragraphs: Option<usize>,
     #[serde(flatten)]
     pub kind: ObjectKind,
 }
@@ -291,6 +298,8 @@ impl Object {
             build_in: None,
             build_out: None,
             link: None,
+            gradient: None,
+            shown_paragraphs: None,
             kind: ObjectKind::Text { text: text.into(), style: TextStyle::default() },
         }
     }
@@ -314,6 +323,8 @@ impl Object {
             build_in: None,
             build_out: None,
             link: None,
+            gradient: None,
+            shown_paragraphs: None,
             kind: ObjectKind::Shape { shape },
         }
     }

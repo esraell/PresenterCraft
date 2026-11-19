@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use pc_model::{Object, Role, Slide, Theme};
+use pc_model::{Object, ObjectKind, Role, Slide, Theme};
 use pc_render::vello::util::RenderContext;
 use pc_render::{Fonts, Painter, build_scene, read_pixels, target_texture, wgpu};
 
@@ -635,4 +635,55 @@ fn transition_sheet() {
         let pixels = read_pixels(device, queue, &texture).expect("read back");
         write_png(&PathBuf::from(&dir).join(format!("{kind:?}.png")), &pixels, w, h);
     }
+}
+
+/// The lowest and highest rows with white (text) pixels, or `None` when there are none.
+fn lit_rows(pixels: &[u8], w: u32, h: u32) -> Option<(u32, u32)> {
+    let lit = |y: u32| (0..w).any(|x| pixel(pixels, w, x, y)[0] > 200 && pixel(pixels, w, x, y)[2] > 200);
+    let top = (0..h).find(|y| lit(*y))?;
+    let bottom = (0..h).rev().find(|y| lit(*y))?;
+    Some((top, bottom))
+}
+
+#[test]
+fn paragraph_spacing_baseline_and_paragraph_builds_move_and_hide_lines() {
+    use pc_model::{SlideRect, TextStyle, VAlign};
+    let (w, h) = (480, 270);
+    let with = |style: TextStyle, shown: Option<usize>| {
+        let mut s = slide("One\nTwo", None);
+        s.objects[0].frame = Some(SlideRect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 });
+        if let ObjectKind::Text { style: own, .. } = &mut s.objects[0].kind {
+            *own = TextStyle { valign: Some(VAlign::Top), size: Some(120.0), ..style };
+        }
+        s.objects[0].shown_paragraphs = shown;
+        lit_rows(&render(Some(&s), w, h), w, h)
+    };
+    let (top, bottom) = with(TextStyle::default(), None).expect("text is drawn");
+    // 200 points of paragraph spacing push the second line about 50 pixels lower at a quarter size.
+    let (spaced_top, spaced_bottom) =
+        with(TextStyle { paragraph_spacing: Some(200.0), ..TextStyle::default() }, None).expect("drawn");
+    assert_eq!(spaced_top, top, "the first line stays put");
+    assert!((spaced_bottom as i32 - bottom as i32 - 50).abs() <= 3, "{bottom} -> {spaced_bottom}");
+    // A baseline of 40 points raises the whole block by about 10 pixels.
+    let (raised_top, raised_bottom) =
+        with(TextStyle { baseline: Some(40.0), ..TextStyle::default() }, None).expect("drawn");
+    assert!((top as i32 - raised_top as i32 - 10).abs() <= 2 && (bottom as i32 - raised_bottom as i32 - 10).abs() <= 2);
+    // Only the first paragraph of two shows while a build has reached one.
+    let (_, first_only_bottom) = with(TextStyle::default(), Some(1)).expect("drawn");
+    assert!(first_only_bottom < (top + bottom) / 2 + 10, "{first_only_bottom} vs {top}..{bottom}");
+}
+
+#[test]
+fn a_gradient_fill_runs_from_one_colour_to_the_other() {
+    use pc_model::{Gradient, GradientKind, Rgba, Shape, SlideRect};
+    let (w, h) = (192, 108);
+    let mut object = Object::shape(Shape::Rectangle);
+    object.frame = Some(SlideRect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 });
+    object.fill = Some(Rgba { r: 255, g: 0, b: 0, a: 255 });
+    object.gradient =
+        Some(Gradient { kind: GradientKind::Linear, to: Rgba { r: 0, g: 0, b: 255, a: 255 }, angle: 0.0 });
+    let px = render(Some(&Slide::new(vec![object])), w, h);
+    let (left, right) = (pixel(&px, w, 4, h / 2), pixel(&px, w, w - 5, h / 2));
+    assert!(left[0] > 200 && left[2] < 60, "the left is red: {left:?}");
+    assert!(right[2] > 200 && right[0] < 60, "the right is blue: {right:?}");
 }

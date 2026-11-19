@@ -146,6 +146,60 @@ impl LineTransform {
     }
 }
 
+/// How a gradient runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GradientKind {
+    /// No gradient: one colour.
+    #[default]
+    None,
+    /// From one side to the other, at an angle.
+    Linear,
+    /// From the middle out.
+    Radial,
+}
+
+impl GradientKind {
+    pub const ALL: [GradientKind; 3] = [GradientKind::None, GradientKind::Linear, GradientKind::Radial];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GradientKind::None => "Color",
+            GradientKind::Linear => "Linear Gradient",
+            GradientKind::Radial => "Radial Gradient",
+        }
+    }
+}
+
+/// A fill that runs from its colour to another: across, at an angle, or from the middle out.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Gradient {
+    #[serde(default)]
+    pub kind: GradientKind,
+    /// The colour it runs to.
+    #[serde(default = "black")]
+    pub to: Rgba,
+    /// For a linear gradient, the way it runs, in degrees: 0 left to right, 90 top to bottom.
+    #[serde(default)]
+    pub angle: f32,
+}
+
+impl Default for Gradient {
+    fn default() -> Gradient {
+        Gradient { kind: GradientKind::None, to: Rgba::BLACK, angle: 90.0 }
+    }
+}
+
+fn black() -> Rgba {
+    Rgba::BLACK
+}
+
+impl Gradient {
+    pub fn on(&self) -> bool {
+        self.kind != GradientKind::None
+    }
+}
+
 /// A colour behind text: behind each line on its own, or across the box's whole width.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LineFill {
@@ -345,6 +399,15 @@ pub struct BoxStyle {
     /// Text that keeps moving through the box, and which way.
     #[serde(default)]
     pub scroll: Scroll,
+    /// Extra space after each paragraph (each line break typed in the text), in slide units.
+    #[serde(default)]
+    pub paragraph_spacing: f32,
+    /// How far the text is raised from where it would sit, in slide units (lowered if negative).
+    #[serde(default)]
+    pub baseline: f32,
+    /// The text's colour running to another.
+    #[serde(default)]
+    pub gradient: Gradient,
 }
 
 /// The distance from one line to the next that text has unless it is given another.
@@ -592,6 +655,9 @@ impl Theme {
             line_fill: LineFill::default(),
             list: Default::default(),
             scroll: Default::default(),
+            paragraph_spacing: 0.0,
+            baseline: 0.0,
+            gradient: Gradient::default(),
         };
         let main =
             base(Role::primary(), SlideRect { x: 120.0, y: 170.0, w: 1680.0, h: 400.0 }, 96.0, 40.0, Rgba::WHITE, 6.0);
@@ -773,6 +839,12 @@ pub struct TextStyle {
     pub list: Option<ListStyle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<Scroll>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paragraph_spacing: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<Gradient>,
 }
 
 impl TextStyle {
@@ -806,6 +878,9 @@ impl TextStyle {
             line_fill: Some(look.line_fill),
             list: Some(look.list),
             scroll: Some(look.scroll),
+            paragraph_spacing: Some(look.paragraph_spacing),
+            baseline: Some(look.baseline),
+            gradient: Some(look.gradient),
         }
     }
 
@@ -840,6 +915,9 @@ impl TextStyle {
             line_fill: self.line_fill.unwrap_or(base.line_fill),
             list: self.list.unwrap_or(base.list),
             scroll: self.scroll.unwrap_or(base.scroll),
+            paragraph_spacing: self.paragraph_spacing.unwrap_or(base.paragraph_spacing),
+            baseline: self.baseline.unwrap_or(base.baseline),
+            gradient: self.gradient.unwrap_or(base.gradient),
         }
     }
 
@@ -868,6 +946,9 @@ impl TextStyle {
             line_fill: (wanted.line_fill != base.line_fill).then_some(wanted.line_fill),
             list: (wanted.list != base.list).then_some(wanted.list),
             scroll: (wanted.scroll != base.scroll).then_some(wanted.scroll),
+            paragraph_spacing: (wanted.paragraph_spacing != base.paragraph_spacing).then_some(wanted.paragraph_spacing),
+            baseline: (wanted.baseline != base.baseline).then_some(wanted.baseline),
+            gradient: (wanted.gradient != base.gradient).then_some(wanted.gradient),
         }
     }
 }
