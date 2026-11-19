@@ -113,6 +113,10 @@ pub struct HomeState {
     pub theme_edit: Option<ThemeEdit>,
     /// Every theme's name, and the places of the ones songs and Bible slides use.
     pub theme_names: Vec<String>,
+    /// Each theme's two layouts as boxes, for the pictures in the theme picker.
+    pub theme_layouts: Vec<[Vec<(pc_model::Role, SlideRect)>; 2]>,
+    /// Which layout of its theme Bible slides use.
+    pub bible_layout: Template,
     pub theme_for_songs: usize,
     pub theme_for_bible: usize,
     /// What the Theme menu or the Theme Editor has just asked for. The app takes this.
@@ -128,6 +132,48 @@ pub struct HomeState {
 /// Where a translation's words, or its reference, go on a Bible slide: one of the Bible
 /// theme's boxes, or nowhere.
 pub type BibleTarget = Option<pc_model::Role>;
+
+/// The boxes one of a theme's layouts has, and where each sits: every box for two languages;
+/// for one language, every box but the translation's, with the main one in its larger place.
+pub fn layout_boxes(theme: &Theme, layout: Template) -> Vec<(pc_model::Role, SlideRect)> {
+    theme
+        .boxes
+        .iter()
+        .filter(|style| layout == Template::Full || style.role != pc_model::Role::translation())
+        .map(|style| {
+            let alone = layout == Template::Alone && style.role == pc_model::Role::primary();
+            (style.role.clone(), if alone { theme.solo_primary } else { style.rect })
+        })
+        .collect()
+}
+
+/// What a layout is called.
+pub fn layout_name(layout: Template) -> &'static str {
+    match layout {
+        Template::Full => "Two languages",
+        Template::Alone => "One language",
+    }
+}
+
+/// A small picture of a slide with its boxes outlined and one of them filled, to show which
+/// box a menu entry means.
+pub fn box_diagram(
+    painter: &egui::Painter,
+    area: Rect,
+    boxes: &[(pc_model::Role, SlideRect)],
+    lit: Option<&pc_model::Role>,
+) {
+    painter.rect_filled(area, 2.0, Color32::BLACK);
+    let scale = area.width() / pc_model::SLIDE_WIDTH;
+    for (role, frame) in boxes {
+        let rect = Rect::from_min_size(area.min + vec2(frame.x, frame.y) * scale, vec2(frame.w, frame.h) * scale);
+        if lit == Some(role) {
+            painter.rect_filled(rect, 1.0, Color32::from_rgb(250, 204, 21));
+        } else {
+            painter.rect_stroke(rect, 1.0, Stroke::new(1.0, Color32::from_gray(90)), StrokeKind::Inside);
+        }
+    }
+}
 
 /// What a target is called in its menu.
 fn target_label(target: &BibleTarget) -> String {
@@ -152,8 +198,12 @@ pub struct BiblePage {
     pub options: crate::bible::BibleOptions,
     /// The Bibles installed.
     pub shelf: crate::bible::Shelf,
-    /// The boxes of the theme Bible slides use, which the Verse and Reference menus offer.
-    pub boxes: Vec<pc_model::Role>,
+    /// The boxes of the theme layout Bible slides use, and where each sits on the slide. The
+    /// Verse and Reference menus offer these.
+    pub boxes: Vec<(pc_model::Role, SlideRect)>,
+    /// Where the main box is pinned when the layout for two languages is used with only one,
+    /// so the words stay where that layout puts them.
+    pub pin_main: Option<SlideRect>,
     /// Bibles being downloaded.
     pub downloads: crate::bible_store::Downloads,
     /// The two places among the show's presentations kept for Bible passages. A new passage
@@ -191,7 +241,8 @@ impl Default for BiblePage {
                 BibleRow { bible: place("syn"), verse: Some(pc_model::Role::translation()), reference: None },
             ],
             shelf,
-            boxes: Theme::builtin().boxes.into_iter().map(|style| style.role).collect(),
+            boxes: layout_boxes(&Theme::builtin(), Template::Full),
+            pin_main: None,
             downloads: crate::bible_store::Downloads::default(),
             slots: None,
             showing: 0,
@@ -216,6 +267,25 @@ impl BiblePage {
         let Some(bible) = unused.filter(|_| self.rows.len() < Self::MAX_ROWS) else { return false };
         self.rows.push(BibleRow { bible, verse: None, reference: None });
         true
+    }
+
+    /// Points each translation at the boxes of the layout now in use, as choosing a theme
+    /// does: the first translation's words in the main box and its reference in the reference
+    /// box, the second's words in the translation box, the rest nowhere.
+    pub fn assign_boxes(&mut self) {
+        let has = |role: pc_model::Role| self.boxes.iter().any(|(have, _)| *have == role).then_some(role);
+        let main = has(pc_model::Role::primary()).or_else(|| self.boxes.first().map(|(role, _)| role.clone()));
+        let reference = has(pc_model::Role::reference());
+        let translation = has(pc_model::Role::translation());
+        for (index, row) in self.rows.iter_mut().enumerate() {
+            (row.verse, row.reference) = match index {
+                0 => (main.clone(), reference.clone()),
+                1 => (translation.clone(), None),
+                _ => (None, None),
+            };
+        }
+        // Whatever is showing is made again with the new boxes.
+        self.made_with.clear();
     }
 
     /// The passage now shown, as something a service can keep.
@@ -315,7 +385,7 @@ impl BiblePage {
                 }
             }
         }
-        match crate::bible::build_passage(&self.lookup, &rows, &self.options) {
+        match crate::bible::build_passage(&self.lookup, &rows, &self.options, self.pin_main) {
             Ok(passage) => {
                 let passage_name = passage.title.clone();
                 // Leave a passage that is on screen alone: use the other slot.
@@ -407,8 +477,8 @@ impl ThemeEdit {
 pub enum ThemeRequest {
     /// Songs use the theme at this place in the list.
     UseForSongs(usize),
-    /// Bible slides use the theme at this place in the list.
-    UseForBible(usize),
+    /// Bible slides use this layout of the theme at this place in the list.
+    UseForBible(usize, Template),
     /// Make a new theme, a copy of the one songs use, and open it in the Theme Editor.
     New,
     /// Open the Theme Editor on the theme at this place in the list.
@@ -483,6 +553,8 @@ impl Default for HomeState {
             inspector: crate::inspector::InspectorState::default(),
             theme_edit: None,
             theme_names: Vec::new(),
+            theme_layouts: Vec::new(),
+            bible_layout: Template::Full,
             theme_for_songs: 0,
             theme_for_bible: 0,
             theme_request: None,
@@ -675,7 +747,7 @@ fn tool_menu(ui: &mut egui::Ui, state: &mut HomeState) {
                             heading(ui, "  BIBLE SLIDES USE");
                             for (index, name) in names.iter().enumerate() {
                                 if row(ui, name, index == state.theme_for_bible, true) {
-                                    state.theme_request = Some(ThemeRequest::UseForBible(index));
+                                    state.theme_request = Some(ThemeRequest::UseForBible(index, state.bible_layout));
                                     close = true;
                                 }
                                 // Keeps the passage in the service, to be brought back with one click.
@@ -1615,6 +1687,70 @@ fn missing_font_notice(ui: &mut egui::Ui, missing: &[String]) {
     });
 }
 
+/// A menu that points a translation's words, or its reference, at one of the theme's boxes.
+/// Each entry has a small picture of the slide with its box filled in. Boxes in `taken` are
+/// in use elsewhere and cannot be chosen. `with_verse`, for a reference menu, is the box the
+/// same translation's words are in: choosing "With Verse" puts the reference there too.
+fn target_menu(
+    ui: &mut egui::Ui,
+    salt: (&str, usize),
+    target: &mut BibleTarget,
+    boxes: &[(pc_model::Role, SlideRect)],
+    taken: &[pc_model::Role],
+    with_verse: Option<&pc_model::Role>,
+) {
+    let is_with_verse = with_verse.is_some() && target.as_ref() == with_verse;
+    let shown = if is_with_verse { "With Verse".to_owned() } else { target_label(target) };
+    egui::ComboBox::from_id_salt(salt).selected_text(shown).width(130.0).height(360.0).show_ui(ui, |ui| {
+        let entry = |ui: &mut egui::Ui, name: &str, lit: Option<&pc_model::Role>, chosen: bool, free: bool| -> bool {
+            let (row, response) =
+                ui.allocate_exact_size(vec2(170.0, 34.0), if free { Sense::click() } else { Sense::hover() });
+            if chosen {
+                ui.painter().rect_filled(row, 5.0, crate::studio::ACCENT.gamma_multiply(0.3));
+            } else if free && response.hovered() {
+                ui.painter().rect_filled(row, 5.0, crate::studio::HOVER);
+            }
+            let picture = Rect::from_min_size(row.min + vec2(4.0, 4.0), vec2(46.0, 26.0));
+            box_diagram(ui.painter(), picture, boxes, lit);
+            let ink = if free { crate::studio::TEXT } else { crate::studio::TEXT_FAINT };
+            ui.painter().text(
+                pos2(picture.max.x + 10.0, row.center().y),
+                Align2::LEFT_CENTER,
+                name,
+                FontId::proportional(13.0),
+                ink,
+            );
+            if !free {
+                response.on_hover_text("Another translation is using this box");
+                return false;
+            }
+            response.clicked()
+        };
+        if entry(ui, "None", None, target.is_none(), true) {
+            *target = None;
+            ui.close();
+        }
+        if let Some(with) = with_verse
+            && entry(ui, "With Verse", Some(with), is_with_verse, true)
+        {
+            *target = Some(with.clone());
+            ui.close();
+        }
+        for (role, _) in boxes {
+            // In a reference menu the words' own box is reached by "With Verse".
+            if Some(role) == with_verse {
+                continue;
+            }
+            let chosen = target.as_ref() == Some(role);
+            let free = chosen || !taken.contains(role);
+            if entry(ui, &role.label(), Some(role), chosen, free) {
+                *target = Some(role.clone());
+                ui.close();
+            }
+        }
+    });
+}
+
 /// The Bible page, in place of the slide grid: a field for a reference, a search field, and a
 /// row for each translation saying where its verse and its reference go on the slide. Looking
 /// verses up is not built yet, so this is the layout with its controls in place.
@@ -1723,10 +1859,15 @@ fn bible_area(
                             &mut bible.downloads,
                             button.rect,
                             "Songs",
-                            (&state.theme_names, state.theme_for_bible),
+                            &crate::bible::ThemeChoice {
+                                names: &state.theme_names,
+                                layouts: &state.theme_layouts,
+                                theme: state.theme_for_bible,
+                                layout: state.bible_layout,
+                            },
                         );
-                        if let Some(index) = picked {
-                            state.theme_request = Some(ThemeRequest::UseForBible(index));
+                        if let Some((index, layout)) = picked {
+                            state.theme_request = Some(ThemeRequest::UseForBible(index, layout));
                         }
                     }
                 });
@@ -1735,6 +1876,9 @@ fn bible_area(
             let mut add = false;
             let mut remove = None;
             let count = state.bible.rows.len();
+            let boxes = state.bible.boxes.clone();
+            let used: Vec<(BibleTarget, BibleTarget)> =
+                state.bible.rows.iter().map(|row| (row.verse.clone(), row.reference.clone())).collect();
             for (index, row) in state.bible.rows.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     let chosen = state.bible.shelf.bibles.get(row.bible).map_or("Choose a Bible", |b| b.name.as_str());
@@ -1748,26 +1892,24 @@ fn bible_area(
                     );
                     ui.add_space(8.0);
                     ui.label("Verse");
-                    egui::ComboBox::from_id_salt(("bible verse", index))
-                        .selected_text(target_label(&row.verse))
-                        .width(120.0)
-                        .show_ui(ui, |ui| {
-                            for target in std::iter::once(None).chain(state.bible.boxes.iter().cloned().map(Some)) {
-                                let name = target_label(&target);
-                                ui.selectable_value(&mut row.verse, target, name);
-                            }
-                        });
+                    // Boxes another translation already fills are not offered again.
+                    let taken = |by_verse: bool| -> Vec<pc_model::Role> {
+                        used.iter()
+                            .enumerate()
+                            .flat_map(|(other, (verse, reference))| {
+                                let mine = other == index;
+                                let verse = verse.clone().filter(|_| !(mine && by_verse));
+                                let reference = reference.clone().filter(|_| !mine);
+                                [verse, reference]
+                            })
+                            .flatten()
+                            .collect()
+                    };
+                    target_menu(ui, ("bible verse", index), &mut row.verse, &boxes, &taken(true), None);
                     ui.add_space(8.0);
                     ui.label("Reference");
-                    egui::ComboBox::from_id_salt(("bible reference", index))
-                        .selected_text(target_label(&row.reference))
-                        .width(120.0)
-                        .show_ui(ui, |ui| {
-                            for target in std::iter::once(None).chain(state.bible.boxes.iter().cloned().map(Some)) {
-                                let name = target_label(&target);
-                                ui.selectable_value(&mut row.reference, target, name);
-                            }
-                        });
+                    let with = row.verse.clone();
+                    target_menu(ui, ("bible reference", index), &mut row.reference, &boxes, &taken(false), with.as_ref());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // The first row adds a translation; the others remove themselves.
                         if index == 0 {

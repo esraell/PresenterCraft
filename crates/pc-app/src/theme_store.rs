@@ -13,9 +13,10 @@ fn in_use_file() -> Option<PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("themes-in-use.txt"))
 }
 
-/// Every theme, and the places in the list of the ones songs and Bible slides use. The built-in theme is always
+/// Every theme, the places in the list of the ones songs and Bible slides use, and which
+/// layout of its theme Bible slides use. The built-in theme is always
 /// there, as it was last saved if it has been changed; the others follow in name order.
-pub fn load_all() -> (Vec<Theme>, usize, usize) {
+pub fn load_all() -> (Vec<Theme>, usize, usize, pc_model::Template) {
     let mut themes = folder().map_or_else(|| vec![Theme::builtin()], |folder| load_from(&folder));
     themes[1..].sort_by_key(|theme| theme.name.to_lowercase());
     // The note has a line for each kind of slide: `songs=<id>` and `bible=<id>`.
@@ -28,7 +29,9 @@ pub fn load_all() -> (Vec<Theme>, usize, usize) {
             .unwrap_or(0)
     };
     let (songs, bible) = (place("songs"), place("bible"));
-    (themes, songs, bible)
+    let alone = note.lines().any(|line| line.trim() == "bible_layout=alone");
+    let layout = if alone { pc_model::Template::Alone } else { pc_model::Template::Full };
+    (themes, songs, bible, layout)
 }
 
 fn load_from(folder: &Path) -> Vec<Theme> {
@@ -67,12 +70,13 @@ fn save_in(folder: &Path, theme: &Theme) -> Result<(), String> {
 }
 
 /// Remembers which themes songs and Bible slides use, for the next start.
-pub fn remember_in_use(songs: &Theme, bible: &Theme) {
+pub fn remember_in_use(songs: &Theme, bible: &Theme, bible_layout: pc_model::Template) {
     if let Some(file) = in_use_file() {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(file, format!("songs={}\nbible={}\n", songs.id, bible.id));
+        let layout = if bible_layout == pc_model::Template::Alone { "alone" } else { "full" };
+        let _ = std::fs::write(file, format!("songs={}\nbible={}\nbible_layout={layout}\n", songs.id, bible.id));
     }
 }
 

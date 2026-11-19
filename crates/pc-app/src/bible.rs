@@ -6,7 +6,7 @@ use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, p
 use std::sync::Arc;
 
 use pc_bible::{Bible, VerseRef, convert, parse_reference};
-use pc_model::{Group, Object, Presentation, Rgba, Role, Slide, Uuid};
+use pc_model::{Group, Object, Presentation, Rgba, Role, Slide, Template, Uuid};
 
 use crate::home::BibleTarget;
 
@@ -140,8 +140,14 @@ fn raised(digit: char) -> char {
 /// Turns what was typed in Scripture Lookup into slides. The reference is read in the
 /// numbering of the first translation; the others are lined up with it. Each translation's
 /// words, and its reference, go into the theme box chosen for them; a box given both holds
-/// the words with the reference under them. The error is a plain sentence for the operator.
-pub fn build_passage(typed: &str, rows: &[RowChoice], options: &BibleOptions) -> Result<Presentation, String> {
+/// the words with the reference under them. `pin_main` keeps the main box where the layout
+/// for two languages has it even when a slide has only one. The error is a plain sentence.
+pub fn build_passage(
+    typed: &str,
+    rows: &[RowChoice],
+    options: &BibleOptions,
+    pin_main: Option<pc_model::SlideRect>,
+) -> Result<Presentation, String> {
     let lead = rows.first().ok_or_else(|| "Choose a Bible first.".to_owned())?;
     let range = parse_reference(typed)?;
     let places: Vec<VerseRef> = lead.bible.verses(range).into_iter().map(|(place, _)| place).collect();
@@ -213,7 +219,7 @@ pub fn build_passage(typed: &str, rows: &[RowChoice], options: &BibleOptions) ->
                 }
             }
         }
-        let objects: Vec<Object> = boxes
+        let mut objects: Vec<Object> = boxes
             .into_iter()
             .map(|(role, words, references)| {
                 // Translations sharing a box each take a line; references sharing one sit side by side.
@@ -224,6 +230,14 @@ pub fn build_passage(typed: &str, rows: &[RowChoice], options: &BibleOptions) ->
                 Object::text(role, lines.join("\n"))
             })
             .collect();
+        // A slide with no second language would give its main box the larger place; the
+        // two-language layout keeps it where it is.
+        if let Some(place) = pin_main
+            && !objects.iter().any(|object| object.role == Some(Role::translation()))
+            && let Some(main) = objects.iter_mut().find(|object| object.role == Some(Role::primary()))
+        {
+            main.frame = Some(place);
+        }
         // Each slide is a group of its own, named by the verses on it, so the bar under
         // every slide says where it is from.
         groups.push(Group {
@@ -409,6 +423,9 @@ pub struct BibleOptions {
     pub reference: ReferenceStyle,
     /// What went wrong with the last download, for the operator.
     pub problem: Option<String>,
+    /// True when one of the pop-up's own menus was open on the last frame, so the click that
+    /// closed that menu does not also close the pop-up.
+    pub menu_was_open: bool,
 }
 
 impl Default for BibleOptions {
@@ -423,8 +440,18 @@ impl Default for BibleOptions {
             preserve_font_color: false,
             reference: ReferenceStyle::VerseReferences,
             problem: None,
+            menu_was_open: false,
         }
     }
+}
+
+/// The themes to choose from for Bible slides, and the choice now made.
+pub struct ThemeChoice<'a> {
+    pub names: &'a [String],
+    /// Each theme's two layouts, as boxes, for the pictures.
+    pub layouts: &'a [[Vec<(Role, pc_model::SlideRect)>; 2]],
+    pub theme: usize,
+    pub layout: Template,
 }
 
 /// Draws the pop-up under the Options button, its right edge in line with the button's.
@@ -435,12 +462,12 @@ pub fn options_popup(
     downloads: &mut crate::bible_store::Downloads,
     button: Rect,
     library: &str,
-    themes: (&[String], usize),
-) -> Option<usize> {
+    themes: &ThemeChoice,
+) -> Option<(usize, Template)> {
     let mut picked_theme = None;
     let size = vec2(508.0, 262.0);
     let corner = pos2(button.max.x - size.x + 8.0, button.max.y + 8.0);
-    egui::Area::new(egui::Id::unique("bible options"))
+    let area = egui::Area::new(egui::Id::unique("bible options"))
         .order(egui::Order::Foreground)
         .fade_in(false)
         .constrain(false)
@@ -523,6 +550,16 @@ pub fn options_popup(
                     });
                 });
         });
+    // A click anywhere outside the pop-up and its button closes it, as any pop-over does. A
+    // click in one of its own menus, which open outside it, does not.
+    let outside = ctx.input(|input| {
+        input.pointer.any_click()
+            && input.pointer.interact_pos().is_some_and(|at| !area.response.rect.contains(at) && !button.contains(at))
+    });
+    if outside && !egui::Popup::is_any_open(ctx) && !std::mem::take(&mut options.menu_was_open) {
+        options.open = false;
+    }
+    options.menu_was_open = egui::Popup::is_any_open(ctx);
     picked_theme
 }
 
@@ -530,8 +567,8 @@ fn slide_options(
     ui: &mut egui::Ui,
     options: &mut BibleOptions,
     library: &str,
-    (themes, in_use): (&[String], usize),
-) -> Option<usize> {
+    themes: &ThemeChoice,
+) -> Option<(usize, Template)> {
     let mut picked_theme = None;
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
@@ -560,20 +597,50 @@ fn slide_options(
     ui.add_space(6.0);
     egui::Grid::new("bible slide options").num_columns(2).spacing([10.0, 12.0]).show(ui, |ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(egui::RichText::new("Theme").strong()));
-        // The theme Bible slides use. The Theme button in the toolbar sets the same thing.
-        let chosen = themes.get(in_use).map_or("", String::as_str);
+        // The theme Bible slides use, and which of its layouts. Each layout is shown as a
+        // small picture of where its boxes sit.
+        let chosen = format!(
+            "{} › {}",
+            themes.names.get(themes.theme).map_or("", String::as_str),
+            crate::home::layout_name(themes.layout)
+        );
         egui::ComboBox::from_id_salt("bible theme")
             .selected_text(chosen)
-            .width(120.0)
+            .width(190.0)
+            .height(320.0)
             .show_ui(ui, |ui| {
-                for (index, name) in themes.iter().enumerate() {
-                    if ui.selectable_label(index == in_use, name.as_str()).clicked() {
-                        picked_theme = Some(index);
+                for (index, name) in themes.names.iter().enumerate() {
+                    ui.label(egui::RichText::new(name.as_str()).font(crate::studio::semibold(12.0)).color(DIM));
+                    for (which, layout) in [Template::Full, Template::Alone].into_iter().enumerate() {
+                        let (row, response) = ui.allocate_exact_size(vec2(210.0, 40.0), Sense::click());
+                        let on = index == themes.theme && layout == themes.layout;
+                        if on {
+                            ui.painter().rect_filled(row, 6.0, crate::studio::ACCENT.gamma_multiply(0.3));
+                        } else if response.hovered() {
+                            ui.painter().rect_filled(row, 6.0, crate::studio::HOVER);
+                        }
+                        let picture = Rect::from_min_size(row.min + vec2(6.0, 4.0), vec2(57.0, 32.0));
+                        let boxes = themes.layouts.get(index).map_or(&[][..], |layouts| layouts[which].as_slice());
+                        crate::home::box_diagram(ui.painter(), picture, boxes, None);
+                        ui.painter().text(
+                            pos2(picture.max.x + 10.0, row.center().y),
+                            Align2::LEFT_CENTER,
+                            crate::home::layout_name(layout),
+                            FontId::proportional(13.0),
+                            INK,
+                        );
+                        if response.clicked() {
+                            picked_theme = Some((index, layout));
+                            ui.close();
+                        }
                     }
+                    ui.add_space(4.0);
                 }
             })
             .response
-            .on_hover_text("The theme Bible slides use. Its boxes are what the Verse and Reference menus offer.");
+            .on_hover_text(
+                "The theme and layout Bible slides use. Its boxes are what the Verse and Reference menus offer.",
+            );
         ui.end_row();
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(egui::RichText::new("Import Library").strong())
@@ -710,7 +777,7 @@ mod tests {
     fn a_reference_becomes_one_slide_for_each_verse_in_both_languages() {
         let mut shelf = Shelf::shipped();
         let rows = rows(&mut shelf, &[("kjv", main(), reference()), ("syn", translation(), None)]);
-        let passage = build_passage("John 3:16-17", &rows, &BibleOptions::default()).unwrap();
+        let passage = build_passage("John 3:16-17", &rows, &BibleOptions::default(), None).unwrap();
         assert_eq!(passage.title, "John 3:16-17");
         assert_eq!(passage.slide_count(), 2);
         // Each slide's bar names its own verse.
@@ -726,13 +793,13 @@ mod tests {
     fn the_russian_psalm_is_the_one_that_matches_the_english() {
         let mut shelf = Shelf::shipped();
         let english_first = rows(&mut shelf, &[("kjv", main(), reference()), ("syn", translation(), reference())]);
-        let passage = build_passage("Psalm 23:1", &english_first, &BibleOptions::default()).unwrap();
+        let passage = build_passage("Psalm 23:1", &english_first, &BibleOptions::default(), None).unwrap();
         let shown = texts(passage.slide(0).unwrap().1).join(" | ");
         assert!(shown.contains("The LORD is my shepherd") && shown.contains("Пастырь мой"), "{shown}");
         assert!(shown.contains("Psalms 23:1  ·  Псалтирь 22:1"), "{shown}");
         // Typed the Russian way with the Russian Bible first, it is the same psalm.
         let russian_first = rows(&mut shelf, &[("syn", main(), None), ("kjv", translation(), None)]);
-        let passage = build_passage("Пс 22:1", &russian_first, &BibleOptions::default()).unwrap();
+        let passage = build_passage("Пс 22:1", &russian_first, &BibleOptions::default(), None).unwrap();
         let shown = texts(passage.slide(0).unwrap().1).join(" | ");
         assert!(shown.contains("Пастырь мой") && shown.contains("The LORD is my shepherd"), "{shown}");
     }
@@ -747,7 +814,7 @@ mod tests {
             display_translation: true,
             ..BibleOptions::default()
         };
-        let passage = build_passage("jn 3:16-17", &rows, &options).unwrap();
+        let passage = build_passage("jn 3:16-17", &rows, &options, None).unwrap();
         assert_eq!(passage.slide_count(), 1);
         let shown = texts(passage.slide(0).unwrap().1);
         assert!(
@@ -758,12 +825,12 @@ mod tests {
         assert_eq!(shown[1], "John 3:16-17 (WEB)");
 
         let last_only = BibleOptions { reference: ReferenceStyle::PassageLast, ..BibleOptions::default() };
-        let passage = build_passage("jn 3:16-17", &rows, &last_only).unwrap();
+        let passage = build_passage("jn 3:16-17", &rows, &last_only, None).unwrap();
         assert_eq!(texts(passage.slide(0).unwrap().1).len(), 1);
         assert_eq!(texts(passage.slide(1).unwrap().1)[1], "John 3:16-17");
 
         let none = BibleOptions { reference: ReferenceStyle::NoReference, ..BibleOptions::default() };
-        let passage = build_passage("jn 3:16", &rows, &none).unwrap();
+        let passage = build_passage("jn 3:16", &rows, &none, None).unwrap();
         assert_eq!(texts(passage.slide(0).unwrap().1).len(), 1);
     }
 
@@ -771,24 +838,39 @@ mod tests {
     fn words_and_reference_sharing_a_box_are_one_object_with_the_reference_last() {
         let mut shelf = Shelf::shipped();
         let rows = rows(&mut shelf, &[("kjv", main(), main()), ("syn", translation(), None)]);
-        let passage = build_passage("John 3:16", &rows, &BibleOptions::default()).unwrap();
+        let passage = build_passage("John 3:16", &rows, &BibleOptions::default(), None).unwrap();
         let (_, slide) = passage.slide(0).unwrap();
         assert_eq!(slide.objects.len(), 2);
         let main_box = slide.text_for(&Role::primary()).unwrap();
         assert!(main_box.starts_with("For God so loved") && main_box.ends_with("\nJohn 3:16"), "{main_box}");
         // A translation sent nowhere is left off the slide.
         let rows = self::rows(&mut shelf, &[("kjv", main(), None), ("syn", None, None)]);
-        let passage = build_passage("John 3:16", &rows, &BibleOptions::default()).unwrap();
+        let passage = build_passage("John 3:16", &rows, &BibleOptions::default(), None).unwrap();
         assert_eq!(passage.slide(0).unwrap().1.objects.len(), 1);
+    }
+
+    #[test]
+    fn the_two_language_layout_keeps_the_main_box_in_place_with_one_language() {
+        let mut shelf = Shelf::shipped();
+        let place = pc_model::SlideRect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 };
+        let one = rows(&mut shelf, &[("kjv", main(), reference())]);
+        let passage = build_passage("John 3:16", &one, &BibleOptions::default(), Some(place)).unwrap();
+        assert_eq!(passage.slide(0).unwrap().1.objects[0].frame, Some(place));
+        // With a second language on the slide the theme places both, as usual.
+        let two = rows(&mut shelf, &[("kjv", main(), reference()), ("syn", translation(), None)]);
+        let passage = build_passage("John 3:16", &two, &BibleOptions::default(), Some(place)).unwrap();
+        assert_eq!(passage.slide(0).unwrap().1.objects[0].frame, None);
     }
 
     #[test]
     fn a_reference_that_names_nothing_says_so() {
         let mut shelf = Shelf::shipped();
         let rows = rows(&mut shelf, &[("kjv", main(), reference())]);
-        assert!(build_passage("John 99", &rows, &BibleOptions::default()).unwrap_err().contains("no such verses"));
-        assert!(build_passage("Nobody 1:1", &rows, &BibleOptions::default()).unwrap_err().contains("No book"));
-        assert!(build_passage("John 3:16", &[], &BibleOptions::default()).is_err());
+        assert!(
+            build_passage("John 99", &rows, &BibleOptions::default(), None).unwrap_err().contains("no such verses")
+        );
+        assert!(build_passage("Nobody 1:1", &rows, &BibleOptions::default(), None).unwrap_err().contains("No book"));
+        assert!(build_passage("John 3:16", &[], &BibleOptions::default(), None).is_err());
     }
 
     #[test]

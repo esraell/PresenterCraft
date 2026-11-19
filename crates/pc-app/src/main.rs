@@ -237,6 +237,8 @@ struct App {
     themes: Vec<Theme>,
     songs_theme: usize,
     bible_theme: usize,
+    /// Which layout of its theme Bible slides use.
+    bible_layout: pc_model::Template,
     /// The themes with changes not yet written to their files, by place.
     themes_unsaved: Vec<usize>,
     /// The modifier keys held down now. A letter pressed with Command or Control is a
@@ -375,6 +377,8 @@ impl App {
                 output_placement: placement,
                 theme_names: self.themes.iter().map(|theme| theme.name.clone()).collect(),
                 theme_for_songs: self.songs_theme,
+                theme_layouts: self.theme_layouts(),
+                bible_layout: self.bible_layout,
                 services: service::load(),
                 // A song is found again by its file, without the ending (which changes when
                 // it is first saved); one with no file, by its title.
@@ -391,7 +395,8 @@ impl App {
                 bible: home::BiblePage {
                     slots: Some(self.bible_slots),
                     shelf: bible::Shelf::with_installed(),
-                    boxes: self.theme_for_bible.boxes.iter().map(|style| style.role.clone()).collect(),
+                    boxes: home::layout_boxes(&self.theme_for_bible, self.bible_layout),
+                    pin_main: self.pinned_main(),
                     ..home::BiblePage::default()
                 },
                 ..HomeState::default()
@@ -626,6 +631,20 @@ impl App {
         if self.bible_slots.contains(&presentation) { &self.theme_for_bible } else { &self.theme }
     }
 
+    /// Each theme's two layouts as boxes, for the pictures in the theme picker.
+    fn theme_layouts(&self) -> Vec<[Vec<(pc_model::Role, pc_model::SlideRect)>; 2]> {
+        use pc_model::Template::{Alone, Full};
+        self.themes.iter().map(|theme| [home::layout_boxes(theme, Full), home::layout_boxes(theme, Alone)]).collect()
+    }
+
+    /// Where a Bible slide's main box is held when the two-language layout is in use, so a
+    /// slide with one language keeps that layout.
+    fn pinned_main(&self) -> Option<pc_model::SlideRect> {
+        (self.bible_layout == pc_model::Template::Full)
+            .then(|| self.theme_for_bible.style_for(&pc_model::Role::primary()).map(|style| style.rect))
+            .flatten()
+    }
+
     /// Brings everything that depends on the themes up to date after one was changed or
     /// chosen: the copies slides are drawn with, every thumbnail, and what the window lists.
     /// The output is left as it is; `refresh_output` brings it up to date.
@@ -634,6 +653,7 @@ impl App {
         self.bible_theme = self.bible_theme.min(self.themes.len().saturating_sub(1));
         self.theme = Arc::new(self.themes[self.songs_theme].clone());
         self.theme_for_bible = Arc::new(self.themes[self.bible_theme].clone());
+        let (layouts, pinned) = (self.theme_layouts(), self.pinned_main());
         if let Some(running) = self.running.as_mut() {
             running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
             running.canvas_for = None;
@@ -641,7 +661,10 @@ impl App {
             state.theme_names = self.themes.iter().map(|theme| theme.name.clone()).collect();
             state.theme_for_songs = self.songs_theme;
             state.theme_for_bible = self.bible_theme;
-            state.bible.boxes = self.theme_for_bible.boxes.iter().map(|style| style.role.clone()).collect();
+            state.theme_layouts = layouts;
+            state.bible_layout = self.bible_layout;
+            state.bible.boxes = home::layout_boxes(&self.theme_for_bible, self.bible_layout);
+            state.bible.pin_main = pinned;
             running.home_window.request_redraw();
         }
     }
@@ -659,15 +682,22 @@ impl App {
             Some(ThemeRequest::UseForSongs(index)) if index < count && index != self.songs_theme => {
                 self.songs_theme = index;
                 self.themes_changed();
-                theme_store::remember_in_use(&self.theme, &self.theme_for_bible);
+                theme_store::remember_in_use(&self.theme, &self.theme_for_bible, self.bible_layout);
                 if !editing {
                     self.refresh_output();
                 }
             }
-            Some(ThemeRequest::UseForBible(index)) if index < count && index != self.bible_theme => {
+            Some(ThemeRequest::UseForBible(index, layout))
+                if index < count && (index != self.bible_theme || layout != self.bible_layout) =>
+            {
                 self.bible_theme = index;
+                self.bible_layout = layout;
                 self.themes_changed();
-                theme_store::remember_in_use(&self.theme, &self.theme_for_bible);
+                theme_store::remember_in_use(&self.theme, &self.theme_for_bible, self.bible_layout);
+                // Choosing a theme points the translations at its boxes, as a fresh start.
+                if let Some(running) = self.running.as_mut() {
+                    running.home_state.bible.assign_boxes();
+                }
                 if !editing {
                     self.refresh_output();
                 }
@@ -1254,7 +1284,7 @@ fn main() -> ExitCode {
         }
     };
     event_loop.set_control_flow(ControlFlow::Wait);
-    let (themes, songs_theme, bible_theme) = theme_store::load_all();
+    let (themes, songs_theme, bible_theme, bible_layout) = theme_store::load_all();
     let mut app = App {
         options,
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
@@ -1268,6 +1298,7 @@ fn main() -> ExitCode {
         themes,
         songs_theme,
         bible_theme,
+        bible_layout,
         themes_unsaved: Vec::new(),
         held: winit::keyboard::ModifiersState::empty(),
         capture_selects_box: false,

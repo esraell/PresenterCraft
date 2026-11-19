@@ -256,8 +256,13 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                     if open || (menu == ToolMenu::More && editing_theme) { Emphasis::Chosen } else { Emphasis::Plain };
                 let response = block_button(ui, vec2(70.0, 28.0), label, "", emphasis).on_hover_text(hint);
                 if response.clicked() {
-                    state.menu = Some((menu, pos2(response.rect.min.x, response.rect.max.y + 8.0)));
-                    state.menu_fresh = true;
+                    // A second click on the button closes its menu.
+                    if open {
+                        state.menu = None;
+                    } else {
+                        state.menu = Some((menu, pos2(response.rect.min.x, response.rect.max.y + 8.0)));
+                        state.menu_fresh = true;
+                    }
                 }
             }
 
