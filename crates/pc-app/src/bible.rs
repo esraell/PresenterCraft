@@ -94,6 +94,23 @@ impl Shelf {
         }
     }
 
+    /// Takes a downloaded Bible off the shelf and moves its file to the Trash. The Bibles that
+    /// come with the app cannot be removed.
+    pub fn remove(&mut self, index: usize) -> Result<(), String> {
+        let Some(shelved) = self.bibles.get(index) else { return Err("There is no such Bible.".to_owned()) };
+        match &shelved.kept {
+            Kept::Shipped(_) => return Err(format!("The {} comes with the app and stays.", shelved.name)),
+            Kept::File(path) => {
+                if path.exists() {
+                    trash::delete(path)
+                        .map_err(|e| format!("Could not move the {} to the Trash: {e}", shelved.name))?;
+                }
+            }
+        }
+        self.bibles.remove(index);
+        Ok(())
+    }
+
     pub fn position(&self, id: &str) -> Option<usize> {
         self.bibles.iter().position(|b| b.id == id)
     }
@@ -149,7 +166,13 @@ pub fn build_passage(
     template: Option<Uuid>,
 ) -> Result<Presentation, String> {
     let lead = rows.first().ok_or_else(|| "Choose a Bible first.".to_owned())?;
-    let range = parse_reference(typed)?;
+    let mut range = parse_reference(typed)?;
+    // A chapter past the end of the book is read as its last chapter: "John 99" is John 21.
+    let chapters = lead.bible.chapter_count(range.start.book);
+    if chapters > 0 && range.start.chapter > chapters {
+        range.start = VerseRef { chapter: chapters, verse: 1, ..range.start };
+        range.end = VerseRef { chapter: chapters, verse: pc_bible::LAST, ..range.start };
+    }
     let places: Vec<VerseRef> = lead.bible.verses(range).into_iter().map(|(place, _)| place).collect();
     let (Some(first), Some(last)) = (places.first().copied(), places.last().copied()) else {
         return Err(format!("The {} has no such verses.", lead.bible.info.name));
@@ -235,7 +258,8 @@ pub fn build_passage(
         groups.push(Group {
             id: Uuid::new_v4(),
             name: label(lead, from, to),
-            color: Rgba::rgb(40, 110, 200),
+            // White on black, as ProPresenter shows a Bible slide's bar.
+            color: Rgba::rgb(0, 0, 0),
             slides: vec![Slide { template, ..Slide::new(objects) }],
         });
     }
@@ -418,6 +442,8 @@ pub struct BibleOptions {
     /// True when one of the pop-up's own menus was open on the last frame, so the click that
     /// closed that menu does not also close the pop-up.
     pub menu_was_open: bool,
+    /// A downloaded Bible asked to be removed, by its place on the shelf.
+    pub remove: Option<usize>,
 }
 
 impl Default for BibleOptions {
@@ -433,6 +459,7 @@ impl Default for BibleOptions {
             reference: ReferenceStyle::VerseReferences,
             problem: None,
             menu_was_open: false,
+            remove: None,
         }
     }
 }
@@ -695,10 +722,14 @@ fn bibles(
         }
         if options.bibles_tab == 0 {
             ui.add_space(6.0);
-            for bible in &shelf.bibles {
+            for (index, bible) in shelf.bibles.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("{} ({})", bible.name, bible.short)).color(INK));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        // A downloaded Bible can be removed; the ones that come with the app stay.
+                        if !bible.shipped && ui.small_button("Remove").on_hover_text("Move this Bible's file to the Trash").clicked() {
+                            options.remove = Some(index);
+                        }
                         let note = if bible.shipped { "Comes with the app" } else { bible.terms.as_str() };
                         ui.label(egui::RichText::new(note).size(10.5).color(DIM));
                     });
@@ -869,8 +900,11 @@ mod tests {
     fn a_reference_that_names_nothing_says_so() {
         let mut shelf = Shelf::shipped();
         let rows = rows(&mut shelf, &[("kjv", main(), reference())]);
+        // A chapter past the end of the book is its last chapter, as ProPresenter has it.
+        let last = build_passage("John 99", &rows, &BibleOptions::default(), None).unwrap();
+        assert!(last.title.starts_with("John 21"), "{}", last.title);
         assert!(
-            build_passage("John 99", &rows, &BibleOptions::default(), None).unwrap_err().contains("no such verses")
+            build_passage("John 3:99", &rows, &BibleOptions::default(), None).unwrap_err().contains("no such verses")
         );
         assert!(build_passage("Nobody 1:1", &rows, &BibleOptions::default(), None).unwrap_err().contains("No book"));
         assert!(build_passage("John 3:16", &[], &BibleOptions::default(), None).is_err());

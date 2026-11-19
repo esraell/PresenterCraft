@@ -297,14 +297,39 @@ impl BiblePage {
     /// The most translations that can be shown together.
     pub const MAX_ROWS: usize = 4;
 
-    /// Adds a translation row, up to the limit. Returns true if one was added.
+    /// Adds a translation row, up to the limit. Returns true if one was added. When every
+    /// installed Bible is already in a row, it says so, as ProPresenter does.
     pub fn add_row(&mut self) -> bool {
-        // The next Bible no row is using yet; when every installed Bible is in use there is
-        // nothing to add.
+        // The next Bible no row is using yet.
         let unused = (0..self.shelf.bibles.len()).find(|at| self.rows.iter().all(|row| row.bible != *at));
-        let Some(bible) = unused.filter(|_| self.rows.len() < Self::MAX_ROWS) else { return false };
+        let Some(bible) = unused.filter(|_| self.rows.len() < Self::MAX_ROWS) else {
+            if unused.is_none() {
+                self.message = Some(
+                    "All available bibles are in use. If you would like to add another translation, please install more bibles."
+                        .to_owned(),
+                );
+            }
+            return false;
+        };
         self.rows.push(BibleRow { bible, verse: None, reference: None });
         true
+    }
+
+    /// Removes a downloaded Bible, and points any row that used it at the first Bible.
+    pub fn remove_bible(&mut self, index: usize) {
+        match self.shelf.remove(index) {
+            Ok(()) => {
+                for row in &mut self.rows {
+                    if row.bible == index {
+                        row.bible = 0;
+                    } else if row.bible > index {
+                        row.bible -= 1;
+                    }
+                }
+                self.made_with.clear();
+            }
+            Err(problem) => self.options.problem = Some(problem),
+        }
     }
 
     /// Points each translation at the boxes of the layout now in use, as choosing a theme
@@ -2661,15 +2686,27 @@ fn bible_area(
                 let entered = |response: &egui::Response, ui: &egui::Ui| {
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
                 };
+                let lookup_id = ui.scope_id().with("scripture lookup");
                 let lookup = ui
                     .add(
                         egui::TextEdit::singleline(&mut state.bible.lookup)
+                            .id(lookup_id)
                             .hint_text("Scripture Lookup")
                             .desired_width(240.0),
                     )
                     .on_hover_text("Type a reference, such as John 3:16, and press Return");
                 if entered(&lookup, ui) {
                     state.bible.look_up(live);
+                    // The field keeps the keyboard with its words selected, ready for the next one.
+                    lookup.request_focus();
+                    if let Some(mut edit) = egui::text_edit::TextEditState::load(ui.ctx(), lookup_id) {
+                        let all = egui::text::CCursorRange::two(
+                            egui::text::CCursor::new(0),
+                            egui::text::CCursor::new(state.bible.lookup.chars().count()),
+                        );
+                        edit.cursor.set_char_range(Some(all));
+                        edit.store(ui.ctx(), lookup_id);
+                    }
                 }
                 // Book, then chapter, then verse, for when the reference is easier to pick than type.
                 let lead = state.bible.rows.first().map(|row| row.bible).and_then(|at| state.bible.shelf.get(at).ok());
@@ -2747,6 +2784,9 @@ fn bible_area(
                         if let Some((index, layout)) = picked {
                             state.theme_request = Some(ThemeRequest::UseForBible(index, layout));
                         }
+                        if let Some(index) = state.bible.options.remove.take() {
+                            state.bible.remove_bible(index);
+                        }
                     }
                     // Keeps the passage in the service, to be brought back with one click.
                     let saved = state.bible.saved();
@@ -2769,14 +2809,21 @@ fn bible_area(
             let labels = state.bible.box_labels.clone();
             let used: Vec<(BibleTarget, BibleTarget)> =
                 state.bible.rows.iter().map(|row| (row.verse.clone(), row.reference.clone())).collect();
+            let bibles_used: Vec<usize> = state.bible.rows.iter().map(|row| row.bible).collect();
             for (index, row) in state.bible.rows.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     let chosen = state.bible.shelf.bibles.get(row.bible).map_or("Choose a Bible", |b| b.name.as_str());
                     egui::ComboBox::from_id_salt(("bible translation", index)).selected_text(chosen).width(200.0).show_ui(
                         ui,
                         |ui| {
+                            // A Bible another row already shows is greyed out.
                             for (place, bible) in state.bible.shelf.bibles.iter().enumerate() {
-                                ui.selectable_value(&mut row.bible, place, format!("{} ({})", bible.name, bible.short));
+                                let elsewhere = place != row.bible && bibles_used.contains(&place);
+                                let label = format!("{} ({})", bible.name, bible.short);
+                                let item = ui.add_enabled(!elsewhere, egui::Button::selectable(row.bible == place, label));
+                                if item.on_disabled_hover_text("Another row shows this Bible").clicked() {
+                                    row.bible = place;
+                                }
                             }
                         },
                     );
@@ -2809,10 +2856,31 @@ fn bible_area(
                         } else if ui.button("−").on_hover_text("Remove this translation").clicked() {
                             remove = Some(index);
                         }
-                        let terms = state.bible.shelf.bibles.get(row.bible).map_or_else(String::new, |b| {
-                            if b.credit.is_empty() { b.terms.clone() } else { format!("{}\n{}", b.terms, b.credit) }
-                        });
-                        ui.label(egui::RichText::new("License").size(11.0).color(DIM)).on_hover_text(terms);
+                        // License: a click shows the Bible's name, abbreviation and terms.
+                        let license = ui.add(egui::Button::new(egui::RichText::new("License").size(11.0).color(DIM)).frame(false));
+                        let shelved = state.bible.shelf.bibles.get(row.bible);
+                        egui::Popup::from_toggle_button_response(&license)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                ui.set_width(300.0);
+                                if let Some(bible) = shelved {
+                                    egui::Grid::new(("license", index)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                                        for (label, value) in [
+                                            ("Bible", bible.name.as_str()),
+                                            ("Abbreviation", bible.short.as_str()),
+                                            ("Copyright", bible.terms.as_str()),
+                                            ("Credit", bible.credit.as_str()),
+                                        ] {
+                                            if value.is_empty() {
+                                                continue;
+                                            }
+                                            ui.label(egui::RichText::new(label).color(DIM));
+                                            ui.add(egui::Label::new(value).wrap());
+                                            ui.end_row();
+                                        }
+                                    });
+                                }
+                            });
                     });
                 });
             }

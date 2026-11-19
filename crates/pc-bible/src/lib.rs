@@ -380,6 +380,21 @@ pub fn parse_reference(typed: &str) -> Result<Range, String> {
         }
     };
     let numbers = numbers.trim();
+    // "3:16,18" lists verses; it is read as 16 to 18, as ProPresenter reads it.
+    let listed;
+    let numbers = match numbers.split_once(':') {
+        Some((chapter, verses)) if verses.contains(',') && !verses.contains(['-', '\u{2013}', '\u{2014}']) => {
+            let parts: Vec<&str> = verses.split(',').map(str::trim).filter(|part| !part.is_empty()).collect();
+            match (parts.first(), parts.last()) {
+                (Some(first), Some(last)) => {
+                    listed = format!("{chapter}:{first}-{last}");
+                    listed.as_str()
+                }
+                _ => numbers,
+            }
+        }
+        _ => numbers,
+    };
     if numbers.is_empty() {
         // A whole book with one chapter is fine; otherwise start at chapter 1.
         return Ok(Range {
@@ -439,6 +454,15 @@ mod tests {
             start: VerseRef { book, chapter: start.0, verse: start.1 },
             end: VerseRef { book, chapter: end.0, verse: end.1 },
         }
+    }
+
+    #[test]
+    fn a_list_of_verses_is_read_from_the_first_to_the_last() {
+        let range = parse_reference("John 3:16,18").unwrap();
+        assert_eq!((range.start.chapter, range.start.verse, range.end.verse), (3, 16, 18));
+        // A comma between chapter and verse still works.
+        let range = parse_reference("John 3,16").unwrap();
+        assert_eq!((range.start.chapter, range.start.verse, range.end.verse), (3, 16, 16));
     }
 
     #[test]
