@@ -3039,7 +3039,8 @@ impl App {
                     running.home_state.bible.options.pane = usize::from(pane == "bibles");
                 }
             }
-            // Testing aid: save the passage on the Bible page as a song, as Save as Song does.
+            // Testing aid: save the passage on the Bible page as a presentation, as Save As… ›
+            // Save as Presentation does.
             if running.frames == GO_LIVE_AT + 6 && std::env::var_os("PRESENTERCRAFT_BIBLE_SAVE_SONG").is_some() {
                 let state = &mut running.home_state;
                 state.bible_song_request = Some((state.bible.showing, "John 3:16-18 (KJV, SYN)".to_owned()));

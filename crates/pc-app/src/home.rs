@@ -3695,33 +3695,45 @@ fn bible_area(
                             state.bible.remove_bible(index);
                         }
                     }
-                    // Keeps the passage in the service, to be brought back with one click.
+                    // Save As…, as ProPresenter has it: the passage as a presentation of its own in
+                    // the library, or kept in a playlist, ready to open again with its settings.
                     let saved = state.bible.saved();
-                    let save = ui
-                        .add_enabled(saved.is_some(), egui::Button::new("Save to Playlist"))
-                        .on_hover_text("Keep this passage in the playlist in front, ready to open again")
+                    let menu = ui
+                        .add_enabled(saved.is_some(), egui::Button::new("Save As… ▾"))
+                        .on_hover_text("Keep this passage: as a presentation in the library, or in a playlist")
                         .on_disabled_hover_text("Look a passage up first");
-                    if save.clicked()
-                        && let Some(saved) = saved.clone()
-                    {
-                        state.services.add(crate::service::Item::Passage(saved));
-                    }
-                    // A song of its own, named by the passage and its Bibles: "John 3:16-18 (KJV, SYN)".
-                    let as_song = ui
-                        .add_enabled(saved.is_some(), egui::Button::new("Save as Song"))
-                        .on_hover_text("Make this passage a song in the library, drawn with the Bible's theme")
-                        .on_disabled_hover_text("Look a passage up first");
-                    if as_song.clicked()
-                        && let Some(saved) = saved
-                    {
-                        let bibles: Vec<String> = saved.rows.iter().map(|row| row.bible.to_uppercase()).collect();
-                        let title = if bibles.is_empty() {
-                            saved.lookup.clone()
-                        } else {
-                            format!("{} ({})", saved.lookup, bibles.join(", "))
-                        };
-                        state.bible_song_request = Some((state.bible.showing, title));
-                    }
+                    egui::Popup::from_toggle_button_response(&menu)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| {
+                            ui.set_min_width(220.0);
+                            let Some(saved) = saved else { return };
+                            // Named by the passage and its Bibles: "John 3:16-18 (KJV, SYN)".
+                            if ui
+                                .button("Save as Presentation")
+                                .on_hover_text("A presentation in the library, drawn with the Bible's theme")
+                                .clicked()
+                            {
+                                let bibles: Vec<String> = saved.rows.iter().map(|row| row.bible.to_uppercase()).collect();
+                                let title = if bibles.is_empty() {
+                                    saved.lookup.clone()
+                                } else {
+                                    format!("{} ({})", saved.lookup, bibles.join(", "))
+                                };
+                                state.bible_song_request = Some((state.bible.showing, title));
+                                ui.close();
+                            }
+                            ui.menu_button("Add to Playlist", |ui| {
+                                let names: Vec<String> =
+                                    state.services.list.iter().map(|playlist| playlist.name.clone()).collect();
+                                for (at, name) in names.iter().enumerate() {
+                                    if ui.button(name.as_str()).clicked() {
+                                        state.services.add_to(at, crate::service::Item::Passage(saved.clone()));
+                                        state.notice = Some(format!("Added {} to {name}.", saved.lookup));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        });
                 });
             });
 

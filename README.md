@@ -127,10 +127,9 @@ ProPresenter.
 - Two translations on one slide, lined up by verse using the standard versification tables.
 - Four Bibles ship with the app (King James, World English, Berean Standard, Russian Synodal)
   and fifteen more can be downloaded from Options › Bibles.
-- Passages can be saved to the playlist in front and brought back with the same settings.
-
-Save as Song makes the passage a song in the library, named like "John 3:16-18 (KJV, SYN)" and
-drawn with the Bible's theme.
+- Save As… keeps a passage: Save as Presentation makes it a presentation in the library, named
+  like "John 3:16-18 (KJV, SYN)" and drawn with the Bible's theme; Add to Playlist puts it in any
+  playlist, to be brought back with the same settings.
 
 ![The Bible view: John 3:16-18 in English and Russian](docs/images/bible.png)
 
