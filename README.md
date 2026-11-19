@@ -108,7 +108,8 @@ ProPresenter.
   in order before it moves on; Previous takes them back.
 - A plus tile after the last slide adds a slide laid out like the one before it.
 - Text can have a background colour behind its lines (under each line's words, or across the
-  box) and bullets or numbers before its lines, from the Text tab.
+  box), bullets or numbers before its lines, and can scroll through its box like a ticker
+  (left, right, up or down), from the Text tab.
 - **Linked Text**: a text box can show the clock, the date, a timer, the song's title, the
   slide's group, label or notes, the next slide's words, the stage message or the copyright line
   instead of its own words; the screens keep the time and timers up to date.

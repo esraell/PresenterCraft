@@ -68,7 +68,13 @@ impl Thumbs {
         slide: &Slide,
         theme: &Theme,
     ) -> Option<(egui::TextureId, bool)> {
-        self.get_layers(gpu, egui_renderer, slide.id, &Layers { media: None, slide: Some(slide), overlay: None }, theme)
+        self.get_layers(
+            gpu,
+            egui_renderer,
+            slide.id,
+            &Layers { media: None, slide: Some(slide), overlay: None, time: 0.0 },
+            theme,
+        )
     }
 
     /// The thumbnail for a picture in the media bin. `None` means it will be ready on a later
@@ -81,8 +87,14 @@ impl Thumbs {
         picture: &Picture,
         theme: &Theme,
     ) -> Option<egui::TextureId> {
-        self.get_layers(gpu, egui_renderer, id, &Layers { media: Some(picture), slide: None, overlay: None }, theme)
-            .map(|(id, _)| id)
+        self.get_layers(
+            gpu,
+            egui_renderer,
+            id,
+            &Layers { media: Some(picture), slide: None, overlay: None, time: 0.0 },
+            theme,
+        )
+        .map(|(id, _)| id)
     }
 
     /// Drops one thumbnail so it is drawn again, for when a slide's words change.
@@ -146,8 +158,13 @@ impl Thumbs {
         // Large enough to stay sharp when the slide is zoomed in on a Retina screen.
         const W: u32 = 2560;
         const H: u32 = 1440;
-        let built =
-            build_layers(&mut self.fonts, &Layers { media: None, slide: Some(slide), overlay: None }, theme, W, H);
+        let built = build_layers(
+            &mut self.fonts,
+            &Layers { media: None, slide: Some(slide), overlay: None, time: 0.0 },
+            theme,
+            W,
+            H,
+        );
         if self.canvas.is_none() {
             let texture = target_texture(&gpu.device, W, H);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

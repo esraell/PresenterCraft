@@ -221,7 +221,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
     loop {
         // While a fade is under way, look for messages without waiting, so it keeps moving;
         // otherwise sleep until there is one.
-        let first = if output.fading.is_some() || output.building() {
+        let first = if output.fading.is_some() || output.building() || output.scrolling() {
             match rx.try_recv() {
                 Ok(msg) => Some(msg),
                 Err(TryRecvError::Empty) => None,
@@ -458,7 +458,9 @@ impl Output {
     /// Builds what a screen shows now for a target of a size.
     fn scene_for(&mut self, id: Uuid, frame: &Frame, w: u32, h: u32) -> vello::Scene {
         let (media, slide, overlay, theme) = self.content_for(id, frame);
-        let layers = Layers { media: media.as_ref(), slide: slide.as_deref(), overlay: overlay.as_deref() };
+        // Scrolling text moves on from when the slide was fully on screen.
+        let time = Instant::now().checked_duration_since(self.slide_on).map_or(0.0, |since| since.as_secs_f32());
+        let layers = Layers { media: media.as_ref(), slide: slide.as_deref(), overlay: overlay.as_deref(), time };
         build_layers(&mut self.fonts, &layers, &theme, w, h).scene
     }
 
@@ -548,6 +550,14 @@ impl Output {
         self.has_stage()
             || self.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text))
             || self.links_tick()
+    }
+
+    /// True while text on the audience screens scrolls, so it is drawn again at each refresh.
+    fn scrolling(&self) -> bool {
+        self.frame.enabled
+            && self.overlay.test_pattern.is_none()
+            && (self.frame.slide.as_deref().is_some_and(|slide| pc_render::scrolls(slide, &self.frame.theme))
+                || self.overlay.props.iter().any(|prop| pc_render::scrolls(prop, &self.frame.theme)))
     }
 
     /// True when linked text on the audience screens shows the time or a timer.

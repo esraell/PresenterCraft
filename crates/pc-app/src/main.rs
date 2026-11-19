@@ -1030,7 +1030,7 @@ impl App {
                 state.screens.iter().find(|screen| screen.kind == screens::Kind::Stage).and_then(|s| s.stage_layout);
             let template = stage::layout_for(&state.stage_layouts, wanted);
             let picture = stage::slide(slide.as_deref(), next.as_ref(), &overlay, &about, &template);
-            let layers = Layers { media: None, slide: Some(&picture), overlay: None };
+            let layers = Layers { media: None, slide: Some(&picture), overlay: None, time: 0.0 };
             let layout = stage::theme_for(&template);
             let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &layout);
             running.preview = now;
@@ -1061,6 +1061,7 @@ impl App {
             media: media.as_ref(),
             slide: slide.as_deref(),
             overlay: over.as_ref().filter(|_| self.show.output_enabled()),
+            time: 0.0,
         };
         let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &theme);
         running.preview = now;

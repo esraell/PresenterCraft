@@ -196,6 +196,7 @@ fn base_box() -> BoxStyle {
         margins: [0.0; 4],
         line_fill: pc_model::LineFill::default(),
         list: Default::default(),
+        scroll: Default::default(),
     }
 }
 

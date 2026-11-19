@@ -35,12 +35,14 @@ pub struct Layers<'a> {
     /// Words over everything else, such as a message. Its objects carry their own places and
     /// looks.
     pub overlay: Option<&'a Slide>,
+    /// Seconds since the slide went on screen, for text that scrolls; 0 shows it where it starts.
+    pub time: f32,
 }
 
 /// Draws a slide for a target of the given pixel size: black, with the slide fitted inside.
 /// `None` draws black only, which is what a cleared layer looks like.
 pub fn build_scene(fonts: &mut Fonts, slide: Option<&Slide>, theme: &Theme, target_w: u32, target_h: u32) -> Built {
-    build_layers(fonts, &Layers { media: None, slide, overlay: None }, theme, target_w, target_h)
+    build_layers(fonts, &Layers { media: None, slide, overlay: None, time: 0.0 }, theme, target_w, target_h)
 }
 
 /// Draws every layer for a target of the given pixel size: black, then the media, then the
@@ -71,16 +73,23 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
 
     let mut overflow = false;
     if let Some(slide) = layers.slide {
-        overflow |= draw_objects(&mut scene, fonts, to_target, slide, theme);
+        overflow |= draw_objects(&mut scene, fonts, to_target, slide, theme, layers.time);
     }
     if let Some(overlay) = layers.overlay {
-        draw_objects(&mut scene, fonts, to_target, overlay, theme);
+        draw_objects(&mut scene, fonts, to_target, overlay, theme, layers.time);
     }
     Built { scene, overflow }
 }
 
 /// Draws a slide's objects. Returns whether any text overflowed its box.
-fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: &Slide, theme: &Theme) -> bool {
+fn draw_objects(
+    scene: &mut Scene,
+    fonts: &mut Fonts,
+    to_target: Affine,
+    slide: &Slide,
+    theme: &Theme,
+    time: f32,
+) -> bool {
     let mut overflow = false;
     // The slide is drawn with one of the theme's templates: the one it names, or the one
     // that suits what is on it.
@@ -144,7 +153,7 @@ fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: 
         if let ObjectKind::Text { text, style } = &object.kind {
             // The theme's style for the object's role, with the object's own settings over it.
             let Some(style) = template.text_style(object.role.as_ref(), style) else { continue };
-            overflow |= draw_text_box(scene, fonts, placed, text, &style, rect);
+            overflow |= draw_text_box(scene, fonts, placed, text, &style, rect, time);
         }
         if faded {
             scene.pop_layer();
@@ -319,6 +328,11 @@ pub fn object_frame(slide: &Slide, object: &Object, theme: &Theme) -> SlideRect 
 }
 
 fn lay_out(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: f32) -> Layout<()> {
+    lay_out_within(fonts, text, style, size, Some(width))
+}
+
+/// Lays text out at a size, wrapping it at `width`, or on lines as long as they are with `None`.
+fn lay_out_within(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: Option<f32>) -> Layout<()> {
     let mut builder = fonts.layout_cx.ranged_builder(&mut fonts.font_cx, text, 1.0, true);
     builder.push_default(StyleProperty::FontSize(size));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(f32::from(style.weight))));
@@ -342,8 +356,48 @@ fn lay_out(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: f3
     };
     // Lines wider than the box (one very long word) stay centred instead of jumping left.
     layout.set_alignment(alignment, AlignmentOptions { align_when_overflowing: true, ..AlignmentOptions::default() });
-    layout.break_all_lines(Some(width));
+    layout.break_all_lines(width);
     layout
+}
+
+/// How fast scrolling text moves, in slide units a second.
+const SCROLL_SPEED: f32 = 160.0;
+
+/// Where scrolling text starts along its way, `time` seconds after it was put on: it moves by
+/// `SCROLL_SPEED`, and once it has gone right out of the box it comes back in from the other
+/// side. `room` is the box's length that way, `length` the text's. At time 0 it is where it
+/// starts, at the box's start.
+fn scrolled(way: pc_model::Scroll, time: f32, room: f32, length: f32) -> f32 {
+    let lap = (room + length).max(1.0);
+    let gone = (time.max(0.0) * SCROLL_SPEED) % lap;
+    match way {
+        // Moving towards the start: out past the start, then back in at the end.
+        pc_model::Scroll::Left | pc_model::Scroll::Up => {
+            if gone <= length {
+                -gone
+            } else {
+                room - (gone - length)
+            }
+        }
+        // Moving towards the end: out past the end, then back in at the start.
+        pc_model::Scroll::Right | pc_model::Scroll::Down | pc_model::Scroll::None => {
+            if gone <= room {
+                gone
+            } else {
+                -(lap - gone)
+            }
+        }
+    }
+}
+
+/// True when a slide has text that scrolls, so it is drawn again at each refresh.
+pub fn scrolls(slide: &Slide, theme: &Theme) -> bool {
+    slide.objects.iter().filter(|object| !object.hidden).any(|object| match &object.kind {
+        ObjectKind::Text { style, .. } => theme
+            .text_style_on(slide, object.role.as_ref(), style)
+            .is_some_and(|look| look.scroll != pc_model::Scroll::None),
+        _ => false,
+    })
 }
 
 /// Lays the text out at the style's size, shrinking in small steps until it fits the box's
@@ -397,10 +451,19 @@ fn draw_text_box(
     text: &str,
     style: &BoxStyle,
     rect: SlideRect,
+    time: f32,
 ) -> bool {
     let text = &*style.line_transform.apply(text);
     let text = &*style.list.apply(text);
     let text = &*style.caps.apply(text);
+    // Text moving sideways runs on one long line.
+    let joined;
+    let text = if style.scroll.sideways() {
+        joined = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join("     ");
+        joined.as_str()
+    } else {
+        text
+    };
     // The text is laid out inside the box's margins.
     let [left, top, right, bottom] = style.margins.map(|margin| margin.max(0.0));
     let rect = SlideRect {
@@ -409,16 +472,34 @@ fn draw_text_box(
         w: (rect.w - left - right).max(1.0),
         h: (rect.h - top - bottom).max(1.0),
     };
-    let (layout, overflow) = fit(fonts, text, style, rect);
+    // Scrolling text keeps its size: it moves instead of being made to fit.
+    let scroll = style.scroll;
+    let (layout, overflow) = match scroll {
+        pc_model::Scroll::None => fit(fonts, text, style, rect),
+        way if way.sideways() => (lay_out_within(fonts, text, style, style.size, None), false),
+        _ => (lay_out(fonts, text, style, style.size, rect.w), false),
+    };
     // Place the text block in its box (in the middle it may spill both ways when it overflows).
     let spare = f64::from(rect.h) - f64::from(layout.height());
-    let top = f64::from(rect.y)
+    let mut left = f64::from(rect.x);
+    let mut top = f64::from(rect.y)
         + match style.valign {
             VAlign::Top => 0.0,
             VAlign::Middle => spare / 2.0,
             VAlign::Bottom => spare,
         };
-    let origin = to_target * Affine::translate((f64::from(rect.x), top));
+    if scroll.sideways() {
+        left += f64::from(scrolled(scroll, time, rect.w, layout.width()));
+    } else if scroll != pc_model::Scroll::None {
+        top = f64::from(rect.y) + f64::from(scrolled(scroll, time, rect.h, layout.height()));
+    }
+    // Scrolling text shows only inside its box.
+    let clipped = scroll != pc_model::Scroll::None;
+    if clipped {
+        let (x, y) = (f64::from(rect.x), f64::from(rect.y));
+        scene.push_clip_layer(Fill::NonZero, to_target, &Rect::new(x, y, x + f64::from(rect.w), y + f64::from(rect.h)));
+    }
+    let origin = to_target * Affine::translate((left, top));
     let outline_width = f64::from(style.outline_width);
     let outline = Stroke::new(outline_width * 2.0).with_join(Join::Round);
     let fill = color(style.fill);
@@ -522,6 +603,9 @@ fn draw_text_box(
                 }
             }
         }
+    }
+    if clipped {
+        scene.pop_layer();
     }
     overflow
 }

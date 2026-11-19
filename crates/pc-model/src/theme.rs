@@ -162,6 +162,28 @@ impl Default for LineFill {
     }
 }
 
+/// Text that keeps moving through its box, as a ticker does, and which way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scroll {
+    #[default]
+    None,
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl Scroll {
+    /// The ways text can move, in the order the inspector shows them.
+    pub const WAYS: [Scroll; 4] = [Scroll::Left, Scroll::Right, Scroll::Up, Scroll::Down];
+
+    /// True for text moving sideways, which runs on one line.
+    pub fn sideways(self) -> bool {
+        matches!(self, Scroll::Left | Scroll::Right)
+    }
+}
+
 /// Marks put before each line of a box's text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -243,7 +265,8 @@ impl BoxStyle {
             letter_spacing,
             margins,
             line_fill,
-            list
+            list,
+            scroll
         );
         self.min_size = self.min_size.min(self.size);
     }
@@ -319,6 +342,9 @@ pub struct BoxStyle {
     /// Bullets or numbers before the lines.
     #[serde(default)]
     pub list: ListStyle,
+    /// Text that keeps moving through the box, and which way.
+    #[serde(default)]
+    pub scroll: Scroll,
 }
 
 /// The distance from one line to the next that text has unless it is given another.
@@ -553,6 +579,7 @@ impl Theme {
             margins: [0.0; 4],
             line_fill: LineFill::default(),
             list: Default::default(),
+            scroll: Default::default(),
         };
         let main =
             base(Role::primary(), SlideRect { x: 120.0, y: 170.0, w: 1680.0, h: 400.0 }, 96.0, 40.0, Rgba::WHITE, 6.0);
@@ -731,6 +758,8 @@ pub struct TextStyle {
     pub line_fill: Option<LineFill>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list: Option<ListStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<Scroll>,
 }
 
 impl TextStyle {
@@ -763,6 +792,7 @@ impl TextStyle {
             margins: Some(look.margins),
             line_fill: Some(look.line_fill),
             list: Some(look.list),
+            scroll: Some(look.scroll),
         }
     }
 
@@ -796,6 +826,7 @@ impl TextStyle {
             margins: self.margins.unwrap_or(base.margins),
             line_fill: self.line_fill.unwrap_or(base.line_fill),
             list: self.list.unwrap_or(base.list),
+            scroll: self.scroll.unwrap_or(base.scroll),
         }
     }
 
@@ -823,6 +854,7 @@ impl TextStyle {
             margins: (wanted.margins != base.margins).then_some(wanted.margins),
             line_fill: (wanted.line_fill != base.line_fill).then_some(wanted.line_fill),
             list: (wanted.list != base.list).then_some(wanted.list),
+            scroll: (wanted.scroll != base.scroll).then_some(wanted.scroll),
         }
     }
 }

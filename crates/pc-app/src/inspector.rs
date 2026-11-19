@@ -48,16 +48,8 @@ pub struct InspectorState {
     pub lock_shape: bool,
     /// True while the slide's notes are open under the inspector.
     pub notes_open: bool,
-    /// Switches for the options that are shown but not built yet, so they can still be ticked.
-    pub later: Later,
     /// What has been typed to narrow the list of fonts.
     pub font_search: String,
-}
-
-#[derive(Debug, Default)]
-pub struct Later {
-    scrolling: bool,
-    scroll_direction: usize,
 }
 
 const WEIGHTS: [(u16, &str); 9] = [
@@ -209,11 +201,6 @@ fn align_mark(painter: &egui::Painter, cell: Rect, which: usize, ink: Color32) {
 /// A tick box with a bold title, as each group of options starts with.
 fn tick(ui: &mut egui::Ui, on: &mut bool, title: &str) -> egui::Response {
     ui.checkbox(on, egui::RichText::new(title).size(13.0).strong().color(INK))
-}
-
-/// A tick box for something not built yet. It can be ticked, and says it does nothing.
-fn tick_later(ui: &mut egui::Ui, on: &mut bool, title: &str) {
-    tick(ui, on, title).on_hover_text(not_built(title));
 }
 
 /// A dim label on the left and a control filling the rest of the row.
@@ -1044,13 +1031,20 @@ fn text_look(
         }
     });
     rule(ui);
+    // Text that keeps moving through its box, as a ticker does.
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(TICK, ROW), Layout::left_to_right(Align::Center), |ui| {
             ui.set_min_width(TICK);
-            tick_later(ui, &mut inspector.later.scrolling, "Scrolling");
+            let mut scrolling = wanted.scroll != pc_model::Scroll::None;
+            if tick(ui, &mut scrolling, "Scrolling")
+                .on_hover_text("The text keeps moving through its box, as a ticker does")
+                .changed()
+            {
+                wanted.scroll = if scrolling { pc_model::Scroll::Left } else { pc_model::Scroll::None };
+            }
         });
-        if inspector.later.scrolling {
-            let picked = inspector.later.scroll_direction;
+        if wanted.scroll != pc_model::Scroll::None {
+            let picked = pc_model::Scroll::WAYS.iter().position(|way| *way == wanted.scroll).unwrap_or(0);
             let width = ui.available_width();
             if let Some(index) = segments(
                 ui,
@@ -1068,7 +1062,7 @@ fn text_look(
                     );
                 },
             ) {
-                inspector.later.scroll_direction = index;
+                wanted.scroll = pc_model::Scroll::WAYS[index];
             }
         }
     });

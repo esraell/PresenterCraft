@@ -229,7 +229,7 @@ fn render_layers(media: Option<&pc_render::Picture>, slide: Option<&Slide>, w: u
     let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
     let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
     let mut painter = Painter::new(device).expect("painter");
-    let layers = pc_render::Layers { media, slide, overlay: None };
+    let layers = pc_render::Layers { media, slide, overlay: None, time: 0.0 };
     let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), w, h);
     let texture = target_texture(device, w, h);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -467,4 +467,36 @@ fn a_text_background_is_drawn_behind_the_lines_or_across_the_box() {
     let full = band(true);
     assert!(blue_count(&lines_only) > 200, "a band sits behind the short line");
     assert!(blue_count(&full) > blue_count(&lines_only) * 3, "across the box is much wider");
+}
+
+#[test]
+fn scrolling_text_starts_in_its_box_and_moves_with_time() {
+    use pc_model::{ObjectKind, Scroll};
+    let mut s = slide("IIIIIIII", None);
+    let ObjectKind::Text { style, .. } = &mut s.objects[0].kind else { panic!("a text object") };
+    style.scroll = Some(Scroll::Left);
+    style.shadow = Some(false);
+    style.outline_width = Some(0.0);
+    let draw = |time: f32| {
+        let mut cx = RenderContext::new();
+        let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+        let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+        let mut painter = Painter::new(device).expect("painter");
+        let layers = pc_render::Layers { media: None, slide: Some(&s), overlay: None, time };
+        let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), 640, 360);
+        let texture = target_texture(device, 640, 360);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        painter.paint(device, queue, &built.scene, &view, 640, 360).expect("paint");
+        read_pixels(device, queue, &texture).expect("read back")
+    };
+    // Where the white letters are, across the screen.
+    let lit_columns = |px: &[u8]| -> Vec<u32> {
+        (0..640).filter(|x| (0..360).any(|y| pixel(px, 640, *x, y)[0] > 200)).collect()
+    };
+    let start = lit_columns(&draw(0.0));
+    let later = lit_columns(&draw(1.0));
+    assert!(!start.is_empty() && !later.is_empty());
+    assert!(later[0] < start[0], "moving left: {} then {}", start[0], later[0]);
+    assert!(pc_render::scrolls(&s, &Theme::builtin()));
+    assert!(!pc_render::scrolls(&slide("Still", None), &Theme::builtin()));
 }
