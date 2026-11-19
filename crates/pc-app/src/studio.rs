@@ -370,10 +370,8 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
         let mut add = None;
         let live_in = show.live().map(|at| at.presentation);
         egui::Panel::bottom("service strip").resizable(false).exact_size(service_height + 96.0).frame(Frame::new()).show(ui, |ui| {
-            ui.add_space(2.0);
-            let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-            ui.painter().rect_filled(line, 0.0, LINE);
-            ui.add_space(10.0);
+            // The strip's own top edge is the line between the library and the service.
+            ui.add_space(12.0);
             // ---- The service.
             ui.horizontal(|ui| {
                 caption(ui, "SERVICE");
