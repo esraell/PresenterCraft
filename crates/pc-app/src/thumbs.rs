@@ -33,7 +33,9 @@ pub struct Thumbs {
     cache: HashMap<Uuid, Thumb>,
     drawn_this_frame: usize,
     frame: u64,
-    preview: Option<(wgpu::Texture, egui::TextureId)>,
+    /// The two pictures the preview alternates between, and which one is in front.
+    previews: [Option<(wgpu::Texture, egui::TextureId)>; 2],
+    preview_front: usize,
     canvas: Option<(wgpu::Texture, egui::TextureId)>,
 }
 
@@ -45,7 +47,8 @@ impl Thumbs {
             cache: HashMap::new(),
             drawn_this_frame: 0,
             frame: 0,
-            preview: None,
+            previews: [None, None],
+            preview_front: 0,
             canvas: None,
         })
     }
@@ -156,27 +159,32 @@ impl Thumbs {
         Some(*id)
     }
 
-    /// Redraws the live preview from what is on each layer and returns its texture.
+    /// Draws the audience screen's picture for the preview. Returns it, and the picture that
+    /// was there before, which is kept so the new one can fade in over it.
     pub fn preview(
         &mut self,
         gpu: &Gpu,
         egui_renderer: &mut egui_wgpu::Renderer,
         layers: &Layers,
         theme: &Theme,
-    ) -> Option<egui::TextureId> {
+    ) -> (Option<egui::TextureId>, Option<egui::TextureId>) {
         let built = build_layers(&mut self.fonts, layers, theme, PREVIEW_W, PREVIEW_H);
-        if self.preview.is_none() {
+        let before = self.previews[self.preview_front].as_ref().map(|(_, id)| *id);
+        // Draw into the picture that is not in front, then bring it to the front.
+        let back = 1 - self.preview_front;
+        if self.previews[back].is_none() {
             let texture = target_texture(&gpu.device, PREVIEW_W, PREVIEW_H);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let id = egui_renderer.register_native_texture(&gpu.device, &view, wgpu::FilterMode::Linear);
-            self.preview = Some((texture, id));
+            self.previews[back] = Some((texture, id));
         }
-        let (texture, id) = self.preview.as_ref()?;
+        let Some((texture, id)) = self.previews[back].as_ref() else { return (before, None) };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         if let Err(e) = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, PREVIEW_W, PREVIEW_H) {
             eprintln!("Could not draw the preview: {e}");
         }
-        Some(*id)
+        self.preview_front = back;
+        (Some(*id), before)
     }
 }
 

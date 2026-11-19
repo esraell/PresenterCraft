@@ -203,6 +203,10 @@ struct Running {
     egui_renderer: egui_wgpu::Renderer,
     thumbs: Thumbs,
     preview: Option<egui::TextureId>,
+    /// The preview picture before the last change, and when that change was, so the preview
+    /// fades as the output does.
+    preview_before: Option<egui::TextureId>,
+    preview_changed: Instant,
     home_state: HomeState,
     next_repaint: Option<Instant>,
     /// The Edit view's picture of the slide being edited, and the words it was drawn from.
@@ -350,7 +354,7 @@ impl App {
         let mut egui_renderer =
             egui_wgpu::Renderer::new(&gpu.device, home_format, egui_wgpu::RendererOptions::default());
         let mut thumbs = Thumbs::new(&gpu.device)?;
-        let preview = thumbs.preview(&gpu, &mut egui_renderer, &Layers::default(), &self.theme);
+        let (preview, _) = thumbs.preview(&gpu, &mut egui_renderer, &Layers::default(), &self.theme);
 
         Ok(Some(Running {
             home_window,
@@ -364,6 +368,8 @@ impl App {
             egui_renderer,
             thumbs,
             preview,
+            preview_before: None,
+            preview_changed: Instant::now(),
             home_state: HomeState {
                 fonts: Arc::new(pc_render::Fonts::new().family_names()),
                 output_placement: placement,
@@ -444,7 +450,10 @@ impl App {
             }
         }
         let layers = Layers { media: media.as_ref(), slide: slide.as_deref() };
-        running.preview = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &theme);
+        let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &theme);
+        running.preview = now;
+        running.preview_before = before;
+        running.preview_changed = Instant::now();
     }
 
     /// Adds a file dropped on the window to the media bin, or says why it could not be added.
@@ -530,6 +539,64 @@ impl App {
         self.unsaved_since = None;
         if let Some(running) = self.running.as_mut() {
             running.home_state.notice = problem;
+            running.home_window.request_redraw();
+        }
+    }
+
+    /// Makes the new song that was asked for, and gives a song the title just typed for it.
+    fn handle_songs(&mut self) {
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        if let Some((index, title)) = running.home_state.pending_title.take()
+            && let Some(song) = self.show.presentations().get(index)
+        {
+            let renamed = pc_model::Presentation { title, ..(**song).clone() };
+            self.show.replace_presentation(index, Arc::new(renamed));
+            if !self.unsaved.contains(&index) {
+                self.unsaved.push(index);
+            }
+            self.unsaved_since = Some(Instant::now());
+        }
+        if !std::mem::take(&mut running.home_state.new_song) {
+            return;
+        }
+        // A name no other song has: "New Song", "New Song 2", and so on.
+        let taken = |name: &str| self.show.presentations().iter().any(|song| song.title == name);
+        let title = std::iter::once("New Song".to_owned())
+            .chain((2..).map(|n| format!("New Song {n}")))
+            .find(|name| !taken(name))
+            .unwrap_or_default();
+        let id = Uuid::new_v4();
+        let verse = pc_model::Group {
+            id: Uuid::new_v4(),
+            name: "Verse 1".to_owned(),
+            color: pc_model::group_color("Verse 1"),
+            slides: vec![Slide::new(vec![pc_model::Object::text(pc_model::Role::primary(), "")])],
+        };
+        let song = pc_model::Presentation { id, title: title.clone(), groups: vec![verse] };
+        // New songs live in the app's Songs folder, each in a file named by its id, so two
+        // songs with one title never collide.
+        let path = bible_store::data_dir().map(|dir| dir.join("Songs").join(format!("{id}.pcpres")));
+        if let Some(folder) = path.as_ref().and_then(|path| path.parent()) {
+            let _ = std::fs::create_dir_all(folder);
+        }
+        let index = self.show.add_presentation(Arc::new(song));
+        self.sources.push(path.clone());
+        self.unsaved.push(index);
+        self.unsaved_since = Some(Instant::now());
+        self.apply(vec![Command::Select(index)]);
+        if let Some(running) = self.running.as_mut() {
+            let state = &mut running.home_state;
+            state.song_keys.push(match &path {
+                Some(path) => path.with_extension("").to_string_lossy().into_owned(),
+                None => format!("title:{title}"),
+            });
+            // Back to the slides, with the title ready to be typed over.
+            state.editing = None;
+            state.bible_open = false;
+            state.renaming_song = Some(title);
+            state.rename_started = true;
             running.home_window.request_redraw();
         }
     }
@@ -724,7 +791,16 @@ impl App {
             running.home_state.output_stopped = true;
         }
         let mut commands = Vec::new();
-        let (show, preview, pictures) = (&self.show, running.preview, &self.pictures);
+        // How far the preview's fade has got: the same time and easing as the output's.
+        let seconds = running.home_state.dissolve_seconds();
+        let amount = if seconds > 0.0 {
+            let t = (running.preview_changed.elapsed().as_secs_f32() / seconds).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        } else {
+            1.0
+        };
+        let preview = home::Preview { now: running.preview, before: running.preview_before, amount };
+        let (show, pictures) = (&self.show, &self.pictures);
         let (songs_theme, bible_theme): (&Theme, &Theme) = (&self.theme, &self.theme_for_bible);
         // The theme the part of the window in front works with: the one being edited, the
         // Bible's on the Bible page or when a Bible slide is being edited, otherwise the songs'.
@@ -847,6 +923,10 @@ impl App {
                     running.home_state.bible.options.open = true;
                     running.home_state.bible.options.pane = usize::from(pane == "bibles");
                 }
+            }
+            // Testing aid: as if Command-N had been pressed.
+            if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_NEW_SONG").is_some() {
+                running.home_state.new_song = true;
             }
             // Testing aid: show the slides in another view.
             if running.frames == GO_LIVE_AT + 2 {
@@ -1032,6 +1112,7 @@ impl ApplicationHandler for App {
                     }
                 }
                 self.handle_themes();
+                self.handle_songs();
                 // The services are written as soon as they change; the file is small.
                 if let Some(running) = self.running.as_mut()
                     && std::mem::take(&mut running.home_state.services.changed)
@@ -1108,6 +1189,26 @@ fn main() -> ExitCode {
         songs.into_iter().map(|loaded| (loaded.song, Some(loaded.path))).collect()
     };
     let (mut songs, mut sources): (Vec<_>, Vec<_>) = songs.into_iter().unzip();
+    // The songs made in the app are kept in its Songs folder; they are always loaded.
+    let own: Vec<PathBuf> = bible_store::data_dir()
+        .and_then(|dir| std::fs::read_dir(dir.join("Songs")).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "pcpres"))
+        .collect();
+    let (mut made_here, problems) = load::load_songs(&own);
+    for problem in &problems {
+        eprintln!("{problem}");
+    }
+    made_here.sort_by_key(|loaded| loaded.song.title.to_lowercase());
+    for loaded in made_here {
+        if !sources.contains(&Some(loaded.path.clone())) {
+            songs.push(loaded.song);
+            sources.push(Some(loaded.path));
+        }
+    }
     // Two empty presentations after the songs hold Bible passages. They have no file.
     let bible_slots = [songs.len(), songs.len() + 1];
     for _ in bible_slots {

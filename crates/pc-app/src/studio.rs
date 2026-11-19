@@ -490,6 +490,12 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
         ui.horizontal(|ui| {
             caption(ui, "LIBRARY");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
+                let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
+                icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
+                if response.on_hover_text("New song (Command-N)").clicked() {
+                    state.new_song = true;
+                }
                 let count = if shown.len() == total { total.to_string() } else { format!("{} of {total}", shown.len()) };
                 ui.label(egui::RichText::new(count).size(11.0).color(TEXT_FAINT));
             });
@@ -554,7 +560,7 @@ pub fn program_panel(
     ui: &mut egui::Ui,
     show: &Show,
     output_stopped: bool,
-    preview: Option<TextureId>,
+    preview: crate::home::Preview,
     commands: &mut Vec<Command>,
 ) {
     let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 16, right: 16, top: 14, bottom: 12 });
@@ -583,8 +589,18 @@ pub fn program_panel(
 
         let (picture, _) = ui.allocate_exact_size(vec2(width, (width * 9.0 / 16.0).round()), Sense::hover());
         ui.painter().rect_filled(picture, RADIUS, Color32::BLACK);
-        if let Some(texture) = preview {
-            egui::Image::from_texture((texture, picture.size())).corner_radius(RADIUS).paint_at(ui, picture);
+        // While the output fades from one picture to the next, so does this.
+        let fading = preview.amount < 1.0;
+        if let Some(before) = preview.before.filter(|_| fading) {
+            egui::Image::from_texture((before, picture.size())).corner_radius(RADIUS).paint_at(ui, picture);
+        }
+        if let Some(texture) = preview.now {
+            let veil =
+                if fading { Color32::WHITE.gamma_multiply(preview.amount.clamp(0.0, 1.0)) } else { Color32::WHITE };
+            egui::Image::from_texture((texture, picture.size())).corner_radius(RADIUS).tint(veil).paint_at(ui, picture);
+        }
+        if fading {
+            ui.ctx().request_repaint();
         }
         if !on {
             ui.painter().rect_filled(picture, RADIUS, Color32::from_black_alpha(190));
@@ -730,7 +746,6 @@ pub fn media_strip(
                         let live = show.live_media() == Some(index);
                         if live {
                             ui.painter().rect_stroke(image, 6.0, Stroke::new(2.0, TALLY), StrokeKind::Outside);
-                            live_tag(ui.painter(), pos2(rect.max.x, image.max.y + 10.0));
                         } else if response.hovered() {
                             ui.painter().rect_stroke(image, 6.0, Stroke::new(1.0, TEXT_FAINT), StrokeKind::Outside);
                         }
@@ -760,14 +775,6 @@ pub fn media_strip(
             );
         }
     });
-}
-
-/// The small red "LIVE" tag for whatever is on screen. It sits beside the picture, never
-/// over it, so nothing on the slide is hidden. `right_centre` is where its right edge goes.
-pub fn live_tag(painter: &egui::Painter, right_centre: egui::Pos2) {
-    let tag = Rect::from_min_size(right_centre - vec2(36.0, 8.5), vec2(36.0, 17.0));
-    painter.rect_filled(tag, 8.5, TALLY);
-    painter.text(tag.center(), Align2::CENTER_CENTER, "LIVE", semibold(10.0), Color32::WHITE);
 }
 
 /// The right end of a slide area's heading: the three ways to lay slides out, and their size.

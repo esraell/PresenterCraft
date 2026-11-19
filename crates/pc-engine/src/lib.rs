@@ -121,6 +121,12 @@ impl Show {
         self.live_media
     }
 
+    /// Adds a presentation after the others and returns its index. Nothing on screen changes.
+    pub fn add_presentation(&mut self, presentation: Arc<Presentation>) -> usize {
+        self.presentations.push(presentation);
+        self.presentations.len() - 1
+    }
+
     /// Adds a media item to the end of the list and returns its index. It is not shown.
     pub fn add_media(&mut self, item: MediaItem) -> usize {
         self.media.push(item);

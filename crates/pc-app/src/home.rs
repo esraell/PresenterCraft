@@ -49,6 +49,12 @@ pub struct HomeState {
     pub dissolve_time: f32,
     /// True on the frame a rename began in the Objects list, so its field takes the keyboard.
     pub rename_started: bool,
+    /// Set when a new song is asked for (Command-N). The app makes it and clears this.
+    pub new_song: bool,
+    /// The song's title while it is being retyped in the heading, and the title just typed,
+    /// with the song's place, for the app to take.
+    pub renaming_song: Option<String>,
+    pub pending_title: Option<(usize, String)>,
     /// Objects copied in the editor, and the words that went to the system clipboard with them.
     pub object_clip: Vec<pc_model::Object>,
     pub object_clip_text: String,
@@ -407,6 +413,15 @@ pub enum ToolMenu {
     More,
 }
 
+/// The picture of the audience screen for the Program panel: what is there now, what was
+/// there before, and how far the new one has faded in (1 when there is no fade).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Preview {
+    pub now: Option<TextureId>,
+    pub before: Option<TextureId>,
+    pub amount: f32,
+}
+
 /// Which thumbnail the window is asking for.
 #[derive(Clone, Copy)]
 pub enum ThumbOf<'a> {
@@ -428,6 +443,9 @@ impl Default for HomeState {
             dissolve: true,
             dissolve_time: 0.4,
             rename_started: false,
+            new_song: false,
+            renaming_song: None,
+            pending_title: None,
             object_clip: Vec::new(),
             object_clip_text: String::new(),
             services: crate::service::Services::default(),
@@ -549,7 +567,7 @@ pub fn home_ui(
     state: &mut HomeState,
     theme: &Theme,
     thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
-    preview: Option<TextureId>,
+    preview: Preview,
     canvas: Option<TextureId>,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
@@ -558,6 +576,10 @@ pub fn home_ui(
     crate::studio::toolbar(ui, show, state, &mut commands);
     if ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Comma)) {
         state.settings_open = !state.settings_open;
+    }
+    // Command-N makes a new song, wherever the keyboard is not in a field.
+    if !ui.ctx().text_edit_focused() && ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::N)) {
+        state.new_song = true;
     }
     tool_menu(ui, state);
     settings_window(ui, state);
@@ -1839,7 +1861,38 @@ fn slide_area(
         let heading = Frame::new().inner_margin(egui::Margin { left: 20, right: 16, top: 12, bottom: 6 });
         egui::Panel::top("song header").resizable(false).frame(heading).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(presentation.title.as_str()).font(crate::studio::semibold(18.0)));
+                // The title; a double click, or a new song, turns it into a field to retype it.
+                if let Some(title) = state.renaming_song.as_mut() {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(title).font(crate::studio::semibold(18.0)).desired_width(320.0),
+                    );
+                    if std::mem::take(&mut state.rename_started) {
+                        field.request_focus();
+                    }
+                    let (enter, escape) =
+                        ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+                    if escape {
+                        state.renaming_song = None;
+                    } else if enter || field.lost_focus() {
+                        if !title.trim().is_empty() && title.trim() != presentation.title {
+                            state.pending_title = Some((show.selected(), title.trim().to_owned()));
+                        }
+                        state.renaming_song = None;
+                    }
+                } else {
+                    let title = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(presentation.title.as_str()).font(crate::studio::semibold(18.0)),
+                            )
+                            .sense(Sense::click()),
+                        )
+                        .on_hover_text("Double-click to rename");
+                    if title.double_clicked() {
+                        state.renaming_song = Some(presentation.title.clone());
+                        state.rename_started = true;
+                    }
+                }
                 let slides = presentation.slide_count();
                 let count = if slides == 1 { "1 slide".to_owned() } else { format!("{slides} slides") };
                 ui.label(egui::RichText::new(count).size(12.0).color(crate::studio::TEXT_FAINT));
@@ -2044,7 +2097,7 @@ fn slide_grid(
                         let image = Rect::from_min_size(rect.min, image_size);
                         painter.rect_stroke(image, 6.0, Stroke::new(1.0, crate::studio::LINE), StrokeKind::Outside);
                     }
-                    // Tally red for the slide on screen, with a tag; the accent for one picked
+                    // Tally red for the slide on screen; the accent for one picked
                     // out; a dim red for the slide that was on screen before it was cleared.
                     let framed =
                         if view == SlideView::Table { rect } else { Rect::from_min_size(rect.min, image_size) };
@@ -2062,15 +2115,6 @@ fn slide_grid(
                     };
                     if let Some(stroke) = outline {
                         painter.rect_stroke(framed, 6.0, stroke, StrokeKind::Outside);
-                    }
-                    if is_live {
-                        // Under the slide at the right, or at the end of a table row.
-                        let at = if view == SlideView::Table {
-                            pos2(rect.max.x - 10.0, rect.min.y + 16.0)
-                        } else {
-                            pos2(rect.max.x, rect.max.y - bar_height / 2.0 + 1.0)
-                        };
-                        crate::studio::live_tag(&painter, at);
                     }
                 }
             });
@@ -2122,7 +2166,7 @@ mod tests {
                     asked += 1;
                     None
                 },
-                None,
+                Preview::default(),
                 None,
             ));
         });
@@ -2168,7 +2212,7 @@ mod tests {
                         }
                         None
                     },
-                    None,
+                    Preview::default(),
                     None,
                 );
             });
