@@ -13,7 +13,7 @@ under the project's new name, SoftPresenter, with fresh screenshots.
 ## Decided by the owner
 
 - The structure below, and moving the detail into `docs/` pages.
-- The README says nothing about softProjector and has no website link yet.
+- The README says nothing about where the name came from and has no website link yet.
 - Fresh screenshots, taken by the main session after its rename lands.
 
 ## Approaches
@@ -22,7 +22,7 @@ under the project's new name, SoftPresenter, with fresh screenshots.
 |---|---|---|
 | One long README with everything (as before, 437 lines) | Complete, but the overview drowns | No |
 | A short README that leads to fuller pages in `docs/` | Scannable front door; detail one click away | Yes (owner) |
-| README plus a website on softpresenter.com | Good later; the owner wants no website yet | Later |
+| README plus a project website | Good later; the owner wants no website yet | Later |
 
 ## Design
 

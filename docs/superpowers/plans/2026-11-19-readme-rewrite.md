@@ -13,7 +13,7 @@ to the main session to cherry-pick, like the standards work.
 
 ## Global Constraints
 
-- The name is SoftPresenter. No mention of softProjector, no website link.
+- The name is SoftPresenter. Nothing about where the name came from, no website link.
 - No other presentation product named, except the not-affiliated line.
 - British spelling, plain words. Commits follow CONTRIBUTING.md#commits.
 - Never write in the main session's working tree; it is renaming the code meanwhile and leaves
