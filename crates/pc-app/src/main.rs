@@ -226,8 +226,8 @@ impl App {
 
         let home_attrs = Window::default_attributes()
             .with_title("PresenterCraft")
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0))
-            .with_min_inner_size(winit::dpi::LogicalSize::new(820.0, 480.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0))
+            .with_min_inner_size(winit::dpi::LogicalSize::new(1100.0, 700.0));
         let home_window =
             Arc::new(el.create_window(home_attrs).map_err(|e| format!("Could not open the home window: {e}"))?);
         let home_display =
