@@ -44,7 +44,7 @@ ProPresenter.
 - Groups (Verse 1, Chorus, Bridge…) with coloured bars and one-key jumps.
 - **Arrangements**: a song's groups in the order to sing them (Verse 1, Chorus, Verse 2, Chorus…),
   from Arrangement beside its title. Next and Previous follow it, a group can come more than
-  once, the stage screens and the NEXT card show what comes next in it, and a row of its
+  once, the stage screens show what comes next in it, and a row of its
   groups shows the one on screen; click one to go to it, right-click to move, repeat or
   remove it, + to add a group.
 - Nineteen transitions: Cut, Dissolve, Fade Black, Fade White, Push, Move In, Reveal, Zoom In,

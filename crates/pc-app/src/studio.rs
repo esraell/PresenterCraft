@@ -228,11 +228,41 @@ pub fn segmented(
     labels: &[&str],
     chosen: Option<usize>,
 ) -> Option<usize> {
-    let (bar, _) = ui.allocate_exact_size(vec2(each.x * labels.len() as f32 + 6.0, each.y + 6.0), Sense::hover());
+    let count = labels.len();
+    let total = each.x * count as f32;
+    let (bar, _) = ui.allocate_exact_size(vec2(total + 6.0, each.y + 6.0), Sense::hover());
     ui.painter().rect_filled(bar, RADIUS + 2.0, BG);
+    // Many choices share the width, so their words are smaller.
+    let mut size: f32 = match count {
+        0..=4 => 13.5,
+        5 => 12.5,
+        _ => 11.5,
+    };
+    // Each word, measured at a size (in the bolder face, the wider of the two).
+    const PAD: f32 = 10.0;
+    let measure = |ui: &egui::Ui, size: f32| -> Vec<f32> {
+        labels
+            .iter()
+            .map(|label| ui.painter().layout_no_wrap((*label).to_owned(), semibold(size), TEXT).size().x)
+            .collect()
+    };
+    let mut widths = measure(ui, size);
+    // In a narrow bar the words shrink a little until they fit side by side.
+    while widths.iter().sum::<f32>() + PAD * count as f32 > total && size > 9.5 {
+        size -= 0.5;
+        widths = measure(ui, size);
+    }
+    // Equal cells while every word fits in one; otherwise each takes room for its word, and the
+    // room left over is shared out evenly.
+    let crowded = widths.iter().any(|width| width + PAD > each.x);
+    let spare = ((total - widths.iter().sum::<f32>()) / count.max(1) as f32).max(0.0);
+    let cells: Vec<f32> =
+        if crowded { widths.iter().map(|width| width + spare).collect() } else { vec![each.x; count] };
     let mut clicked = None;
+    let mut x = bar.min.x + 3.0;
     for (index, label) in labels.iter().enumerate() {
-        let cell = Rect::from_min_size(bar.min + vec2(3.0 + each.x * index as f32, 3.0), each);
+        let cell = Rect::from_min_size(pos2(x, bar.min.y + 3.0), vec2(cells[index], each.y));
+        x += cells[index];
         let response = ui.interact(cell, ui.scope_id().with((salt, index)), Sense::click());
         let on = chosen == Some(index);
         if on {
@@ -241,12 +271,6 @@ pub fn segmented(
             ui.painter().rect_filled(cell, RADIUS, PANEL);
         }
         let ink = if on { TEXT } else { TEXT_DIM };
-        // Many choices share the width, so their words are smaller.
-        let size = match labels.len() {
-            0..=4 => 13.5,
-            5 => 12.5,
-            _ => 11.5,
-        };
         let font = if on { semibold(size) } else { FontId::proportional(size) };
         ui.painter().text(cell.center(), Align2::CENTER_CENTER, *label, font, ink);
         if response.clicked() {
@@ -1266,28 +1290,6 @@ pub fn program_panel(
         });
         ui.add_space(6.0);
 
-        // What the next slide says, so the operator can read ahead.
-        caption(ui, "NEXT");
-        let next = show.upcoming().and_then(|up| Some((song?, song?.slide(up.slide)?)));
-        Frame::new().fill(CARD).corner_radius(RADIUS).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
-            ui.set_width(width - 24.0);
-            match next {
-                Some((_, (group, slide))) => {
-                    if !group.name.is_empty() {
-                        ui.label(egui::RichText::new(group.name.as_str()).size(11.0).color(TEXT_FAINT));
-                    }
-                    let words: Vec<String> = slide.texts().into_iter().map(|(_, text)| text).collect();
-                    let words = words.first().cloned().unwrap_or_default();
-                    ui.label(egui::RichText::new(words).size(13.0).color(TEXT_DIM));
-                }
-                None if at.is_some() => {
-                    ui.label(egui::RichText::new("End of the song").size(13.0).color(TEXT_FAINT));
-                }
-                None => {
-                    ui.label(egui::RichText::new("Click a slide to show it").size(13.0).color(TEXT_FAINT));
-                }
-            }
-        });
         // Timers, messages and the stage, in tabs under the rest.
         crate::live_tabs::live_tabs(ui, show, state);
     });

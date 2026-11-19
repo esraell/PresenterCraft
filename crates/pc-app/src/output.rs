@@ -773,6 +773,23 @@ impl Output {
     fn step_fade(&mut self) {
         let Some((started, look)) = self.fading else { return };
         let amount = fade_amount(started, look.duration());
+        // A video playing behind the new slide keeps moving through the fade: each new picture
+        // of it builds the picture being faded to again.
+        if self.take_video_picture() {
+            let frame = self.frame.clone();
+            for index in 0..self.targets.len() {
+                let (id, w, h) = {
+                    let target = &self.targets[index];
+                    (target.id, target.config.width, target.config.height)
+                };
+                if self.targets[index].fade.is_some() {
+                    let fresh = self.scene_for(id, &frame, w, h);
+                    if let Some((_, to)) = self.targets[index].fade.as_mut() {
+                        *to = fresh;
+                    }
+                }
+            }
+        }
         for index in 0..self.targets.len() {
             let Some((from, to)) = self.targets[index].fade.take() else { continue };
             if amount >= 1.0 {

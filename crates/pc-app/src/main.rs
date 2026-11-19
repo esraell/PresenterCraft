@@ -673,9 +673,17 @@ impl App {
             return Ok(None);
         }
 
+        // Testing aid: open the window at another size, such as 1100x700.
+        let (width, height) = std::env::var("PRESENTERCRAFT_WINDOW_SIZE")
+            .ok()
+            .and_then(|size| {
+                let (w, h) = size.split_once('x')?;
+                Some((w.parse::<f64>().ok()?, h.parse::<f64>().ok()?))
+            })
+            .unwrap_or((1440.0, 900.0));
         let home_attrs = Window::default_attributes()
             .with_title("PresenterCraft")
-            .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0))
+            .with_inner_size(winit::dpi::LogicalSize::new(width, height))
             .with_min_inner_size(winit::dpi::LogicalSize::new(1100.0, 700.0));
         // A run that only saves a picture of the window stays out of the way: its windows open
         // behind everything else and do not take the keyboard, so whoever is using the
@@ -1052,9 +1060,13 @@ impl App {
             {
                 state.notice = Some(problem);
             }
-        } else if state.audio.through
+        } else if let playing = self.player.playing()
+            && state.audio.through
             && !fade.is_zero()
-            && let Some(id) = self.player.playing().track
+            && !playing.paused
+            && let Some(id) = playing.track
+            // A track too short to crossfade from just plays to its end.
+            && playing.length.is_some_and(|length| length > fade * 2)
             && self.player.left().is_some_and(|left| left <= fade)
             && let Some(next) = state.audio.after(id, pick)
             && let Err(problem) = self.player.play_fading(next, fade)
@@ -1374,13 +1386,22 @@ impl App {
         if song.transition == transition {
             return;
         }
+        // Dragging the duration or turning the direction of the song's own transition is one
+        // step to undo, not one for each frame of the drag.
+        let same_kind = matches!((song.transition, transition), (Some(was), Some(now)) if was.kind == now.kind);
+        if !(same_kind && self.history.peek(false) == Some(index)) {
+            self.history.remember(index, song.clone());
+        }
         let changed = pc_model::Presentation { transition, ..(*song).clone() };
-        self.history.remember(index, song);
         self.show.replace_presentation(index, Arc::new(changed));
         if !self.unsaved.contains(&index) {
             self.unsaved.push(index);
         }
-        self.save_unsaved();
+        // Written once the changes pause, not on every frame of a drag.
+        self.unsaved_since = Some(Instant::now());
+        if let Some(running) = self.running.as_ref() {
+            running.home_window.request_redraw();
+        }
     }
 
     fn handle_song_loop(&mut self) {
