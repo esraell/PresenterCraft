@@ -15,6 +15,17 @@ goes fullscreen on it; with one display it opens as an ordinary window.
     --list-displays        print the connected displays
     --output-display N     put the output on display N
 
+## Bible
+
+The Bible button opens Scripture Lookup. Type a reference (`John 3:16`, `jn 3:16-18`,
+`Psalm 23`, `Пс 22:1-3`) and press Return: each verse becomes a slide, and clicking a slide
+shows it. Two translations can be shown together, one as the main language and one as the
+translation; where their verse numbers differ (the Russian Psalms, for one) the matching verses
+are found. Typing words in Search and pressing Return lists the verses that hold them.
+
+Four public-domain Bibles come with the app: King James, World English, Berean Standard and
+the Russian Synodal. `docs/licences/bibles.md` lists these and the others that may be offered.
+
 ## NDI output
 
 The audience screen can be sent over the network as an NDI source, at 1920 x 1080. Switch it

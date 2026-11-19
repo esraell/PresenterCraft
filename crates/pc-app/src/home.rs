@@ -125,30 +125,59 @@ impl BibleTarget {
 /// One translation on the Bible page and where its text goes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BibleRow {
+    /// Which Bible, as its place on the shelf.
+    pub bible: usize,
     pub verse: BibleTarget,
     pub reference: BibleTarget,
 }
 
-/// The Bible page's fields. Looking verses up is not built yet; this holds the layout's state.
+/// The Bible page: what is typed, the translations chosen, and the passage being shown.
 #[derive(Debug)]
 pub struct BiblePage {
     pub lookup: String,
     pub search: String,
     pub rows: Vec<BibleRow>,
     pub options: crate::bible::BibleOptions,
+    /// The Bibles installed.
+    pub shelf: crate::bible::Shelf,
+    /// The two places among the show's presentations kept for Bible passages. A new passage
+    /// goes into the one that is not on screen, so looking up the next verses never changes
+    /// what the audience sees.
+    pub slots: Option<[usize; 2]>,
+    /// Which of the two the page is showing.
+    pub showing: usize,
+    /// What was typed for the passage now shown, and the choices it was made with.
+    pub shown: String,
+    pub made_with: String,
+    /// A passage just made. The app takes it and puts it in the slot named.
+    pub pending: Option<(usize, pc_model::Presentation)>,
+    /// What went wrong with the last lookup, for the operator.
+    pub message: Option<String>,
+    /// Verses found by the last search: the reference to type and the verse's words.
+    pub found: Vec<(String, String)>,
 }
 
 impl Default for BiblePage {
     fn default() -> BiblePage {
+        let shelf = crate::bible::Shelf::shipped();
+        let place = |id: &str| shelf.position(id).unwrap_or(0);
         BiblePage {
             lookup: String::new(),
             search: String::new(),
             options: crate::bible::BibleOptions::default(),
             // Two translations side by side is the usual case here: one for each language.
             rows: vec![
-                BibleRow { verse: BibleTarget::Main, reference: BibleTarget::Main },
-                BibleRow { verse: BibleTarget::Translation, reference: BibleTarget::None },
+                BibleRow { bible: place("kjv"), verse: BibleTarget::Main, reference: BibleTarget::Main },
+                BibleRow { bible: place("syn"), verse: BibleTarget::Translation, reference: BibleTarget::None },
             ],
+            shelf,
+            slots: None,
+            showing: 0,
+            shown: String::new(),
+            made_with: String::new(),
+            pending: None,
+            message: None,
+            found: Vec::new(),
         }
     }
 }
@@ -162,8 +191,65 @@ impl BiblePage {
         if self.rows.len() >= Self::MAX_ROWS {
             return false;
         }
-        self.rows.push(BibleRow { verse: BibleTarget::None, reference: BibleTarget::None });
+        self.rows.push(BibleRow { bible: 0, verse: BibleTarget::None, reference: BibleTarget::None });
         true
+    }
+
+    /// The choices a passage is made with, as text, so a change to any of them can be noticed.
+    fn choices(&self) -> String {
+        let o = &self.options;
+        format!(
+            "{:?} {} {} {} {:?}",
+            self.rows, o.show_verse_numbers, o.break_on_new_verse, o.display_translation, o.reference
+        )
+    }
+
+    /// Looks up what is typed and readies its slides for the app to take. `live` is the
+    /// presentation on screen now, if any.
+    pub fn look_up(&mut self, live: Option<usize>) {
+        let Some(slots) = self.slots else { return };
+        let mut rows = Vec::new();
+        for row in &self.rows {
+            match self.shelf.get(row.bible) {
+                Ok(bible) => rows.push(crate::bible::RowChoice { bible, verse: row.verse, reference: row.reference }),
+                Err(problem) => {
+                    self.message = Some(problem);
+                    return;
+                }
+            }
+        }
+        match crate::bible::build_passage(&self.lookup, &rows, &self.options) {
+            Ok(passage) => {
+                // Leave a passage that is on screen alone: use the other slot.
+                if live == Some(slots[self.showing]) {
+                    self.showing = 1 - self.showing;
+                }
+                self.pending = Some((slots[self.showing], passage));
+                self.shown = self.lookup.clone();
+                self.made_with = self.choices();
+                self.message = None;
+                self.found.clear();
+            }
+            Err(problem) => self.message = Some(problem),
+        }
+    }
+
+    /// Finds verses holding the words typed in Search, in the first translation.
+    pub fn find(&mut self) {
+        self.found.clear();
+        self.message = None;
+        let Some(row) = self.rows.first() else { return };
+        match self.shelf.get(row.bible) {
+            Ok(bible) => {
+                for (place, words) in bible.search(&self.search, 60) {
+                    self.found.push((bible.label(place, place), words.to_owned()));
+                }
+                if self.found.is_empty() && !self.search.trim().is_empty() {
+                    self.message = Some(format!("Nothing in the {} has those words.", bible.info.name));
+                }
+            }
+            Err(problem) => self.message = Some(problem),
+        }
     }
 
     /// Removes a translation row, always leaving one. Returns true if one was removed.
@@ -441,7 +527,7 @@ pub fn home_ui(
     live_panel(ui, show, state.output_stopped, preview, &mut commands);
     media_bin(ui, show, state, thumb, &mut commands);
     if state.bible_open {
-        bible_area(ui, state);
+        bible_area(ui, show, state, thumb, &mut commands);
     } else {
         slide_area(ui, show, state, theme, thumb, &mut commands);
     }
@@ -520,7 +606,9 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
 /// middle with a filter box under them, and the media bin's list at the bottom.
 fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     egui::Panel::left("library").resizable(false).exact_size(240.0).frame(panel_frame(SIDE, 0)).show(ui, |ui| {
-        let total = show.presentations().len();
+        let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+        let total =
+            show.presentations().len() - hidden.iter().filter(|slot| **slot < show.presentations().len()).count();
 
         egui::Panel::bottom("media list").resizable(false).exact_size(MEDIA_BIN).frame(panel_frame(SIDE, 8)).show(
             ui,
@@ -547,13 +635,18 @@ fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
         ui.separator();
 
         Frame::new().inner_margin(8).show(ui, |ui| {
-            let shown = show.presentations().iter().filter(|p| matches_filter(&p.title, &state.filter)).count();
+            let shown = show
+                .presentations()
+                .iter()
+                .enumerate()
+                .filter(|(index, p)| !hidden.contains(index) && matches_filter(&p.title, &state.filter))
+                .count();
             let items = if shown == 1 { "1 ITEM".to_owned() } else { format!("{shown} ITEMS") };
             heading_with(ui, &items, &[(Icon::Plus, "Add an item")]);
             ui.add_space(2.0);
             egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
                 for (index, presentation) in show.presentations().iter().enumerate() {
-                    if !matches_filter(&presentation.title, &state.filter) {
+                    if hidden.contains(&index) || !matches_filter(&presentation.title, &state.filter) {
                         continue;
                     }
                     let selected = index == show.selected();
@@ -1563,7 +1656,14 @@ fn missing_font_notice(ui: &mut egui::Ui, missing: &[String]) {
 /// The Bible page, in place of the slide grid: a field for a reference, a search field, and a
 /// row for each translation saying where its verse and its reference go on the slide. Looking
 /// verses up is not built yet, so this is the layout with its controls in place.
-fn bible_area(ui: &mut egui::Ui, state: &mut HomeState) {
+fn bible_area(
+    ui: &mut egui::Ui,
+    show: &Show,
+    state: &mut HomeState,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
+    commands: &mut Vec<Command>,
+) {
+    let live = show.live().map(|at| at.presentation);
     egui::CentralPanel::default().frame(panel_frame(CANVAS, 0)).show(ui, |ui| {
         egui::Panel::bottom("bible bar").resizable(false).frame(panel_frame(BAR, 5)).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1585,14 +1685,25 @@ fn bible_area(ui: &mut egui::Ui, state: &mut HomeState) {
         Frame::new().fill(SIDE).inner_margin(egui::Margin::symmetric(8, 8)).show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.bible.lookup)
-                        .hint_text("Scripture Lookup")
-                        .desired_width(240.0),
-                )
-                .on_hover_text("Type a reference, such as John 3:16");
-                ui.add(egui::TextEdit::singleline(&mut state.bible.search).hint_text("Search").desired_width(230.0))
-                    .on_hover_text("Search the Bible for words");
+                let entered = |response: &egui::Response, ui: &egui::Ui| {
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                };
+                let lookup = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut state.bible.lookup)
+                            .hint_text("Scripture Lookup")
+                            .desired_width(240.0),
+                    )
+                    .on_hover_text("Type a reference, such as John 3:16, and press Return");
+                if entered(&lookup, ui) {
+                    state.bible.look_up(live);
+                }
+                let search =
+                    ui.add(egui::TextEdit::singleline(&mut state.bible.search).hint_text("Search").desired_width(230.0))
+                        .on_hover_text("Type words to find in the first Bible, and press Return");
+                if entered(&search, ui) {
+                    state.bible.find();
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let button = ui.add(egui::Button::selectable(state.bible.options.open, "Options"))
                         .on_hover_text("How verses become slides, and which Bibles are installed");
@@ -1603,7 +1714,9 @@ fn bible_area(ui: &mut egui::Ui, state: &mut HomeState) {
                         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             state.bible.options.open = false;
                         }
-                        crate::bible::options_popup(ui.ctx(), &mut state.bible.options, button.rect, "Songs");
+                        let installed: Vec<(&str, &str)> =
+                            state.bible.shelf.bibles.iter().map(|b| (b.name, b.short)).collect();
+                        crate::bible::options_popup(ui.ctx(), &mut state.bible.options, &installed, button.rect, "Songs");
                     }
                 });
             });
@@ -1613,12 +1726,15 @@ fn bible_area(ui: &mut egui::Ui, state: &mut HomeState) {
             let count = state.bible.rows.len();
             for (index, row) in state.bible.rows.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt(("bible translation", index))
-                        .selected_text("No Bible installed")
-                        .width(200.0)
-                        .show_ui(ui, |ui| {
-                            ui.label(egui::RichText::new("Bibles are not installed yet").color(DIM));
-                        });
+                    let chosen = state.bible.shelf.bibles.get(row.bible).map_or("Choose a Bible", |b| b.name);
+                    egui::ComboBox::from_id_salt(("bible translation", index)).selected_text(chosen).width(200.0).show_ui(
+                        ui,
+                        |ui| {
+                            for (place, bible) in state.bible.shelf.bibles.iter().enumerate() {
+                                ui.selectable_value(&mut row.bible, place, format!("{} ({})", bible.name, bible.short));
+                            }
+                        },
+                    );
                     ui.add_space(8.0);
                     ui.label("Verse");
                     egui::ComboBox::from_id_salt(("bible verse", index)).selected_text(row.verse.label()).width(120.0).show_ui(
@@ -1648,7 +1764,8 @@ fn bible_area(ui: &mut egui::Ui, state: &mut HomeState) {
                         } else if ui.button("−").on_hover_text("Remove this translation").clicked() {
                             remove = Some(index);
                         }
-                        ui.label(egui::RichText::new("License").size(11.0).color(DIM)).on_hover_text(not_built("This Bible's licence"));
+                        ui.label(egui::RichText::new("License").size(11.0).color(DIM))
+                            .on_hover_text("Public domain. See docs/licences/bibles.md for where each Bible comes from.");
                     });
                 });
             }
@@ -1660,12 +1777,49 @@ fn bible_area(ui: &mut egui::Ui, state: &mut HomeState) {
             }
         });
 
-        ui.centered_and_justified(|ui| {
-            ui.label(
-                egui::RichText::new("Verses will appear here as slides.\nBibles are not installed yet, so looking a verse up is not built.")
-                    .color(DIM),
-            );
-        });
+        // A change to the Bibles or the options remakes the passage that is showing.
+        if !state.bible.shown.is_empty() && state.bible.made_with != state.bible.choices() {
+            state.bible.lookup = state.bible.shown.clone();
+            state.bible.look_up(live);
+        }
+        if let Some(message) = state.bible.message.clone() {
+            Frame::new().inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+                ui.label(egui::RichText::new(message).color(Color32::from_rgb(255, 150, 120)));
+            });
+        }
+        if !state.bible.found.is_empty() {
+            // Search results: click one to turn it into slides.
+            let mut picked = None;
+            egui::ScrollArea::vertical().id_salt("bible found").auto_shrink([false, false]).show(ui, |ui| {
+                Frame::new().inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                    for (reference, words) in &state.bible.found {
+                        let line = format!("{reference}   {words}");
+                        if ui.add(egui::Button::new(egui::RichText::new(line).size(13.0)).frame(false).truncate()).clicked() {
+                            picked = Some(reference.clone());
+                        }
+                    }
+                });
+            });
+            if let Some(reference) = picked {
+                state.bible.lookup = reference;
+                state.bible.look_up(live);
+            }
+            return;
+        }
+        let slot = state.bible.slots.map(|slots| slots[state.bible.showing]);
+        match slot.filter(|slot| show.presentations().get(*slot).is_some_and(|p| p.slide_count() > 0)) {
+            Some(slot) => slide_grid(ui, show, slot, state, thumb, commands),
+            None => {
+                ui.centered_and_justified(|ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            "Type a reference such as John 3:16-18 in Scripture Lookup and press Return.\nIts verses appear here as slides; click one to show it.",
+                        )
+                        .color(DIM),
+                    );
+                });
+            }
+        }
     });
 }
 
@@ -1735,88 +1889,97 @@ fn slide_area(
             });
         });
 
-        let width = state.thumb_width;
-        let image_size = vec2(width, width * 9.0 / 16.0);
-        let bar_height = 20.0;
-        let cell = vec2(width, image_size.y + bar_height);
-        egui::ScrollArea::vertical().id_salt("slide grid").auto_shrink([false, false]).show(ui, |ui| {
-            ui.add_space(12.0);
-            Frame::new().inner_margin(egui::Margin::symmetric(20, 0)).show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(14.0, 14.0);
-                    ui.add_space(0.0);
-                    for (index, (group, slide)) in presentation.slides().enumerate() {
-                        let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
-                        let here = SlideRef { presentation: show.selected(), slide: index };
-                        if response.clicked() {
-                            commands.push(Command::GoTo(here));
-                        }
-                        // Editing is on the right-click menu, so reaching for it never puts a
-                        // slide on screen by accident.
-                        response.context_menu(|ui| {
-                            if ui.button("Edit words…").clicked() {
-                                state.editing = EditDraft::of(show, here);
-                                ui.close();
-                            }
-                        });
-                        // Slides scrolled out of view cost nothing: no thumbnail is asked for.
-                        if !ui.is_rect_visible(rect) {
-                            continue;
-                        }
-                        let image = Rect::from_min_size(rect.min, image_size);
-                        let painter = ui.painter();
-                        painter.rect_filled(image, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, Color32::BLACK);
-                        match thumb(ThumbOf::Slide(slide)) {
-                            Some((texture, overflow)) => {
-                                egui::Image::from_texture((texture, image_size)).paint_at(ui, image);
-                                if overflow {
-                                    let mark = image.right_top() + vec2(-14.0, 14.0);
-                                    painter.circle_filled(mark, 9.0, Color32::from_rgb(240, 190, 40));
-                                    painter.text(
-                                        mark,
-                                        Align2::CENTER_CENTER,
-                                        "!",
-                                        FontId::proportional(14.0),
-                                        Color32::BLACK,
-                                    );
-                                }
-                            }
-                            None => ui.ctx().request_repaint(),
-                        }
-                        // The bar under the slide: its number and its group, in the group's colour.
-                        let bar = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
-                        painter.rect_filled(bar, CornerRadius { nw: 0, ne: 0, sw: 3, se: 3 }, color32(group.color));
-                        let ink = text_on(group.color);
-                        painter.text(
-                            bar.left_center() + vec2(7.0, 0.0),
-                            Align2::LEFT_CENTER,
-                            (index + 1).to_string(),
-                            FontId::proportional(13.0),
-                            ink,
-                        );
-                        painter.text(
-                            bar.right_center() - vec2(7.0, 0.0),
-                            Align2::RIGHT_CENTER,
-                            group.name.as_str(),
-                            FontId::proportional(12.0),
-                            ink,
-                        );
+        slide_grid(ui, show, show.selected(), state, thumb, commands);
+    });
+}
 
-                        if show.live() == Some(here) {
-                            painter.rect_stroke(rect, 3.0, Stroke::new(3.0, ACCENT), StrokeKind::Outside);
-                        } else if response.hovered() {
-                            painter.rect_stroke(
-                                rect,
-                                3.0,
-                                Stroke::new(1.0, Color32::from_gray(150)),
-                                StrokeKind::Outside,
-                            );
-                        }
+/// One presentation's slides as a grid of thumbnails with a group bar under each. Clicking a
+/// slide puts it on screen.
+fn slide_grid(
+    ui: &mut egui::Ui,
+    show: &Show,
+    which: usize,
+    state: &mut HomeState,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
+    commands: &mut Vec<Command>,
+) {
+    let Some(presentation) = show.presentations().get(which) else { return };
+    let width = state.thumb_width;
+    let image_size = vec2(width, width * 9.0 / 16.0);
+    let bar_height = 20.0;
+    let cell = vec2(width, image_size.y + bar_height);
+    egui::ScrollArea::vertical().id_salt("slide grid").auto_shrink([false, false]).show(ui, |ui| {
+        ui.add_space(12.0);
+        Frame::new().inner_margin(egui::Margin::symmetric(20, 0)).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(14.0, 14.0);
+                ui.add_space(0.0);
+                for (index, (group, slide)) in presentation.slides().enumerate() {
+                    let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
+                    let here = SlideRef { presentation: which, slide: index };
+                    if response.clicked() {
+                        commands.push(Command::GoTo(here));
                     }
-                });
+                    // Editing is on the right-click menu, so reaching for it never puts a
+                    // slide on screen by accident.
+                    response.context_menu(|ui| {
+                        if ui.button("Edit words…").clicked() {
+                            state.editing = EditDraft::of(show, here);
+                            ui.close();
+                        }
+                    });
+                    // Slides scrolled out of view cost nothing: no thumbnail is asked for.
+                    if !ui.is_rect_visible(rect) {
+                        continue;
+                    }
+                    let image = Rect::from_min_size(rect.min, image_size);
+                    let painter = ui.painter();
+                    painter.rect_filled(image, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, Color32::BLACK);
+                    match thumb(ThumbOf::Slide(slide)) {
+                        Some((texture, overflow)) => {
+                            egui::Image::from_texture((texture, image_size)).paint_at(ui, image);
+                            if overflow {
+                                let mark = image.right_top() + vec2(-14.0, 14.0);
+                                painter.circle_filled(mark, 9.0, Color32::from_rgb(240, 190, 40));
+                                painter.text(
+                                    mark,
+                                    Align2::CENTER_CENTER,
+                                    "!",
+                                    FontId::proportional(14.0),
+                                    Color32::BLACK,
+                                );
+                            }
+                        }
+                        None => ui.ctx().request_repaint(),
+                    }
+                    // The bar under the slide: its number and its group, in the group's colour.
+                    let bar = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
+                    painter.rect_filled(bar, CornerRadius { nw: 0, ne: 0, sw: 3, se: 3 }, color32(group.color));
+                    let ink = text_on(group.color);
+                    painter.text(
+                        bar.left_center() + vec2(7.0, 0.0),
+                        Align2::LEFT_CENTER,
+                        (index + 1).to_string(),
+                        FontId::proportional(13.0),
+                        ink,
+                    );
+                    painter.text(
+                        bar.right_center() - vec2(7.0, 0.0),
+                        Align2::RIGHT_CENTER,
+                        group.name.as_str(),
+                        FontId::proportional(12.0),
+                        ink,
+                    );
+
+                    if show.live() == Some(here) {
+                        painter.rect_stroke(rect, 3.0, Stroke::new(3.0, ACCENT), StrokeKind::Outside);
+                    } else if response.hovered() {
+                        painter.rect_stroke(rect, 3.0, Stroke::new(1.0, Color32::from_gray(150)), StrokeKind::Outside);
+                    }
+                }
             });
-            ui.add_space(12.0);
         });
+        ui.add_space(12.0);
     });
 }
 

@@ -75,10 +75,22 @@ has bought one of these elsewhere cannot get it through PresenterCraft.
 - Not used: collections on GitHub that mix in copyrighted Bibles, and the online Bible APIs
   whose terms forbid keeping the text for use without a connection.
 
+## What is built
+
+- **Four Bibles come with the app**: King James, World English, Berean Standard and the
+  Synodal. All four are public domain with no conditions. Their files are in `assets/bibles/`.
+- **Our file format** (`.pcbible`) is the publisher's words, one verse per line, with a few
+  lines saying which Bible it is, its terms and its source, compressed. `cargo run -p pc-bible
+  --example convert` makes one from eBible's one-verse-per-line text. The only changes to the
+  words: the King James source marks paragraphs with a pilcrow and the translators' added
+  words with square brackets, and those marks are removed (the words stay).
+- **Verse numbering.** A table lines up English and Synodal numbering for the Psalms and for
+  the chapters that start at a different verse. Checked against the shipped texts: of 31,102
+  King James verses, 5 have no partner in the Synodal text because it joins them to the verse
+  before (Leviticus 14:57, Isaiah 3:26, Acts 19:41, 2 Corinthians 11:33 and 13:14); those
+  slides show the English alone.
+
 ## Still to work out
 
-- **Verse numbering differs between languages.** The Synodal text numbers the Psalms and some
-  other chapters differently from English Bibles (its Psalm 22 is the English Psalm 23). Showing
-  English beside Russian needs a table that matches them. Not built.
-- **Shipping some inside the app.** KJV, WEB, BSB and the Synodal text have no conditions and
-  could come with the app, so it works without a connection on first start. Not decided.
+- **Downloading the others.** The Install buttons do nothing yet. The plan is to convert each
+  offered Bible to our format and host the files ourselves.

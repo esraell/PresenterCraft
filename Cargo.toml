@@ -13,6 +13,7 @@ pc-model = { path = "crates/pc-model" }
 pc-engine = { path = "crates/pc-engine" }
 pc-render = { path = "crates/pc-render" }
 pc-ndi = { path = "crates/pc-ndi" }
+pc-bible = { path = "crates/pc-bible" }
 # Graphics crates change their APIs between releases: pinned exactly.
 vello = "=0.12.0"
 parley = "=0.13.0"

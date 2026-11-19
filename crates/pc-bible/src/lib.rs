@@ -1,0 +1,423 @@
+//! Bibles for the Bible page: reading a Bible file, finding the verses a reference such as
+//! "John 3:16-18" names, and lining up Bibles that number their verses differently.
+//!
+//! A Bible file (`.pcbible`) is gzip-compressed text: a first line naming the format, then
+//! `key: value` lines about the Bible, a blank line, and one verse per line as
+//! `GEN 1:1 In the beginning...`. The words are kept exactly as their publisher gives them.
+
+mod books;
+mod numbering;
+
+use std::io::{Read, Write};
+
+pub use books::{BOOKS, Book, book_by_code, find_book};
+pub use numbering::{Numbering, convert};
+
+const FIRST_LINE: &str = "presentercraft-bible 1";
+
+/// One verse's place: the book's position in [`BOOKS`], then chapter and verse from 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VerseRef {
+    pub book: usize,
+    pub chapter: u16,
+    pub verse: u16,
+}
+
+/// What a Bible file says about itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Info {
+    /// A short name for files and settings, such as `kjv`.
+    pub id: String,
+    pub name: String,
+    /// The short name shown on slides, such as `KJV`.
+    pub short: String,
+    /// The language's code, such as `en` or `ru`. Decides how book names are written.
+    pub language: String,
+    /// The terms it may be used under, in a few words.
+    pub terms: String,
+    /// The credit its terms ask for, if any.
+    pub credit: String,
+    /// Where the text was taken from.
+    pub source: String,
+    pub numbering: Numbering,
+}
+
+/// A whole Bible held in memory: all its words in one piece, and where each verse is in it.
+#[derive(Debug)]
+pub struct Bible {
+    pub info: Info,
+    text: String,
+    /// Each verse and the bytes of `text` that hold it, in order.
+    index: Vec<(VerseRef, u32, u32)>,
+}
+
+/// Verses from one place to another, both included, in the same book.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Range {
+    pub start: VerseRef,
+    pub end: VerseRef,
+}
+
+/// The last verse of a chapter, whatever its number.
+pub const LAST: u16 = u16::MAX;
+
+impl Bible {
+    /// Reads a Bible file. The error is a plain sentence.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Bible, String> {
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(bytes)
+            .read_to_string(&mut text)
+            .map_err(|_| "This is not a PresenterCraft Bible file, or it is damaged.".to_owned())?;
+        Bible::from_text(&text)
+    }
+
+    fn from_text(file: &str) -> Result<Bible, String> {
+        let mut lines = file.lines();
+        if lines.next() != Some(FIRST_LINE) {
+            return Err("This is not a PresenterCraft Bible file, or it was made by a newer version.".to_owned());
+        }
+        let mut info = Info {
+            id: String::new(),
+            name: String::new(),
+            short: String::new(),
+            language: String::new(),
+            terms: String::new(),
+            credit: String::new(),
+            source: String::new(),
+            numbering: Numbering::English,
+        };
+        for line in lines.by_ref() {
+            if line.is_empty() {
+                break;
+            }
+            let Some((key, value)) = line.split_once(": ") else { continue };
+            let value = value.to_owned();
+            match key {
+                "id" => info.id = value,
+                "name" => info.name = value,
+                "short" => info.short = value,
+                "language" => info.language = value,
+                "terms" => info.terms = value,
+                "credit" => info.credit = value,
+                "source" => info.source = value,
+                "numbering" => {
+                    info.numbering = Numbering::from_name(&value).ok_or_else(|| {
+                        format!("This Bible file uses a verse numbering this version does not know: {value}.")
+                    })?;
+                }
+                _ => {}
+            }
+        }
+        if info.id.is_empty() || info.name.is_empty() {
+            return Err("This Bible file does not say which Bible it is.".to_owned());
+        }
+        let mut bible = Bible { info, text: String::new(), index: Vec::new() };
+        for line in lines {
+            let Some((place, words)) = parse_verse_line(line) else { continue };
+            bible.push(place, words);
+        }
+        if bible.index.is_empty() {
+            return Err("This Bible file has no verses in it.".to_owned());
+        }
+        bible.index.sort_by_key(|(place, _, _)| *place);
+        Ok(bible)
+    }
+
+    /// Makes a Bible from one-verse-per-line text (`GEN 1:1 words`), passing each verse's
+    /// words through `tidy` first. Lines that are not verses of the sixty-six books are left out.
+    pub fn from_verse_lines(info: Info, lines: &str, tidy: impl Fn(&str) -> String) -> Bible {
+        let mut bible = Bible { info, text: String::new(), index: Vec::new() };
+        for line in lines.lines() {
+            if let Some((place, words)) = parse_verse_line(line) {
+                let words = tidy(words);
+                if !words.is_empty() {
+                    bible.push(place, &words);
+                }
+            }
+        }
+        bible.index.sort_by_key(|(place, _, _)| *place);
+        bible
+    }
+
+    fn push(&mut self, place: VerseRef, words: &str) {
+        let start = self.text.len() as u32;
+        self.text.push_str(words);
+        self.index.push((place, start, self.text.len() as u32));
+    }
+
+    /// Writes the Bible as a file.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let i = &self.info;
+        let mut out = format!(
+            "{FIRST_LINE}\nid: {}\nname: {}\nshort: {}\nlanguage: {}\nterms: {}\ncredit: {}\nsource: {}\nnumbering: {}\n\n",
+            i.id,
+            i.name,
+            i.short,
+            i.language,
+            i.terms,
+            i.credit,
+            i.source,
+            i.numbering.name()
+        );
+        for (place, words) in self.all() {
+            out.push_str(&format!("{} {}:{} {words}\n", BOOKS[place.book].code, place.chapter, place.verse));
+        }
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        // Writing into memory cannot fail.
+        let _ = gz.write_all(out.as_bytes());
+        gz.finish().unwrap_or_default()
+    }
+
+    pub fn verse_count(&self) -> usize {
+        self.index.len()
+    }
+
+    fn words(&self, entry: &(VerseRef, u32, u32)) -> &str {
+        &self.text[entry.1 as usize..entry.2 as usize]
+    }
+
+    /// Every verse in order.
+    pub fn all(&self) -> impl Iterator<Item = (VerseRef, &str)> {
+        self.index.iter().map(|entry| (entry.0, self.words(entry)))
+    }
+
+    /// One verse's words, if the Bible has that verse.
+    pub fn verse(&self, place: VerseRef) -> Option<&str> {
+        let at = self.index.binary_search_by_key(&place, |(p, _, _)| *p).ok()?;
+        Some(self.words(&self.index[at]))
+    }
+
+    /// The verses a range names, in order. A range that names nothing gives an empty list.
+    pub fn verses(&self, range: Range) -> Vec<(VerseRef, &str)> {
+        let from = self.index.partition_point(|(p, _, _)| *p < range.start);
+        self.index[from..]
+            .iter()
+            .take_while(|(p, _, _)| *p <= range.end)
+            .map(|entry| (entry.0, self.words(entry)))
+            .collect()
+    }
+
+    /// The first verses that hold every one of the given words, without regard to case.
+    pub fn search(&self, words: &str, limit: usize) -> Vec<(VerseRef, &str)> {
+        let wanted: Vec<String> = words.split_whitespace().map(str::to_lowercase).collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        self.all()
+            .filter(|(_, text)| {
+                let text = text.to_lowercase();
+                wanted.iter().all(|word| text.contains(word.as_str()))
+            })
+            .take(limit)
+            .collect()
+    }
+
+    /// A book's name as this Bible's language writes it.
+    pub fn book_name(&self, book: usize) -> &'static str {
+        let names = &BOOKS[book.min(BOOKS.len() - 1)];
+        if self.info.language == "ru" { names.russian } else { names.english }
+    }
+
+    /// How a run of verses is named, such as "John 3:16-18" or "Psalms 23". `first` and `last`
+    /// are the first and last verses actually shown.
+    pub fn label(&self, first: VerseRef, last: VerseRef) -> String {
+        let book = self.book_name(first.book);
+        if first == last {
+            format!("{book} {}:{}", first.chapter, first.verse)
+        } else if first.chapter == last.chapter {
+            format!("{book} {}:{}-{}", first.chapter, first.verse, last.verse)
+        } else {
+            format!("{book} {}:{}-{}:{}", first.chapter, first.verse, last.chapter, last.verse)
+        }
+    }
+}
+
+/// Reads `GEN 1:1 words` into the verse's place and its words.
+fn parse_verse_line(line: &str) -> Option<(VerseRef, &str)> {
+    let (code, rest) = line.split_once(' ')?;
+    let (place, words) = rest.split_once(' ')?;
+    let (chapter, verse) = place.split_once(':')?;
+    let place = VerseRef { book: book_by_code(code)?, chapter: chapter.parse().ok()?, verse: verse.parse().ok()? };
+    Some((place, words.trim()))
+}
+
+/// Reads what someone typed, such as "John 3:16", "jn 3:16-18", "1 Cor 13", "Пс 22:1-3" or
+/// "John 3:16-4:2", into the verses it names. The error is a plain sentence.
+pub fn parse_reference(typed: &str) -> Result<Range, String> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Err("Type a reference, such as John 3:16.".to_owned());
+    }
+    // The book is everything up to the first number that is not the "1" of "1 John".
+    let mut split = None;
+    let chars: Vec<(usize, char)> = typed.char_indices().collect();
+    for (n, (at, c)) in chars.iter().enumerate() {
+        if c.is_ascii_digit() && n > 0 && chars[..n].iter().any(|(_, c)| c.is_alphabetic()) {
+            split = Some(*at);
+            break;
+        }
+    }
+    let (book_text, numbers) = match split {
+        Some(at) => (&typed[..at], &typed[at..]),
+        None => (typed, ""),
+    };
+    let book =
+        find_book(book_text).ok_or_else(|| format!("No book of the Bible is called \"{}\".", book_text.trim()))?;
+    let unclear = || format!("\"{}\" is not a chapter and verse. Try something like 3:16 or 3:16-18.", numbers.trim());
+    let number = |text: &str| text.trim().parse::<u16>().ok().filter(|n| *n > 0);
+    // "3:16" or "3,16" or "3.16"; a space also separates chapter from verse.
+    let place = |text: &str| -> Option<(u16, Option<u16>)> {
+        let text = text.trim();
+        match text.split_once([':', ',', '.', ' ']) {
+            Some((chapter, verse)) => Some((number(chapter)?, Some(number(verse)?))),
+            None => Some((number(text)?, None)),
+        }
+    };
+    let numbers = numbers.trim();
+    if numbers.is_empty() {
+        // A whole book with one chapter is fine; otherwise start at chapter 1.
+        return Ok(Range {
+            start: VerseRef { book, chapter: 1, verse: 1 },
+            end: VerseRef { book, chapter: 1, verse: LAST },
+        });
+    }
+    let (first, second) = match numbers.split_once(['-', '\u{2013}', '\u{2014}']) {
+        Some((first, second)) => (first, Some(second)),
+        None => (numbers, None),
+    };
+    let (chapter, verse) = place(first).ok_or_else(unclear)?;
+    let start = VerseRef { book, chapter, verse: verse.unwrap_or(1) };
+    let end = match second {
+        None => VerseRef { book, chapter, verse: verse.unwrap_or(LAST) },
+        Some(second) => match (place(second).ok_or_else(unclear)?, verse) {
+            // "3:16-18": the second number is a verse of the same chapter.
+            ((to, None), Some(_)) => VerseRef { book, chapter, verse: to },
+            // "3-4": whole chapters.
+            ((to, None), None) => VerseRef { book, chapter: to, verse: LAST },
+            ((to_chapter, Some(to_verse)), _) => VerseRef { book, chapter: to_chapter, verse: to_verse },
+        },
+    };
+    if end < start {
+        return Err("The reference ends before it starts.".to_owned());
+    }
+    Ok(Range { start, end })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(numbering: Numbering, language: &str) -> Info {
+        Info {
+            id: "test".to_owned(),
+            name: "Test Bible".to_owned(),
+            short: "TB".to_owned(),
+            language: language.to_owned(),
+            terms: "Public domain".to_owned(),
+            credit: String::new(),
+            source: "made for a test".to_owned(),
+            numbering,
+        }
+    }
+
+    fn small() -> Bible {
+        let lines = "JOH 3:16 For God so loved the world\nJOH 3:17 For God sent not his Son\nJOH 3:18 He that believeth\n\
+                     JOH 4:1 When therefore the Lord knew\nGEN 1:1 In the beginning\nXXX 1:1 not a book\nrubbish";
+        Bible::from_verse_lines(info(Numbering::English, "en"), lines, str::to_owned)
+    }
+
+    fn range(book: &str, start: (u16, u16), end: (u16, u16)) -> Range {
+        let book = book_by_code(book).unwrap();
+        Range {
+            start: VerseRef { book, chapter: start.0, verse: start.1 },
+            end: VerseRef { book, chapter: end.0, verse: end.1 },
+        }
+    }
+
+    #[test]
+    fn references_are_read_the_ways_people_type_them() {
+        assert_eq!(parse_reference("John 3:16"), Ok(range("JOH", (3, 16), (3, 16))));
+        assert_eq!(parse_reference("  jn 3:16-18 "), Ok(range("JOH", (3, 16), (3, 18))));
+        assert_eq!(parse_reference("Jn3.16"), Ok(range("JOH", (3, 16), (3, 16))));
+        assert_eq!(parse_reference("John 3 16"), Ok(range("JOH", (3, 16), (3, 16))));
+        assert_eq!(parse_reference("John 3"), Ok(range("JOH", (3, 1), (3, LAST))));
+        assert_eq!(parse_reference("John 3-4"), Ok(range("JOH", (3, 1), (4, LAST))));
+        assert_eq!(parse_reference("John 3:16-4:2"), Ok(range("JOH", (3, 16), (4, 2))));
+        assert_eq!(parse_reference("1 John 4:8"), Ok(range("1JO", (4, 8), (4, 8))));
+        assert_eq!(parse_reference("1cor 13:4–7"), Ok(range("1CO", (13, 4), (13, 7))));
+        assert_eq!(parse_reference("Psalm 23"), Ok(range("PSA", (23, 1), (23, LAST))));
+        assert_eq!(parse_reference("Jude"), Ok(range("JUD", (1, 1), (1, LAST))));
+        assert_eq!(parse_reference("Gene 1:1"), Ok(range("GEN", (1, 1), (1, 1))));
+    }
+
+    #[test]
+    fn russian_references_are_read() {
+        assert_eq!(parse_reference("Ин 3:16"), Ok(range("JOH", (3, 16), (3, 16))));
+        assert_eq!(parse_reference("Иоанна 3:16"), Ok(range("JOH", (3, 16), (3, 16))));
+        assert_eq!(parse_reference("От Иоанна 3:16"), Ok(range("JOH", (3, 16), (3, 16))));
+        assert_eq!(parse_reference("Пс 22:1-3"), Ok(range("PSA", (22, 1), (22, 3))));
+        assert_eq!(parse_reference("1 Кор 13"), Ok(range("1CO", (13, 1), (13, LAST))));
+        assert_eq!(parse_reference("3 Царств 8:1"), Ok(range("1KI", (8, 1), (8, 1))));
+    }
+
+    #[test]
+    fn unclear_references_are_refused_in_plain_words() {
+        assert!(parse_reference("").unwrap_err().contains("Type a reference"));
+        assert!(parse_reference("Hezekiah 3:1").unwrap_err().contains("No book"));
+        assert!(parse_reference("John 3:x").unwrap_err().contains("not a chapter and verse"));
+        assert!(parse_reference("John 3:18-16").unwrap_err().contains("ends before"));
+        assert!(parse_reference("John 0:1").is_err());
+    }
+
+    #[test]
+    fn verses_are_found_in_order_and_other_lines_are_left_out() {
+        let bible = small();
+        assert_eq!(bible.verse_count(), 5);
+        let found = bible.verses(parse_reference("John 3:16-17").unwrap());
+        assert_eq!(
+            found.iter().map(|(_, words)| *words).collect::<Vec<_>>(),
+            ["For God so loved the world", "For God sent not his Son"]
+        );
+        assert_eq!(bible.verses(parse_reference("John 3").unwrap()).len(), 3);
+        assert_eq!(bible.verses(parse_reference("John 3:18-4:1").unwrap()).len(), 2);
+        assert!(bible.verses(parse_reference("John 9").unwrap()).is_empty());
+        assert_eq!(bible.verse(VerseRef { book: 0, chapter: 1, verse: 1 }), Some("In the beginning"));
+    }
+
+    #[test]
+    fn a_bible_survives_being_written_and_read() {
+        let bible = small();
+        let again = Bible::from_bytes(&bible.to_bytes()).unwrap();
+        assert_eq!(again.info, bible.info);
+        assert_eq!(again.all().collect::<Vec<_>>(), bible.all().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn files_that_are_not_bibles_are_refused() {
+        assert!(Bible::from_bytes(b"hello").is_err());
+        assert!(Bible::from_text("something else\n").is_err());
+        assert!(Bible::from_text("presentercraft-bible 1\nid: x\nname: X\n\n").unwrap_err().contains("no verses"));
+        assert!(Bible::from_text("presentercraft-bible 1\n\nGEN 1:1 words\n").unwrap_err().contains("which Bible"));
+    }
+
+    #[test]
+    fn search_wants_every_word_and_ignores_case() {
+        let bible = small();
+        assert_eq!(bible.search("god SON", 10).len(), 1);
+        assert_eq!(bible.search("god", 1).len(), 1);
+        assert!(bible.search("  ", 10).is_empty());
+    }
+
+    #[test]
+    fn labels_name_the_verses_shown_in_the_bibles_language() {
+        let english = small();
+        let john = book_by_code("JOH").unwrap();
+        let at = |chapter, verse| VerseRef { book: john, chapter, verse };
+        assert_eq!(english.label(at(3, 16), at(3, 16)), "John 3:16");
+        assert_eq!(english.label(at(3, 16), at(3, 18)), "John 3:16-18");
+        assert_eq!(english.label(at(3, 16), at(4, 2)), "John 3:16-4:2");
+        let russian =
+            Bible::from_verse_lines(info(Numbering::Synodal, "ru"), "JOH 3:16 Ибо так возлюбил", str::to_owned);
+        assert_eq!(russian.label(at(3, 16), at(3, 16)), "От Иоанна 3:16");
+    }
+}

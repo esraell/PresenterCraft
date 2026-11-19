@@ -1,0 +1,11 @@
+[package]
+name = "pc-bible"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+flate2 = "1"
+
+[lints]
+workspace = true

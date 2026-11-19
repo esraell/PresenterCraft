@@ -2068,6 +2068,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "image",
+ "pc-bible",
  "pc-engine",
  "pc-model",
  "pc-ndi",
@@ -2075,6 +2076,13 @@ dependencies = [
  "png",
  "pollster",
  "winit",
+]
+
+[[package]]
+name = "pc-bible"
+version = "0.1.0"
+dependencies = [
+ "flate2",
 ]
 
 [[package]]

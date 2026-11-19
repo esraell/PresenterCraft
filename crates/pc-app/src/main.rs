@@ -223,6 +223,8 @@ struct App {
     show: Show,
     /// The file each song came from, in the show's order; `None` for the bundled sample.
     sources: Vec<Option<PathBuf>>,
+    /// The presentations kept for Bible passages.
+    bible_slots: [usize; 2],
     /// The decoded picture of each media item, in the show's order.
     pictures: Vec<Picture>,
     /// Songs changed in the Edit view and not yet written to their files, and when the last
@@ -346,6 +348,7 @@ impl App {
             home_state: HomeState {
                 fonts: Arc::new(pc_render::Fonts::new().family_names()),
                 output_placement: placement,
+                bible: home::BiblePage { slots: Some(self.bible_slots), ..home::BiblePage::default() },
                 ..HomeState::default()
             },
             next_repaint: None,
@@ -641,6 +644,11 @@ impl App {
             // Testing aid: show the Bible page.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_BIBLE").is_some() {
                 running.home_state.bible_open = true;
+                // Testing aid: look a reference up as if it had been typed.
+                if let Ok(reference) = std::env::var("PRESENTERCRAFT_BIBLE_LOOKUP") {
+                    running.home_state.bible.lookup = reference;
+                    running.home_state.bible.look_up(None);
+                }
                 // Testing aid: open the Options pop-up on the named pane.
                 if let Ok(pane) = std::env::var("PRESENTERCRAFT_BIBLE_OPTIONS") {
                     running.home_state.bible.options.open = true;
@@ -787,6 +795,14 @@ impl ApplicationHandler for App {
                 if let Some((at, slide)) = self.running.as_mut().and_then(|r| r.home_state.pending_edit.take()) {
                     self.apply_edit(at, slide);
                 }
+                // A Bible passage just looked up goes into its slot. It is never the slot on
+                // screen, so the output is untouched.
+                if let Some((slot, passage)) = self.running.as_mut().and_then(|r| r.home_state.bible.pending.take()) {
+                    self.show.replace_presentation(slot, Arc::new(passage));
+                    if let Some(running) = self.running.as_ref() {
+                        running.home_window.request_redraw();
+                    }
+                }
                 self.update_canvas();
                 self.move_output();
                 self.switch_ndi();
@@ -855,7 +871,17 @@ fn main() -> ExitCode {
         }
         songs.into_iter().map(|loaded| (loaded.song, Some(loaded.path))).collect()
     };
-    let (songs, sources): (Vec<_>, Vec<_>) = songs.into_iter().unzip();
+    let (mut songs, mut sources): (Vec<_>, Vec<_>) = songs.into_iter().unzip();
+    // Two empty presentations after the songs hold Bible passages. They have no file.
+    let bible_slots = [songs.len(), songs.len() + 1];
+    for _ in bible_slots {
+        songs.push(pc_model::Presentation {
+            id: pc_model::Uuid::new_v4(),
+            title: "Bible".to_owned(),
+            groups: Vec::new(),
+        });
+        sources.push(None);
+    }
 
     let event_loop = match EventLoop::new() {
         Ok(event_loop) => event_loop,
@@ -869,6 +895,7 @@ fn main() -> ExitCode {
         options,
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
         sources,
+        bible_slots,
         pictures: Vec::new(),
         unsaved: Vec::new(),
         unsaved_since: None,

@@ -17,6 +17,7 @@ ndi = ["pc-ndi/sdk"]
 
 [dependencies]
 pc-ndi.workspace = true
+pc-bible.workspace = true
 pc-model.workspace = true
 pc-engine.workspace = true
 pc-render.workspace = true
