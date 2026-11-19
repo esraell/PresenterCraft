@@ -81,7 +81,11 @@ message.
 - **Clean room.** Behaviour familiar from other presentation software is fine. Their names,
   wording, names for features, icons, artwork and looks are not, anywhere: code, comments, the
   interface, file formats, commit messages, the README, issues and pull requests. Nothing comes
-  from decompiling another product or from file formats extracted from one.
+  from decompiling another product or from file formats extracted from one. One exception,
+  agreed by the owner: the song importer reads ProPresenter 7 `.pro` documents using
+  greyshirtguy's MIT-licensed definitions, may name ProPresenter as a plain fact where it says
+  what it reads, and never writes that format
+  ([docs/licences/song-documents.md](docs/licences/song-documents.md)).
 - **Content.** No song lyrics or Bible text that isn't public domain, in tests or anywhere else.
   Tests use text written for them.
 - **Privacy.** No secrets, tokens, local paths (`/Users/…`), links to private sessions or

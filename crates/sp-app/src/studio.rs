@@ -730,9 +730,13 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
     if library.is_none() {
         state.library_shown = None;
     }
-    let keys = state.song_keys.clone();
-    let in_library =
-        |index: usize| library.as_ref().is_none_or(|library| keys.get(index).is_some_and(|key| library.has(key)));
+    // The songs in the library shown, found once with a set rather than row by row, so a
+    // library of thousands of songs doesn't slow every frame.
+    let in_set: Option<std::collections::HashSet<usize>> = library.as_ref().map(|library| {
+        let wanted: std::collections::HashSet<&str> = library.songs.iter().map(String::as_str).collect();
+        state.song_keys.iter().enumerate().filter(|(_, key)| wanted.contains(key.as_str())).map(|(at, _)| at).collect()
+    });
+    let in_library = |index: usize| in_set.as_ref().is_none_or(|set| set.contains(&index));
     let total = (0..show.presentations().len()).filter(|index| listed(*index) && in_library(*index)).count();
     let shown: Vec<usize> = show
         .presentations()
@@ -764,11 +768,14 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
         ui.input(|input| (input.pointer.interact_pos(), input.modifiers, input.pointer.primary_down()));
     // Songs picked out lose the ones no longer listed.
     state.picked_songs.retain(|at| shown.contains(at));
-    egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.y = 2.0;
+    let spacing = ui.spacing().item_spacing.y;
+    ui.spacing_mut().item_spacing.y = 2.0;
+    // Only the rows in view are laid out, so thousands of songs cost no more to draw than a few.
+    let scroll = egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]);
+    scroll.show_rows(ui, 30.0, shown.len(), |ui, in_view| {
         let several = state.picked_songs.len() > 1;
         let mut rows: Vec<(usize, Rect)> = Vec::new();
-        for index in shown.iter().copied() {
+        for index in shown[in_view].iter().copied() {
             let Some(song) = show.presentations().get(index) else { continue };
             // Several picked out are lit together; otherwise the song shown is.
             let chosen = if several {
@@ -828,7 +835,7 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
             response.context_menu(|ui| song_menu(ui, show, state, commands, index, &mut add));
         }
         let ctx = ui.ctx().clone();
-        sweep_rows(ui, state, crate::home::Picking::Songs, &rows, list, pointer, down, |picked| {
+        sweep_rows(ui, state, crate::home::Picking::Songs, &rows, &shown, list, pointer, down, |picked| {
             egui::DragAndDrop::set_payload(&ctx, SongDrag(picked));
         });
         if total == 0 {
@@ -842,6 +849,7 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
             ui.label(egui::RichText::new("No song matches.").color(TEXT_DIM));
         }
     });
+    ui.spacing_mut().item_spacing.y = spacing;
     if let Some(index) = add
         && let (Some(key), Some(song)) = (state.song_keys.get(index), show.presentations().get(index))
     {
@@ -1005,6 +1013,7 @@ fn sweep_rows(
     state: &mut HomeState,
     which: crate::home::Picking,
     rows: &[(usize, Rect)],
+    order: &[usize],
     list: Rect,
     pointer: Option<egui::Pos2>,
     down: bool,
@@ -1033,9 +1042,10 @@ fn sweep_rows(
     if sweep.keeps || at.distance(sweep.start) < 3.0 {
         return;
     }
-    // The row under the pointer, or the first or last when it is above or below them all.
+    // The row under the pointer, or the first or last in view when it is above or below them
+    // all. `rows` are the rows in view; `order` is every row of the list, in order, so a sweep
+    // goes on picking when the row it started on has scrolled out of view.
     let under = rows.iter().find(|(_, row)| at.y < row.max.y + 1.0).or(rows.last()).map(|(index, _)| *index);
-    let order: Vec<usize> = rows.iter().map(|(index, _)| *index).collect();
     if let (Some(from), Some(to)) = (sweep.from.and_then(|f| order.iter().position(|i| *i == f)), under)
         && let Some(to) = order.iter().position(|i| *i == to)
     {
@@ -2301,6 +2311,32 @@ mod tests {
         (0..3).map(|n| (5 + n, Rect::from_min_size(pos2(0.0, n as f32 * 32.0), vec2(200.0, 30.0)))).collect()
     }
 
+    /// Every row of the list the tests' rows are in, in order.
+    fn order() -> Vec<usize> {
+        rows().iter().map(|(index, _)| *index).collect()
+    }
+
+    #[test]
+    fn a_sweep_goes_on_picking_when_the_row_it_started_on_has_scrolled_out_of_view() {
+        let list = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 300.0));
+        let mut state = HomeState {
+            sweep: Some(Sweep {
+                list: Picking::Songs,
+                from: Some(1),
+                start: pos2(10.0, 15.0),
+                keeps: false,
+                carried: false,
+            }),
+            ..HomeState::default()
+        };
+        // Rows 5 to 7 are in view; the sweep started on row 1, now scrolled away above them.
+        let all: Vec<usize> = (0..10).collect();
+        in_frame(|ui| {
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), &all, list, Some(pos2(10.0, 40.0)), true, |_| {})
+        });
+        assert_eq!(state.picked_songs, vec![1, 2, 3, 4, 5, 6]);
+    }
+
     /// Runs `body` once in a frame, with nothing pressed.
     fn in_frame(body: impl FnOnce(&mut egui::Ui)) {
         let ctx = egui::Context::default();
@@ -2345,18 +2381,28 @@ mod tests {
         };
         let mut carried = None;
         in_frame(|ui| {
-            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 75.0)), true, |_| {});
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), &order(), list, Some(pos2(10.0, 75.0)), true, |_| {});
             assert_eq!(state.picked_songs, vec![5, 6, 7], "from the first row to the one under the pointer");
-            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 40.0)), true, |_| {});
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), &order(), list, Some(pos2(10.0, 40.0)), true, |_| {});
             assert_eq!(state.picked_songs, vec![5, 6], "moving back up picks fewer");
             // Out of the list: the songs picked are carried, once.
-            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 420.0)), true, |picked| {
-                carried = Some(picked);
-            });
-            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 430.0)), true, |_| {
+            sweep_rows(
+                ui,
+                &mut state,
+                Picking::Songs,
+                &rows(),
+                &order(),
+                list,
+                Some(pos2(10.0, 420.0)),
+                true,
+                |picked| {
+                    carried = Some(picked);
+                },
+            );
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), &order(), list, Some(pos2(10.0, 430.0)), true, |_| {
                 panic!("carried twice")
             });
-            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 430.0)), false, |_| {});
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), &order(), list, Some(pos2(10.0, 430.0)), false, |_| {});
         });
         assert_eq!(carried, Some(vec![5, 6]));
         assert!(state.sweep.is_none(), "letting go ends the drag");
@@ -2378,11 +2424,21 @@ mod tests {
         };
         let mut carried = None;
         in_frame(|ui| {
-            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 20.0)), true, |_| {});
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), &order(), list, Some(pos2(10.0, 20.0)), true, |_| {});
             assert_eq!(state.picked_songs, vec![5, 7]);
-            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(-30.0, 20.0)), true, |picked| {
-                carried = Some(picked);
-            });
+            sweep_rows(
+                ui,
+                &mut state,
+                Picking::Songs,
+                &rows(),
+                &order(),
+                list,
+                Some(pos2(-30.0, 20.0)),
+                true,
+                |picked| {
+                    carried = Some(picked);
+                },
+            );
         });
         assert_eq!(carried, Some(vec![5, 7]));
     }

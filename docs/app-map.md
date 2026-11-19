@@ -85,6 +85,7 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 | Delete | Delete what is picked out, after asking |
 | Command-N | New song |
 | File › Import Songs… (or drop song files on the window) | Import songs from text, lyric, ChordPro, rich-text or Word files |
+| File › Import from ProPresenter… (or drop a folder) | Bring a library folder across; each folder becomes a library |
 | Command-L | Back to the song on screen |
 
 Every menu bar item, with its shortcut, is listed by `softpresenter ctl menu`; any of them can be

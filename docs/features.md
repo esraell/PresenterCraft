@@ -31,7 +31,15 @@ feature changes, this page changes in the same commit.
   languages), the lyric files song services give (title, sections, and a footer whose song
   number, writers and copyright go into the song's details; a church's own licence number is
   never kept), ChordPro (sections from its directives, chords taken out), SoftPresenter's own
-  song text and song files, and on macOS rich-text, Word, OpenDocument and web page files.
+  song text and song files, rich text, and on macOS Word, OpenDocument and web page files.
+- **Bringing a library across from ProPresenter 7.** File › Import from ProPresenter… opens
+  its Libraries folder; choose one library, or the folder of all of them. Each folder becomes a
+  library of the same name. Each song keeps its groups, slides, arrangements (and the one
+  chosen), slide labels and notes, slides switched off, and its copyright details. A slide's
+  text box in the largest type becomes the words, the next the translation, and a line such as
+  "Psalm 133:3" the reference. `.pro` files can also be dropped on the window or given to
+  `sp song import`. Documents with pictures or videos but no words are listed as not imported
+  for now. A library of 4,372 songs comes across in about a third of a second.
   Sections are found from lines naming them ("Verse 1", "Chorus:", "Bridge", "Куплет 1",
   "Припев", "Приспів"…); slides break at blank lines, and more than four lines without one are
   shared out evenly (eight lines make two slides of four). A song the library already has,

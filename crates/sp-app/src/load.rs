@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use sp_model::{Presentation, decode_text, from_json, import_song_text, to_json};
+use sp_model::{
+    LARGEST_PRO_FILE, Presentation, decode_text, from_json, import_song_text, read_pro_file, rtf_to_text, to_json,
+};
 
 /// The song shown when the program is started without any files.
 pub const SAMPLE_SONG: &str = include_str!("../../../samples/sample-song.txt");
@@ -23,13 +25,52 @@ pub const OLD_SONG_EXTENSION: &str = "pcpres";
 /// Endings of text files read as songs: plain text, lyric files and ChordPro.
 pub const TEXT_ENDINGS: [&str; 6] = ["txt", "text", "cho", "chordpro", "chopro", "crd"];
 /// Endings of documents read as songs through macOS's own text converter.
-pub const DOCUMENT_ENDINGS: [&str; 6] = ["rtf", "doc", "docx", "odt", "html", "htm"];
+pub const DOCUMENT_ENDINGS: [&str; 5] = ["doc", "docx", "odt", "html", "htm"];
+/// Rich text, read by SoftPresenter itself.
+pub const RICH_TEXT_ENDING: &str = "rtf";
+/// The documents ProPresenter 7 saves songs in.
+pub const PRO_ENDING: &str = "pro";
 /// A song file is a few kilobytes; anything far bigger is not one, and isn't read into memory.
 const LARGEST_SONG_FILE: u64 = 4 * 1024 * 1024;
 
 /// True for a file SoftPresenter can import as a song (besides its own song files).
 pub fn is_importable(path: &Path) -> bool {
-    TEXT_ENDINGS.iter().chain(&DOCUMENT_ENDINGS).any(|ending| has_extension(path, ending))
+    TEXT_ENDINGS
+        .iter()
+        .chain(&DOCUMENT_ENDINGS)
+        .chain(&[RICH_TEXT_ENDING, PRO_ENDING])
+        .any(|ending| has_extension(path, ending))
+}
+
+/// The files to import for the paths given, each with the library it goes into. A file goes
+/// into no particular library; a folder's songs go into a library named after it, and the songs
+/// in each folder inside it into a library named after that one (so a folder of libraries
+/// comes across as those libraries). Hidden files and folders are passed over; files are taken
+/// in name order.
+pub fn files_to_import(paths: &[PathBuf]) -> Vec<(PathBuf, Option<String>)> {
+    let name_of = |path: &Path| path.file_name().map(|n| n.to_string_lossy().into_owned());
+    let hidden = |path: &Path| name_of(path).is_some_and(|n| n.starts_with('.'));
+    let listed = |folder: &Path| {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(folder)
+            .map(|read| read.filter_map(Result::ok).map(|entry| entry.path()).filter(|p| !hidden(p)).collect())
+            .unwrap_or_default();
+        entries.sort();
+        entries
+    };
+    let wanted = |path: &Path| path.is_file() && (is_importable(path) || is_song_file(path));
+    let mut files = Vec::new();
+    for path in paths {
+        if !path.is_dir() {
+            files.push((path.clone(), None));
+            continue;
+        }
+        let entries = listed(path);
+        files.extend(entries.iter().filter(|p| wanted(p)).map(|p| (p.clone(), name_of(path))));
+        for folder in entries.iter().filter(|p| p.is_dir()) {
+            files.extend(listed(folder).into_iter().filter(|p| wanted(p)).map(|p| (p, name_of(folder))));
+        }
+    }
+    files
 }
 
 /// Every ending a song can be imported from, its own song files included, for file dialogs.
@@ -37,32 +78,43 @@ pub fn import_endings() -> Vec<&'static str> {
     let mut endings = vec![SONG_EXTENSION, OLD_SONG_EXTENSION];
     endings.extend(TEXT_ENDINGS);
     endings.extend(DOCUMENT_ENDINGS);
+    endings.extend([RICH_TEXT_ENDING, PRO_ENDING]);
     endings
 }
 
 /// Reads a song from a file to import: text in any common encoding, a lyric file, ChordPro,
-/// or (on macOS) a rich-text, Word, OpenDocument or web page file. The error is a plain
+/// rich text, a song document saved by ProPresenter 7, or (on macOS) a Word, OpenDocument or
+/// web page file. The error is a plain
 /// sentence for the operator.
 pub fn import_file(path: &Path) -> Result<Presentation, String> {
     let name = path.file_name().map_or_else(|| "The file".into(), |n| n.to_string_lossy().into_owned());
     let size = std::fs::metadata(path).map_err(|e| format!("{name} could not be read ({e})."))?.len();
-    if size > LARGEST_SONG_FILE {
+    let pro = has_extension(path, PRO_ENDING);
+    let largest = if pro { LARGEST_PRO_FILE as u64 } else { LARGEST_SONG_FILE };
+    if size > largest {
         return Err(format!("{name} is too large to be a song."));
     }
     let title = path.file_stem().map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
-    let text = if DOCUMENT_ENDINGS.iter().any(|ending| has_extension(path, ending)) {
-        document_text(path).map_err(|reason| format!("{name} could not be read ({reason})."))?
+    let read = || std::fs::read(path).map_err(|e| format!("{name} could not be read ({e})."));
+    let song = if pro {
+        read_pro_file(&read()?, &title).map_err(|reason| format!("{name} could not be read ({reason})."))?
     } else {
-        decode_text(&std::fs::read(path).map_err(|e| format!("{name} could not be read ({e})."))?)
+        let text = if has_extension(path, RICH_TEXT_ENDING) {
+            rtf_to_text(&read()?)
+        } else if DOCUMENT_ENDINGS.iter().any(|ending| has_extension(path, ending)) {
+            document_text(path).map_err(|reason| format!("{name} could not be read ({reason})."))?
+        } else {
+            decode_text(&read()?)
+        };
+        import_song_text(&title, &text)
     };
-    let song = import_song_text(&title, &text);
     if song.slide_count() == 0 {
         return Err(format!("{name} has no words in it."));
     }
     Ok(song)
 }
 
-/// The words of a rich-text, Word, OpenDocument or web page file, from macOS's own converter
+/// The words of a Word, OpenDocument or web page file, from macOS's own converter
 /// (textutil), which ships with every Mac. It gets ten seconds.
 #[cfg(target_os = "macos")]
 fn document_text(path: &Path) -> Result<String, String> {
@@ -107,7 +159,7 @@ fn document_text(path: &Path) -> Result<String, String> {
 
 #[cfg(not(target_os = "macos"))]
 fn document_text(_path: &Path) -> Result<String, String> {
-    Err("rich-text and Word files can be imported on macOS for now; save the song as a .txt file".to_owned())
+    Err("Word files can be imported on macOS for now; save the song as a .txt or .rtf file".to_owned())
 }
 
 /// Reads one of SoftPresenter's own song files.

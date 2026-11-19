@@ -9,8 +9,8 @@ Size: S = under a day, M = days, L = a week or more. Sunday: how much it matters
 
 ## Coming first
 
-1. **Import from a church's existing presentation software**, so a library can move over in one
-   go. A first way in (M), then full file import (L). · M, then L
+1. **Playlists and media from a church's existing presentation software.** Songs and libraries
+   come across already; playlists, pictures, videos and bundles are next. · M
 2. **PowerPoint import.** As pictures first and editable later: sermon and announcement slides
    arrive as PowerPoint files every week. · L
 3. **FFmpeg in the app.** Without it, MKV, WebM, AVI and some MP4 files won't play on a stock
@@ -184,7 +184,7 @@ rather than a feature, but no church on Windows can use the app without them.
 
 - **Choices when importing songs.** How slides are split (paragraph, line or marker, and how many lines), and the theme, library and playlist imported songs go to. (started: File › Import Songs…, drops and `sp song import` read text, lyric, ChordPro, rich-text and Word files, find sections, and share long stretches into slides of up to four lines) · S · Medium
 - **PowerPoint import.** As editable slides, as pictures, or as objects and text (weekly sermon slides). · L · High
-- **Importing from a church's existing presentation software**, so a library can move over in one go: songs, playlists and their media. Some ways in are M, full file import L. · M–L · High
+- **Importing from a church's existing presentation software**, so a library can move over in one go: songs, playlists and their media. (started: ProPresenter 7 songs and library folders, with groups, arrangements, labels, notes and copyright details; not yet playlists, pictures, videos or bundles) · M · High
 - **SongSelect inside the app.** Search, preview and import from the search panel (⌘F). May need CCLI's agreement. · L · Medium
 - **Media, placeholder and stream items in a playlist.** A countdown video, an announcement loop, a "sermon slides to come" placeholder, a cue, a video or audio stream, and hidden items. (started: playlists hold songs, saved passages and headers) · M · Medium
 - **Exporting a playlist with its songs and media.** Prepare at home, run at church. · M · Medium

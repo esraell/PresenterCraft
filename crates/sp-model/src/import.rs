@@ -370,7 +370,7 @@ pub fn decode_text(bytes: &[u8]) -> String {
 }
 
 /// One byte of Windows-1251 as the character it stands for.
-fn windows_1251(byte: u8) -> char {
+pub(crate) fn windows_1251(byte: u8) -> char {
     const HIGH: [char; 64] = [
         'Ђ', 'Ѓ', '‚', 'ѓ', '„', '…', '†', '‡', '€', '‰', 'Љ', '‹', 'Њ', 'Ќ', 'Ћ', 'Џ', 'ђ', '‘', '’', '“', '”', '•',
         '–', '—', '\u{fffd}', '™', 'љ', '›', 'њ', 'ќ', 'ћ', 'џ', '\u{a0}', 'Ў', 'ў', 'Ј', '¤', 'Ґ', '¦', '§', 'Ё', '©',
@@ -386,7 +386,7 @@ fn windows_1251(byte: u8) -> char {
 }
 
 /// One byte of Windows-1252 as the character it stands for.
-fn windows_1252(byte: u8) -> char {
+pub(crate) fn windows_1252(byte: u8) -> char {
     const MIDDLE: [char; 32] = [
         '€', '\u{fffd}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{fffd}', 'Ž', '\u{fffd}',
         '\u{fffd}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{fffd}', 'ž', 'Ÿ',
