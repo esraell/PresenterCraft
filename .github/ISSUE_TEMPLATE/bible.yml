@@ -1,0 +1,44 @@
+name: Add a Bible translation
+description: Ask for a translation to be offered for download.
+labels: ["bible"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        PresenterCraft offers a Bible only if its terms let anyone pass it on: public domain, or
+        an open licence. docs/licences/bibles.md lists the ones offered now.
+  - type: input
+    id: name
+    attributes:
+      label: Name and abbreviation
+      placeholder: Reina-Valera 1909 (RV1909)
+    validations:
+      required: true
+  - type: input
+    id: language
+    attributes:
+      label: Language
+      placeholder: Spanish
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Where the text is published
+      description: A link to the text, or to the publisher's page for it.
+    validations:
+      required: true
+  - type: textarea
+    id: terms
+    attributes:
+      label: Its licence or terms
+      description: Paste or link the terms that say how it may be shared.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you send
+      options:
+        - label: As far as I can tell, its terms let anyone pass it on (public domain or an open licence).
+          required: true
