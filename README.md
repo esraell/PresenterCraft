@@ -46,7 +46,8 @@ ProPresenter.
   Wipe (each from any side), Iris and Zoom In, with their time, from the bar under the slides.
 - A Library of songs above a Service list (songs and saved Bible passages, in running order).
   Several services can be kept and switched between; the line between the two lists can be
-  dragged, and the library folded away. With View, Continuous Playlist on, Next at the end of a
+  dragged, and the library folded away. Service items can be dragged into a new order, and
+  headers (+ beside SERVICE) group them. With View, Continuous Playlist on, Next at the end of a
   song goes on to the next song in the service.
 - Pictures dropped on the window, or added with the media bin's +, go into the media bin, are
   kept between runs, and can be shown behind the words; right-click one to remove it.

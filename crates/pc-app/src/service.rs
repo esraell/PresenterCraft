@@ -47,6 +47,10 @@ pub enum Item {
         title: String,
     },
     Passage(SavedPassage),
+    /// A heading that groups the items under it, such as "Worship" or "Sermon".
+    Header {
+        name: String,
+    },
 }
 
 impl Item {
@@ -55,6 +59,7 @@ impl Item {
         match self {
             Item::Song { title, .. } => title,
             Item::Passage(passage) => &passage.lookup,
+            Item::Header { name } => name,
         }
     }
 }
@@ -137,6 +142,31 @@ impl Services {
     }
 
     /// Moves an item one place earlier or later. Returns true if it moved.
+    /// Moves an item to a place in the list: `slot` is how many items will be above it.
+    pub fn move_item(&mut self, index: usize, slot: usize) -> bool {
+        let count = self.front().items.len();
+        if index >= count {
+            return false;
+        }
+        let to = if slot > index { slot - 1 } else { slot }.min(count - 1);
+        if to == index {
+            return false;
+        }
+        let item = self.front_mut().items.remove(index);
+        self.front_mut().items.insert(to, item);
+        self.chosen = Some(to);
+        true
+    }
+
+    /// Renames a header in the service shown.
+    pub fn rename_header(&mut self, index: usize, name: &str) {
+        if let Some(Item::Header { name: have }) = self.front_mut().items.get_mut(index)
+            && !name.trim().is_empty()
+        {
+            *have = name.trim().to_owned();
+        }
+    }
+
     pub fn nudge(&mut self, index: usize, earlier: bool) -> bool {
         let count = self.front().items.len();
         let to = if earlier { index.checked_sub(1) } else { Some(index + 1).filter(|to| *to < count) };
@@ -421,6 +451,14 @@ mod tests {
         assert!(services.remove(1));
         assert!(!services.remove(9));
         assert_eq!(services.front().items.len(), 2);
+        // Headers are kept, renamed, and items are dragged to a new place.
+        services.add(Item::Header { name: "Worship".to_owned() });
+        services.rename_header(2, "Sermon");
+        assert!(services.move_item(2, 0));
+        assert_eq!(services.front().items.iter().map(Item::title).collect::<Vec<_>>(), ["Sermon", "A", "B"]);
+        assert!(!services.move_item(0, 0));
+        let again = Services::from_json(&services.to_json()).unwrap();
+        assert_eq!(again.front().items[0], Item::Header { name: "Sermon".to_owned() });
     }
 
     #[test]

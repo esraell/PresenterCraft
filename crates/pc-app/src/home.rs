@@ -143,6 +143,8 @@ pub struct HomeState {
     pub screen_status: Vec<(String, bool)>,
     /// The screen chosen in the Screens window.
     pub screen_selected: usize,
+    /// A service header being renamed, by its place, and its name as typed so far.
+    pub renaming_header: Option<(usize, String)>,
     /// True while the library is folded away.
     pub library_collapsed: bool,
     /// Next at the end of a song goes on to the next song in the service.
@@ -673,6 +675,7 @@ impl Default for HomeState {
             screen_selected: 0,
             show_notes: false,
             library_collapsed: false,
+            renaming_header: None,
             continuous: false,
             test_pattern: None,
             props: Vec::new(),

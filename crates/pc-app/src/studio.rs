@@ -358,7 +358,7 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
 /// One row of a list in the left column. Returns its response; `live` puts a tally light at
 /// the right, and `trailing` is room kept clear there for a button.
 fn list_row(ui: &mut egui::Ui, icon: Icon, title: &str, chosen: bool, live: bool, missing: bool) -> egui::Response {
-    let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+    let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click_and_drag());
     let painter = ui.painter();
     if chosen {
         painter.rect_filled(row, RADIUS, ACCENT.gamma_multiply(0.22));
@@ -433,6 +433,14 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
             ui.horizontal(|ui| {
                 caption(ui, "SERVICE");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // + adds a header, a heading that groups the items under it.
+                    let add = ui.add(egui::Button::new(egui::RichText::new("+").color(TEXT_FAINT)).frame(false));
+                    if add.on_hover_text("New Header").clicked() {
+                        state.services.add(Item::Header { name: "Header".to_owned() });
+                        let at = state.services.front().items.len() - 1;
+                        state.renaming_header = Some((at, "Header".to_owned()));
+                        state.rename_started = true;
+                    }
                     ui.label(egui::RichText::new(state.services.front().items.len().to_string()).size(11.0).color(TEXT_FAINT));
                 });
             });
@@ -491,8 +499,15 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 Earlier(usize),
                 Later(usize),
                 Remove(usize),
+                Rename(usize),
             }
             let mut ask = None;
+            // Rows can be dragged up and down to change the running order.
+            let mut rows: Vec<Rect> = Vec::new();
+            let mut dragging = None;
+            let mut dropped = None;
+            let mut renamed: Option<Option<(usize, String)>> = None;
+            let mut rename_started = std::mem::take(&mut state.rename_started);
             egui::ScrollArea::vertical().id_salt("service list").auto_shrink([false, false]).show(
                 ui,
                 |ui| {
@@ -505,14 +520,85 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                         );
                     }
                     for (index, item) in items.iter().enumerate() {
+                        // A header: bold, full width, and renamed in place.
+                        if let Item::Header { name } = item {
+                            let (row, response) =
+                                ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
+                            rows.push(row);
+                            match state.renaming_header.as_mut().filter(|(at, _)| *at == index) {
+                                Some((_, typed)) => {
+                                    let field = rename_field_at(
+                                        ui,
+                                        typed,
+                                        semibold(13.0),
+                                        TEXT,
+                                        ACCENT,
+                                        row.left_center() + vec2(6.0, 0.0),
+                                        row.max.x - 4.0,
+                                    );
+                                    if std::mem::take(&mut rename_started) {
+                                        field.request_focus();
+                                    }
+                                    let (enter, escape) = ui.input(|input| {
+                                        (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape))
+                                    });
+                                    if escape {
+                                        renamed = Some(None);
+                                    } else if enter || field.lost_focus() {
+                                        renamed = Some(Some((index, typed.clone())));
+                                    }
+                                }
+                                None => {
+                                    ui.painter().text(
+                                        row.left_center() + vec2(6.0, 0.0),
+                                        Align2::LEFT_CENTER,
+                                        name.as_str(),
+                                        semibold(13.0),
+                                        TEXT,
+                                    );
+                                    ui.painter().hline(
+                                        row.x_range(),
+                                        row.max.y - 1.0,
+                                        Stroke::new(1.0, LINE),
+                                    );
+                                }
+                            }
+                            if response.dragged() {
+                                dragging = Some(index);
+                            }
+                            if response.drag_stopped() {
+                                dropped = Some(index);
+                            }
+                            if response.double_clicked() {
+                                ask = Some(Ask::Rename(index));
+                            }
+                            response.context_menu(|ui| {
+                                if ui.button("Rename").clicked() {
+                                    ask = Some(Ask::Rename(index));
+                                    ui.close();
+                                }
+                                if ui.button("Remove from Service").clicked() {
+                                    ask = Some(Ask::Remove(index));
+                                    ui.close();
+                                }
+                            });
+                            continue;
+                        }
                         let (icon, found) = match item {
                             Item::Song { key, .. } => (Icon::Document, song_at(&state.song_keys, key)),
-                            Item::Passage(_) => (Icon::Book, None),
+                            _ => (Icon::Book, None),
                         };
                         let missing = matches!(item, Item::Song { .. }) && found.is_none();
                         let live = found.is_some() && found == live_in;
                         let chosen = state.services.chosen == Some(index);
                         let mut response = list_row(ui, icon, item.title(), chosen, live, missing);
+                        rows.push(response.rect);
+                        if response.dragged() {
+                            dragging = Some(index);
+                        }
+                        if response.drag_stopped() {
+                            dropped = Some(index);
+                        }
                         if missing {
                             response = response.on_hover_text("This song is not open in the library");
                         }
@@ -537,7 +623,31 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                     }
                 },
             );
+            // Where a dragged row would land: a line between rows, and on release the move.
+            let pointer_y = ui.input(|input| input.pointer.interact_pos()).map(|at| at.y);
+            let slot = pointer_y.map(|y| rows.iter().filter(|row| row.center().y < y).count());
+            if let (Some(_), Some(slot)) = (dragging, slot) {
+                let y = rows.get(slot).map_or_else(|| rows.last().map_or(0.0, |row| row.max.y), |row| row.min.y);
+                let (left, right) = rows.first().map_or((0.0, 0.0), |row| (row.min.x, row.max.x));
+                ui.painter().line_segment([pos2(left + 4.0, y), pos2(right - 4.0, y)], Stroke::new(2.0, ACCENT));
+            }
+            if let (Some(index), Some(slot)) = (dropped, slot) {
+                state.services.move_item(index, slot);
+            }
+            state.rename_started = rename_started;
+            match renamed {
+                Some(Some((index, name))) => {
+                    state.services.rename_header(index, &name);
+                    state.renaming_header = None;
+                }
+                Some(None) => state.renaming_header = None,
+                None => {}
+            }
             match ask {
+                Some(Ask::Rename(index)) => {
+                    state.renaming_header = Some((index, items.get(index).map(|item| item.title().to_owned()).unwrap_or_default()));
+                    state.rename_started = true;
+                }
                 Some(Ask::Open(index)) => {
                     state.services.chosen = Some(index);
                     match items.get(index) {
@@ -551,7 +661,7 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                             state.bible_open = true;
                             state.bible.open_saved(saved, live_in);
                         }
-                        None => {}
+                        Some(Item::Header { .. }) | None => {}
                     }
                 }
                 Some(Ask::Earlier(index)) => {
