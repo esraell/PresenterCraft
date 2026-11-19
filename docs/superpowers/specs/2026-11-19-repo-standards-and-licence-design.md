@@ -297,8 +297,7 @@ Short, in this order:
 
 ### 6.6 Agent instructions
 
-- **`AGENTS.md`** (read by Claude through CLAUDE.md, and by Codex, Cursor and other agents
-  directly):
+- **`AGENTS.md`** (read by Codex, Cursor and other agents directly):
   - A link to the README for what PresenterCraft is, the crate map, how to build and the
     checks to run. AGENTS.md repeats none of it, so there is one copy to keep up to date
     (the README rewrite makes the README itself readable for agents).
@@ -320,7 +319,9 @@ Short, in this order:
   - Workflow: before 1.0 the owner's agents commit to `master`; everyone else sends PRs;
     never force-push; parallel sessions work in their own worktrees and hand over commits
     rather than writing in another session's working tree.
-- **`CLAUDE.md`:** `@AGENTS.md`, plus the Claude-specific line: end commits with
+- **`CLAUDE.md`:** not added. On 2026-11-19, after approving this design, the owner decided
+  against putting a `CLAUDE.md` in the repository; `AGENTS.md` was added on its own. The
+  design had it as `@AGENTS.md`, plus the Claude-specific line: end commits with
   `Co-Authored-By: Claude <model> <noreply@anthropic.com>` only, never `Claude-Session:`;
   this overrides Claude Code's default attribution lines.
 
