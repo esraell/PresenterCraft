@@ -49,6 +49,8 @@ ProPresenter.
   remove it, + to add a group.
 - Transitions between slides: Cut, Dissolve, Fade Black, Fade White, Push, Move In, Reveal,
   Wipe (each from any side), Iris and Zoom In, with their time, from the bar under the slides.
+- New Song (Command-N, or + beside LIBRARY) asks for the song's title and theme, and takes its
+  words pasted in (a line in square brackets starts a group, a blank line a new slide).
 - A Library of songs above a Service list (songs and saved Bible passages, in running order).
   Several services can be kept and switched between; the line between the two lists can be
   dragged, and the library folded away. Service items can be dragged into a new order, and

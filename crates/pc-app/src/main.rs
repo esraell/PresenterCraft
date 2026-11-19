@@ -1442,28 +1442,30 @@ impl App {
             running.home_state.editing = EditDraft::of(&self.show, at);
             running.home_window.request_redraw();
         }
-        if !std::mem::take(&mut running.home_state.new_song) {
+        let Some(asked) = running.home_state.new_song_request.take() else {
             return;
-        }
-        // A name no other song has: "New Song", "New Song 2", and so on.
-        let taken = |name: &str| self.show.presentations().iter().any(|song| song.title == name);
-        let title = std::iter::once("New Song".to_owned())
-            .chain((2..).map(|n| format!("New Song {n}")))
-            .find(|name| !taken(name))
-            .unwrap_or_default();
-        let id = Uuid::new_v4();
-        let verse = pc_model::Group {
-            id: Uuid::new_v4(),
-            name: "Verse 1".to_owned(),
-            color: pc_model::group_color("Verse 1"),
-            slides: vec![Slide::new(vec![pc_model::Object::text(pc_model::Role::primary(), "")])],
         };
+        let title = asked.title.clone();
+        let id = Uuid::new_v4();
+        // The words given, made into slides; with none, one empty slide in a first verse.
+        let parsed = pc_model::parse_song_text(&title, &asked.words);
+        let groups = if parsed.slide_count() > 0 {
+            parsed.groups
+        } else {
+            vec![pc_model::Group {
+                id: Uuid::new_v4(),
+                name: "Verse 1".to_owned(),
+                color: pc_model::group_color("Verse 1"),
+                slides: vec![Slide::new(vec![pc_model::Object::text(pc_model::Role::primary(), "")])],
+            }]
+        };
+        let theme = asked.theme.and_then(|at| self.themes.get(at)).map(|theme| theme.id);
         let song = pc_model::Presentation {
             id,
             title: title.clone(),
-            groups: vec![verse],
+            groups,
             copyright: pc_model::Copyright::default(),
-            theme: None,
+            theme,
             arrangements: Vec::new(),
             arrangement: None,
         };
@@ -1484,10 +1486,9 @@ impl App {
                 Some(path) => path.with_extension("").to_string_lossy().into_owned(),
                 None => format!("title:{title}"),
             });
-            // Back to the slides, with the title ready to be typed over.
+            // Back to the slides of the new song.
             state.editing = None;
             state.bible_open = false;
-            state.renaming_song = Some(title);
             state.rename_started = true;
             running.home_window.request_redraw();
         }
@@ -2923,6 +2924,7 @@ impl ApplicationHandler<String> for App {
             && key.state == ElementState::Pressed
             && !running.egui_ctx.text_edit_focused()
             && running.home_state.editing.is_none()
+            && running.home_state.new_song_sheet.is_none()
             && !self.held.super_key()
             && !self.held.control_key()
             && let Some(command) = show_key_command(&key.logical_key, &self.show)
@@ -2933,6 +2935,9 @@ impl ApplicationHandler<String> for App {
             let something_open = state.settings_open
                 || state.bible.options.open
                 || state.library_search.is_some()
+                || state.confirm_delete_song.is_some()
+                || state.confirm_delete_theme.is_some()
+                || state.confirm_delete_template.is_some()
                 || egui::Popup::is_any_open(&running.egui_ctx);
             let escape = matches!(key.logical_key, Key::Named(NamedKey::Escape));
             if !(escape && something_open) {

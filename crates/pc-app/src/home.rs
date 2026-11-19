@@ -51,6 +51,9 @@ pub struct HomeState {
     pub rename_started: bool,
     /// Set when a new song is asked for (Command-N). The app makes it and clears this.
     pub new_song: bool,
+    /// The New Song sheet while it is open, and a song it asked to be made.
+    pub new_song_sheet: Option<NewSong>,
+    pub new_song_request: Option<NewSong>,
     /// The song's title while it is being retyped in the heading, and the title just typed,
     /// with the song's place, for the app to take.
     pub renaming_song: Option<String>,
@@ -677,6 +680,8 @@ impl Default for HomeState {
             transition: pc_model::Transition::default(),
             rename_started: false,
             new_song: false,
+            new_song_sheet: None,
+            new_song_request: None,
             renaming_song: None,
             pending_title: None,
             renaming_group: None,
@@ -903,6 +908,16 @@ pub fn home_ui(
     if !ui.ctx().text_edit_focused() && ui.input(|input| command_key(input, egui::Key::N, false)) {
         state.new_song = true;
     }
+    // New Song, from anywhere, opens the sheet that asks for the song's title, theme and words.
+    if std::mem::take(&mut state.new_song) {
+        let taken = |name: &str| show.presentations().iter().any(|song| song.title == name);
+        let title = std::iter::once("New Song".to_owned())
+            .chain((2..).map(|n| format!("New Song {n}")))
+            .find(|name| !taken(name))
+            .unwrap_or_default();
+        state.new_song_sheet = Some(NewSong { title, focus: true, ..NewSong::default() });
+    }
+    new_song_sheet(ui, state);
     confirm_delete_theme(ui, state);
     confirm_delete_song(ui, show, state);
     library_search(ui, show, state, &mut commands);
@@ -2198,6 +2213,17 @@ pub enum SlideRequest {
     Label(Option<String>),
 }
 
+/// A new song as the New Song sheet describes it: its title, its theme by its place (`None`
+/// for the theme songs use), and its words in the song text format, if any were given.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NewSong {
+    pub title: String,
+    pub theme: Option<usize>,
+    pub words: String,
+    /// True until the title field has been given the keyboard.
+    pub focus: bool,
+}
+
 /// Something asked of the audio player from the Audio tab.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AudioRequest {
@@ -2871,6 +2897,91 @@ fn missing_font_notice(ui: &mut egui::Ui, missing: &[String]) {
 
 /// Asks before a theme is deleted, since it cannot be brought back.
 /// Asks before taking a song out of the library.
+/// The New Song sheet: the song's title, its theme, and its words to paste in (the song text
+/// format: [Verse 1] and so on, a blank line between slides). Create makes it; Escape or Cancel
+/// closes the sheet.
+fn new_song_sheet(ui: &mut egui::Ui, state: &mut HomeState) {
+    let Some(sheet) = state.new_song_sheet.as_mut() else { return };
+    let mut decided = None;
+    egui::Window::new("New Song")
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(false)
+        .fade_in(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, -30.0])
+        .show(ui.ctx(), |ui| {
+            ui.set_width(460.0);
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("New Song").font(crate::studio::semibold(16.0)));
+            ui.add_space(8.0);
+            egui::Grid::new("new song").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                ui.label(egui::RichText::new("Title").color(DIM));
+                let title = ui.add(egui::TextEdit::singleline(&mut sheet.title).desired_width(340.0));
+                if std::mem::take(&mut sheet.focus) {
+                    title.request_focus();
+                }
+                if title.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    decided = Some(true);
+                }
+                ui.end_row();
+                ui.label(egui::RichText::new("Theme").color(DIM));
+                let shown = sheet.theme.and_then(|at| state.theme_names.get(at)).map_or("Songs Theme", String::as_str);
+                egui::ComboBox::from_id_salt("new song theme").selected_text(shown).width(340.0).show_ui(ui, |ui| {
+                    if ui.add(egui::Button::selectable(sheet.theme.is_none(), "Songs Theme")).clicked() {
+                        sheet.theme = None;
+                    }
+                    for (at, name) in state.theme_names.iter().enumerate() {
+                        if ui.add(egui::Button::selectable(sheet.theme == Some(at), name.as_str())).clicked() {
+                            sheet.theme = Some(at);
+                        }
+                    }
+                });
+                ui.end_row();
+            });
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Words (optional)").color(DIM));
+            egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut sheet.words)
+                        .desired_rows(8)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("[Verse 1]\nThe first slide's lines\n\nThe next slide\n\n[Chorus]\n…"),
+                );
+            });
+            ui.label(
+                egui::RichText::new("A line in square brackets starts a group; a blank line starts a new slide; -- before a line starts its translation.")
+                    .size(11.0)
+                    .color(DIM),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let size = vec2(96.0, 30.0);
+                    let ready = !sheet.title.trim().is_empty();
+                    let emphasis = if ready { crate::studio::Emphasis::Plain } else { crate::studio::Emphasis::Idle };
+                    if crate::studio::block_button(ui, size, "Create", "", emphasis).clicked() {
+                        decided = Some(true);
+                    }
+                    if crate::studio::block_button(ui, size, "Cancel", "", crate::studio::Emphasis::Plain).clicked() {
+                        decided = Some(false);
+                    }
+                });
+            });
+            if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                decided = Some(false);
+            }
+        });
+    match decided {
+        Some(true) if !sheet.title.trim().is_empty() => {
+            let mut made = state.new_song_sheet.take().unwrap_or_default();
+            made.title = made.title.trim().to_owned();
+            state.new_song_request = Some(made);
+        }
+        Some(false) => state.new_song_sheet = None,
+        _ => {}
+    }
+}
+
 fn confirm_delete_song(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
     let Some(index) = state.confirm_delete_song else { return };
     let Some(song) = show.presentations().get(index) else {
