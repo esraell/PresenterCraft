@@ -259,3 +259,25 @@ fn replacing_a_presentation_that_is_not_live_changes_no_layer() {
     assert!(!c.slides);
     assert_eq!(s.presentations()[1].slide(0).unwrap().1.objects[0].as_text(), Some("New"));
 }
+
+#[test]
+fn disabled_slides_are_stepped_over_and_cannot_be_shown() {
+    let mut song = parse_song_text("One", "[Verse 1]\nA\n\nB\n\nC\n\n[Chorus]\nD\n\nE\n");
+    // B and D are disabled.
+    song.groups[0].slides[1].enabled = false;
+    song.groups[1].slides[0].enabled = false;
+    let mut s = Show::new(vec![Arc::new(song)]);
+    s.apply(Command::Next);
+    assert_eq!(s.live(), at(0, 0));
+    s.apply(Command::Next);
+    assert_eq!(s.live(), at(0, 2), "B is skipped");
+    s.apply(Command::Next);
+    assert_eq!(s.live(), at(0, 4), "D is skipped");
+    assert!(!s.apply(Command::Next).slides, "the end of the song");
+    s.apply(Command::Previous);
+    assert_eq!(s.live(), at(0, 2));
+    // Clicking a disabled slide does nothing.
+    assert!(!s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 1 })).slides);
+    // The chorus key lands on the chorus's first slide that is not disabled.
+    assert_eq!(s.group_start(&["chorus"]), at(0, 4));
+}

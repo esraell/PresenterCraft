@@ -141,8 +141,11 @@ impl Show {
         let song = self.presentations.get(presentation)?;
         let mut slide = 0;
         for group in &song.groups {
-            if names.contains(&group.name.trim().to_lowercase().as_str()) && !group.slides.is_empty() {
-                return Some(SlideRef { presentation, slide });
+            // The group's first slide that is not disabled.
+            if names.contains(&group.name.trim().to_lowercase().as_str())
+                && let Some(skip) = group.slides.iter().position(|one| one.enabled)
+            {
+                return Some(SlideRef { presentation, slide: slide + skip });
             }
             slide += group.slides.len();
         }
@@ -221,7 +224,7 @@ impl Show {
         let Some(target) = target else {
             return Changes::default();
         };
-        if target.slide >= self.slide_count(target.presentation) || self.live == Some(target) {
+        if target.slide >= self.slide_count(target.presentation) || self.live == Some(target) || !self.enabled(target) {
             return Changes::default();
         }
         self.live = Some(target);
@@ -229,24 +232,40 @@ impl Show {
         Changes { slides: true, ..Changes::default() }
     }
 
+    /// False for a slide that has been disabled: it stays in its song but is never shown.
+    fn enabled(&self, at: SlideRef) -> bool {
+        self.presentations
+            .get(at.presentation)
+            .and_then(|song| song.slide(at.slide))
+            .is_some_and(|(_, slide)| slide.enabled)
+    }
+
+    /// The next slide after the cursor that is not disabled. At the end of the song it stays
+    /// where it is, so after a clear the last slide can be shown again.
     fn next_target(&self) -> Option<SlideRef> {
         match self.cursor {
-            Some(cursor) => {
-                let last = self.slide_count(cursor.presentation).checked_sub(1)?;
-                Some(SlideRef { slide: (cursor.slide + 1).min(last), ..cursor })
-            }
+            Some(cursor) => (cursor.slide + 1..self.slide_count(cursor.presentation))
+                .map(|slide| SlideRef { slide, ..cursor })
+                .find(|at| self.enabled(*at))
+                .or(Some(cursor)),
             None => self.edge_of_selected(false),
         }
     }
 
+    /// The slide before the cursor that is not disabled; at the start of the song it stays.
     fn previous_target(&self) -> Option<SlideRef> {
         let cursor = self.cursor?;
-        Some(SlideRef { slide: cursor.slide.saturating_sub(1), ..cursor })
+        (0..cursor.slide).rev().map(|slide| SlideRef { slide, ..cursor }).find(|at| self.enabled(*at)).or(Some(cursor))
     }
 
+    /// The selected song's first (or last) slide that is not disabled.
     fn edge_of_selected(&self, last: bool) -> Option<SlideRef> {
+        let at = |slide| SlideRef { presentation: self.selected, slide };
         let count = self.slide_count(self.selected);
-        let slide = if last { count.checked_sub(1)? } else { 0 };
-        (count > 0).then_some(SlideRef { presentation: self.selected, slide })
+        if last {
+            (0..count).rev().map(at).find(|at| self.enabled(*at))
+        } else {
+            (0..count).map(at).find(|at| self.enabled(*at))
+        }
     }
 }

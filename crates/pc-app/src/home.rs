@@ -2767,6 +2767,14 @@ fn slide_grid(
                             state.editing = EditDraft::of(show, here);
                             ui.close();
                         }
+                        // A disabled slide stays in the song but is stepped over and never shown.
+                        if !from_bible {
+                            let label = if slide.enabled { "Disable Slide" } else { "Enable Slide" };
+                            if ui.button(label).clicked() {
+                                state.pending_edit = Some((here, Slide { enabled: !slide.enabled, ..slide.clone() }));
+                                ui.close();
+                            }
+                        }
                         // Which of the theme's templates the slide is drawn with. Automatic
                         // lets the theme pick the one that suits what is on the slide.
                         if !from_bible && !state.song_templates.is_empty() {
@@ -2906,6 +2914,17 @@ fn slide_grid(
                                 }
                             }
                         }
+                    }
+                    // A disabled slide is dimmed and says so: it is never shown.
+                    if !slide.enabled {
+                        painter.rect_filled(rect, 6.0, Color32::from_black_alpha(170));
+                        painter.text(
+                            rect.center(),
+                            Align2::CENTER_CENTER,
+                            "Disabled",
+                            crate::studio::semibold(13.0),
+                            crate::studio::TEXT_DIM,
+                        );
                     }
                     // A hairline round the slide and its bar, so black slides do not melt into the background.
                     if view != SlideView::Table {
