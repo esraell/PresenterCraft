@@ -176,6 +176,9 @@ pub struct HomeState {
     pub macro_rename: Option<(pc_model::Uuid, String)>,
     /// Actions to carry out, from a macro that was clicked. The app does them.
     pub actions_to_run: Vec<pc_model::ShowAction>,
+    /// How far along a chain of slides' actions the waiting actions are: 0 for a macro or a
+    /// slide the operator put on screen.
+    pub actions_depth: u8,
     /// The audio tracks, and true when the list has changed and is to be saved.
     pub audio_tracks: Vec<crate::audio::Track>,
     pub audio_changed: bool,
@@ -722,6 +725,7 @@ impl Default for HomeState {
             macros_changed: false,
             macro_rename: None,
             actions_to_run: Vec::new(),
+            actions_depth: 0,
             props_live: Vec::new(),
             prop_rename: None,
             live_tab: 0,

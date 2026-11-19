@@ -165,6 +165,128 @@ fn open_panel_window(
     Ok(PanelWindow { kind, window, surface, config, ctx, state, renderer, next_repaint: None, frames: 0 })
 }
 
+/// How many slides in a row can set each other going through their actions.
+const MAX_ACTION_CHAIN: u8 = 3;
+
+/// What Clear All, Clear Messages and Clear Props take off: the message and the props. Returns
+/// whether anything was showing.
+fn clear_overlays(state: &mut home::HomeState, command: &Command) -> bool {
+    let mut cleared = false;
+    if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Messages)) {
+        cleared |= state.message_live.take().is_some();
+    }
+    if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Props)) && !state.props_live.is_empty() {
+        state.props_live.clear();
+        cleared = true;
+    }
+    cleared
+}
+
+/// The show commands an action stands for, or `None` for an action that changes the window's
+/// own state (a message, a prop, a timer).
+fn action_commands(show: &Show, state: &home::HomeState, action: &pc_model::ShowAction) -> Option<Vec<Command>> {
+    use pc_model::{ClearWhat, ShowAction};
+    match action {
+        ShowAction::Clear { what } => Some(vec![match what {
+            ClearWhat::All => Command::ClearAll,
+            ClearWhat::Slide => Command::Clear(pc_engine::Layer::Slides),
+            ClearWhat::Media => Command::Clear(pc_engine::Layer::Media),
+            ClearWhat::Props => Command::Clear(pc_engine::Layer::Props),
+            ClearWhat::Messages => Command::Clear(pc_engine::Layer::Messages),
+        }]),
+        ShowAction::Audience { on } => Some(vec![Command::SetOutputEnabled(*on)]),
+        ShowAction::Song { key } => {
+            // The song's first slide that is not disabled.
+            let at = state.song_keys.iter().position(|have| have == key);
+            let first = at.and_then(|at| {
+                let song = show.presentations().get(at)?;
+                song.groups.iter().flat_map(|group| &group.slides).position(|slide| slide.enabled)
+            });
+            Some(match (at, first) {
+                (Some(at), Some(slide)) => {
+                    vec![Command::Select(at), Command::GoTo(pc_engine::SlideRef { presentation: at, slide })]
+                }
+                (Some(at), None) => vec![Command::Select(at)],
+                _ => Vec::new(),
+            })
+        }
+        ShowAction::Message { .. } | ShowAction::Prop { .. } | ShowAction::Timer { .. } => None,
+    }
+}
+
+/// Does an action that changes the window's own state: shows or hides a message or a prop,
+/// starts, stops or resets a timer.
+fn do_state_action(state: &mut home::HomeState, action: &pc_model::ShowAction, now: Instant) {
+    use pc_model::{ShowAction, TimerDo};
+    match action {
+        ShowAction::Message { id, show } => {
+            if *show && state.messages.iter().any(|m| m.id == *id) {
+                state.message_live = Some((*id, now));
+            } else if !*show && state.message_live.is_some_and(|(live, _)| live == *id) {
+                state.message_live = None;
+            }
+        }
+        ShowAction::Prop { id, show } => {
+            state.props_live.retain(|(live, _)| live != id);
+            if *show && state.props.iter().any(|p| p.id == *id) {
+                state.props_live.push((*id, now));
+            }
+        }
+        ShowAction::Timer { id, act } => {
+            if let Some(timer) = state.timers.iter_mut().find(|t| t.id == *id) {
+                match act {
+                    TimerDo::Start => timer.start(now),
+                    TimerDo::Stop => timer.stop(now),
+                    TimerDo::Reset => timer.reset(),
+                }
+            }
+        }
+        ShowAction::Clear { .. } | ShowAction::Audience { .. } | ShowAction::Song { .. } => {}
+    }
+}
+
+/// The changes made to songs in the Show view: each step is a song's place and the song as it
+/// was. Undo puts the song back and keeps how it is now, to redo.
+#[derive(Default)]
+struct SongHistory {
+    undo: Vec<(usize, Arc<pc_model::Presentation>)>,
+    redo: Vec<(usize, Arc<pc_model::Presentation>)>,
+}
+
+impl SongHistory {
+    /// Keeps a song as it is before a change, and drops what could be redone.
+    fn remember(&mut self, index: usize, song: Arc<pc_model::Presentation>) {
+        self.undo.push((index, song));
+        if self.undo.len() > 100 {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    /// Drops every step for a song, after it was changed in a way that isn't kept here.
+    fn forget(&mut self, index: usize) {
+        self.undo.retain(|(at, _)| *at != index);
+        self.redo.retain(|(at, _)| *at != index);
+    }
+
+    /// The song the next undo (or redo) would change.
+    fn peek(&self, redo: bool) -> Option<usize> {
+        if redo { self.redo.last() } else { self.undo.last() }.map(|(index, _)| *index)
+    }
+
+    /// Takes the next undo (or redo) step, keeping the song as it is now to step back to.
+    fn step(
+        &mut self,
+        redo: bool,
+        current: Arc<pc_model::Presentation>,
+    ) -> Option<(usize, Arc<pc_model::Presentation>)> {
+        let (from, to) = if redo { (&mut self.redo, &mut self.undo) } else { (&mut self.undo, &mut self.redo) };
+        let (index, song) = from.pop()?;
+        to.push((index, current));
+        Some((index, song))
+    }
+}
+
 /// What a theme calls its templates, in order.
 fn template_names(theme: &Theme) -> Vec<String> {
     theme.templates.iter().map(|template| template.name.clone()).collect()
@@ -463,10 +585,10 @@ struct App {
     /// Songs changed in the Edit view and not yet written to their files, and when the last
     /// change was made.
     unsaved: Vec<usize>,
-    /// Songs as they were before each change made in the Show view, to undo; and changes
-    /// undone, to redo. Each is the song's place and the song.
-    show_undo: Vec<(usize, Arc<pc_model::Presentation>)>,
-    show_redo: Vec<(usize, Arc<pc_model::Presentation>)>,
+    /// The changes made to songs in the Show view, to undo and redo.
+    history: SongHistory,
+    /// While actions are being done, how far along a chain of slides' actions they are.
+    action_depth: Option<u8>,
     unsaved_since: Option<Instant>,
     /// The theme songs are drawn with, and the one Bible slides are drawn with: copies of
     /// the themes at `songs_theme` and `bible_theme` in `themes`.
@@ -658,22 +780,11 @@ impl App {
         let mut any = false;
         let mut output_changed = false;
         for command in commands {
-            // Clear All, and Clear Messages, take a message off the screens.
-            if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Messages))
-                && running.home_state.message_live.take().is_some()
-            {
-                output_changed = true;
-                any = true;
-            }
             // Clear All, and Clear Audio, stop the audio.
             if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Audio)) {
                 self.player.stop();
             }
-            // Clear All, and Clear Props, take the props off.
-            if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Props))
-                && !running.home_state.props_live.is_empty()
-            {
-                running.home_state.props_live.clear();
+            if clear_overlays(&mut running.home_state, &command) {
                 output_changed = true;
                 any = true;
             }
@@ -688,13 +799,16 @@ impl App {
         if output_changed {
             self.refresh_output();
         }
-        // A slide that has just gone on screen does what it says.
+        // A slide that has just gone on screen does what it says. One reached by another slide's
+        // actions counts one step further along a chain, which stops after a few steps.
+        let depth = self.action_depth.map_or(0, |depth| depth + 1);
         if self.show.live() != live_before
             && let Some((_, slide)) = self.show.live_slide()
             && !slide.actions.is_empty()
             && let Some(running) = self.running.as_mut()
         {
             running.home_state.actions_to_run.extend(slide.actions.iter().cloned());
+            running.home_state.actions_depth = depth;
         }
         if any && let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
@@ -758,61 +872,27 @@ impl App {
 
     /// Carries out the actions waiting to be done: a macro's, or a slide's.
     fn run_actions(&mut self) {
-        use pc_model::{ClearWhat, ShowAction, TimerDo};
         let Some(running) = self.running.as_mut() else { return };
         let actions = std::mem::take(&mut running.home_state.actions_to_run);
-        if actions.is_empty() {
+        let depth = std::mem::take(&mut running.home_state.actions_depth);
+        // Two slides whose actions go to each other's songs would send the show back and forth
+        // for ever; a chain of slides' actions stops after a few steps.
+        if actions.is_empty() || depth >= MAX_ACTION_CHAIN {
             return;
         }
-        let now = Instant::now();
-        let mut commands = Vec::new();
+        self.action_depth = Some(depth);
+        // Each action is done in its turn, so a later one sees what an earlier one did:
+        // Clear All, then Show Prop, leaves the prop on screen.
         for action in actions {
-            let Some(running) = self.running.as_mut() else { return };
-            let state = &mut running.home_state;
-            match action {
-                ShowAction::Clear { what } => commands.push(match what {
-                    ClearWhat::All => Command::ClearAll,
-                    ClearWhat::Slide => Command::Clear(pc_engine::Layer::Slides),
-                    ClearWhat::Media => Command::Clear(pc_engine::Layer::Media),
-                    ClearWhat::Props => Command::Clear(pc_engine::Layer::Props),
-                    ClearWhat::Messages => Command::Clear(pc_engine::Layer::Messages),
-                }),
-                ShowAction::Message { id, show } => {
-                    if show && state.messages.iter().any(|m| m.id == id) {
-                        state.message_live = Some((id, now));
-                    } else if !show && state.message_live.is_some_and(|(live, _)| live == id) {
-                        state.message_live = None;
-                    }
-                }
-                ShowAction::Prop { id, show } => {
-                    state.props_live.retain(|(live, _)| *live != id);
-                    if show && state.props.iter().any(|p| p.id == id) {
-                        state.props_live.push((id, now));
-                    }
-                }
-                ShowAction::Timer { id, act } => {
-                    if let Some(timer) = state.timers.iter_mut().find(|t| t.id == id) {
-                        match act {
-                            TimerDo::Start => timer.start(now),
-                            TimerDo::Stop => timer.stop(now),
-                            TimerDo::Reset => timer.reset(),
-                        }
-                    }
-                }
-                ShowAction::Audience { on } => commands.push(Command::SetOutputEnabled(on)),
-                ShowAction::Song { key } => {
-                    if let Some(at) = state.song_keys.iter().position(|have| *have == key) {
-                        commands.push(Command::Select(at));
-                        commands.push(Command::GoTo(pc_engine::SlideRef { presentation: at, slide: 0 }));
-                    }
-                }
+            let Some(running) = self.running.as_mut() else { break };
+            match action_commands(&self.show, &running.home_state, &action) {
+                Some(commands) => self.apply(commands),
+                None => do_state_action(&mut running.home_state, &action, Instant::now()),
             }
         }
+        self.action_depth = None;
         if let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
-        }
-        if !commands.is_empty() {
-            self.apply(commands);
         }
     }
 
@@ -994,21 +1074,17 @@ impl App {
     /// Keeps a song as it is now, so the change about to be made to it can be undone.
     fn remember_for_undo(&mut self, index: usize) {
         if let Some(song) = self.show.presentations().get(index).cloned() {
-            self.show_undo.push((index, song));
-            if self.show_undo.len() > 100 {
-                self.show_undo.remove(0);
-            }
-            self.show_redo.clear();
+            self.history.remember(index, song);
         }
     }
 
     /// Undoes the last change made to a song in the Show view, or redoes the last one undone.
     fn undo_show(&mut self, redo: bool) {
-        let (from, to) =
-            if redo { (&mut self.show_redo, &mut self.show_undo) } else { (&mut self.show_undo, &mut self.show_redo) };
-        let Some((index, song)) = from.pop() else { return };
-        let Some(current) = self.show.presentations().get(index).cloned() else { return };
-        to.push((index, current));
+        let Some(current) = self.history.peek(redo).and_then(|index| self.show.presentations().get(index).cloned())
+        else {
+            return;
+        };
+        let Some((index, song)) = self.history.step(redo, current) else { return };
         let changes = self.show.replace_presentation_following(index, song);
         if !self.unsaved.contains(&index) {
             self.unsaved.push(index);
@@ -1057,6 +1133,7 @@ impl App {
         };
         let Some(song) = self.show.presentations().get(index).cloned() else { return };
         let changed = pc_model::Presentation { copyright: details, ..(*song).clone() };
+        self.history.remember(index, song.clone());
         self.show.replace_presentation(index, Arc::new(changed));
         if !self.unsaved.contains(&index) {
             self.unsaved.push(index);
@@ -1072,6 +1149,7 @@ impl App {
         if rebuilt == *song {
             return;
         }
+        self.history.remember(index, song.clone());
         let changes = self.show.replace_presentation(index, Arc::new(rebuilt));
         if !self.unsaved.contains(&index) {
             self.unsaved.push(index);
@@ -1146,9 +1224,12 @@ impl App {
         let Some(edited) = song.with_slide(at.slide, slide) else {
             return;
         };
-        // A change made in the Show view can be undone there; the Edit view keeps its own steps.
+        // A change made in the Show view can be undone there. The Edit view keeps its own steps,
+        // and the Show view's steps for the song are dropped, so they can't undo its edits.
         if self.running.as_ref().is_some_and(|r| r.home_state.editing.is_none()) {
             self.remember_for_undo(at.presentation);
+        } else {
+            self.history.forget(at.presentation);
         }
         let changes = self.show.replace_presentation(at.presentation, Arc::new(edited));
         if !self.unsaved.contains(&at.presentation) {
@@ -1216,6 +1297,7 @@ impl App {
             && let Some(song) = self.show.presentations().get(index)
         {
             let renamed = pc_model::Presentation { title, ..(**song).clone() };
+            self.history.remember(index, song.clone());
             self.show.replace_presentation(index, Arc::new(renamed));
             if !self.unsaved.contains(&index) {
                 self.unsaved.push(index);
@@ -1231,6 +1313,7 @@ impl App {
             renamed.groups[group].color = pc_model::group_color(&name);
             renamed.groups[group].name = name;
             let ids: Vec<Uuid> = renamed.groups[group].slides.iter().map(|slide| slide.id).collect();
+            self.history.forget(index);
             self.show.replace_presentation(index, Arc::new(renamed));
             if !self.unsaved.contains(&index) {
                 self.unsaved.push(index);
@@ -1246,6 +1329,7 @@ impl App {
             && let Some(song) = self.show.presentations().get(index)
         {
             let (longer, slide) = song.with_slide_added();
+            self.history.forget(index);
             self.show.replace_presentation(index, Arc::new(longer));
             if !self.unsaved.contains(&index) {
                 self.unsaved.push(index);
@@ -2118,6 +2202,8 @@ impl App {
                         self.apply(vec![Command::Clear(pc_engine::Layer::Slides)]);
                     }
                     self.unsaved.retain(|at| *at != index);
+                    // A deleted song can't be brought back by Undo, which would save it again.
+                    self.history.forget(index);
                     if let Some(running) = self.running.as_mut() {
                         running.home_state.removed_songs.push(index);
                     }
@@ -2947,8 +3033,8 @@ fn main() -> ExitCode {
         bible_slots,
         pictures: Vec::new(),
         unsaved: Vec::new(),
-        show_undo: Vec::new(),
-        show_redo: Vec::new(),
+        history: SongHistory::default(),
+        action_depth: None,
         unsaved_since: None,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),
@@ -3022,6 +3108,67 @@ mod tests {
         assert!(args(&["--output-display"]).is_err());
         assert!(args(&["--output-display", "two"]).is_err());
         assert!(args(&["--wat"]).unwrap_err().contains("--wat"));
+    }
+
+    #[test]
+    fn a_macros_actions_are_done_in_turn() {
+        use pc_model::{ClearWhat, ShowAction};
+        let mut state = home::HomeState::default();
+        let logo = props::Prop::new("Logo".to_owned());
+        let old = props::Prop::new("Old".to_owned());
+        let now = Instant::now();
+        state.props = vec![logo.clone(), old.clone()];
+        state.props_live = vec![(old.id, now)];
+        let song = pc_model::parse_song_text("Song", "One\n\nTwo\n");
+        let show = Show::new(vec![Arc::new(song)]);
+        // Clear All, then Show Prop: the old prop goes, the logo stays.
+        for action in [ShowAction::Clear { what: ClearWhat::All }, ShowAction::Prop { id: logo.id, show: true }] {
+            match action_commands(&show, &state, &action) {
+                Some(commands) => {
+                    for command in &commands {
+                        clear_overlays(&mut state, command);
+                    }
+                }
+                None => do_state_action(&mut state, &action, now),
+            }
+        }
+        assert_eq!(state.props_live.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [logo.id]);
+    }
+
+    #[test]
+    fn going_to_a_song_lands_on_its_first_slide_that_is_not_disabled() {
+        let mut song = pc_model::parse_song_text("Song", "One\n\nTwo\n");
+        song.groups[0].slides[0].enabled = false;
+        let show = Show::new(vec![Arc::new(song)]);
+        let state = home::HomeState { song_keys: vec!["song".to_owned()], ..home::HomeState::default() };
+        let go = pc_model::ShowAction::Song { key: "song".to_owned() };
+        assert_eq!(
+            action_commands(&show, &state, &go),
+            Some(vec![Command::Select(0), Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 1 })])
+        );
+        let gone = pc_model::ShowAction::Song { key: "nowhere".to_owned() };
+        assert_eq!(action_commands(&show, &state, &gone), Some(Vec::new()));
+    }
+
+    #[test]
+    fn undo_steps_go_back_and_forth_and_are_dropped_with_their_song() {
+        let a = Arc::new(pc_model::parse_song_text("A", "One\n"));
+        let b = Arc::new(pc_model::parse_song_text("B", "Two\n"));
+        let mut history = SongHistory::default();
+        history.remember(0, a.clone());
+        history.remember(1, b.clone());
+        assert_eq!(history.peek(false), Some(1));
+        let (index, song) = history.step(false, b.clone()).unwrap();
+        assert_eq!((index, song.title.as_str()), (1, "B"));
+        assert_eq!(history.peek(true), Some(1));
+        // A song changed elsewhere (or deleted) loses its steps; another song keeps its own.
+        history.forget(1);
+        assert_eq!(history.peek(true), None);
+        assert_eq!(history.peek(false), Some(0));
+        // A new change drops what could be redone.
+        history.step(false, a.clone());
+        history.remember(0, a);
+        assert_eq!(history.peek(true), None);
     }
 
     #[test]
