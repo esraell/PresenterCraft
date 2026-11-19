@@ -1,4 +1,4 @@
-//! Loading pictures for the media bin.
+//! Loading pictures and videos for the media bin.
 
 use std::path::{Path, PathBuf};
 
@@ -8,10 +8,24 @@ use pc_render::Picture;
 /// most a few thousand pixels wide, and a phone photo kept at full size costs tens of megabytes.
 pub const MAX_SIDE: u32 = 2560;
 
-pub const PICTURES: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+/// Pictures decoded here.
+const OWN_PICTURES: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
 
-/// The file endings of pictures, as the file chooser lists them.
-pub const PICTURE_ENDINGS: [&str; 6] = PICTURES;
+/// Pictures the computer's own system reads: iPhone photos, TIFF, Photoshop and others.
+const SYSTEM_PICTURES: [&str; 7] = ["heic", "heif", "tif", "tiff", "psd", "avif", "jp2"];
+
+/// Every picture's file ending, as the file chooser lists them.
+pub const PICTURES: [&str; 13] =
+    ["png", "jpg", "jpeg", "webp", "bmp", "gif", "heic", "heif", "tif", "tiff", "psd", "avif", "jp2"];
+
+/// Videos the system plays.
+const PLAYABLE: [&str; 3] = ["mp4", "mov", "m4v"];
+
+/// The file endings of everything the media bin takes, as the file chooser lists them.
+pub const PICTURE_ENDINGS: [&str; 16] = [
+    "png", "jpg", "jpeg", "webp", "bmp", "gif", "heic", "heif", "tif", "tiff", "psd", "avif", "jp2", "mp4", "mov",
+    "m4v",
+];
 
 fn list_file() -> Option<PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("media.json"))
@@ -34,6 +48,7 @@ pub fn save_list(paths: &[PathBuf]) -> Result<(), String> {
     std::fs::write(&path, serde_json::to_string_pretty(paths).unwrap_or_default())
         .map_err(|e| format!("Could not save the media list: {e}"))
 }
+/// Videos by their names: the ones the system plays, and others it doesn't.
 const VIDEOS: [&str; 6] = ["mp4", "mov", "m4v", "mkv", "avi", "webm"];
 
 fn extension(path: &Path) -> String {
@@ -47,15 +62,34 @@ pub fn is_media(path: &Path) -> bool {
     PICTURES.contains(&ext.as_str()) || VIDEOS.contains(&ext.as_str())
 }
 
-/// Reads and decodes a picture file. The error is a plain sentence for the operator.
+/// True for a video, which plays when it goes on screen.
+pub fn is_video(path: &Path) -> bool {
+    VIDEOS.contains(&extension(path).as_str())
+}
+
+/// Reads and decodes a picture file; for a video, a still from it. The error is a plain
+/// sentence for the operator.
 pub fn load_picture(path: &Path) -> Result<Picture, String> {
     let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
     let ext = extension(path);
-    if VIDEOS.contains(&ext.as_str()) {
-        return Err(format!("{name}: videos are not supported yet, only pictures."));
+    let from_system = |frame: Result<pc_video::Frame, String>| {
+        let frame = frame?;
+        Picture::from_rgba(frame.width, frame.height, frame.rgba)
+            .ok_or_else(|| format!("{name}: the picture is empty."))
+    };
+    if PLAYABLE.contains(&ext.as_str()) {
+        return from_system(pc_video::still(path, MAX_SIDE));
     }
-    if !PICTURES.contains(&ext.as_str()) {
-        return Err(format!("{name}: not a picture PresenterCraft can open (PNG, JPEG, WebP, BMP or GIF)."));
+    if VIDEOS.contains(&ext.as_str()) {
+        return Err(format!("{name}: PresenterCraft plays MP4 and MOV videos. Convert this one to MP4 first."));
+    }
+    if SYSTEM_PICTURES.contains(&ext.as_str()) {
+        return from_system(pc_video::picture(path, MAX_SIDE));
+    }
+    if !OWN_PICTURES.contains(&ext.as_str()) {
+        return Err(format!(
+            "{name}: not a picture or video PresenterCraft can open (such as PNG, JPEG, HEIC, TIFF, MP4 or MOV)."
+        ));
     }
     let decoded = image::open(path).map_err(|e| format!("{name}: could not be opened ({e})."))?;
     let decoded = if decoded.width().max(decoded.height()) > MAX_SIDE {
@@ -108,10 +142,24 @@ mod tests {
     }
 
     #[test]
-    fn videos_and_other_files_are_refused_in_plain_words() {
-        assert!(load_picture(Path::new("/x/clip.MP4")).unwrap_err().contains("videos are not supported yet"));
+    fn other_files_are_refused_in_plain_words() {
+        assert!(load_picture(Path::new("/x/clip.webm")).unwrap_err().contains("Convert this one to MP4"));
         assert!(load_picture(Path::new("/x/notes.txt")).unwrap_err().contains("not a picture"));
         assert!(load_picture(Path::new("/x/no-extension")).unwrap_err().contains("not a picture"));
+        assert!(is_video(Path::new("a/Clip.MOV")) && !is_video(Path::new("a/photo.heic")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_system_reads_tiff_and_a_missing_video_is_said_so() {
+        let path = temp("small.tiff");
+        image::RgbaImage::from_pixel(40, 30, image::Rgba([10, 200, 30, 255]))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        // A PNG named .tiff still opens: the system reads what the file is, not its name.
+        let picture = load_picture(&path).unwrap();
+        assert_eq!((picture.width(), picture.height()), (40, 30));
+        assert!(load_picture(Path::new("/x/clip.MP4")).unwrap_err().contains("could not be found"));
     }
 
     #[test]

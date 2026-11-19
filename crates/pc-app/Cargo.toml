@@ -18,6 +18,8 @@ ndi = ["pc-ndi/sdk"]
 [dependencies]
 pc-ndi.workspace = true
 pc-bible.workspace = true
+# Videos, and pictures in the system's own formats (HEIC, TIFF...).
+pc-video.workspace = true
 ureq.workspace = true
 sha2.workspace = true
 serde.workspace = true

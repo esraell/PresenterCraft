@@ -10,11 +10,18 @@ use pc_model::{Object, Role, Slide, Theme, Uuid};
 use pc_ndi::NdiOutput;
 use pc_render::{Fonts, Layers, Painter, Picture, build_layers, read_pixels, target_texture, vello, wgpu};
 
+/// How often a playing video is looked at for a new picture: more often than any video's
+/// frame rate.
+const VIDEO_POLL: Duration = Duration::from_millis(8);
+
 /// Everything the output needs to draw one picture. Immutable once sent.
 #[derive(Clone)]
 pub struct Frame {
-    /// The picture behind the words, if any.
+    /// The picture behind the words, if any. For a video, a still from it, shown until its
+    /// first picture comes.
     pub media: Option<Picture>,
+    /// The video playing behind the words, where its pictures are taken from.
+    pub video: Option<pc_video::Frames>,
     pub slide: Option<Arc<Slide>>,
     pub theme: Arc<Theme>,
     /// When false the output is black whatever the slide is.
@@ -186,6 +193,8 @@ struct Output {
     slide_on: Instant,
     step_at: Instant,
     overlay: Overlay,
+    /// The playing video's latest picture.
+    video_picture: Option<Picture>,
 }
 
 fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver<OutputMsg>, ndi_status: NdiStatuses) {
@@ -198,6 +207,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         fonts: Fonts::new(),
         frame: Frame {
             media: None,
+            video: None,
             slide: None,
             theme,
             enabled: true,
@@ -219,6 +229,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         slide_on: Instant::now(),
         step_at: Instant::now(),
         overlay: Overlay::default(),
+        video_picture: None,
         device,
         queue,
     };
@@ -237,15 +248,42 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             let into_second = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(Duration::ZERO, |since| Duration::from_nanos(u64::from(since.subsec_nanos())));
-            match rx.recv_timeout(Duration::from_secs(1).saturating_sub(into_second) + Duration::from_millis(5)) {
+            // A playing video is looked at for a new picture far more often.
+            let wait = if output.frame.video.is_some() {
+                VIDEO_POLL
+            } else {
+                Duration::from_secs(1).saturating_sub(into_second) + Duration::from_millis(5)
+            };
+            match rx.recv_timeout(wait) {
                 Ok(msg) => Some(msg),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // A new picture of the video redraws everything, the time included.
+                    if output.take_video_picture() {
+                        output.draw(false);
+                        continue;
+                    }
+                    // Otherwise the time changes only as a second begins.
+                    let new_second = output.frame.video.is_none() || into_second + VIDEO_POLL >= Duration::from_secs(1);
+                    if !new_second {
+                        continue;
+                    }
                     if output.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text))
                         || output.links_tick()
                     {
                         output.draw(false);
                     } else {
                         output.draw_stage();
+                    }
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        } else if output.frame.video.is_some() {
+            match rx.recv_timeout(VIDEO_POLL) {
+                Ok(msg) => Some(msg),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if output.take_video_picture() {
+                        output.draw(false);
                     }
                     continue;
                 }
@@ -262,6 +300,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             if output.fading.is_some() {
                 output.step_fade();
             } else {
+                output.take_video_picture();
                 output.draw(false);
                 // With no window to wait for (only NDI), keep to about the screens' pace.
                 if output.targets.is_empty() {
@@ -293,6 +332,16 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                         output.step_at = now.checked_sub(Duration::from_secs(3600)).unwrap_or(now);
                     } else {
                         new_picture = true;
+                    }
+                    // Another video, or none: its last picture goes, and its still shows until
+                    // the new one's first picture comes.
+                    let same_video = match (&output.frame.video, &frame.video) {
+                        (Some(was), Some(now)) => was.same(now),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    if !same_video {
+                        output.video_picture = None;
                     }
                     output.frame = frame;
                 }
@@ -446,7 +495,8 @@ impl Output {
             let (built, _) = slide.built(&frame.theme, self.build_clock());
             Arc::new(crate::links::fill(&built, &values).into_owned())
         });
-        (frame.media.clone().filter(|_| look.media), slide, over, frame.theme.clone())
+        let media = self.video_picture.clone().or_else(|| frame.media.clone());
+        (media.filter(|_| look.media), slide, over, frame.theme.clone())
     }
 
     /// How an audience screen shows the show: its own look, or every layer.
@@ -543,6 +593,7 @@ impl Output {
         // Cheap copies: the picture and the slide are shared, not duplicated.
         let frame = self.frame.clone();
         self.send_ndi(&frame);
+        self.capture(&frame);
         // How far a fade already under way has got, before the clock is started again.
         let under_way = self.fading;
         let amount = under_way.map(|(started, look)| fade_amount(started, look.duration()));
@@ -579,6 +630,51 @@ impl Output {
         if fading {
             self.step_fade();
         }
+    }
+
+    /// Testing aid: saves what the audience screens show, once, a few seconds after the start,
+    /// to the file PRESENTERCRAFT_CAPTURE_OUTPUT names (PRESENTERCRAFT_CAPTURE_OUTPUT_AFTER
+    /// seconds, 3 if not given).
+    fn capture(&mut self, frame: &Frame) {
+        static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let Some(path) = std::env::var_os("PRESENTERCRAFT_CAPTURE_OUTPUT") else { return };
+        let after = std::env::var("PRESENTERCRAFT_CAPTURE_OUTPUT_AFTER").ok().and_then(|s| s.parse().ok());
+        let started = *STARTED.get_or_init(Instant::now);
+        if started.elapsed().as_secs_f32() < after.unwrap_or(3.0)
+            || DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let (w, h) = NDI_SIZE;
+        let scene = self.scene_for(Uuid::nil(), frame, w, h);
+        let target = target_texture(&self.device, w, h);
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let saved = self
+            .painter
+            .paint(&self.device, &self.queue, &scene, &view, w, h)
+            .map_err(|e| e.to_string())
+            .and_then(|()| read_pixels(&self.device, &self.queue, &target).map_err(|e| e.to_string()))
+            .and_then(|pixels| {
+                let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+                let mut png = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+                png.set_color(png::ColorType::Rgba);
+                png.set_depth(png::BitDepth::Eight);
+                png.write_header().and_then(|mut writer| writer.write_image_data(&pixels)).map_err(|e| e.to_string())
+            });
+        match saved {
+            Ok(()) => eprintln!("saved the output to {}", std::path::Path::new(&path).display()),
+            Err(e) => eprintln!("could not save the output: {e}"),
+        }
+    }
+
+    /// Takes the playing video's newest picture, if a new one has come. True when it has.
+    fn take_video_picture(&mut self) -> bool {
+        let Some(frame) = self.frame.video.as_ref().and_then(pc_video::Frames::next) else {
+            return false;
+        };
+        self.video_picture = Picture::from_rgba(frame.width, frame.height, frame.rgba);
+        self.video_picture.is_some()
     }
 
     /// True when something on the screens changes by itself each second: the time on a stage

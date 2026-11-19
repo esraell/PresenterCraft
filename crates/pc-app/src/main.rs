@@ -620,6 +620,8 @@ struct App {
     advanced: bool,
     /// When the app started.
     started: Instant,
+    /// The video on screen, by its media item, playing.
+    video: Option<(Uuid, pc_video::Player)>,
     unsaved_since: Option<Instant>,
     /// The theme songs are drawn with, and the one Bible slides are drawn with: copies of
     /// the themes at `songs_theme` and `bible_theme` in `themes`.
@@ -877,6 +879,95 @@ impl App {
         }
     }
 
+    /// Plays the video on screen, if the media on screen is one, and stops the one that was.
+    fn sync_video(&mut self) {
+        let live = self
+            .show
+            .live_media()
+            .and_then(|index| self.show.media().get(index))
+            .filter(|item| media::is_video(&item.path))
+            .cloned();
+        if self.video.as_ref().map(|(id, _)| *id) == live.as_ref().map(|item| item.id) {
+            return;
+        }
+        self.video = None;
+        let Some(running) = self.running.as_mut() else { return };
+        running.home_state.video_live = None;
+        let Some(item) = live else { return };
+        match pc_video::Player::open(&item.path) {
+            Ok(mut player) => {
+                player.set_looping(true);
+                player.play();
+                running.home_state.video_live = Some(home::VideoLive {
+                    name: item.name.clone(),
+                    position: 0.0,
+                    duration: None,
+                    playing: true,
+                    looping: true,
+                    muted: false,
+                });
+                self.video = Some((item.id, player));
+            }
+            Err(problem) => running.home_state.notice = Some(problem),
+        }
+    }
+
+    /// Keeps the video on screen going (a looping one starts again at its end) and the
+    /// operator's view of it up to date. Says when to look again.
+    fn tick_video(&mut self) -> Option<Instant> {
+        let (_, player) = self.video.as_mut()?;
+        let wait = player.tick();
+        let running = self.running.as_mut()?;
+        if let Some(problem) = player.problem() {
+            running.home_state.notice = Some(problem);
+            running.home_state.video_live = None;
+            self.video = None;
+            running.home_window.request_redraw();
+            return None;
+        }
+        if let Some(live) = running.home_state.video_live.as_mut() {
+            let (position, duration, playing) = (player.position(), player.duration(), player.playing());
+            // The window shows whole seconds, so it is drawn again only when one passes.
+            let changed =
+                live.position.floor() != position.floor() || live.duration != duration || live.playing != playing;
+            *live = home::VideoLive { position, duration, playing, ..live.clone() };
+            if changed {
+                running.home_window.request_redraw();
+            }
+        }
+        Some(Instant::now() + wait)
+    }
+
+    /// Carries out what the operator asked of the video on screen.
+    fn handle_video(&mut self) {
+        use home::VideoRequest;
+        let Some(running) = self.running.as_mut() else { return };
+        let Some(request) = running.home_state.video_request.take() else { return };
+        let (Some((_, player)), Some(live)) = (self.video.as_mut(), running.home_state.video_live.as_mut()) else {
+            return;
+        };
+        match request {
+            VideoRequest::TogglePause if player.playing() => player.pause(),
+            VideoRequest::TogglePause => player.play(),
+            VideoRequest::Restart => {
+                player.seek(0.0);
+                player.play();
+            }
+            VideoRequest::Looping(on) => {
+                player.set_looping(on);
+                live.looping = on;
+            }
+            VideoRequest::Muted(on) => {
+                player.set_volume(if on { 0.0 } else { 1.0 });
+                live.muted = on;
+            }
+            VideoRequest::Seek(to) => player.seek(to),
+        }
+        live.playing = player.playing();
+        live.position = player.position();
+        running.home_window.request_redraw();
+    }
+
     /// Carries out what the Audio tab asked of the player, and tells the tab what is playing.
     fn handle_audio(&mut self) {
         use home::AudioRequest;
@@ -993,6 +1084,8 @@ impl App {
 
     /// Tells the output what is on each layer now, then redraws the operator's preview.
     fn refresh_output(&mut self) {
+        self.sync_video();
+        let video = self.video.as_ref().map(|(_, player)| player.frames());
         let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
         let about = self.stage_about();
         let Some(running) = self.running.as_mut() else {
@@ -1009,6 +1102,7 @@ impl App {
         if let Some(output) = &running.output {
             let frame = Frame {
                 media: media.clone(),
+                video,
                 slide: slide.clone(),
                 theme: theme.clone(),
                 enabled: self.show.output_enabled(),
@@ -1364,8 +1458,8 @@ impl App {
             MediaRequest::Choose => {
                 // The system's own window for choosing files, as any Mac app has.
                 let chosen = rfd::FileDialog::new()
-                    .set_title("Add Pictures")
-                    .add_filter("Pictures", &media::PICTURE_ENDINGS)
+                    .set_title("Add Pictures and Videos")
+                    .add_filter("Pictures and Videos", &media::PICTURE_ENDINGS)
                     .pick_files()
                     .unwrap_or_default();
                 for path in chosen {
@@ -2996,9 +3090,13 @@ impl ApplicationHandler<String> for App {
                         Err(problem) => eprintln!("{problem}"),
                     }
                 }
-                // Testing aid: start with the first slide on screen.
+                // Testing aid: start with the first slide on screen, and the first media item
+                // behind it.
                 if std::env::var_os("PRESENTERCRAFT_GO_LIVE").is_some() {
                     self.apply(vec![Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 0 })]);
+                }
+                if std::env::var_os("PRESENTERCRAFT_GO_LIVE_MEDIA").is_some() {
+                    self.apply(vec![Command::ShowMedia(0)]);
                 }
             }
             Ok(None) => el.exit(),
@@ -3171,12 +3269,24 @@ impl ApplicationHandler<String> for App {
             WindowEvent::RedrawRequested => {
                 let commands = self.draw_home();
                 self.apply(commands);
+                // Testing aid: choose menu bar items by their ids, one every few frames, the way
+                // a click on them reaches the app.
+                if let Ok(ids) = std::env::var("PRESENTERCRAFT_MENU") {
+                    let frame = self.running.as_ref().map_or(0, |r| r.frames);
+                    if let Some(id) =
+                        frame.checked_sub(6).filter(|n| n % 4 == 0).and_then(|n| ids.split(',').nth((n / 4) as usize))
+                    {
+                        eprintln!("menu {id}");
+                        self.user_event(el, id.to_owned());
+                    }
+                }
                 if let Some((at, slide)) = self.running.as_mut().and_then(|r| r.home_state.pending_edit.take()) {
                     self.apply_edit(at, slide);
                 }
                 self.run_actions();
                 self.tick_advance();
                 self.handle_audio();
+                self.handle_video();
                 self.handle_slide_request();
                 self.handle_song_theme();
                 self.handle_song_loop();
@@ -3265,6 +3375,7 @@ impl ApplicationHandler<String> for App {
         self.run_actions();
         self.tick_advance();
         self.sync_overlay();
+        let video_at = self.tick_video();
         // Songs changed in the Edit view are written once typing has paused for a second.
         const SAVE_AFTER: Duration = Duration::from_secs(1);
         let save_at = self.unsaved_since.map(|since| since + SAVE_AFTER);
@@ -3289,7 +3400,7 @@ impl ApplicationHandler<String> for App {
             }
             panel_at = [panel_at, panel.next_repaint].into_iter().flatten().min();
         }
-        match [running.next_repaint, panel_at, save_at].into_iter().flatten().min() {
+        match [running.next_repaint, panel_at, save_at, video_at].into_iter().flatten().min() {
             Some(at) => el.set_control_flow(ControlFlow::WaitUntil(at)),
             None => el.set_control_flow(ControlFlow::Wait),
         }
@@ -3416,6 +3527,7 @@ fn main() -> ExitCode {
         live_since: None,
         advanced: false,
         started: Instant::now(),
+        video: None,
         unsaved_since: None,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),

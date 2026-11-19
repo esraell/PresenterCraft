@@ -59,8 +59,12 @@ ProPresenter.
   dragged, and the library folded away. Service items can be dragged into a new order, and
   headers (+ beside SERVICE) group them. With View, Continuous Playlist on, Next at the end of a
   song goes on to the next song in the service.
-- Pictures dropped on the window, or added with the media bin's +, go into the media bin, are
-  kept between runs, and can be shown behind the words; right-click one to remove it.
+- Pictures and videos dropped on the window, or added with the media bin's +, go into the media
+  bin, are kept between runs, and can be shown behind the words; right-click one to remove it.
+  Pictures can be PNG, JPEG, WebP, GIF, BMP, and on the Mac also HEIC (iPhone photos), TIFF,
+  Photoshop, AVIF and JPEG 2000. Videos (MP4, MOV and M4V, including HEVC and ProRes) play on
+  the Mac with their sound, through macOS's own player, and loop; under the Program preview
+  they can be paused, started again, moved through, looped or not, and muted.
 - A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
   or bridge starts), Copy and Paste Text Style, Label (Blank Slide, Instrumental, Repeat, Spoken Word), Transition (its own,
   or as all slides), Hot Key (a letter or digit that puts the slide on screen, shown on its
@@ -171,7 +175,8 @@ drawn with the Bible's theme.
 
 Among the things PresenterCraft can't do yet:
 
-- Videos and live video inputs (pictures work).
+- Videos on Windows and Linux, video formats macOS doesn't play (such as WebM and MKV), and
+  live video inputs.
 - Formatting one word differently from the rest of its box.
 - Slide sizes other than 1920 × 1080.
 - A timeline that times slides, media and audio together (a slide can go on by itself after a

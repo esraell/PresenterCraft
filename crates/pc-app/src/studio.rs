@@ -1005,6 +1005,9 @@ pub fn program_panel(
                 egui::RichText::new("The output has stopped. Restart PresenterCraft to bring it back.").color(TALLY),
             );
         }
+        if let Some(video) = state.video_live.clone() {
+            video_controls(ui, state, &video, width);
+        }
         ui.add_space(2.0);
 
         // Clear: the big one takes everything off; the two under it take one layer each.
@@ -1025,7 +1028,7 @@ pub fn program_panel(
                 commands.push(Command::Clear(Layer::Slides));
             }
             if block_button(ui, vec2(half, 30.0), "Clear Media", "", emphasis(media_live))
-                .on_hover_text("Take the picture off the screen")
+                .on_hover_text("Take the picture or video off the screen")
                 .clicked()
             {
                 commands.push(Command::Clear(Layer::Media));
@@ -1130,10 +1133,12 @@ pub fn media_strip(
             caption(ui, "MEDIA");
             let note = match &state.notice {
                 Some(notice) => egui::RichText::new(notice.as_str()).size(12.0).color(Color32::from_rgb(255, 170, 120)),
-                None if empty => {
-                    egui::RichText::new("Drop pictures on the window to add backgrounds").size(12.0).color(TEXT_FAINT)
-                }
-                None => egui::RichText::new("Click a picture to put it behind the words").size(12.0).color(TEXT_FAINT),
+                None if empty => egui::RichText::new("Drop pictures or videos on the window to add backgrounds")
+                    .size(12.0)
+                    .color(TEXT_FAINT),
+                None => egui::RichText::new("Click a picture or video to put it behind the words")
+                    .size(12.0)
+                    .color(TEXT_FAINT),
             };
             ui.add_space(6.0);
             ui.label(note);
@@ -1164,6 +1169,18 @@ pub fn media_strip(
                                 egui::Image::from_texture((texture, image_size)).corner_radius(6.0).paint_at(ui, image);
                             }
                             None => ui.ctx().request_repaint(),
+                        }
+                        // A video says so in its corner.
+                        if crate::media::is_video(&item.path) {
+                            let badge = Rect::from_min_size(image.left_bottom() + vec2(5.0, -19.0), vec2(22.0, 14.0));
+                            ui.painter().rect_filled(badge, 3.0, Color32::from_black_alpha(170));
+                            ui.painter().text(
+                                badge.center(),
+                                Align2::CENTER_CENTER,
+                                "▶",
+                                FontId::proportional(9.0),
+                                Color32::WHITE,
+                            );
                         }
                         let live = show.live_media() == Some(index);
                         if live {
@@ -1342,4 +1359,66 @@ fn transition_settings(ui: &mut egui::Ui, state: &mut HomeState) {
     if ui.button("Reset to Default Parameters").clicked() {
         *look = pc_model::Transition::of(look.kind);
     }
+}
+
+/// The video on screen: play and pause, start again, how far in it is (a click on the bar goes
+/// there), and whether it loops and has sound.
+fn video_controls(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home::VideoLive, width: f32) {
+    use crate::home::VideoRequest;
+    let clock = |seconds: f64| crate::audio::clock(std::time::Duration::from_secs_f64(seconds.max(0.0)));
+    // A small button that is only an icon.
+    let tool = |ui: &mut egui::Ui, icon: Icon, hint: &str| {
+        let (cell, response) = ui.allocate_exact_size(vec2(26.0, 22.0), Sense::click());
+        if response.hovered() {
+            ui.painter().rect_filled(cell, 5.0, HOVER);
+        }
+        icons::paint(ui.painter(), icon, Rect::from_center_size(cell.center(), vec2(12.0, 12.0)), TEXT);
+        response.on_hover_text(hint)
+    };
+    egui::Frame::new().fill(CARD).corner_radius(8).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+        ui.set_width(width - 16.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let (icon, hint) =
+                if video.playing { (Icon::Pause, "Pause the video") } else { (Icon::Play, "Play the video") };
+            if tool(ui, icon, hint).clicked() {
+                state.video_request = Some(VideoRequest::TogglePause);
+            }
+            if tool(ui, Icon::Back, "Play the video from the start").clicked() {
+                state.video_request = Some(VideoRequest::Restart);
+            }
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(egui::RichText::new(video.name.as_str()).size(12.0).color(TEXT)).truncate());
+        });
+        let fraction = video.duration.map_or(0.0, |length| (video.position / length.max(0.001)).clamp(0.0, 1.0));
+        let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0), Sense::click());
+        let track = Rect::from_center_size(bar.center(), vec2(bar.width(), 4.0));
+        ui.painter().rect_filled(track, 2.0, LINE);
+        let done = Rect::from_min_max(track.min, pos2(track.min.x + track.width() * fraction as f32, track.max.y));
+        ui.painter().rect_filled(done, 2.0, ACCENT);
+        if let (Some(length), Some(at)) =
+            (video.duration, response.interact_pointer_pos().filter(|_| response.clicked()))
+        {
+            let to = f64::from(((at.x - track.min.x) / track.width()).clamp(0.0, 1.0)) * length;
+            state.video_request = Some(VideoRequest::Seek(to));
+        }
+        response.on_hover_text("Click to go to that point in the video");
+        ui.horizontal(|ui| {
+            let total = video.duration.map_or_else(|| "–".to_owned(), clock);
+            ui.label(
+                egui::RichText::new(format!("{} / {total}", clock(video.position)))
+                    .size(11.0)
+                    .color(TEXT_DIM)
+                    .monospace(),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.selectable_label(!video.muted, "Sound").on_hover_text("Play the video's sound").clicked() {
+                    state.video_request = Some(VideoRequest::Muted(!video.muted));
+                }
+                if ui.selectable_label(video.looping, "Loop").on_hover_text("Start again at the end").clicked() {
+                    state.video_request = Some(VideoRequest::Looping(!video.looping));
+                }
+            });
+        });
+    });
 }

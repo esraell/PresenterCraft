@@ -31,8 +31,12 @@ pub struct Imported {
 /// the operator.
 pub fn import(path: &Path) -> Result<Imported, String> {
     let shown = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-    let (width, height) =
-        image::image_dimensions(path).map_err(|e| format!("{shown}: not a picture PresenterCraft can open ({e})."))?;
+    // A picture in a format the system reads (HEIC, TIFF...) is measured by decoding it.
+    let (width, height) = image::image_dimensions(path).or_else(|e| {
+        crate::media::load_picture(path)
+            .map(|picture| (picture.width(), picture.height()))
+            .map_err(|_| format!("{shown}: not a picture PresenterCraft can open ({e})."))
+    })?;
     let dir = folder().ok_or_else(|| "Could not find where to keep pictures on this computer.".to_owned())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make the Images folder: {e}"))?;
     let ending = path.extension().map_or_else(String::new, |e| format!(".{}", e.to_string_lossy().to_lowercase()));

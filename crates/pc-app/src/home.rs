@@ -201,6 +201,9 @@ pub struct HomeState {
     pub audio_changed: bool,
     /// Something asked of the audio player, what it is playing, and its volume.
     pub audio_request: Option<AudioRequest>,
+    /// The video on screen, as the operator sees it, and what they asked of it.
+    pub video_live: Option<VideoLive>,
+    pub video_request: Option<VideoRequest>,
     pub audio_playing: crate::audio::Playing,
     pub audio_volume: f32,
     /// The tab open under the Program panel: 0 Timers, 1 Messages, 2 Props, 3 Macros, 4 Stage,
@@ -760,6 +763,8 @@ impl Default for HomeState {
             audio_tracks: Vec::new(),
             audio_changed: false,
             audio_request: None,
+            video_live: None,
+            video_request: None,
             audio_playing: crate::audio::Playing::default(),
             audio_volume: 1.0,
             macros_changed: false,
@@ -2249,6 +2254,28 @@ pub struct NewSong {
     pub words: String,
     /// True until the title field has been given the keyboard.
     pub focus: bool,
+}
+
+/// The video on screen: its name, how far in it is, and how it plays.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VideoLive {
+    pub name: String,
+    pub position: f64,
+    pub duration: Option<f64>,
+    pub playing: bool,
+    pub looping: bool,
+    pub muted: bool,
+}
+
+/// What the operator asked of the video on screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VideoRequest {
+    TogglePause,
+    Restart,
+    Looping(bool),
+    Muted(bool),
+    /// Go to this many seconds in.
+    Seek(f64),
 }
 
 /// Something asked of the audio player from the Audio tab.
