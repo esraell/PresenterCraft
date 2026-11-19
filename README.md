@@ -156,7 +156,7 @@ ProPresenter.
 - **Media** on slides (Media… above the slide, Insert > Media…, Shift-Command-I, or dropped on
   the editor from the Finder, several at once if you like): a picture,
   copied into the app's Images folder, or a video, which stays where it is and plays in its box,
-  looping with its sound, while the slide is on screen; each can fit, fill or stretch to its
+  looping with its sound, while the slide is on screen (several videos on one slide all play); each can fit, fill or stretch to its
   box. The Insert
   menu also adds a text box or any shape.
 - **Builds** (the inspector's Build tab): an object can come on with a Dissolve, Fly In from

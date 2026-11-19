@@ -26,7 +26,8 @@ pub struct Frame {
     pub media_fit: pc_model::ImageFit,
     /// A video in a box on the slide, by the file the box names, and where its pictures come
     /// from: each new one is shown in the box in place of its still.
-    pub slide_video: Option<(String, pc_video::Frames)>,
+    /// The videos in boxes on the slide, by their files, each with where its pictures come from.
+    pub slide_video: Vec<(String, pc_video::Frames)>,
     pub slide: Option<Arc<Slide>>,
     pub theme: Arc<Theme>,
     /// When false the output is black whatever the slide is.
@@ -46,7 +47,7 @@ pub struct Frame {
 impl Frame {
     /// True while a video plays, as the media or in a box on the slide.
     fn plays_video(&self) -> bool {
-        self.video.is_some() || self.slide_video.is_some()
+        self.video.is_some() || !self.slide_video.is_empty()
     }
 }
 
@@ -376,7 +377,7 @@ fn run(
             media: None,
             video: None,
             media_fit: pc_model::ImageFit::Fill,
-            slide_video: None,
+            slide_video: Vec::new(),
             slide: None,
             theme,
             enabled: true,
@@ -543,12 +544,10 @@ fn run(
                         output.video_picture = None;
                     }
                     // A video box that stops playing goes back to its still.
-                    let old_box = output.frame.slide_video.as_ref().map(|(file, _)| file.clone());
-                    let new_box = frame.slide_video.as_ref().map(|(file, _)| file.clone());
-                    if old_box != new_box
-                        && let Some(file) = old_box
-                    {
-                        pc_render::forget_picture(&file);
+                    for (file, _) in &output.frame.slide_video {
+                        if !frame.slide_video.iter().any(|(still, _)| still == file) {
+                            pc_render::forget_picture(file);
+                        }
                     }
                     let same_media = match (&output.frame.media, &frame.media) {
                         (Some(was), Some(now)) => was.same(now),
@@ -1099,14 +1098,15 @@ impl Output {
             self.video_pictures += 1;
             new |= self.video_picture.is_some();
         }
-        // A video in a box on the slide: its newest picture stands in for the box's still.
-        if let Some((file, frames)) = self.frame.slide_video.as_ref()
-            && let Some(frame) = frames.next()
-            && let Some(picture) = Picture::from_rgba(frame.width, frame.height, frame.rgba)
-        {
-            pc_render::show_picture(file, picture);
-            self.video_pictures += 1;
-            new = true;
+        // Each video in a box on the slide: its newest picture stands in for the box's still.
+        for (file, frames) in &self.frame.slide_video {
+            if let Some(frame) = frames.next()
+                && let Some(picture) = Picture::from_rgba(frame.width, frame.height, frame.rgba)
+            {
+                pc_render::show_picture(file, picture);
+                self.video_pictures += 1;
+                new = true;
+            }
         }
         new
     }

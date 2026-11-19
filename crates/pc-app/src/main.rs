@@ -660,7 +660,7 @@ struct App {
     /// The video on screen, by its media item, playing.
     video: Option<(Uuid, pc_video::Player)>,
     /// A video in a box on the slide on screen, by the file the box names, playing.
-    slide_video: Option<(String, pc_video::Player)>,
+    slide_videos: Vec<(String, pc_video::Player)>,
     /// The song on the Announcements layer: which, the slide shown, since when, and what was
     /// sent to the screens.
     announcing: Option<Announcing>,
@@ -1210,66 +1210,90 @@ impl App {
     /// Plays the video in a box on the slide on screen, if it has one, and stops the one that was.
     /// The video loops, with its sound; it is the first visible picture box naming a video.
     fn sync_slide_video(&mut self) {
-        // A video in a box on the slide on screen, or else in its theme's layout behind it.
-        let video_in = |objects: &[pc_model::Object]| {
-            objects.iter().filter(|object| !object.hidden).find_map(|object| match &object.kind {
-                pc_model::ObjectKind::Image { file, .. } if media::is_video(std::path::Path::new(file)) => {
-                    Some(file.clone())
+        // Every video in a box on the slide on screen, and in its theme's layout behind it: each
+        // plays, looping, while the slide is on screen.
+        let videos_in = |objects: &[pc_model::Object], into: &mut Vec<String>| {
+            for object in objects.iter().filter(|object| !object.hidden) {
+                if let pc_model::ObjectKind::Image { file, .. } = &object.kind
+                    && media::is_video(std::path::Path::new(file))
+                    && !into.contains(file)
+                {
+                    into.push(file.clone());
                 }
-                _ => None,
-            })
+            }
         };
-        let wanted = self.show.live().zip(self.show.live_slide()).and_then(|(at, (_, slide))| {
-            video_in(&slide.objects).or_else(|| {
-                let behind = pc_render::layout_objects(slide, self.theme_of(at.presentation))?;
-                video_in(&behind.objects)
-            })
-        });
-        if self.slide_video.as_ref().map(|(file, _)| file) == wanted.as_ref() {
+        let mut wanted: Vec<String> = Vec::new();
+        if let (Some(at), Some((_, slide))) = (self.show.live(), self.show.live_slide()) {
+            videos_in(&slide.objects, &mut wanted);
+            if let Some(behind) = pc_render::layout_objects(slide, self.theme_of(at.presentation)) {
+                videos_in(&behind.objects, &mut wanted);
+            }
+        }
+        let playing: Vec<&String> = self.slide_videos.iter().map(|(file, _)| file).collect();
+        if playing.len() == wanted.len() && playing.iter().zip(&wanted).all(|(have, want)| *have == want) {
             return;
         }
-        if self.slide_video.take().is_some() {
-            applog::event("video", "stopped the video on the slide");
+        // Those no longer wanted stop; those still wanted go on from where they are.
+        let before = self.slide_videos.len();
+        self.slide_videos.retain(|(file, _)| wanted.contains(file));
+        if self.slide_videos.len() < before {
+            applog::event("video", "stopped a video on the slide");
         }
-        let Some(file) = wanted else { return };
-        let Some(path) = images::resolve(&file) else { return };
         let quiet = self.quiet();
-        match pc_video::Player::open(&path) {
-            Ok(mut player) => {
-                applog::event("video", &format!("playing {} in a box on the slide", path.display()));
-                player.set_looping(true);
-                if quiet {
-                    player.set_volume(0.0);
-                }
-                player.play();
-                self.slide_video = Some((file, player));
+        let mut kept = std::mem::take(&mut self.slide_videos);
+        for file in wanted {
+            if let Some(at) = kept.iter().position(|(have, _)| *have == file) {
+                self.slide_videos.push(kept.remove(at));
+                continue;
             }
-            Err(problem) => {
-                if let Some(running) = self.running.as_mut() {
-                    running.home_state.notice = Some(problem);
+            let Some(path) = images::resolve(&file) else { continue };
+            match pc_video::Player::open(&path) {
+                Ok(mut player) => {
+                    applog::event("video", &format!("playing {} in a box on the slide", path.display()));
+                    player.set_looping(true);
+                    if quiet {
+                        player.set_volume(0.0);
+                    }
+                    player.play();
+                    self.slide_videos.push((file, player));
+                }
+                Err(problem) => {
+                    if let Some(running) = self.running.as_mut() {
+                        running.home_state.notice = Some(problem);
+                    }
                 }
             }
         }
     }
 
-    /// Keeps the video in a box on the slide going; if the system's player can't play it,
-    /// FFmpeg takes over. Says when to look again.
+    /// Keeps the videos in boxes on the slide going; if the system's player can't play one,
+    /// FFmpeg takes it over. Says when to look again.
     fn tick_slide_video(&mut self) -> Option<Instant> {
-        let (file, player) = self.slide_video.as_mut()?;
-        let wait = player.tick();
-        if player.problem().is_some() && !player.uses_ffmpeg() {
-            let file = file.clone();
-            let path = images::resolve(&file)?;
-            if let Ok(mut fallback) = pc_video::Player::open_with_ffmpeg(&path) {
+        if self.slide_videos.is_empty() {
+            return None;
+        }
+        let quiet = self.quiet();
+        let mut wait = Duration::from_secs(1);
+        let mut switched = false;
+        for (file, player) in &mut self.slide_videos {
+            wait = wait.min(player.tick());
+            if player.problem().is_some()
+                && !player.uses_ffmpeg()
+                && let Some(path) = images::resolve(file)
+                && let Ok(mut fallback) = pc_video::Player::open_with_ffmpeg(&path)
+            {
                 applog::event("video", &format!("playing {} in a box with FFmpeg instead", path.display()));
                 fallback.set_looping(true);
-                if self.quiet() {
+                if quiet {
                     fallback.set_volume(0.0);
                 }
                 fallback.play();
-                self.slide_video = Some((file, fallback));
-                self.refresh_output();
+                *player = fallback;
+                switched = true;
             }
+        }
+        if switched {
+            self.refresh_output();
         }
         Some(Instant::now() + wait)
     }
@@ -1517,7 +1541,8 @@ impl App {
         self.sync_video();
         self.sync_slide_video();
         let video = self.video.as_ref().map(|(_, player)| player.frames());
-        let slide_video = self.slide_video.as_ref().map(|(file, player)| (file.clone(), player.frames()));
+        let slide_video: Vec<(String, pc_video::Frames)> =
+            self.slide_videos.iter().map(|(file, player)| (file.clone(), player.frames())).collect();
         let media_fit = self.live_media_fit();
         let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
         let about = self.stage_about();
@@ -4380,7 +4405,7 @@ fn main() -> ExitCode {
         advanced: false,
         started: Instant::now(),
         video: None,
-        slide_video: None,
+        slide_videos: Vec::new(),
         media_playlists: Vec::new(),
         announcing: None,
         media_cycle: None,
