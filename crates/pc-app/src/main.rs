@@ -601,6 +601,10 @@ struct App {
     history: SongHistory,
     /// While actions are being done, how far along a chain of slides' actions they are.
     action_depth: Option<u8>,
+    /// The slide on screen and when it went on, for a slide that goes on to the next by itself;
+    /// and true once it has.
+    live_since: Option<(pc_engine::SlideRef, Instant)>,
+    advanced: bool,
     unsaved_since: Option<Instant>,
     /// The theme songs are drawn with, and the one Bible slides are drawn with: copies of
     /// the themes at `songs_theme` and `bible_theme` in `themes`.
@@ -825,6 +829,28 @@ impl App {
         }
         if any && let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
+        }
+    }
+
+    /// Goes on to the next slide when the one on screen has been there as long as it asks.
+    fn tick_advance(&mut self) {
+        let live = self.show.live();
+        if live != self.live_since.map(|(at, _)| at) {
+            self.live_since = live.map(|at| (at, Instant::now()));
+            self.advanced = false;
+        }
+        let Some((_, since)) = self.live_since else { return };
+        let Some(seconds) = self.show.live_slide().and_then(|(_, slide)| slide.advance).filter(|s| *s > 0.0) else {
+            return;
+        };
+        let due = since + Duration::from_secs_f32(seconds);
+        if Instant::now() >= due {
+            if !self.advanced {
+                self.advanced = true;
+                self.apply(vec![Command::Next]);
+            }
+        } else if let Some(running) = self.running.as_mut() {
+            running.next_repaint = Some(running.next_repaint.map_or(due, |at| at.min(due)));
         }
     }
 
@@ -1153,6 +1179,22 @@ impl App {
         }
     }
 
+    /// Turns a song's looping on or off, from its menu.
+    fn handle_song_loop(&mut self) {
+        let Some(index) = self.running.as_mut().and_then(|r| r.home_state.song_loop_request.take()) else { return };
+        let Some(song) = self.show.presentations().get(index).cloned() else { return };
+        let changed = pc_model::Presentation { loops: !song.loops, ..(*song).clone() };
+        self.history.remember(index, song);
+        self.show.replace_presentation(index, Arc::new(changed));
+        if !self.unsaved.contains(&index) {
+            self.unsaved.push(index);
+        }
+        self.save_unsaved();
+        if self.show.live().is_some_and(|live| live.presentation == index) {
+            self.refresh_output();
+        }
+    }
+
     /// Keeps a song's arrangements as changed in the Show view, and the one it is played in.
     fn handle_arrangement(&mut self) {
         let Some((index, arrangements, chosen)) =
@@ -1475,6 +1517,7 @@ impl App {
             theme,
             arrangements: Vec::new(),
             arrangement: None,
+            loops: false,
         };
         // New songs live in the app's Songs folder, each in a file named by its id, so two
         // songs with one title never collide.
@@ -2998,9 +3041,11 @@ impl ApplicationHandler<String> for App {
                     self.apply_edit(at, slide);
                 }
                 self.run_actions();
+                self.tick_advance();
                 self.handle_audio();
                 self.handle_slide_request();
                 self.handle_song_theme();
+                self.handle_song_loop();
                 self.handle_arrangement();
                 self.handle_copyright();
                 self.handle_reflow();
@@ -3182,6 +3227,7 @@ fn main() -> ExitCode {
             theme: None,
             arrangements: Vec::new(),
             arrangement: None,
+            loops: false,
         });
         sources.push(None);
     }
@@ -3226,6 +3272,8 @@ fn main() -> ExitCode {
         unsaved: Vec::new(),
         history: SongHistory::default(),
         action_depth: None,
+        live_since: None,
+        advanced: false,
         unsaved_since: None,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),

@@ -108,6 +108,8 @@ pub struct HomeState {
     /// A song's arrangements changed in the Show view: the song, its arrangements, and the one
     /// it is played in.
     pub arrangement_request: Option<(usize, Vec<pc_model::Arrangement>, Option<pc_model::Uuid>)>,
+    /// A song whose looping is to be turned on or off, from its menu.
+    pub song_loop_request: Option<usize>,
     /// A theme chosen for a song from its menu: the song, and the theme by its place (`None`
     /// puts it back on the songs theme).
     pub song_theme_request: Option<(usize, Option<usize>)>,
@@ -721,6 +723,7 @@ impl Default for HomeState {
             slide_request: None,
             song_request: None,
             song_theme_request: None,
+            song_loop_request: None,
             arrangement_request: None,
             theme_ids: Vec::new(),
             confirm_delete_song: None,
@@ -4182,6 +4185,23 @@ fn slide_grid(
                                     }
                                 });
                             });
+                            // Going on to the next slide by itself, after a time.
+                            ui.menu_button("Go to Next", |ui| {
+                                if ui.add(egui::Button::selectable(slide.advance.is_none(), "Off")).clicked() {
+                                    state.pending_edit = Some((here, Slide { advance: None, ..slide.clone() }));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                for seconds in [3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0] {
+                                    let on = slide.advance == Some(seconds);
+                                    let label = format!("After {seconds:.0} Seconds");
+                                    if ui.add(egui::Button::selectable(on, label)).clicked() {
+                                        state.pending_edit =
+                                            Some((here, Slide { advance: Some(seconds), ..slide.clone() }));
+                                        ui.close();
+                                    }
+                                }
+                            });
                             // A key that puts this slide on screen in the Show view.
                             ui.menu_button("Hot Key", |ui| {
                                 if ui.add(egui::Button::selectable(slide.hot_key.is_none(), "None")).clicked() {
@@ -4391,6 +4411,19 @@ fn slide_grid(
                             "⚡",
                             FontId::proportional(10.0),
                             Color32::from_rgb(250, 200, 60),
+                        );
+                    }
+                    // A slide that goes on by itself shows after how long, beside that.
+                    if let Some(seconds) = slide.advance {
+                        let left = rect.min.x + if slide.actions.is_empty() { 4.0 } else { 24.0 };
+                        let badge = Rect::from_min_size(pos2(left, rect.min.y + 4.0), vec2(34.0, 16.0));
+                        painter.rect_filled(badge, 4.0, Color32::from_black_alpha(200));
+                        painter.text(
+                            badge.center(),
+                            Align2::CENTER_CENTER,
+                            format!("{seconds:.0}s ›"),
+                            FontId::proportional(10.5),
+                            Color32::WHITE,
                         );
                     }
                     // A slide's label, in a small dark tab at the picture's bottom right.

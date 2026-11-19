@@ -61,7 +61,8 @@ ProPresenter.
 - A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
   or bridge starts), Label (Blank Slide, Instrumental, Repeat, Spoken Word), Transition (its own,
   or as all slides), Hot Key (a letter or digit that puts the slide on screen, shown on its
-  picture), Disable, Template. Undo and Redo (Command-Z, Shift-Command-Z) step back through
+  picture), Go to Next (after a number of seconds, shown on its picture), Disable, Template.
+  A song's menu has Loop to First Slide, for a loop of announcements. Undo and Redo (Command-Z, Shift-Command-Z) step back through
   these changes in the Show view, and the audience stays on the same slide.
 - A song's right-click menu: Add to Service, Rename, Duplicate, Theme (a theme of its own, or
   the songs theme), Reflow, and Delete (a song made in the app goes to the Trash).

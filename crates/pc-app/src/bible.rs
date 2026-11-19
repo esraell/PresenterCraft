@@ -271,6 +271,7 @@ pub fn build_passage(
         theme: None,
         arrangements: Vec::new(),
         arrangement: None,
+        loops: false,
     })
 }
 

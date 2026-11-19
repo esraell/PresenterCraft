@@ -448,7 +448,18 @@ impl Show {
     fn next_target(&self) -> Option<(SlideRef, Option<usize>)> {
         let Some(cursor) = self.cursor else { return self.edge_of_selected(false) };
         let order = self.order(cursor.presentation);
-        let stay = Some((cursor, self.step));
+        // A song that loops goes back to its first slide after its last.
+        let looped = self
+            .presentations
+            .get(cursor.presentation)
+            .filter(|song| song.loops)
+            .and_then(|_| {
+                (0..order.len())
+                    .map(|step| (SlideRef { slide: order[step], ..cursor }, Some(step)))
+                    .find(|(at, _)| self.enabled(*at))
+            })
+            .filter(|(_, step)| *step != self.step);
+        let stay = looped.or(Some((cursor, self.step)));
         match self.cursor_step(cursor, &order) {
             Some(here) => (here + 1..order.len())
                 .map(|step| (SlideRef { slide: order[step], ..cursor }, Some(step)))

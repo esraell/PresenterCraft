@@ -411,3 +411,14 @@ fn next_sets_a_slides_click_builds_going_before_moving_on() {
     s.apply(Command::Next);
     assert_eq!((s.live(), s.build_step()), (at(0, 1), 0), "a new slide starts with no builds done");
 }
+
+#[test]
+fn a_song_that_loops_goes_back_to_its_first_slide() {
+    let mut song = parse_song_text("Notices", "A\n\nB\n\nC\n");
+    song.loops = true;
+    let mut s = Show::new(vec![Arc::new(song)]);
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 2 }));
+    assert_eq!(s.upcoming(), at(0, 0));
+    assert!(s.apply(Command::Next).slides);
+    assert_eq!(s.live(), at(0, 0));
+}

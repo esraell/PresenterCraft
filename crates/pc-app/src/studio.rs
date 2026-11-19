@@ -765,6 +765,16 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                         state.song_request = Some((index, crate::home::SongRequest::Duplicate));
                         ui.close();
                     }
+                    // Next on the last slide goes back to the first.
+                    let loops = show.presentations().get(index).is_some_and(|song| song.loops);
+                    if ui
+                        .add(egui::Button::selectable(loops, "Loop to First Slide"))
+                        .on_hover_text("Next on the last slide goes back to the first, for a loop of announcements")
+                        .clicked()
+                    {
+                        state.song_loop_request = Some(index);
+                        ui.close();
+                    }
                     // The theme this song is drawn with.
                     let own = show.presentations().get(index).and_then(|song| song.theme);
                     ui.menu_button("Theme", |ui| {

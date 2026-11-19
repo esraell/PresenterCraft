@@ -45,6 +45,7 @@ pub fn parse_song_text(title: &str, text: &str) -> Presentation {
         theme: None,
         arrangements: Vec::new(),
         arrangement: None,
+        loops: false,
     }
 }
 

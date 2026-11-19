@@ -412,6 +412,9 @@ pub struct Slide {
     /// letter. Kept in capitals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hot_key: Option<char>,
+    /// Goes on to the next slide by itself this many seconds after it is put on screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advance: Option<f32>,
 }
 
 impl Slide {
@@ -426,6 +429,7 @@ impl Slide {
             transition: None,
             actions: Vec::new(),
             hot_key: None,
+            advance: None,
         }
     }
 
@@ -467,6 +471,9 @@ pub struct Presentation {
     /// The arrangement the song is played in, by its id; `None` plays the groups as written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrangement: Option<Uuid>,
+    /// Next on the last slide goes back to the first, for a loop of announcements.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub loops: bool,
 }
 
 /// An order to play a song's groups in. A group can come more than once, and a group left out
@@ -629,6 +636,7 @@ impl Presentation {
             theme: self.theme,
             arrangements: self.arrangements.clone(),
             arrangement: self.arrangement,
+            loops: self.loops,
         }
     }
 
@@ -861,6 +869,7 @@ mod tests {
             theme: None,
             arrangements: Vec::new(),
             arrangement: None,
+            loops: false,
         };
         let (first, at) = empty.with_slide_added();
         assert_eq!((first.slide_count(), at), (1, 0));
