@@ -168,9 +168,52 @@ impl TextStyle {
     }
 }
 
+/// The font families a presentation is drawn with under a theme, each once, in name order.
+pub fn fonts_used(presentation: &crate::Presentation, theme: &Theme) -> Vec<String> {
+    let mut families: Vec<String> = Vec::new();
+    for (_, slide) in presentation.slides() {
+        for object in &slide.objects {
+            let crate::ObjectKind::Text { style, .. } = &object.kind;
+            if let Some(drawn) = theme.text_style(object.role.as_ref(), style)
+                && !families.contains(&drawn.font_family)
+            {
+                families.push(drawn.font_family);
+            }
+        }
+    }
+    families.sort_by_key(|name| name.to_lowercase());
+    families
+}
+
+/// The fonts in `used` that are not among `installed`, comparing names without regard to case.
+/// A song that names one of these is drawn with a substitute on this computer.
+pub fn missing_fonts(used: &[String], installed: &[String]) -> Vec<String> {
+    used.iter().filter(|name| !installed.iter().any(|have| have.eq_ignore_ascii_case(name))).cloned().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fonts_a_song_uses_are_listed_once_each() {
+        let theme = Theme::builtin();
+        let mut song = crate::parse_song_text("S", "A\n--\nБ\n\nC\n");
+        assert_eq!(fonts_used(&song, &theme), vec![theme.boxes[0].font_family.clone()]);
+        let crate::ObjectKind::Text { style, .. } = &mut song.groups[0].slides[1].objects[0].kind;
+        style.font_family = Some("Georgia".to_owned());
+        assert_eq!(fonts_used(&song, &theme), vec!["Georgia".to_owned(), theme.boxes[0].font_family.clone()]);
+        assert!(fonts_used(&crate::parse_song_text("S", ""), &theme).is_empty());
+    }
+
+    #[test]
+    fn missing_fonts_are_those_this_computer_does_not_have() {
+        let used = vec!["Georgia".to_owned(), "Helvetica Neue".to_owned(), "Brand Sans".to_owned()];
+        let installed = vec!["georgia".to_owned(), "Helvetica Neue".to_owned(), "Arial".to_owned()];
+        assert_eq!(missing_fonts(&used, &installed), vec!["Brand Sans".to_owned()]);
+        assert!(missing_fonts(&[], &installed).is_empty());
+        assert_eq!(missing_fonts(&used, &[]).len(), 3);
+    }
 
     #[test]
     fn an_unset_style_is_exactly_the_theme() {

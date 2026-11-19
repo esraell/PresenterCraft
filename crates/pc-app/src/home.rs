@@ -426,7 +426,7 @@ pub fn home_ui(
     if state.bible_open {
         bible_area(ui, state);
     } else {
-        slide_area(ui, show, state, thumb, &mut commands);
+        slide_area(ui, show, state, theme, thumb, &mut commands);
     }
     commands
 }
@@ -1690,6 +1690,37 @@ fn screens_pane(ui: &mut egui::Ui, state: &mut HomeState) {
     ui.label(egui::RichText::new("NDI and other outputs are not built yet.").color(DIM));
 }
 
+/// Says which of a song's fonts this computer does not have, and offers a place to look for
+/// each. Until the font is installed the song is drawn with a substitute, so it will not look
+/// the way it does on the computer it came from.
+fn missing_font_notice(ui: &mut egui::Ui, missing: &[String]) {
+    if missing.is_empty() {
+        return;
+    }
+    ui.add_space(10.0);
+    let label = if missing.len() == 1 {
+        format!("Missing font: {}", missing[0])
+    } else {
+        format!("{} missing fonts", missing.len())
+    };
+    let warning = Color32::from_rgb(240, 190, 40);
+    ui.menu_button(egui::RichText::new(label).size(12.0).color(warning), |ui| {
+        ui.set_max_width(320.0);
+        ui.label("This song uses fonts that are not installed on this computer. It is shown with a substitute until they are installed.");
+        ui.separator();
+        for family in missing {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(family.as_str()).strong());
+                let query: String = family.chars().map(|c| if c == ' ' { '+' } else { c }).collect();
+                ui.hyperlink_to("Look for it", format!("https://fonts.google.com/?query={query}"))
+                    .on_hover_text("Opens a font library in your browser. Not every font is free to download.");
+            });
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("After installing a font, restart PresenterCraft.").size(11.5).color(DIM));
+    });
+}
+
 /// The Bible page, in place of the slide grid: a field for a reference, a search field, and a
 /// row for each translation saying where its verse and its reference go on the slide. Looking
 /// verses up is not built yet, so this is the layout with its controls in place.
@@ -1795,6 +1826,7 @@ fn slide_area(
     ui: &mut egui::Ui,
     show: &Show,
     state: &mut HomeState,
+    theme: &Theme,
     thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
     commands: &mut Vec<Command>,
 ) {
@@ -1836,6 +1868,10 @@ fn slide_area(
                 let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
                 icons::paint(ui.painter(), Icon::Document, rect, ACCENT);
                 ui.label(egui::RichText::new(presentation.title.as_str()).size(13.5));
+                missing_font_notice(
+                    ui,
+                    &pc_model::missing_fonts(&pc_model::fonts_used(presentation, theme), &state.fonts),
+                );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     ghost(ui, Icon::Transition, "Transition for this presentation");
