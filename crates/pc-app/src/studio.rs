@@ -802,4 +802,31 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
             state.slide_view = view;
         }
     }
+    ui.add_space(10.0);
+    // How one slide gives way to the next on the output: at once, or fading over a time.
+    if state.dissolve {
+        ui.add(
+            egui::DragValue::new(&mut state.dissolve_time).speed(0.02).range(0.1..=5.0).max_decimals(1).suffix(" s"),
+        )
+        .on_hover_text("How long the fade takes");
+    }
+    // Laid out right to left: Dissolve first puts it at the right of Cut.
+    let (bar, _) = ui.allocate_exact_size(vec2(64.0 + 44.0 + 6.0, 30.0), Sense::hover());
+    ui.painter().rect_filled(bar, RADIUS + 1.0, PANEL);
+    for (dissolve, label, width, x, hint) in [
+        (false, "Cut", 44.0, 3.0, "Slides switch at once"),
+        (true, "Dissolve", 64.0, 47.0, "Each slide fades into the next"),
+    ] {
+        let cell = Rect::from_min_size(bar.min + vec2(x, 3.0), vec2(width, 24.0));
+        let response = ui.interact(cell, ui.scope_id().with(("transition", dissolve)), Sense::click());
+        let on = state.dissolve == dissolve;
+        if on {
+            ui.painter().rect_filled(cell, RADIUS - 2.0, CARD);
+        }
+        let ink = if on || response.hovered() { TEXT } else { TEXT_FAINT };
+        ui.painter().text(cell.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), ink);
+        if response.on_hover_text(hint).clicked() {
+            state.dissolve = dissolve;
+        }
+    }
 }

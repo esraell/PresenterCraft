@@ -264,7 +264,7 @@ impl App {
         // A run that only saves a picture of the window stays out of the way: its windows open
         // behind everything else and do not take the keyboard, so whoever is using the
         // computer is not interrupted.
-        let quiet = self.options.capture_home.is_some();
+        let quiet = self.options.capture_home.is_some() || std::env::var_os("PRESENTERCRAFT_QUIET").is_some();
         let behind = |attrs: winit::window::WindowAttributes| {
             if quiet {
                 attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom)
@@ -437,6 +437,7 @@ impl App {
                 slide: slide.clone(),
                 theme: theme.clone(),
                 enabled: self.show.output_enabled(),
+                dissolve: running.home_state.dissolve_seconds(),
             };
             if !output.send(OutputMsg::Show(frame)) {
                 running.home_state.output_stopped = true;
@@ -1116,7 +1117,7 @@ fn main() -> ExitCode {
     let mut builder = EventLoop::builder();
     // A run that only saves a picture must not come to the front of whatever is in use.
     #[cfg(target_os = "macos")]
-    if options.capture_home.is_some() {
+    if options.capture_home.is_some() || std::env::var_os("PRESENTERCRAFT_QUIET").is_some() {
         use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
         builder.with_activation_policy(ActivationPolicy::Accessory).with_activate_ignoring_other_apps(false);
     }

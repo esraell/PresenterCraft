@@ -1,13 +1,14 @@
 //! The output thread. It owns the output's surface and its own painter, draws only when told
 //! what to show, and never waits on the home window.
 
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use pc_model::{Slide, Theme};
 use pc_ndi::NdiOutput;
-use pc_render::{Fonts, Layers, Painter, Picture, build_layers, read_pixels, target_texture, wgpu};
+use pc_render::{Fonts, Layers, Painter, Picture, build_layers, read_pixels, target_texture, vello, wgpu};
 
 /// Everything the output needs to draw one picture. Immutable once sent.
 #[derive(Clone)]
@@ -18,6 +19,8 @@ pub struct Frame {
     pub theme: Arc<Theme>,
     /// When false the output is black whatever the slide is.
     pub enabled: bool,
+    /// How long the picture before fades into this one, in seconds. Zero switches at once.
+    pub dissolve: f32,
 }
 
 pub enum OutputMsg {
@@ -96,6 +99,14 @@ impl OutputHandle {
     }
 }
 
+/// One picture fading into the next.
+struct Fade {
+    from: vello::Scene,
+    to: vello::Scene,
+    started: Instant,
+    seconds: f32,
+}
+
 struct Output {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -106,6 +117,10 @@ struct Output {
     fonts: Fonts,
     target: wgpu::Texture,
     frame: Frame,
+    /// The picture now on the screen in full, kept so the next one can fade in over it.
+    shown: Option<vello::Scene>,
+    /// A fade under way.
+    fade: Option<Fade>,
     /// The NDI source, while it is switched on, and the texture its picture is drawn into.
     ndi: Option<NdiOutput>,
     ndi_target: Option<wgpu::Texture>,
@@ -145,7 +160,9 @@ fn run(
         target: target_texture(&device, config.width, config.height),
         painter,
         fonts: Fonts::new(),
-        frame: Frame { media: None, slide: None, theme, enabled: true },
+        frame: Frame { media: None, slide: None, theme, enabled: true, dissolve: 0.0 },
+        shown: None,
+        fade: None,
         ndi: None,
         ndi_target: None,
         ndi_status,
@@ -154,14 +171,37 @@ fn run(
         surface,
         config,
     };
-    output.draw();
+    output.draw(false);
 
-    while let Ok(first) = rx.recv() {
+    loop {
+        // While a fade is under way, look for messages without waiting, so it keeps moving;
+        // otherwise sleep until there is one.
+        let first = if output.fade.is_some() {
+            match rx.try_recv() {
+                Ok(msg) => Some(msg),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => return,
+            }
+        } else {
+            match rx.recv() {
+                Ok(msg) => Some(msg),
+                Err(_) => return,
+            }
+        };
+        let Some(first) = first else {
+            // Drawing waits for the screen's next refresh, which paces the fade.
+            output.step_fade();
+            continue;
+        };
         // Take everything that has queued up, so a burst of changes costs one draw.
         let mut next = Some(first);
+        let mut new_picture = false;
         while let Some(msg) = next {
             match msg {
-                OutputMsg::Show(frame) => output.frame = frame,
+                OutputMsg::Show(frame) => {
+                    output.frame = frame;
+                    new_picture = true;
+                }
                 OutputMsg::Resized(w, h) => output.resize(w, h),
                 OutputMsg::Redraw => {}
                 OutputMsg::Ndi(name) => output.set_ndi(name),
@@ -169,7 +209,7 @@ fn run(
             }
             next = rx.try_recv().ok();
         }
-        output.draw();
+        output.draw(new_picture);
     }
 }
 
@@ -183,6 +223,9 @@ impl Output {
         self.config.height = h;
         self.surface.configure(&self.device, &self.config);
         self.target = target_texture(&self.device, w, h);
+        // Pictures built for the old size cannot be faded at the new one.
+        self.shown = None;
+        self.fade = None;
     }
 
     /// Starts or stops the NDI source and records how that went for the operator.
@@ -225,7 +268,9 @@ impl Output {
         }
     }
 
-    fn draw(&mut self) {
+    /// Draws the current frame. A new picture fades in over the one on screen when the frame
+    /// asks for a dissolve; anything else (a resize, an uncovered window) is drawn at once.
+    fn draw(&mut self, new_picture: bool) {
         let (w, h) = (self.config.width, self.config.height);
         // Cheap copies: the picture and the slide are shared, not duplicated.
         let frame = self.frame.clone();
@@ -236,8 +281,42 @@ impl Output {
         };
         self.send_ndi(&layers);
         let built = build_layers(&mut self.fonts, &layers, &self.frame.theme, w, h);
+        // What is on screen this instant: the last whole picture, or a fade part-way through.
+        let before = match self.fade.take() {
+            Some(fade) => Some(pc_render::cross_fade(&fade.from, &fade.to, fade.amount(), w, h)),
+            None => self.shown.take(),
+        };
+        match before {
+            Some(from) if new_picture && frame.dissolve > 0.0 => {
+                self.fade = Some(Fade { from, to: built.scene, started: Instant::now(), seconds: frame.dissolve });
+                self.step_fade();
+            }
+            _ => {
+                self.present(&built.scene);
+                self.shown = Some(built.scene);
+            }
+        }
+    }
+
+    /// Draws the next step of the fade under way, and finishes it when its time is up.
+    fn step_fade(&mut self) {
+        let Some(fade) = self.fade.take() else { return };
+        let amount = fade.amount();
+        if amount >= 1.0 {
+            self.present(&fade.to);
+            self.shown = Some(fade.to);
+        } else {
+            let scene = pc_render::cross_fade(&fade.from, &fade.to, amount, self.config.width, self.config.height);
+            self.present(&scene);
+            self.fade = Some(fade);
+        }
+    }
+
+    /// Paints a picture and shows it on the screen.
+    fn present(&mut self, scene: &vello::Scene) {
+        let (w, h) = (self.config.width, self.config.height);
         let view = self.target.create_view(&wgpu::TextureViewDescriptor::default());
-        if let Err(e) = self.painter.paint(&self.device, &self.queue, &built.scene, &view, w, h) {
+        if let Err(e) = self.painter.paint(&self.device, &self.queue, scene, &view, w, h) {
             return eprintln!("The output could not draw a frame: {e}");
         }
         // A lost or outdated surface is set up again and tried once more; anything else
@@ -256,8 +335,17 @@ impl Output {
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost if attempt == 0 => {
                     self.surface.configure(&self.device, &self.config);
                 }
-                _ => return,
+                // A hidden window shows nothing; wait a moment so a fade does not spin.
+                _ => return std::thread::sleep(Duration::from_millis(8)),
             }
         }
+    }
+}
+
+impl Fade {
+    /// How far in the fade is, from 0 to 1, eased so it starts and ends gently.
+    fn amount(&self) -> f32 {
+        let t = (self.started.elapsed().as_secs_f32() / self.seconds.max(0.001)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
     }
 }

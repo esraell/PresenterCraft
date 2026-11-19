@@ -105,6 +105,17 @@ fn main_is_alone(slide: &Slide) -> bool {
     !slide.objects.iter().any(|object| object.role.as_ref() == Some(&Role::translation()))
 }
 
+/// One picture fading into another: `from` with `to` over it, `amount` of the way in (0 is
+/// all `from`, 1 is all `to`). Both must have been built for a target of this size.
+pub fn cross_fade(from: &Scene, to: &Scene, amount: f32, target_w: u32, target_h: u32) -> Scene {
+    let mut scene = from.clone();
+    let whole = Rect::new(0.0, 0.0, f64::from(target_w), f64::from(target_h));
+    scene.push_layer(Fill::NonZero, Mix::Normal, amount.clamp(0.0, 1.0), Affine::IDENTITY, &whole);
+    scene.append(to, None);
+    scene.pop_layer();
+    scene
+}
+
 /// The style and rectangle for a box. A lone main-language box, or a box whose role the theme
 /// does not know, is centred on the slide in the main-language style.
 fn placement<'a>(theme: &'a Theme, role: Option<&Role>, alone: bool) -> (Option<&'a BoxStyle>, SlideRect) {

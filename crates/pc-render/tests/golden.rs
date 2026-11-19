@@ -351,3 +351,32 @@ fn an_objects_own_colour_alignment_and_size_are_drawn() {
     let small_red = small.chunks(4).filter(|p| p[0] > 200 && p[1] < 60 && p[2] < 60).count();
     assert!(small_red * 4 < red.len(), "{small_red} pixels at size 20 against {}", red.len());
 }
+
+/// A fade half-way from a black screen to a white one is mid grey; at its ends it is one
+/// picture or the other.
+#[test]
+fn a_cross_fade_blends_two_pictures() {
+    use pc_model::Rgba;
+    use pc_render::cross_fade;
+    let (w, h) = (64, 36);
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let black = build_scene(&mut Fonts::new(), None, &Theme::builtin(), w, h).scene;
+    let mut white_theme = Theme::builtin();
+    white_theme.background = Some(Rgba::WHITE);
+    let white = build_scene(&mut Fonts::new(), Some(&Slide::new(Vec::new())), &white_theme, w, h).scene;
+    let mut middle_of = |amount: f32| {
+        let texture = target_texture(device, w, h);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        painter.paint(device, queue, &cross_fade(&black, &white, amount, w, h), &view, w, h).expect("paint");
+        let pixels = read_pixels(device, queue, &texture).expect("read back");
+        let at = ((h / 2 * w + w / 2) * 4) as usize;
+        pixels[at]
+    };
+    assert_eq!(middle_of(0.0), 0);
+    assert_eq!(middle_of(1.0), 255);
+    let half = middle_of(0.5);
+    assert!((110..=145).contains(&half), "half-way was {half}");
+}

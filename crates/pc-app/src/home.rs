@@ -44,6 +44,9 @@ pub struct HomeState {
     pub columns: usize,
     /// The slide picked out without being shown, by a right-click.
     pub selected_slide: Option<SlideRef>,
+    /// Whether one slide fades into the next, and over how many seconds.
+    pub dissolve: bool,
+    pub dissolve_time: f32,
     /// The running orders, and the one in front.
     pub services: crate::service::Services,
     /// For each presentation, the name its song is found by again in a service.
@@ -417,6 +420,8 @@ impl Default for HomeState {
             slide_view: SlideView::Grid,
             columns: 4,
             selected_slide: None,
+            dissolve: true,
+            dissolve_time: 0.4,
             services: crate::service::Services::default(),
             song_keys: Vec::new(),
             renaming_service: None,
@@ -448,6 +453,13 @@ impl Default for HomeState {
             menu_fresh: false,
             bible: BiblePage::default(),
         }
+    }
+}
+
+impl HomeState {
+    /// How long a new picture takes to fade in on the output; zero when slides cut.
+    pub fn dissolve_seconds(&self) -> f32 {
+        if self.dissolve { self.dissolve_time.clamp(0.0, 5.0) } else { 0.0 }
     }
 }
 
