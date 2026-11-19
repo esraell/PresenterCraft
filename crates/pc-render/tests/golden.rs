@@ -328,7 +328,7 @@ fn an_objects_own_colour_alignment_and_size_are_drawn() {
     use pc_model::{Align, ObjectKind, Rgba};
     let mut s = slide("IIII", None);
     let plain = render(Some(&s), 640, 360);
-    let ObjectKind::Text { style, .. } = &mut s.objects[0].kind;
+    let ObjectKind::Text { style, .. } = &mut s.objects[0].kind else { panic!("a text object") };
     style.fill = Some(Rgba::rgb(255, 0, 0));
     style.align = Some(Align::Left);
     style.outline_width = Some(0.0);
@@ -345,7 +345,7 @@ fn an_objects_own_colour_alignment_and_size_are_drawn() {
     assert!(count_lit(&plain) > 100, "the same slide in the theme's style is white");
 
     // A much smaller size draws much less ink.
-    let ObjectKind::Text { style, .. } = &mut s.objects[0].kind;
+    let ObjectKind::Text { style, .. } = &mut s.objects[0].kind else { panic!("a text object") };
     style.size = Some(20.0);
     let small = render(Some(&s), 640, 360);
     let small_red = small.chunks(4).filter(|p| p[0] > 200 && p[1] < 60 && p[2] < 60).count();

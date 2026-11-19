@@ -421,9 +421,31 @@ impl EditDraft {
             hidden: false,
             locked: false,
             fill: None,
+            stroke: None,
+            shadow: None,
+            flip_h: false,
+            flip_v: false,
             kind: ObjectKind::Text { text: "Text".to_owned(), style: TextStyle::default() },
         };
         self.selected = Some(object.id);
+        self.slide.objects.push(object);
+    }
+
+    /// Adds a shape in the middle of the slide, in front of everything, and selects it.
+    pub fn add_shape(&mut self, shape: pc_model::Shape) {
+        self.record();
+        let mut object = Object::shape(shape);
+        let same = self
+            .slide
+            .objects
+            .iter()
+            .filter(|o| matches!(o.kind, ObjectKind::Shape { shape: s } if s == shape))
+            .count();
+        if same > 0 {
+            object.name = format!("{} {}", shape.name(), same + 1);
+        }
+        self.selected = Some(object.id);
+        self.also.clear();
         self.slide.objects.push(object);
     }
 
@@ -521,10 +543,7 @@ impl EditDraft {
         if self.also.is_empty() || after == *before {
             return;
         }
-        let looks = |object: &Object| {
-            let ObjectKind::Text { style, .. } = &object.kind;
-            theme.text_style(object.role.as_ref(), style)
-        };
+        let looks = |object: &Object| theme.text_style(object.role.as_ref(), object.text_style()?);
         let (look_before, look_after) = (looks(before), looks(&after));
         let (was, now) = (object_frame(&self.slide, before, theme), object_frame(&self.slide, &after, theme));
         let moved_by = (now.x - was.x, now.y - was.y, now.w - was.w, now.h - was.h);
@@ -540,6 +559,18 @@ impl EditDraft {
             if before.fill != after.fill {
                 object.fill = after.fill;
             }
+            if before.stroke != after.stroke {
+                object.stroke = after.stroke;
+            }
+            if before.shadow != after.shadow {
+                object.shadow = after.shadow;
+            }
+            if before.flip_h != after.flip_h {
+                object.flip_h = after.flip_h;
+            }
+            if before.flip_v != after.flip_v {
+                object.flip_v = after.flip_v;
+            }
             if moved_by != (0.0, 0.0, 0.0, 0.0)
                 && let Some(frame) = frame
             {
@@ -554,8 +585,9 @@ impl EditDraft {
                 && look_before != look_after
             {
                 let role = object.role.clone();
-                let ObjectKind::Text { style, .. } = &mut object.kind;
-                if let Some(base) = theme.text_style(role.as_ref(), &TextStyle::default()) {
+                if let ObjectKind::Text { style, .. } = &mut object.kind
+                    && let Some(base) = theme.text_style(role.as_ref(), &TextStyle::default())
+                {
                     let mut look = style.over(&base);
                     look.follow_change(look_before, look_after);
                     *style = TextStyle::between(&base, &look);
@@ -600,7 +632,7 @@ impl EditDraft {
         let mut changed = false;
         for object in self.slide.objects.iter_mut().filter(|object| ids.contains(&object.id)) {
             let Some(base) = template.box_for(object.role.as_ref()).cloned() else { continue };
-            let ObjectKind::Text { style, .. } = &mut object.kind;
+            let ObjectKind::Text { style, .. } = &mut object.kind else { continue };
             let mut look = style.over(&base);
             change(&mut look);
             let own = TextStyle::between(&base, &look);
@@ -617,7 +649,7 @@ impl EditDraft {
         let ids = self.selection();
         let mut changed = false;
         for object in self.slide.objects.iter_mut().filter(|object| ids.contains(&object.id)) {
-            let ObjectKind::Text { text, .. } = &mut object.kind;
+            let ObjectKind::Text { text, .. } = &mut object.kind else { continue };
             let new = change(text);
             if new != *text {
                 *text = new;
@@ -645,6 +677,48 @@ impl EditDraft {
         }
         if lock {
             self.select_only(None);
+        }
+        changed
+    }
+
+    /// Spreads the selected objects out evenly, leaving the first and last where they are:
+    /// across (equal gaps between them, left to right) or down. Needs three or more objects.
+    pub fn distribute(&mut self, theme: &Theme, across: bool) -> bool {
+        let ids = self.selection();
+        let mut placed: Vec<(Uuid, SlideRect)> = self
+            .slide
+            .objects
+            .iter()
+            .filter(|object| ids.contains(&object.id))
+            .map(|object| (object.id, object_frame(&self.slide, object, theme)))
+            .collect();
+        if placed.len() < 3 {
+            return false;
+        }
+        let start = |rect: &SlideRect| if across { rect.x } else { rect.y };
+        let length = |rect: &SlideRect| if across { rect.w } else { rect.h };
+        placed.sort_by(|a, b| start(&a.1).total_cmp(&start(&b.1)));
+        let first = placed[0].1;
+        let last = placed[placed.len() - 1].1;
+        let span = start(&last) + length(&last) - start(&first);
+        let filled: f32 = placed.iter().map(|(_, rect)| length(rect)).sum();
+        let gap = (span - filled) / (placed.len() - 1) as f32;
+        let mut at = start(&first);
+        let mut changed = false;
+        for (id, rect) in placed {
+            let mut moved = rect;
+            if across {
+                moved.x = at;
+            } else {
+                moved.y = at;
+            }
+            at += length(&rect) + gap;
+            if let Some(object) = self.slide.objects.iter_mut().find(|object| object.id == id)
+                && moved != rect
+            {
+                object.frame = Some(moved);
+                changed = true;
+            }
         }
         changed
     }
@@ -996,12 +1070,12 @@ mod tests {
         let first = d.selected_object_mut().unwrap();
         first.opacity = 0.5;
         first.frame = Some(SlideRect { y: frame.y + 30.0, ..frame });
-        let ObjectKind::Text { style, .. } = &mut first.kind;
+        let ObjectKind::Text { style, .. } = &mut first.kind else { panic!("a text object") };
         style.italic = Some(true);
         let other_before = object_frame(&d.slide, &d.slide.objects[1], &theme);
         d.share_change(&theme, &before);
         let other = &d.slide.objects[1];
-        let ObjectKind::Text { style, .. } = &other.kind;
+        let ObjectKind::Text { style, .. } = &other.kind else { panic!("a text object") };
         assert_eq!((style.italic, other.opacity), (Some(true), 0.5));
         assert_eq!(other.frame.unwrap().y, other_before.y + 30.0);
         // Its own colour and size were not touched.
@@ -1034,11 +1108,11 @@ mod tests {
         let (back, front) = (d.slide.objects[0].id, d.slide.objects[1].id);
         d.select_only(Some(back));
         assert!(d.restyle(&theme, |look| look.weight = 400));
-        let ObjectKind::Text { style, .. } = &d.slide.objects[0].kind;
+        let ObjectKind::Text { style, .. } = &d.slide.objects[0].kind else { panic!("a text object") };
         assert_eq!((style.weight, style.size), (Some(400), None), "only what changed is kept");
         // Setting it back to the theme's own look leaves nothing of its own.
         assert!(d.restyle(&theme, |look| look.weight = 700));
-        let ObjectKind::Text { style, .. } = &d.slide.objects[0].kind;
+        let ObjectKind::Text { style, .. } = &d.slide.objects[0].kind else { panic!("a text object") };
         assert!(style.is_default());
         assert!(d.retext(str::to_uppercase));
         assert!(d.slide.objects[0].as_text().is_some_and(|text| text == text.to_uppercase()));
@@ -1051,6 +1125,34 @@ mod tests {
         assert!(d.slide.objects.iter().any(|o| o.id == front && !o.locked));
         assert!(d.lock(false));
         assert!(d.slide.objects.iter().all(|o| !o.locked));
+    }
+
+    #[test]
+    fn a_shape_is_added_in_front_selected_and_named_after_its_kind() {
+        let mut d = draft();
+        d.add_shape(pc_model::Shape::Star);
+        d.add_shape(pc_model::Shape::Star);
+        let last = d.slide.objects.last().unwrap();
+        assert_eq!((last.name.as_str(), d.selected), ("Star 2", Some(last.id)));
+        assert!(d.undo());
+        assert_eq!(d.slide.objects.last().unwrap().name, "Star");
+    }
+
+    #[test]
+    fn three_objects_are_spread_out_evenly() {
+        let theme = Theme::builtin();
+        let mut d = draft();
+        d.slide.objects.clear();
+        for x in [0.0, 300.0, 1000.0] {
+            let mut shape = Object::shape(pc_model::Shape::Rectangle);
+            shape.frame = Some(SlideRect { x, y: 100.0, w: 100.0, h: 100.0 });
+            d.slide.objects.push(shape);
+        }
+        d.select_all();
+        assert!(d.distribute(&theme, true));
+        let xs: Vec<f32> = d.slide.objects.iter().map(|o| o.frame.unwrap().x).collect();
+        assert_eq!(xs, [0.0, 500.0, 1000.0]);
+        assert!(!d.distribute(&theme, true), "already even");
     }
 
     #[test]

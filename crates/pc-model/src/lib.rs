@@ -12,7 +12,7 @@ pub use theme::{
     Align, BoxStyle, Caps, LINE_HEIGHT, LineTransform, Scaling, Shadow, SlideRect, TextStyle, Theme, ThemeTemplate,
     VAlign, fonts_used, missing_fonts,
 };
-pub use types::{Group, MediaItem, Object, ObjectKind, Presentation, Rgba, Role, Slide};
+pub use types::{Group, MediaItem, Object, ObjectKind, Presentation, Rgba, Role, Shape, Slide, StrokeLook};
 pub use uuid::Uuid;
 
 /// Slides are authored at this size and scaled to the screen.

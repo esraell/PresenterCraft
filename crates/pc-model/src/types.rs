@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::theme::{SlideRect, TextStyle};
+use crate::theme::{Shadow, SlideRect, TextStyle};
 
 /// A colour with straight (not premultiplied) alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +57,7 @@ impl Role {
     }
 }
 
-/// What an object on a slide is. More kinds (shapes, pictures, video) are added here.
+/// What an object on a slide is. More kinds (pictures, video) are added here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObjectKind {
@@ -68,6 +68,103 @@ pub enum ObjectKind {
         #[serde(default, skip_serializing_if = "TextStyle::is_default")]
         style: TextStyle,
     },
+    /// A drawn shape filling the object's place, in the object's fill colour.
+    Shape { shape: Shape },
+}
+
+/// The shapes the editor can draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Shape {
+    RoundedRect,
+    Rectangle,
+    Ellipse,
+    Triangle,
+    RightTriangle,
+    Rhombus,
+    Polygon,
+    Star,
+    DoubleArrow,
+    Arrow,
+}
+
+impl Shape {
+    pub const ALL: [Shape; 10] = [
+        Shape::RoundedRect,
+        Shape::Rectangle,
+        Shape::Ellipse,
+        Shape::Triangle,
+        Shape::RightTriangle,
+        Shape::Rhombus,
+        Shape::Polygon,
+        Shape::Star,
+        Shape::DoubleArrow,
+        Shape::Arrow,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Shape::RoundedRect => "Rounded Rect",
+            Shape::Rectangle => "Rectangle",
+            Shape::Ellipse => "Ellipse",
+            Shape::Triangle => "Triangle",
+            Shape::RightTriangle => "Right Triangle",
+            Shape::Rhombus => "Rhombus",
+            Shape::Polygon => "Polygon",
+            Shape::Star => "Star",
+            Shape::DoubleArrow => "Double Arrow",
+            Shape::Arrow => "Arrow",
+        }
+    }
+
+    /// The shape's outline as points in a box from (0, 0) to (1, 1), for the shapes made of
+    /// straight lines. Rounded shapes are drawn as curves instead and give `None`.
+    pub fn corners(self) -> Option<Vec<(f64, f64)>> {
+        use std::f64::consts::PI;
+        let ring = |count: usize, inner: Option<f64>| -> Vec<(f64, f64)> {
+            let steps = if inner.is_some() { count * 2 } else { count };
+            (0..steps)
+                .map(|step| {
+                    let radius = match inner {
+                        Some(inner) if step % 2 == 1 => inner,
+                        _ => 0.5,
+                    };
+                    let angle = -PI / 2.0 + 2.0 * PI * step as f64 / steps as f64;
+                    (0.5 + radius * angle.cos(), 0.5 + radius * angle.sin())
+                })
+                .collect()
+        };
+        Some(match self {
+            Shape::RoundedRect | Shape::Ellipse => return None,
+            Shape::Rectangle => vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+            Shape::Triangle => vec![(0.5, 0.0), (1.0, 1.0), (0.0, 1.0)],
+            Shape::RightTriangle => vec![(0.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+            Shape::Rhombus => vec![(0.5, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 0.5)],
+            Shape::Polygon => ring(5, None),
+            Shape::Star => ring(5, Some(0.2)),
+            Shape::Arrow => vec![(0.0, 0.3), (0.6, 0.3), (0.6, 0.0), (1.0, 0.5), (0.6, 1.0), (0.6, 0.7), (0.0, 0.7)],
+            Shape::DoubleArrow => vec![
+                (0.0, 0.5),
+                (0.3, 0.0),
+                (0.3, 0.3),
+                (0.7, 0.3),
+                (0.7, 0.0),
+                (1.0, 0.5),
+                (0.7, 1.0),
+                (0.7, 0.7),
+                (0.3, 0.7),
+                (0.3, 1.0),
+            ],
+        })
+    }
+}
+
+/// A line drawn round an object's box or shape.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StrokeLook {
+    /// In slide units.
+    pub width: f32,
+    pub color: Rgba,
 }
 
 fn full_opacity() -> f32 {
@@ -117,6 +214,17 @@ pub struct Object {
     /// The colour the object's box is filled with behind its content. `None` leaves it clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<Rgba>,
+    /// A line round the object's box or shape. `None` draws none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<StrokeLook>,
+    /// A shadow behind the object's box or shape. `None` draws none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<Shadow>,
+    /// Mirrored left to right, and top to bottom, about its centre.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip_h: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip_v: bool,
     #[serde(flatten)]
     pub kind: ObjectKind,
 }
@@ -135,20 +243,55 @@ impl Object {
             hidden: false,
             locked: false,
             fill: None,
+            stroke: None,
+            shadow: None,
+            flip_h: false,
+            flip_v: false,
             kind: ObjectKind::Text { text: text.into(), style: TextStyle::default() },
+        }
+    }
+
+    /// A shape in the middle of the slide, filled light blue as a new shape is.
+    pub fn shape(shape: Shape) -> Object {
+        Object {
+            id: Uuid::new_v4(),
+            name: shape.name().to_owned(),
+            role: None,
+            frame: Some(SlideRect { x: 660.0, y: 340.0, w: 600.0, h: 400.0 }),
+            rotation: 0.0,
+            opacity: 1.0,
+            hidden: false,
+            locked: false,
+            fill: Some(Rgba::rgb(110, 170, 240)),
+            stroke: None,
+            shadow: None,
+            flip_h: false,
+            flip_v: false,
+            kind: ObjectKind::Shape { shape },
         }
     }
 
     /// The object's words, if it is a text object.
     /// The object's own text settings, over its theme box.
     pub fn text_style(&self) -> Option<&crate::TextStyle> {
-        let ObjectKind::Text { style, .. } = &self.kind;
-        Some(style)
+        match &self.kind {
+            ObjectKind::Text { style, .. } => Some(style),
+            ObjectKind::Shape { .. } => None,
+        }
+    }
+
+    /// The object's own text settings, to change; `None` for an object that is not text.
+    pub fn text_style_mut(&mut self) -> Option<&mut crate::TextStyle> {
+        match &mut self.kind {
+            ObjectKind::Text { style, .. } => Some(style),
+            ObjectKind::Shape { .. } => None,
+        }
     }
 
     pub fn as_text(&self) -> Option<&str> {
         match &self.kind {
             ObjectKind::Text { text, .. } => Some(text),
+            ObjectKind::Shape { .. } => None,
         }
     }
 }
@@ -245,8 +388,9 @@ impl Presentation {
                         }
                         (Some(at), false) => {
                             // Only the words change; the object keeps the look it was given.
-                            let ObjectKind::Text { text: words, .. } = &mut slide.objects[at].kind;
-                            *words = text;
+                            if let ObjectKind::Text { text: words, .. } = &mut slide.objects[at].kind {
+                                *words = text;
+                            }
                         }
                         (None, false) => {
                             let at = position.min(slide.objects.len());
@@ -289,12 +433,14 @@ impl Presentation {
                     .objects
                     .iter()
                     .map(|object| {
-                        let ObjectKind::Text { style, .. } = &object.kind;
-                        Object {
-                            id: Uuid::new_v4(),
-                            kind: ObjectKind::Text { text: String::new(), style: style.clone() },
-                            ..object.clone()
-                        }
+                        // Text boxes come empty; shapes come as they are.
+                        let kind = match &object.kind {
+                            ObjectKind::Text { style, .. } => {
+                                ObjectKind::Text { text: String::new(), style: style.clone() }
+                            }
+                            shape @ ObjectKind::Shape { .. } => shape.clone(),
+                        };
+                        Object { id: Uuid::new_v4(), kind, ..object.clone() }
                     })
                     .collect();
                 // It uses the template the one before it uses.

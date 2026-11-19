@@ -872,6 +872,24 @@ fn edit_view(
             }
         }
     }
+    // In a song's editor, a letter adds an object: T a text box, and each shape its own key.
+    if !typing && !theme_mode && !ui.ctx().text_edit_focused() && state.editing.is_some() {
+        let pressed = ui.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Text(text) if !input.modifiers.command && !input.modifiers.ctrl => {
+                    text.chars().next().map(|c| c.to_ascii_uppercase())
+                }
+                _ => None,
+            })
+        });
+        if let (Some(key), Some(draft)) = (pressed, state.editing.as_mut()) {
+            if key == 'T' {
+                draft.add_text();
+            } else if let Some(at) = SHAPE_KEYS.iter().position(|have| *have == key) {
+                draft.add_shape(pc_model::Shape::ALL[at]);
+            }
+        }
+    }
     // A change asked for from the menu bar.
     if let (Some(request), Some(draft)) = (state.edit_request.take(), state.editing.as_mut()) {
         match request {
@@ -921,8 +939,9 @@ fn edit_view(
                 if let Some(copied) = state.inspector.copied_style.clone() {
                     let ids = draft.selection();
                     for object in draft.slide.objects.iter_mut().filter(|object| ids.contains(&object.id)) {
-                        let pc_model::ObjectKind::Text { style, .. } = &mut object.kind;
-                        *style = copied.clone();
+                        if let Some(style) = object.text_style_mut() {
+                            *style = copied.clone();
+                        }
                     }
                 }
             }
@@ -1043,11 +1062,13 @@ fn edit_view(
                                 }
                                 // A hidden object's row is greyed.
                                 let ink = if object.hidden { Color32::from_gray(120) } else { Color32::from_gray(230) };
+                                // T for text, a diamond for a shape.
+                                let mark = if object.as_text().is_some() { "T" } else { "◆" };
                                 ui.painter().text(
                                     row.left_center() + vec2(12.0, 0.0),
                                     Align2::LEFT_CENTER,
-                                    "T",
-                                    FontId::proportional(15.0),
+                                    mark,
+                                    FontId::proportional(if mark == "T" { 15.0 } else { 12.0 }),
                                     ink,
                                 );
                                 let name_area = Rect::from_min_max(row.min, pos2(row.max.x - 46.0, row.max.y));
@@ -1719,15 +1740,14 @@ fn edit_view(
             && let Some(id) = draft.typing
         {
             let started = std::mem::take(&mut draft.typing_started);
-            let placed = draft.slide.objects.iter().find(|o| o.id == id).map(|object| {
-                let pc_model::ObjectKind::Text { style, .. } = &object.kind;
-                let look = theme.text_style(object.role.as_ref(), style);
-                (to_screen(object_frame(&draft.slide, object, theme)), look)
+            // Only a text object can be typed in.
+            let placed = draft.slide.objects.iter().find(|o| o.id == id).and_then(|object| {
+                let look = theme.text_style(object.role.as_ref(), object.text_style()?);
+                Some((to_screen(object_frame(&draft.slide, object, theme)), look))
             });
             let object = draft.slide.objects.iter_mut().find(|o| o.id == id);
             match (placed, object) {
-                (Some((rect, look)), Some(object)) => {
-                    let pc_model::ObjectKind::Text { text, .. } = &mut object.kind;
+                (Some((rect, look)), Some(pc_model::Object { kind: pc_model::ObjectKind::Text { text, .. }, .. })) => {
                     // The box is covered while it is typed in, so only the words being typed
                     // are read; the slide shows them in its own look as soon as typing ends.
                     ui.painter().rect_filled(rect, 4.0, Color32::from_rgb(8, 9, 11));
@@ -1751,8 +1771,37 @@ fn edit_view(
             }
         }
 
-        // The one object tool that works: a text box.
-        let bar = Rect::from_center_size(pos2(slide.center().x, slide.min.y - 22.0), vec2(96.0, 28.0));
+        // The object tools: a text box, and (on a song's slide) the shapes.
+        let shapes_too = !theme_mode;
+        let offset = if shapes_too { -52.0 } else { 0.0 };
+        if shapes_too {
+            let shapes_bar =
+                Rect::from_center_size(pos2(slide.center().x + 52.0, slide.min.y - 22.0), vec2(96.0, 28.0));
+            let shapes = ui.interact(shapes_bar, ui.scope_id().with("add shape"), Sense::click());
+            ui.painter().rect_filled(
+                shapes_bar,
+                8.0,
+                if shapes.hovered() { crate::studio::HOVER } else { crate::studio::CARD },
+            );
+            ui.painter().text(
+                shapes_bar.center(),
+                Align2::CENTER_CENTER,
+                "Shapes ▾",
+                crate::studio::semibold(12.5),
+                crate::studio::TEXT,
+            );
+            let shapes = shapes.on_hover_text("Add a shape. Each has a key: O R E G L H P S D A");
+            egui::Popup::menu(&shapes).show(|ui| {
+                for (shape, key) in pc_model::Shape::ALL.into_iter().zip(SHAPE_KEYS) {
+                    if ui.add(egui::Button::new(shape.name()).shortcut_text(key.to_string())).clicked()
+                        && let Some(draft) = state.editing.as_mut()
+                    {
+                        draft.add_shape(shape);
+                    }
+                }
+            });
+        }
+        let bar = Rect::from_center_size(pos2(slide.center().x + offset, slide.min.y - 22.0), vec2(96.0, 28.0));
         let add = ui.interact(bar, ui.scope_id().with("add text"), Sense::click());
         ui.painter().rect_filled(bar, 8.0, if add.hovered() { crate::studio::HOVER } else { crate::studio::CARD });
         ui.painter().text(
@@ -1888,6 +1937,9 @@ fn capitalize(text: &str) -> String {
     }
     out
 }
+
+/// The key that adds each shape in the editor, in the order of `Shape::ALL`.
+const SHAPE_KEYS: [char; 10] = ['O', 'R', 'E', 'G', 'L', 'H', 'P', 'S', 'D', 'A'];
 
 /// Room after a song's title, for the field it turns into when renamed to fit in.
 const TITLE_ROOM: f32 = 12.0;

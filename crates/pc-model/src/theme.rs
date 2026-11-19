@@ -368,8 +368,9 @@ impl ThemeTemplate {
                 let mut object = Object::text(style.role.clone(), "Text");
                 object.name = style.label();
                 object.frame = Some(style.rect);
-                let ObjectKind::Text { style: own, .. } = &mut object.kind;
-                *own = TextStyle::all(style);
+                if let ObjectKind::Text { style: own, .. } = &mut object.kind {
+                    *own = TextStyle::all(style);
+                }
                 object
             })
             .collect();
@@ -385,7 +386,8 @@ impl ThemeTemplate {
     pub fn with_slide(&self, slide: &Slide) -> ThemeTemplate {
         let mut boxes: Vec<BoxStyle> = Vec::new();
         for object in &slide.objects {
-            let ObjectKind::Text { style, .. } = &object.kind;
+            // A theme is made of text boxes only.
+            let ObjectKind::Text { style, .. } = &object.kind else { continue };
             let role = object.role.clone().unwrap_or_else(|| role_from_name(&object.name));
             if boxes.iter().any(|have| have.role == role) {
                 continue;
@@ -709,7 +711,7 @@ pub fn fonts_used(presentation: &crate::Presentation, theme: &Theme) -> Vec<Stri
     let mut families: Vec<String> = Vec::new();
     for (_, slide) in presentation.slides() {
         for object in &slide.objects {
-            let crate::ObjectKind::Text { style, .. } = &object.kind;
+            let crate::ObjectKind::Text { style, .. } = &object.kind else { continue };
             if let Some(drawn) = theme.text_style_on(slide, object.role.as_ref(), style)
                 && !families.contains(&drawn.font_family)
             {
@@ -806,7 +808,7 @@ mod tests {
         }
         let mut slide = theme.templates[0].as_slide();
         slide.objects[1].frame = Some(SlideRect { x: 10.0, y: 20.0, w: 300.0, h: 100.0 });
-        let ObjectKind::Text { style, .. } = &mut slide.objects[1].kind;
+        let ObjectKind::Text { style, .. } = &mut slide.objects[1].kind else { panic!("a text box") };
         style.size = Some(48.0);
         slide.objects[0].name = "English".to_owned();
         // Two new boxes with one name, given their roles as the editor gives them.
@@ -933,7 +935,9 @@ mod tests {
         let theme = Theme::builtin();
         let mut song = crate::parse_song_text("S", "A\n--\nБ\n\nC\n");
         assert_eq!(fonts_used(&song, &theme), vec![theme.templates[0].boxes[0].font_family.clone()]);
-        let crate::ObjectKind::Text { style, .. } = &mut song.groups[0].slides[1].objects[0].kind;
+        let crate::ObjectKind::Text { style, .. } = &mut song.groups[0].slides[1].objects[0].kind else {
+            panic!("a text object")
+        };
         style.font_family = Some("Georgia".to_owned());
         assert_eq!(
             fonts_used(&song, &theme),

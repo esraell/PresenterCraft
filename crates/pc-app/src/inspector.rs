@@ -54,10 +54,6 @@ pub struct InspectorState {
 
 #[derive(Debug, Default)]
 pub struct Later {
-    shape_stroke: bool,
-    shape_shadow: bool,
-    feathering: bool,
-    visibility: bool,
     lines_only: bool,
     scrolling: bool,
     scroll_direction: usize,
@@ -479,7 +475,6 @@ fn nothing_selected(ui: &mut egui::Ui) {
 
 fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
     let for_theme = state.theme_edit.is_some();
-    let later = &mut state.inspector.later;
     let lock_shape = &mut state.inspector.lock_shape;
     let Some(draft) = state.editing.as_mut() else { return };
     let themed = draft.selected_object().map(|object| object_frame(&draft.slide, object, theme));
@@ -487,6 +482,8 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         return nothing_selected(ui);
     };
     let mut edited = frame;
+    // Spreading the selected objects out evenly is done once this object is let go of.
+    let mut spread: Option<bool> = None;
 
     // Line the object up with the slide's sides or middle.
     ui.horizontal(|ui| {
@@ -496,20 +493,20 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         ui.add_space(12.0);
         let down = segments(ui, "align down", each, 3, |_| false, |p, i, cell, ink| align_mark(p, cell, i + 3, ink));
         ui.add_space(12.0);
-        ui.add_enabled_ui(false, |ui| {
-            segments(
-                ui,
-                "distribute",
-                each,
-                3,
-                |_| false,
-                |p, i, cell, _| {
-                    align_mark(p, cell, [1, 4, 1][i], Color32::from_gray(95));
-                },
-            );
-        })
-        .response
-        .on_hover_text(not_built("Distribute"));
+        // Spread three or more selected objects out evenly: across, or down.
+        let picked = segments(
+            ui,
+            "distribute",
+            each,
+            2,
+            |_| false,
+            |p, i, cell, ink| {
+                align_mark(p, cell, [1, 4][i], ink);
+            },
+        );
+        if let Some(index) = picked {
+            spread = Some(index == 0);
+        }
         match across {
             Some(0) => edited.x = 0.0,
             Some(1) => edited.x = (SLIDE_WIDTH - edited.w) / 2.0,
@@ -561,25 +558,27 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
     });
     ui.horizontal_top(|ui| {
         title(ui, "Transform");
-        ui.add_enabled_ui(false, |ui| {
-            segments(
-                ui,
-                "flip",
-                84.0,
-                2,
-                |_| false,
-                |p, i, cell, _| {
-                    let c = cell.center();
-                    let ink = Color32::from_gray(120);
-                    let (a, b) =
-                        if i == 0 { (vec2(-6.0, 4.0), vec2(6.0, 4.0)) } else { (vec2(-4.0, -6.0), vec2(-4.0, 6.0)) };
-                    let tip = if i == 0 { vec2(0.0, -5.0) } else { vec2(5.0, 0.0) };
-                    p.add(egui::Shape::convex_polygon(vec![c + a, c + b, c + tip], ink, Stroke::NONE));
-                },
-            );
-        })
-        .response
-        .on_hover_text(not_built("Flip"));
+        // Mirror the object left to right, or top to bottom.
+        let flips = [object.flip_h, object.flip_v];
+        let flipped = segments(
+            ui,
+            "flip",
+            84.0,
+            2,
+            |i| flips[i],
+            |p, i, cell, ink| {
+                let c = cell.center();
+                let (a, b) =
+                    if i == 0 { (vec2(-6.0, 4.0), vec2(6.0, 4.0)) } else { (vec2(-4.0, -6.0), vec2(-4.0, 6.0)) };
+                let tip = if i == 0 { vec2(0.0, -5.0) } else { vec2(5.0, 0.0) };
+                p.add(egui::Shape::convex_polygon(vec![c + a, c + b, c + tip], ink, Stroke::NONE));
+            },
+        );
+        match flipped {
+            Some(0) => object.flip_h = !object.flip_h,
+            Some(_) => object.flip_v = !object.flip_v,
+            None => {}
+        }
         ui.add_space(16.0);
         number(ui, &mut object.rotation, 84.0, "Rotation", |d| {
             d.speed(0.5).range(-360.0..=360.0).suffix("°").max_decimals(1)
@@ -607,13 +606,47 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         }
     });
     rule(ui);
-    tick_later(ui, &mut later.shape_stroke, "Stroke");
+    // A line round the box or shape: 3 points of white to start with.
+    ui.horizontal(|ui| {
+        let mut stroked = object.stroke.is_some();
+        if tick(ui, &mut stroked, "Stroke").on_hover_text("Draw a line round the box or shape").changed() {
+            object.stroke = stroked.then_some(pc_model::StrokeLook { width: 3.0, color: Rgba::WHITE });
+        }
+        if let Some(line) = object.stroke.as_mut() {
+            number(ui, &mut line.width, 84.0, "Width", |d| d.speed(0.2).range(0.0..=100.0).max_decimals(1));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| colour(ui, &mut line.color, "Stroke colour"));
+        }
+    });
     rule(ui);
-    tick_later(ui, &mut later.shape_shadow, "Shadow");
-    rule(ui);
-    tick_later(ui, &mut later.feathering, "Feathering");
-    rule(ui);
-    tick_later(ui, &mut later.visibility, "Visibility");
+    // A soft shadow under the box or shape: 75 % black, falling down and to the right.
+    ui.horizontal_top(|ui| {
+        let mut shadowed = object.shadow.is_some();
+        if tick(ui, &mut shadowed, "Shadow").on_hover_text("Put a soft shadow under the box or shape").changed() {
+            object.shadow = shadowed.then_some(pc_model::Shadow {
+                color: Rgba::BLACK,
+                opacity: 0.75,
+                angle: 315.0,
+                offset: 5.0,
+                blur: 5.0,
+            });
+        }
+        if let Some(look) = object.shadow.as_mut() {
+            let mut percent = (look.opacity * 100.0).round();
+            number(ui, &mut percent, 78.0, "Opacity", |d| d.range(0.0..=100.0).suffix("%"));
+            look.opacity = percent / 100.0;
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| colour(ui, &mut look.color, "Shadow colour"));
+        }
+    });
+    if let Some(look) = object.shadow.as_mut() {
+        ui.horizontal_top(|ui| {
+            let each = (INNER - 2.0 * 12.0) / 3.0;
+            number(ui, &mut look.angle, each, "Angle", |d| d.range(0.0..=360.0).suffix("°"));
+            ui.add_space(6.0);
+            number(ui, &mut look.offset, each, "Offset", |d| d.speed(0.5).range(0.0..=200.0));
+            ui.add_space(6.0);
+            number(ui, &mut look.blur, each, "Blur", |d| d.speed(0.5).range(0.0..=200.0));
+        });
+    }
     rule(ui);
 
     // Not in the reference layout, but needed until objects can be managed from the slide itself.
@@ -621,6 +654,9 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
     ui.add(egui::TextEdit::singleline(&mut object.name).desired_width(f32::INFINITY).hint_text("Name"));
     let follows_theme =
         object.frame.is_none() && object.rotation == 0.0 && object.opacity == 1.0 && object.fill.is_none();
+    if let Some(across) = spread {
+        draft.distribute(theme, across);
+    }
     ui.horizontal_wrapped(|ui| {
         let small = |label: &str| egui::Button::new(egui::RichText::new(label).size(12.0));
         if ui.add_enabled(draft.can_undo(), small("Undo")).on_hover_text("Undo the last change (Cmd+Z)").clicked() {
@@ -658,7 +694,14 @@ fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         return nothing_selected(ui);
     };
     let role = object.role.clone();
-    let ObjectKind::Text { text, style } = &mut object.kind;
+    let ObjectKind::Text { text, style } = &mut object.kind else {
+        ui.label(
+            egui::RichText::new("A shape has no text. Its colour and outline are on the Shape tab.")
+                .size(12.0)
+                .color(DIM),
+        );
+        return;
+    };
     let Some(base) = theme.text_style(role.as_ref(), &TextStyle::default()) else { return };
 
     ui.horizontal(|ui| {

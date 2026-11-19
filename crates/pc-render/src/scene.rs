@@ -1,8 +1,9 @@
 use parley::{Alignment, AlignmentOptions, FontWeight, Layout, LineHeight, PositionedLayoutItem, StyleProperty};
 use pc_model::{
-    Align, BoxStyle, Object, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, Slide, SlideRect, Theme, VAlign,
+    Align, BoxStyle, Object, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, Shape, Slide, SlideRect, Theme,
+    VAlign,
 };
-use vello::kurbo::{Affine, Join, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Ellipse, Join, Rect, RoundedRect, Shape as _, Stroke};
 use vello::peniko::{Color, Fill, Mix};
 use vello::{Glyph, Scene};
 
@@ -89,29 +90,79 @@ fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: 
         let rect = object.frame.unwrap_or_else(|| template.place_for(object.role.as_ref()));
         // Turn the object about its own centre.
         let centre = (f64::from(rect.x + rect.w / 2.0), f64::from(rect.y + rect.h / 2.0));
-        let placed = to_target * Affine::rotate_about(f64::from(object.rotation).to_radians(), centre);
+        let mirror = Affine::translate(centre)
+            * Affine::scale_non_uniform(if object.flip_h { -1.0 } else { 1.0 }, if object.flip_v { -1.0 } else { 1.0 })
+            * Affine::translate((-centre.0, -centre.1));
+        let placed = to_target * Affine::rotate_about(f64::from(object.rotation).to_radians(), centre) * mirror;
         let faded = object.opacity < 1.0;
         if faded {
             let whole_slide = Rect::new(0.0, 0.0, f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
             scene.push_layer(Fill::NonZero, Mix::Normal, object.opacity.clamp(0.0, 1.0), to_target, &whole_slide);
         }
-        if let Some(fill) = object.fill {
-            let (x, y) = (f64::from(rect.x), f64::from(rect.y));
-            let filled = Rect::new(x, y, x + f64::from(rect.w), y + f64::from(rect.h));
-            scene.fill(Fill::NonZero, placed, color(fill), None, &filled);
-        }
-        match &object.kind {
-            ObjectKind::Text { text, style } => {
-                // The theme's style for the object's role, with the object's own settings over it.
-                let Some(style) = template.text_style(object.role.as_ref(), style) else { continue };
-                overflow |= draw_text_box(scene, fonts, placed, text, &style, rect);
+        // The object's outline: its shape, or the box a text object sits in.
+        let outline = match &object.kind {
+            ObjectKind::Shape { shape } => shape_path(*shape, rect),
+            ObjectKind::Text { .. } => {
+                let (x, y) = (f64::from(rect.x), f64::from(rect.y));
+                Rect::new(x, y, x + f64::from(rect.w), y + f64::from(rect.h)).to_path(0.1)
             }
+        };
+        // A soft shadow under the box or shape: several faint, widening layers, offset.
+        if let Some(look) = object.shadow.filter(|look| look.opacity > 0.0) {
+            let fall = f64::from(look.angle).to_radians();
+            let offset = (f64::from(look.offset) * fall.cos(), -f64::from(look.offset) * fall.sin());
+            let layer_alpha = 1.0 - (1.0 - look.opacity.clamp(0.0, 1.0)).powf(1.0 / 6.0);
+            let mut shade = look.color;
+            shade.a = (f32::from(shade.a) * layer_alpha).round() as u8;
+            let shadowed = placed * Affine::translate(offset);
+            let spread = f64::from(look.blur.max(0.0)) / 3.0;
+            for step in 1..=6 {
+                scene.fill(Fill::NonZero, shadowed, color(shade), None, &outline);
+                if spread > 0.0 {
+                    let edge = Stroke::new(f64::from(step) * spread).with_join(Join::Round);
+                    scene.stroke(&edge, shadowed, color(shade), None, &outline);
+                }
+            }
+        }
+        if let Some(fill) = object.fill {
+            scene.fill(Fill::NonZero, placed, color(fill), None, &outline);
+        }
+        if let Some(line) = object.stroke.filter(|line| line.width > 0.0) {
+            scene.stroke(&Stroke::new(f64::from(line.width)), placed, color(line.color), None, &outline);
+        }
+        if let ObjectKind::Text { text, style } = &object.kind {
+            // The theme's style for the object's role, with the object's own settings over it.
+            let Some(style) = template.text_style(object.role.as_ref(), style) else { continue };
+            overflow |= draw_text_box(scene, fonts, placed, text, &style, rect);
         }
         if faded {
             scene.pop_layer();
         }
     }
     overflow
+}
+
+/// A shape filling a place on the slide, as a path in slide units.
+fn shape_path(shape: Shape, rect: SlideRect) -> BezPath {
+    let (x, y, w, h) = (f64::from(rect.x), f64::from(rect.y), f64::from(rect.w), f64::from(rect.h));
+    let bounds = Rect::new(x, y, x + w, y + h);
+    match (shape, shape.corners()) {
+        (_, Some(points)) => {
+            let mut path = BezPath::new();
+            for (index, (px, py)) in points.into_iter().enumerate() {
+                let point = (x + px * w, y + py * h);
+                if index == 0 {
+                    path.move_to(point);
+                } else {
+                    path.line_to(point);
+                }
+            }
+            path.close_path();
+            path
+        }
+        (Shape::Ellipse, None) => Ellipse::from_rect(bounds).to_path(0.1),
+        (_, None) => RoundedRect::from_rect(bounds, w.min(h) * 0.12).to_path(0.1),
+    }
 }
 
 /// One picture fading into another: `from` with `to` over it, `amount` of the way in (0 is
@@ -381,7 +432,7 @@ mod tests {
         use pc_model::{Caps, TextStyle};
         let mut object = Object::text(Role::primary(), "Light rises\nover the hills");
         object.fill = Some(Rgba { r: 0, g: 0, b: 0, a: 160 });
-        let ObjectKind::Text { style, .. } = &mut object.kind;
+        let ObjectKind::Text { style, .. } = &mut object.kind else { panic!("a text object") };
         *style = TextStyle {
             valign: Some(VAlign::Bottom),
             caps: Some(Caps::AllCaps),
@@ -397,7 +448,7 @@ mod tests {
         use pc_model::TextStyle;
         let with = |text: &str, scaling: Scaling| {
             let mut object = Object::text(Role::primary(), text);
-            let ObjectKind::Text { style, .. } = &mut object.kind;
+            let ObjectKind::Text { style, .. } = &mut object.kind else { panic!("a text object") };
             *style = TextStyle { scaling: Some(scaling), ..TextStyle::default() };
             Slide::new(vec![object])
         };
@@ -484,13 +535,31 @@ mod tests {
         let fixed = |margins| {
             let look = BoxStyle { margins, scaling: Scaling::None, ..base.clone() };
             let mut object = Object::text(Role::primary(), "Light rises over the hills");
-            let ObjectKind::Text { style, .. } = &mut object.kind;
+            let ObjectKind::Text { style, .. } = &mut object.kind else { panic!("a text object") };
             *style = pc_model::TextStyle::all(&look);
             object.frame = Some(SlideRect { x: 100.0, y: 100.0, w: 1700.0, h: 300.0 });
             build_scene(&mut Fonts::new(), Some(&Slide::new(vec![object])), &theme, 1920, 1080).overflow
         };
         assert!(!fixed([0.0; 4]));
         assert!(fixed([600.0, 120.0, 600.0, 120.0]));
+    }
+
+    #[test]
+    fn every_shape_is_drawn_inside_its_place() {
+        for shape in Shape::ALL {
+            let rect = SlideRect { x: 100.0, y: 200.0, w: 400.0, h: 300.0 };
+            let bounds = shape_path(shape, rect).bounding_box();
+            assert!(bounds.width() > 300.0 && bounds.height() > 200.0, "{shape:?} is too small: {bounds:?}");
+            assert!(bounds.x0 >= 99.9 && bounds.y0 >= 199.9 && bounds.x1 <= 500.1 && bounds.y1 <= 500.1, "{shape:?}");
+        }
+        // A slide with a shape and a stroked text box builds.
+        let mut boxed = Object::text(Role::primary(), "Words");
+        boxed.stroke = Some(pc_model::StrokeLook { width: 6.0, color: Rgba::WHITE });
+        let mut star = Object::shape(Shape::Star);
+        star.shadow = Some(pc_model::Shadow::default());
+        star.flip_h = true;
+        let slide = Slide::new(vec![star, boxed]);
+        assert!(!build_scene(&mut Fonts::new(), Some(&slide), &Theme::builtin(), 1920, 1080).overflow);
     }
 
     #[test]

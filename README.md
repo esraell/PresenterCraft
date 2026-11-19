@@ -68,6 +68,9 @@ ProPresenter.
   and a safe-area edge, multi-select (Shift or Command, or drag a box around them), copy and
   paste, undo, renaming by clicking a name, font search, and typing straight on the slide.
 - Character spacing, line height and margins for a text box, under the gear beside B I U S.
+- Shapes (rectangle, rounded rectangle, ellipse, triangles, rhombus, polygon, star, arrows) from
+  the Shapes menu or a single key; fill, stroke, shadow and flip for any object; spreading
+  objects out evenly.
 - A plus tile after the last slide adds a slide laid out like the one before it.
 - **Cmd+N** makes a new song.
 

@@ -67,8 +67,9 @@ pub fn slide(words: &str) -> Slide {
     let mut object = Object::text(Role("message".to_owned()), words);
     object.frame = Some(SlideRect { x: 0.0, y: 890.0, w: 1920.0, h: 190.0 });
     object.fill = Some(Rgba { r: 0, g: 0, b: 0, a: 200 });
-    let pc_model::ObjectKind::Text { style, .. } = &mut object.kind;
-    *style = TextStyle::all(&look);
+    if let Some(style) = object.text_style_mut() {
+        *style = TextStyle::all(&look);
+    }
     Slide::new(vec![object])
 }
 

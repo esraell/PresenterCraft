@@ -63,7 +63,7 @@ mod tests {
         object.frame = Some(SlideRect { x: 100.0, y: 700.5, w: 1720.0, h: 250.0 });
         object.rotation = -3.5;
         object.opacity = 0.8;
-        let crate::ObjectKind::Text { style, .. } = &mut object.kind;
+        let crate::ObjectKind::Text { style, .. } = &mut object.kind else { panic!("a text object") };
         style.fill = Some(crate::Rgba::rgb(10, 200, 30));
         style.align = Some(crate::Align::Left);
         style.size = Some(48.0);
