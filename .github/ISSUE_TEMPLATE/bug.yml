@@ -1,0 +1,78 @@
+name: Something doesn't work
+description: A crash, a freeze, the wrong thing on a screen, or a button that doesn't do what it says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. A security problem? Please don't file it here: use the
+        Security tab's **Report a vulnerability** instead (see SECURITY.md).
+  - type: textarea
+    id: what-you-did
+    attributes:
+      label: What you did
+      description: The steps, in order, so someone else can make it happen too.
+      placeholder: |
+        1. Opened a song from the Sunday playlist
+        2. Pressed the right arrow on the last slide
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected
+      placeholder: The audience screen went black. I expected the next song's first slide.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PresenterCraft version
+      description: From PresenterCraft > About PresenterCraft. If you built it yourself, also the commit from `git log -1 --oneline`.
+      placeholder: 0.1.0 (a184a56)
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: macOS 27.0
+    validations:
+      required: true
+  - type: dropdown
+    id: chip
+    attributes:
+      label: Your Mac
+      options:
+        - Apple silicon (M1 or later)
+        - Intel
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: screens
+    attributes:
+      label: Your screens
+      description: The displays, windows and NDI outputs in use, if the problem involves them.
+      placeholder: Audience on an HDMI projector, stage screen over NDI.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Attach or paste `~/Library/Logs/PresenterCraft/PresenterCraft.log`. It can contain song
+        titles and file names, so read it before you share it.
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Of PresenterCraft only, please.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I searched the existing issues and this isn't one of them.
+          required: true
+        - label: This is not a security problem.
+          required: true
