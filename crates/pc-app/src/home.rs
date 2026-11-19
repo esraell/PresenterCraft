@@ -15,12 +15,14 @@ use crate::icons::{self, Icon};
 
 /// The one accent colour: the live slide's outline and selections.
 pub const ACCENT: Color32 = Color32::from_rgb(64, 156, 255);
-const BAR: Color32 = Color32::from_rgb(38, 38, 42);
-const SIDE: Color32 = Color32::from_rgb(30, 30, 33);
-const CANVAS: Color32 = Color32::from_rgb(20, 20, 22);
+const BAR: Color32 = Color32::from_rgb(44, 44, 47);
+const SIDE: Color32 = Color32::from_rgb(40, 40, 43);
+const CANVAS: Color32 = Color32::from_rgb(27, 27, 29);
 const ON: Color32 = Color32::from_rgb(70, 200, 110);
 const OFF: Color32 = Color32::from_rgb(210, 70, 70);
-const DIM: Color32 = Color32::from_gray(105);
+const DIM: Color32 = Color32::from_gray(120);
+/// The strip that names what the slide area is showing.
+const TITLE_STRIP: Color32 = Color32::from_rgb(120, 120, 126);
 /// Height of the media bin, shared by its list (left column) and its thumbnails (middle).
 const MEDIA_BIN: f32 = 190.0;
 
@@ -35,7 +37,7 @@ pub struct HomeState {
 
 impl Default for HomeState {
     fn default() -> HomeState {
-        HomeState { thumb_width: 200.0, filter: String::new(), output_stopped: false }
+        HomeState { thumb_width: 170.0, filter: String::new(), output_stopped: false }
     }
 }
 
@@ -151,37 +153,69 @@ fn list_row(ui: &mut egui::Ui, icon: Icon, name: &str, right: &str, selected: bo
     response
 }
 
-/// One toolbar item: an icon on a rounded chip above a small label. Items that are not built
-/// are dim.
-fn tool(ui: &mut egui::Ui, face: impl Into<Face>, label: &str, selected: bool, built: bool) -> egui::Response {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(52.0, 50.0), if built { Sense::click() } else { Sense::hover() });
-    let chip = Rect::from_center_size(rect.center_top() + vec2(0.0, 17.0), vec2(40.0, 28.0));
-    let painter = ui.painter();
-    let fill = if selected {
-        Color32::from_gray(96)
-    } else if response.hovered() {
-        Color32::from_gray(66)
-    } else {
-        Color32::from_gray(52)
-    };
-    painter.rect_filled(chip, 9.0, fill);
-    let ink = if !built {
-        Color32::from_gray(125)
-    } else if selected {
-        Color32::WHITE
-    } else {
-        Color32::from_gray(215)
-    };
-    paint_face(ui, face.into(), Rect::from_center_size(chip.center(), vec2(16.0, 16.0)), 15.0, ink);
-    ui.painter().text(
-        rect.center_bottom() - vec2(0.0, 7.0),
-        Align2::CENTER_CENTER,
-        label,
-        FontId::proportional(10.5),
-        ink,
-    );
-    if built { response } else { response.on_hover_text(not_built(label)) }
+/// One item in a toolbar group.
+struct Tool {
+    face: Face,
+    label: &'static str,
+    selected: bool,
+    built: bool,
+}
+
+impl Tool {
+    fn ghost(face: impl Into<Face>, label: &'static str) -> Tool {
+        Tool { face: face.into(), label, selected: false, built: false }
+    }
+}
+
+const TOOL_WIDTH: f32 = 46.0;
+const PILL_HEIGHT: f32 = 30.0;
+const TOOL_HEIGHT: f32 = 50.0;
+
+/// A group of toolbar items sharing one rounded pill, each with its label beneath. The
+/// selected item is lit; items that are not built are dim. Returns the index of a clicked,
+/// working item.
+fn tool_group(ui: &mut egui::Ui, tools: &[Tool]) -> Option<usize> {
+    let width = TOOL_WIDTH * tools.len() as f32;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, TOOL_HEIGHT), Sense::hover());
+    let pill = Rect::from_min_size(rect.min + vec2(0.0, 2.0), vec2(width, PILL_HEIGHT));
+    ui.painter().rect_filled(pill, 9.0, Color32::from_gray(70));
+    let mut clicked = None;
+    for (index, tool) in tools.iter().enumerate() {
+        let cell = Rect::from_min_size(rect.min + vec2(TOOL_WIDTH * index as f32, 0.0), vec2(TOOL_WIDTH, TOOL_HEIGHT));
+        let segment = Rect::from_min_size(cell.min + vec2(0.0, 2.0), vec2(TOOL_WIDTH, PILL_HEIGHT));
+        let id = ui.scope_id().with(("tool", tool.label));
+        let response = ui.interact(cell, id, if tool.built { Sense::click() } else { Sense::hover() });
+        let painter = ui.painter();
+        if tool.selected {
+            painter.rect_filled(segment.shrink(2.0), 7.0, Color32::from_gray(118));
+        } else if response.hovered() {
+            painter.rect_filled(segment.shrink(2.0), 7.0, Color32::from_gray(86));
+        }
+        let ink = if tool.selected {
+            Color32::WHITE
+        } else if tool.built {
+            Color32::from_gray(225)
+        } else {
+            Color32::from_gray(150)
+        };
+        paint_face(ui, tool.face, Rect::from_center_size(segment.center(), vec2(16.0, 16.0)), 15.0, ink);
+        let label_ink = if tool.selected || tool.built { Color32::from_gray(225) } else { Color32::from_gray(150) };
+        ui.painter().text(
+            cell.center_bottom() - vec2(0.0, 8.0),
+            Align2::CENTER_CENTER,
+            tool.label,
+            FontId::proportional(10.5),
+            label_ink,
+        );
+        if tool.built {
+            if response.clicked() {
+                clicked = Some(index);
+            }
+        } else {
+            response.on_hover_text(not_built(tool.label));
+        }
+    }
+    clicked
 }
 
 /// A toolbar item for a screen: a status light on a chip above its name. `None` is a screen
@@ -189,10 +223,10 @@ fn tool(ui: &mut egui::Ui, face: impl Into<Face>, label: &str, selected: bool, b
 fn screen_light(ui: &mut egui::Ui, label: &str, on: Option<bool>) -> egui::Response {
     let built = on.is_some();
     let (rect, response) =
-        ui.allocate_exact_size(vec2(60.0, 50.0), if built { Sense::click() } else { Sense::hover() });
-    let chip = Rect::from_center_size(rect.center_top() + vec2(0.0, 17.0), vec2(40.0, 28.0));
+        ui.allocate_exact_size(vec2(58.0, TOOL_HEIGHT), if built { Sense::click() } else { Sense::hover() });
+    let chip = Rect::from_min_size(rect.min + vec2(6.0, 2.0), vec2(TOOL_WIDTH, PILL_HEIGHT));
     let painter = ui.painter();
-    painter.rect_filled(chip, 9.0, if response.hovered() { Color32::from_gray(66) } else { Color32::from_gray(52) });
+    painter.rect_filled(chip, 9.0, if response.hovered() { Color32::from_gray(86) } else { Color32::from_gray(70) });
     let light = match on {
         Some(true) => ON,
         Some(false) => OFF,
@@ -200,7 +234,7 @@ fn screen_light(ui: &mut egui::Ui, label: &str, on: Option<bool>) -> egui::Respo
     };
     painter.circle_filled(chip.center(), 7.0, light);
     let ink = if built { Color32::from_gray(215) } else { Color32::from_gray(125) };
-    painter.text(rect.center_bottom() - vec2(0.0, 7.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), ink);
+    painter.text(rect.center_bottom() - vec2(0.0, 8.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), ink);
     if built { response } else { response.on_hover_text(not_built(label)) }
 }
 
@@ -228,21 +262,22 @@ pub fn home_ui(
 fn toolbar(ui: &mut egui::Ui, show: &Show, commands: &mut Vec<Command>) {
     egui::Panel::top("toolbar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            tool(ui, Icon::Search, "Search", false, false);
-            ui.add_space(8.0);
-            tool(ui, "Aa", "Text", false, false);
-            tool(ui, Icon::Theme, "Theme", false, false);
-            ui.add_space(8.0);
-            tool(ui, Icon::Play, "Show", true, true);
-            tool(ui, Icon::Pencil, "Edit", false, false);
-            tool(ui, Icon::Reflow, "Reflow", false, false);
-            tool(ui, Icon::Book, "Bible", false, false);
-            tool(ui, Icon::More, "More", false, false);
+            ui.spacing_mut().item_spacing.x = 10.0;
+            tool_group(ui, &[Tool::ghost(Icon::Search, "Search")]);
+            tool_group(ui, &[Tool::ghost("Aa", "Text"), Tool::ghost(Icon::Theme, "Theme")]);
+            tool_group(
+                ui,
+                &[
+                    Tool { face: Icon::Play.into(), label: "Show", selected: true, built: true },
+                    Tool::ghost(Icon::Pencil, "Edit"),
+                    Tool::ghost(Icon::Reflow, "Reflow"),
+                    Tool::ghost(Icon::Book, "Bible"),
+                    Tool::ghost(Icon::More, "More"),
+                ],
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                tool(ui, Icon::Status, "Status", false, false);
-                ui.add_space(8.0);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                tool_group(ui, &[Tool::ghost(Icon::Status, "Status")]);
                 ui.separator();
                 screen_light(ui, "Stage", None);
                 let on = show.output_enabled();
@@ -255,10 +290,9 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, commands: &mut Vec<Command>) {
                     commands.push(Command::SetOutputEnabled(!on));
                 }
                 ui.separator();
-                ui.add_space(8.0);
-                tool(ui, Icon::Live, "Live", false, false);
-                tool(ui, Icon::Look, "Look", false, false);
-                tool(ui, Icon::Picture, "Media", false, false);
+                tool_group(ui, &[Tool::ghost(Icon::Live, "Live")]);
+                tool_group(ui, &[Tool::ghost(Icon::Look, "Look")]);
+                tool_group(ui, &[Tool::ghost(Icon::Picture, "Media")]);
             });
         });
     });
@@ -562,15 +596,12 @@ fn slide_area(
     commands: &mut Vec<Command>,
 ) {
     egui::CentralPanel::default().frame(panel_frame(CANVAS, 0)).show(ui, |ui| {
-        egui::Panel::top("library title").resizable(false).frame(panel_frame(Color32::from_gray(58), 6)).show(
-            ui,
-            |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Songs").strong().size(15.0).color(Color32::WHITE));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Gear, "View settings"));
-                });
-            },
-        );
+        egui::Panel::top("library title").resizable(false).frame(panel_frame(TITLE_STRIP, 6)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Songs").strong().size(15.0).color(Color32::WHITE));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Gear, "View settings"));
+            });
+        });
         egui::Panel::bottom("slide bar").resizable(false).frame(panel_frame(BAR, 5)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 transition_controls(ui);
