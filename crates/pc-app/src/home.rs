@@ -172,7 +172,15 @@ pub struct HomeState {
     pub macro_rename: Option<(pc_model::Uuid, String)>,
     /// Actions to carry out, from a macro that was clicked. The app does them.
     pub actions_to_run: Vec<pc_model::ShowAction>,
-    /// The tab open under the Program panel: 0 Timers, 1 Messages, 2 Props, 3 Macros, 4 Stage.
+    /// The audio tracks, and true when the list has changed and is to be saved.
+    pub audio_tracks: Vec<crate::audio::Track>,
+    pub audio_changed: bool,
+    /// Something asked of the audio player, what it is playing, and its volume.
+    pub audio_request: Option<AudioRequest>,
+    pub audio_playing: crate::audio::Playing,
+    pub audio_volume: f32,
+    /// The tab open under the Program panel: 0 Timers, 1 Messages, 2 Props, 3 Macros, 4 Stage,
+    /// 5 Audio.
     pub live_tab: usize,
     /// The timers, and true when their settings have changed and are to be saved.
     pub timers: Vec<crate::timers::Timer>,
@@ -695,6 +703,11 @@ impl Default for HomeState {
             props: Vec::new(),
             props_changed: false,
             macros: Vec::new(),
+            audio_tracks: Vec::new(),
+            audio_changed: false,
+            audio_request: None,
+            audio_playing: crate::audio::Playing::default(),
+            audio_volume: 1.0,
             macros_changed: false,
             macro_rename: None,
             actions_to_run: Vec::new(),
@@ -2085,6 +2098,18 @@ pub enum SlideRequest {
     PasteAfter(Slide),
     Group(String),
     Label(Option<String>),
+}
+
+/// Something asked of the audio player from the Audio tab.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AudioRequest {
+    Add,
+    Play(pc_model::Uuid),
+    TogglePause,
+    Stop,
+    Skip(f32),
+    Volume(f32),
+    Remove(pc_model::Uuid),
 }
 
 /// A change to the media bin asked for: pictures to choose and add, or one to remove.

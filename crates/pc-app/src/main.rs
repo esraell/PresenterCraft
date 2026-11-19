@@ -1,5 +1,6 @@
 //! PresenterCraft: a home window with a slide grid, and a separate output for the audience.
 
+mod audio;
 mod bible;
 mod bible_store;
 mod displays;
@@ -182,6 +183,7 @@ fn show_key_command(key: &Key, show: &Show) -> Option<Command> {
         Key::Named(NamedKey::F2) => Some(Command::Clear(pc_engine::Layer::Slides)),
         Key::Named(NamedKey::F3) => Some(Command::Clear(pc_engine::Layer::Media)),
         Key::Named(NamedKey::F4) => Some(Command::Clear(pc_engine::Layer::Props)),
+        Key::Named(NamedKey::F5) => Some(Command::Clear(pc_engine::Layer::Audio)),
         Key::Named(NamedKey::F6) => Some(Command::Clear(pc_engine::Layer::Messages)),
         Key::Character(typed) => {
             let mut letters = typed.chars();
@@ -476,6 +478,8 @@ struct App {
     /// moment to start, and the choices are not written until it has had that moment.
     prefs_saved: Option<service::Prefs>,
     frames_since_start: u32,
+    /// Plays the Audio tab's tracks.
+    player: audio::Player,
     /// The modifier keys held down now. A letter pressed with Command or Control is a
     /// shortcut, not a jump to a group.
     held: winit::keyboard::ModifiersState,
@@ -650,6 +654,10 @@ impl App {
                 output_changed = true;
                 any = true;
             }
+            // Clear All, and Clear Audio, stop the audio.
+            if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Audio)) {
+                self.player.stop();
+            }
             // Clear All, and Clear Props, take the props off.
             if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Props))
                 && !running.home_state.props_live.is_empty()
@@ -679,6 +687,61 @@ impl App {
         }
         if any && let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
+        }
+    }
+
+    /// Carries out what the Audio tab asked of the player, and tells the tab what is playing.
+    fn handle_audio(&mut self) {
+        use home::AudioRequest;
+        let Some(running) = self.running.as_mut() else { return };
+        let state = &mut running.home_state;
+        match state.audio_request.take() {
+            Some(AudioRequest::Add) => {
+                let chosen = rfd::FileDialog::new()
+                    .set_title("Add Audio")
+                    .add_filter("Audio", &audio::AUDIO_ENDINGS)
+                    .pick_files()
+                    .unwrap_or_default();
+                for path in chosen {
+                    if !state.audio_tracks.iter().any(|track| track.path == path) {
+                        state.audio_tracks.push(audio::Track::of(path));
+                        state.audio_changed = true;
+                    }
+                }
+            }
+            Some(AudioRequest::Play(id)) => {
+                if let Some(track) = state.audio_tracks.iter().find(|track| track.id == id)
+                    && let Err(problem) = self.player.play(track)
+                {
+                    state.notice = Some(problem);
+                }
+            }
+            Some(AudioRequest::TogglePause) => self.player.toggle_pause(),
+            Some(AudioRequest::Stop) => self.player.stop(),
+            Some(AudioRequest::Skip(seconds)) => self.player.skip(seconds),
+            Some(AudioRequest::Volume(volume)) => self.player.set_volume(volume),
+            Some(AudioRequest::Remove(id)) => {
+                if state.audio_playing.track == Some(id) {
+                    self.player.stop();
+                }
+                state.audio_tracks.retain(|track| track.id != id);
+                state.audio_changed = true;
+            }
+            None => {}
+        }
+        if std::mem::take(&mut state.audio_changed)
+            && let Err(problem) = audio::save(&state.audio_tracks)
+        {
+            state.notice = Some(problem);
+        }
+        let playing = self.player.playing();
+        if playing != state.audio_playing {
+            state.audio_playing = playing;
+        }
+        // While a track plays, the tab shows how far in it is.
+        if playing.track.is_some() && !playing.paused {
+            let soon = Instant::now() + Duration::from_millis(250);
+            running.next_repaint = Some(running.next_repaint.map_or(soon, |at| at.min(soon)));
         }
     }
 
@@ -1675,6 +1738,7 @@ impl App {
                     "props" => 2,
                     "macros" => 3,
                     "stage" => 4,
+                    "audio" => 5,
                     _ => 0,
                 };
                 if let Some(first) = state.messages.first() {
@@ -2189,6 +2253,8 @@ impl App {
             A::PropsTab => state.live_tab = 2,
             A::MacrosTab => state.live_tab = 3,
             A::StageTab => state.live_tab = 4,
+            A::AudioTab => state.live_tab = 5,
+            A::ClearAudio => commands.push(Command::Clear(pc_engine::Layer::Audio)),
             A::ClearProps => commands.push(Command::Clear(pc_engine::Layer::Props)),
             A::ClearMessages => commands.push(Command::Clear(pc_engine::Layer::Messages)),
             A::GridView => state.slide_view = home::SlideView::Grid,
@@ -2263,6 +2329,7 @@ impl App {
                 A::PropsTab => state.live_tab == 2,
                 A::MacrosTab => state.live_tab == 3,
                 A::StageTab => state.live_tab == 4,
+                A::AudioTab => state.live_tab == 5,
                 A::IdentifyScreens => state.identify,
                 _ => action == view || action == slide_view,
             });
@@ -2311,6 +2378,7 @@ impl ApplicationHandler<String> for App {
                 running.home_state.messages = messages::load();
                 running.home_state.props = props::load();
                 running.home_state.macros = macros::load();
+                running.home_state.audio_tracks = audio::load();
                 // Macros set to run when PresenterCraft starts.
                 let startup: Vec<pc_model::ShowAction> = running
                     .home_state
@@ -2514,6 +2582,7 @@ impl ApplicationHandler<String> for App {
                     self.apply_edit(at, slide);
                 }
                 self.run_actions();
+                self.handle_audio();
                 self.handle_slide_request();
                 self.handle_song_theme();
                 self.handle_copyright();
@@ -2745,6 +2814,7 @@ fn main() -> ExitCode {
         bible_page_saved: String::new(),
         prefs_saved: None,
         frames_since_start: 0,
+        player: audio::Player::default(),
         held: winit::keyboard::ModifiersState::empty(),
         capture_selects_box: false,
         focused: None,

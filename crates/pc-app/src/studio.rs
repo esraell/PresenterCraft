@@ -241,7 +241,13 @@ pub fn segmented(
             ui.painter().rect_filled(cell, RADIUS, PANEL);
         }
         let ink = if on { TEXT } else { TEXT_DIM };
-        let font = if on { semibold(13.5) } else { FontId::proportional(13.5) };
+        // Many choices share the width, so their words are smaller.
+        let size = match labels.len() {
+            0..=4 => 13.5,
+            5 => 12.5,
+            _ => 11.5,
+        };
+        let font = if on { semibold(size) } else { FontId::proportional(size) };
         ui.painter().text(cell.center(), Align2::CENTER_CENTER, *label, font, ink);
         if response.clicked() {
             clicked = Some(index);

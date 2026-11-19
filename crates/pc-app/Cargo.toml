@@ -35,6 +35,7 @@ image.workspace = true
 chrono.workspace = true
 trash.workspace = true
 rfd.workspace = true
+rodio.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda.workspace = true

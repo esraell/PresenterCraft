@@ -17,8 +17,8 @@ pub fn live_tabs(ui: &mut egui::Ui, show: &pc_engine::Show, state: &mut HomeStat
     let picked = segmented(
         ui,
         "live tabs",
-        vec2((width - 8.0) / 5.0, 26.0),
-        &["Timers", "Messages", "Props", "Macros", "Stage"],
+        vec2((width - 8.0) / 6.0, 26.0),
+        &["Timers", "Messages", "Props", "Macros", "Stage", "Audio"],
         Some(state.live_tab),
     );
     if let Some(tab) = picked {
@@ -32,7 +32,8 @@ pub fn live_tabs(ui: &mut egui::Ui, show: &pc_engine::Show, state: &mut HomeStat
             1 => messages_tab(ui, state),
             2 => props_tab(ui, state),
             3 => macros_tab(ui, show, state),
-            _ => stage_tab(ui, state),
+            4 => stage_tab(ui, state),
+            _ => audio_tab(ui, state),
         }
     });
 }
@@ -788,6 +789,100 @@ fn macros_tab(ui: &mut egui::Ui, show: &pc_engine::Show, state: &mut HomeState) 
             }
         }
         state.macros_changed = true;
+    }
+}
+
+fn audio_tab(ui: &mut egui::Ui, state: &mut HomeState) {
+    use crate::audio::clock;
+    use crate::home::AudioRequest;
+    if heading_with_add(ui, "AUDIO", "Add audio files") {
+        state.audio_request = Some(AudioRequest::Add);
+    }
+    let playing = state.audio_playing;
+    // What is playing: its name, how far in, and the controls.
+    if let Some(id) = playing.track {
+        let name = state.audio_tracks.iter().find(|track| track.id == id).map_or("", |track| track.name.as_str());
+        egui::Frame::new().fill(CARD).corner_radius(8).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(name).size(13.0).color(TEXT));
+            let fraction = playing.length.map_or(0.0, |length| {
+                (playing.position.as_secs_f32() / length.as_secs_f32().max(0.001)).clamp(0.0, 1.0)
+            });
+            ui.add(egui::ProgressBar::new(fraction).desired_height(6.0));
+            let total = playing.length.map_or_else(|| "–".to_owned(), clock);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} / {total}", clock(playing.position)))
+                        .size(11.5)
+                        .color(TEXT_DIM)
+                        .monospace(),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("■").on_hover_text("Stop").clicked() {
+                        state.audio_request = Some(AudioRequest::Stop);
+                    }
+                    if ui.button("15 ⟳").on_hover_text("Skip Forward 15 Seconds").clicked() {
+                        state.audio_request = Some(AudioRequest::Skip(15.0));
+                    }
+                    let (label, hint) = if playing.paused { ("▶", "Play") } else { ("❚❚", "Pause") };
+                    if ui.button(label).on_hover_text(hint).clicked() {
+                        state.audio_request = Some(AudioRequest::TogglePause);
+                    }
+                    if ui.button("⟲ 15").on_hover_text("Skip Backward 15 Seconds").clicked() {
+                        state.audio_request = Some(AudioRequest::Skip(-15.0));
+                    }
+                });
+            });
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Volume").size(12.0).color(TEXT_DIM));
+        let mut volume = state.audio_volume;
+        if ui.add(egui::Slider::new(&mut volume, 0.0..=1.5).show_value(false)).changed() {
+            state.audio_volume = volume;
+            state.audio_request = Some(AudioRequest::Volume(volume));
+        }
+    });
+    if state.audio_tracks.is_empty() {
+        ui.label(
+            egui::RichText::new("No audio. Press + to add music to play, such as walk-in music.")
+                .size(12.0)
+                .color(TEXT_FAINT),
+        );
+        return;
+    }
+    for track in &state.audio_tracks {
+        let on = playing.track == Some(track.id);
+        let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+        if on {
+            ui.painter().rect_filled(row, 6.0, ACCENT.gamma_multiply(0.35));
+        } else if response.hovered() {
+            ui.painter().rect_filled(row, 6.0, crate::studio::HOVER);
+        }
+        ui.painter().text(
+            row.left_center() + vec2(10.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            format!("♫  {}", track.name),
+            FontId::proportional(13.0),
+            TEXT,
+        );
+        if response.clicked() {
+            state.audio_request = Some(AudioRequest::Play(track.id));
+        }
+        response.on_hover_text("Click to play from the start").context_menu(|ui| {
+            if ui.button("Remove").clicked() {
+                state.audio_request = Some(AudioRequest::Remove(track.id));
+                ui.close();
+            }
+        });
+    }
+    ui.add_space(6.0);
+    if ui
+        .add_enabled(playing.track.is_some(), egui::Button::new("Clear Audio"))
+        .on_hover_text("Stop the audio (F5)")
+        .clicked()
+    {
+        state.audio_request = Some(AudioRequest::Stop);
     }
 }
 
