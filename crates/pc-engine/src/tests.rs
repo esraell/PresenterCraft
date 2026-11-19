@@ -170,3 +170,92 @@ fn a_song_without_slides_is_skipped() {
         assert!(!s.apply(c).slides);
     }
 }
+
+fn picture(name: &str) -> pc_model::MediaItem {
+    pc_model::MediaItem { id: pc_model::Uuid::new_v4(), name: name.to_owned(), path: name.into() }
+}
+
+#[test]
+fn media_is_added_in_order_and_nothing_is_live() {
+    let mut s = show();
+    assert_eq!(s.add_media(picture("a.png")), 0);
+    assert_eq!(s.add_media(picture("b.png")), 1);
+    assert_eq!(s.media().len(), 2);
+    assert_eq!(s.live_media(), None);
+}
+
+#[test]
+fn showing_media_reports_a_media_change_and_leaves_the_slide() {
+    let mut s = show();
+    s.add_media(picture("a.png"));
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 1 }));
+    let c = s.apply(Command::ShowMedia(0));
+    assert!(c.media && !c.slides);
+    assert_eq!(s.live_media(), Some(0));
+    assert_eq!(s.live(), at(0, 1));
+    assert!(!s.apply(Command::ShowMedia(0)).media, "showing what is already showing changes nothing");
+    assert!(!s.apply(Command::ShowMedia(7)).media, "there is no media 7");
+}
+
+#[test]
+fn layers_clear_separately_and_clear_all_clears_both() {
+    let mut s = show();
+    s.add_media(picture("a.png"));
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 0 }));
+    s.apply(Command::ShowMedia(0));
+
+    let c = s.apply(Command::Clear(Layer::Media));
+    assert!(c.media && !c.slides);
+    assert_eq!(s.live_media(), None);
+    assert_eq!(s.live(), at(0, 0));
+
+    s.apply(Command::ShowMedia(0));
+    let c = s.apply(Command::Clear(Layer::Slides));
+    assert!(c.slides && !c.media);
+    assert_eq!(s.live_media(), Some(0));
+
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 0 }));
+    let c = s.apply(Command::ClearAll);
+    assert!(c.slides && c.media);
+    assert_eq!((s.live(), s.live_media()), (None, None));
+    assert_eq!(s.apply(Command::ClearAll), Changes::default());
+}
+
+#[test]
+fn anything_live_says_whether_the_screen_is_empty() {
+    let mut s = show();
+    assert!(!s.anything_live());
+    s.add_media(picture("a.png"));
+    s.apply(Command::ShowMedia(0));
+    assert!(s.anything_live());
+    s.apply(Command::ClearAll);
+    s.apply(Command::Next);
+    assert!(s.anything_live());
+}
+
+#[test]
+fn replacing_a_presentation_keeps_what_is_live_when_it_still_exists() {
+    let mut s = show();
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 2 }));
+    // Same number of slides: the live slide stays, now with the new words.
+    let c = s.replace_presentation(0, Arc::new(parse_song_text("One", "A\n\nB\n\nEdited\n")));
+    assert!(c.slides, "the live slide's words changed");
+    assert_eq!(s.live(), at(0, 2));
+    assert_eq!(s.live_slide().unwrap().1.boxes[0].text, "Edited");
+    // Fewer slides: the live slide is gone, so the layer is cleared.
+    let c = s.replace_presentation(0, Arc::new(parse_song_text("One", "A\n")));
+    assert!(c.slides);
+    assert_eq!(s.live(), None);
+    assert_eq!(s.cursor(), None);
+    // Out of range: nothing happens.
+    assert_eq!(s.replace_presentation(9, Arc::new(parse_song_text("X", "A\n"))), Changes::default());
+}
+
+#[test]
+fn replacing_a_presentation_that_is_not_live_changes_no_layer() {
+    let mut s = show();
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 0 }));
+    let c = s.replace_presentation(1, Arc::new(parse_song_text("Two", "New\n")));
+    assert!(!c.slides);
+    assert_eq!(s.presentations()[1].slide(0).unwrap().1.boxes[0].text, "New");
+}

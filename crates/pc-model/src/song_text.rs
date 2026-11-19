@@ -66,6 +66,41 @@ pub fn group_color(name: &str) -> Rgba {
     PALETTE[(hash % PALETTE.len() as u64) as usize]
 }
 
+/// Writes a song in the plain-text format that [`parse_song_text`] reads.
+pub fn to_song_text(presentation: &Presentation) -> String {
+    let mut out = String::new();
+    for group in &presentation.groups {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        if !group.name.is_empty() {
+            out.push_str(&format!("[{}]\n", group.name));
+        }
+        for (index, slide) in group.slides.iter().enumerate() {
+            if index > 0 {
+                out.push('\n');
+            }
+            let translation = slide.text_for(&Role::translation());
+            if let Some(primary) = slide.text_for(&Role::primary()) {
+                out.push_str(primary);
+                out.push('\n');
+            }
+            if let Some(translation) = translation {
+                out.push_str("--\n");
+                out.push_str(translation);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// Tidies text typed into a box so it survives being saved: line endings are normalised,
+/// trailing spaces go, and blank lines (which would start a new slide) are removed.
+pub fn clean_box_text(text: &str) -> String {
+    text.lines().map(str::trim_end).filter(|line| !line.trim().is_empty()).collect::<Vec<_>>().join("\n")
+}
+
 #[derive(Default)]
 struct SlideDraft {
     primary: Vec<String>,
@@ -176,6 +211,46 @@ mod tests {
     fn a_second_separator_is_text() {
         let p = parse_song_text("T", "A\n--\nB\n--\nC\n");
         assert_eq!(p.slide(0).unwrap().1.text_for(&Role::translation()), Some("B\n--\nC"));
+    }
+
+    #[test]
+    fn writing_then_reading_gives_the_same_song() {
+        let p = parse_song_text(
+            "T",
+            "Loose\n--\nБез группы\n\n[Verse 1]\nA\nB\n--\nА\nБ\n\nOnly primary\n\n[Chorus]\n--\nТолько перевод\n",
+        );
+        let again = parse_song_text("T", &to_song_text(&p));
+        let shape = |p: &Presentation| {
+            p.groups
+                .iter()
+                .map(|g| (g.name.clone(), g.slides.iter().map(|s| s.boxes.clone()).collect::<Vec<_>>()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(&p), shape(&again));
+        assert_eq!(to_song_text(&p), to_song_text(&again));
+    }
+
+    #[test]
+    fn cleaning_box_text_removes_what_would_break_the_file() {
+        assert_eq!(clean_box_text("  one  \r\n\n\n two\n   \n"), "  one\n two");
+        assert_eq!(clean_box_text(" \n\n"), "");
+    }
+
+    #[test]
+    fn replacing_a_slides_text_keeps_ids_and_everything_else() {
+        let p = parse_song_text("T", "[V]\nA\n--\nБ\n\nC\n\n[Ch]\nD\n");
+        let edited = p.with_slide_text(1, "New words\n\nsecond line", "Перевод").unwrap();
+        assert_eq!(edited.id, p.id);
+        assert_eq!(edited.slide(1).unwrap().1.id, p.slide(1).unwrap().1.id);
+        assert_eq!(edited.slide(1).unwrap().1.text_for(&Role::primary()), Some("New words\nsecond line"));
+        assert_eq!(edited.slide(1).unwrap().1.text_for(&Role::translation()), Some("Перевод"));
+        assert_eq!(edited.slide(0).unwrap().1, p.slide(0).unwrap().1);
+        assert_eq!(edited.slide(2).unwrap().1, p.slide(2).unwrap().1);
+        // Emptying the translation removes that box; emptying both is refused.
+        let one_box = p.with_slide_text(0, "A", "  ").unwrap();
+        assert_eq!(one_box.slide(0).unwrap().1.boxes.len(), 1);
+        assert!(p.with_slide_text(0, "", "\n").is_none());
+        assert!(p.with_slide_text(9, "A", "").is_none());
     }
 
     #[test]

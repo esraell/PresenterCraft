@@ -2,15 +2,31 @@
 
 use std::path::{Path, PathBuf};
 
-use pc_model::{Presentation, parse_song_text};
+use pc_model::{Presentation, parse_song_text, to_song_text};
 
 /// The song shown when the program is started without any files.
 pub const SAMPLE_SONG: &str = include_str!("../../../samples/sample-song.txt");
 
+/// A song and the file it came from, so edits can be saved back.
+pub struct Loaded {
+    pub song: Presentation,
+    pub path: PathBuf,
+}
+
+/// Saves a song over its file. The new text is written beside the file first and then moved
+/// into place, so a crash cannot leave half a song.
+pub fn save_song(path: &Path, song: &Presentation) -> Result<(), String> {
+    let name = path.file_name().map_or_else(|| "song".into(), |n| n.to_string_lossy().into_owned());
+    let temporary = path.with_file_name(format!(".{name}.saving"));
+    std::fs::write(&temporary, to_song_text(song))
+        .and_then(|()| std::fs::rename(&temporary, path))
+        .map_err(|e| format!("{}: could not be saved ({e}).", path.display()))
+}
+
 /// Loads every path given: a file is one song, a folder is every `.txt` file directly inside
 /// it in name order. Returns the songs in order and one plain message for each path that
 /// could not be used.
-pub fn load_songs(paths: &[PathBuf]) -> (Vec<Presentation>, Vec<String>) {
+pub fn load_songs(paths: &[PathBuf]) -> (Vec<Loaded>, Vec<String>) {
     let mut songs = Vec::new();
     let mut problems = Vec::new();
     for path in paths {
@@ -40,7 +56,7 @@ fn text_files_in(folder: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-fn load_one(path: &Path, songs: &mut Vec<Presentation>, problems: &mut Vec<String>) {
+fn load_one(path: &Path, songs: &mut Vec<Loaded>, problems: &mut Vec<String>) {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) => return problems.push(format!("{}: {e}", path.display())),
@@ -54,7 +70,7 @@ fn load_one(path: &Path, songs: &mut Vec<Presentation>, problems: &mut Vec<Strin
     if song.slide_count() == 0 {
         return problems.push(format!("{}: no slides found", path.display()));
     }
-    songs.push(song);
+    songs.push(Loaded { song, path: path.to_owned() });
 }
 
 #[cfg(test)]
@@ -93,8 +109,8 @@ mod tests {
         let path = dir.write("Morning Song.txt", "[V]\nA\n--\nБ\n".as_bytes());
         let (songs, problems) = load_songs(&[path]);
         assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(songs[0].title, "Morning Song");
-        assert_eq!(songs[0].slide_count(), 1);
+        assert_eq!(songs[0].song.title, "Morning Song");
+        assert_eq!(songs[0].song.slide_count(), 1);
     }
 
     #[test]
@@ -105,7 +121,7 @@ mod tests {
         dir.write("notes.md", b"not a song\n");
         let (songs, problems) = load_songs(std::slice::from_ref(&dir.0));
         assert!(problems.is_empty(), "{problems:?}");
-        assert_eq!(songs.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert_eq!(songs.iter().map(|s| s.song.title.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
     }
 
     #[test]
@@ -149,7 +165,28 @@ mod tests {
         let dir = TempDir::new("bom");
         let path = dir.write("bom.txt", "\u{feff}[Verse]\nA\n".as_bytes());
         let (songs, _) = load_songs(&[path]);
-        assert_eq!(songs[0].groups[0].name, "Verse");
+        assert_eq!(songs[0].song.groups[0].name, "Verse");
+    }
+
+    #[test]
+    fn a_saved_song_reads_back_the_same_and_leaves_no_temporary_file() {
+        let dir = TempDir::new("save");
+        let path = dir.write("song.txt", "[Verse]\nOld\n".as_bytes());
+        let (mut songs, _) = load_songs(std::slice::from_ref(&path));
+        let edited = songs.remove(0).song.with_slide_text(0, "New words", "Новые слова").unwrap();
+        save_song(&path, &edited).unwrap();
+        let (again, problems) = load_songs(std::slice::from_ref(&path));
+        assert!(problems.is_empty());
+        assert_eq!(again[0].song.slide(0).unwrap().1.boxes, edited.slide(0).unwrap().1.boxes);
+        let left: Vec<_> = std::fs::read_dir(&dir.0).unwrap().filter_map(Result::ok).map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "only the song should remain: {left:?}");
+    }
+
+    #[test]
+    fn saving_into_a_missing_folder_is_reported() {
+        let dir = TempDir::new("nosave");
+        let song = parse_song_text("x", "A\n");
+        assert!(save_song(&dir.0.join("gone").join("song.txt"), &song).unwrap_err().contains("could not be saved"));
     }
 
     #[test]

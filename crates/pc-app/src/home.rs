@@ -9,10 +9,12 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Rect, Sense, Stroke, StrokeKind, TextureId, pos2, vec2,
 };
 use pc_engine::{Command, Layer, Show, SlideRef};
-use pc_model::{Rgba, Slide};
+use pc_model::{Rgba, Role, Slide};
 
 use crate::icons::{self, Icon};
 
+/// The outline of the media item that is on screen.
+const MEDIA_LIVE: Color32 = Color32::from_rgb(240, 138, 36);
 /// The one accent colour: the live slide's outline and selections.
 pub const ACCENT: Color32 = Color32::from_rgb(64, 156, 255);
 /// Bars around the slide area and the media bin.
@@ -54,11 +56,64 @@ pub struct HomeState {
     pub filter: String,
     /// Set by the app when the output has stopped drawing, so the operator is told.
     pub output_stopped: bool,
+    /// Displayed media thumbnail width in points.
+    pub media_width: f32,
+    /// True while a file is being dragged over the window.
+    pub drop_hover: bool,
+    /// A short message for the operator, shown in the media bin (a file that could not be
+    /// added, a song that could not be saved).
+    pub notice: Option<String>,
+    /// The slide being edited, while the editor is open.
+    pub editing: Option<EditDraft>,
+    /// An edit the operator has just saved. The app takes it and applies it.
+    pub finished_edit: Option<EditDraft>,
+}
+
+/// The words of one slide as they are being edited.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditDraft {
+    pub at: SlideRef,
+    pub primary: String,
+    pub translation: String,
+}
+
+impl EditDraft {
+    /// Starts an edit of a slide with its current words.
+    pub fn of(show: &Show, at: SlideRef) -> Option<EditDraft> {
+        let (_, slide) = show.presentations().get(at.presentation)?.slide(at.slide)?;
+        Some(EditDraft {
+            at,
+            primary: slide.text_for(&Role::primary()).unwrap_or_default().to_owned(),
+            translation: slide.text_for(&Role::translation()).unwrap_or_default().to_owned(),
+        })
+    }
+
+    /// A slide needs words in at least one box.
+    pub fn can_save(&self) -> bool {
+        !self.primary.trim().is_empty() || !self.translation.trim().is_empty()
+    }
+}
+
+/// Which thumbnail the window is asking for.
+#[derive(Clone, Copy)]
+pub enum ThumbOf<'a> {
+    Slide(&'a Slide),
+    /// A media item, by its index in the show.
+    Media(usize),
 }
 
 impl Default for HomeState {
     fn default() -> HomeState {
-        HomeState { thumb_width: 170.0, filter: String::new(), output_stopped: false }
+        HomeState {
+            thumb_width: 170.0,
+            filter: String::new(),
+            output_stopped: false,
+            media_width: 150.0,
+            drop_hover: false,
+            notice: None,
+            editing: None,
+            finished_edit: None,
+        }
     }
 }
 
@@ -261,43 +316,53 @@ fn screen_light(ui: &mut egui::Ui, label: &str, on: Option<bool>) -> egui::Respo
 
 /// Draws the home window for one frame and returns the commands the operator issued.
 ///
-/// `thumb` returns a slide's thumbnail and whether its text overflows, or `None` while the
-/// thumbnail is still being made. It is only called for slides that are on screen.
+/// `thumb` returns the thumbnail of a slide or a media item and whether its text overflows, or
+/// `None` while the thumbnail is still being made. It is only called for what is on screen.
 pub fn home_ui(
     ui: &mut egui::Ui,
     show: &Show,
     state: &mut HomeState,
-    thumb: &mut dyn FnMut(&Slide) -> Option<(TextureId, bool)>,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
     preview: Option<TextureId>,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
     // Text boxes are dark wells in the lighter side columns.
     ui.visuals_mut().extreme_bg_color = FIELD;
-    toolbar(ui, show, &mut commands);
+    toolbar(ui, show, state, &mut commands);
     library(ui, show, state, &mut commands);
     live_panel(ui, show, state.output_stopped, preview, &mut commands);
-    media_bin(ui);
+    media_bin(ui, show, state, thumb, &mut commands);
     slide_area(ui, show, state, thumb, &mut commands);
+    editor(ui, show, state);
     commands
 }
 
 /// The strip along the top: tools and views on the left, media and screens on the right.
-fn toolbar(ui: &mut egui::Ui, show: &Show, commands: &mut Vec<Command>) {
+fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     egui::Panel::top("toolbar").resizable(false).frame(panel_frame(TOOLBAR, 6)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             tool_group(ui, &[Tool::ghost(Icon::Search, "Search")]);
             tool_group(ui, &[Tool::ghost("Aa", "Text"), Tool::ghost(Icon::Theme, "Theme")]);
-            tool_group(
+            let views = tool_group(
                 ui,
                 &[
-                    Tool { face: Icon::Play.into(), label: "Show", selected: true, built: true },
-                    Tool::ghost(Icon::Pencil, "Edit"),
+                    Tool { face: Icon::Play.into(), label: "Show", selected: state.editing.is_none(), built: true },
+                    Tool { face: Icon::Pencil.into(), label: "Edit", selected: state.editing.is_some(), built: true },
                     Tool::ghost(Icon::Reflow, "Reflow"),
                     Tool::ghost(Icon::Book, "Bible"),
                     Tool::ghost(Icon::More, "More"),
                 ],
             );
+            match views {
+                Some(0) => state.editing = None,
+                // Edit opens the slide that was last on screen, or the song's first slide.
+                Some(1) if state.editing.is_none() => {
+                    let at = show.cursor().unwrap_or(SlideRef { presentation: show.selected(), slide: 0 });
+                    state.editing = EditDraft::of(show, at);
+                }
+                _ => {}
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 tool_group(ui, &[Tool::ghost(Icon::Status, "Status")]);
@@ -333,7 +398,8 @@ fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
                 section_label(ui, "MEDIA");
                 ui.add_space(2.0);
                 heading_with(ui, "Playlists", &[(Icon::Plus, "Add a media playlist")]);
-                ui.label(egui::RichText::new("No media playlists yet").size(11.5).color(DIM));
+                let count = show.media().len();
+                list_row(ui, Icon::Picture, "All media", &count.to_string(), true);
             },
         );
         egui::Panel::bottom("library filter").resizable(false).frame(panel_frame(SIDE, 8)).show(ui, |ui| {
@@ -421,6 +487,8 @@ fn live_panel(
     egui::Panel::right("live").resizable(false).exact_size(300.0).frame(panel_frame(SIDE, 0)).show(ui, |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let live = show.live().is_some();
+        let media_live = show.live_media().is_some();
+        let any_live = show.anything_live();
         let full_width = ui.available_width();
 
         // The preview block: preview, then the clear strip, then seven layer buttons.
@@ -454,16 +522,16 @@ fn live_panel(
         }
 
         // The strip is red while anything is on screen; its round button clears everything.
-        ui.painter().rect_filled(strip, 0.0, if live { LIVE_RED } else { WELL });
+        ui.painter().rect_filled(strip, 0.0, if any_live { LIVE_RED } else { WELL });
         let clear_all = ui.interact(strip, ui.scope_id().with("clear all"), Sense::click());
         let knob = strip.center();
-        let knob_fill = if clear_all.hovered() || live { Color32::WHITE } else { Color32::from_gray(150) };
+        let knob_fill = if clear_all.hovered() || any_live { Color32::WHITE } else { Color32::from_gray(150) };
         ui.painter().circle_filled(knob, 9.0, knob_fill);
         icons::paint(
             ui.painter(),
             Icon::Close,
             Rect::from_center_size(knob, vec2(11.0, 11.0)),
-            if live { LIVE_RED } else { WELL },
+            if any_live { LIVE_RED } else { WELL },
         );
         if clear_all.on_hover_text("Clear everything from the screen (F1)").clicked() {
             commands.push(Command::ClearAll);
@@ -475,7 +543,7 @@ fn live_panel(
             (Icon::Layers, "Clear props", false, false),
             (Icon::Megaphone, "Clear announcements", false, false),
             (Icon::Slide, "Clear the slide: take the words off the screen (C)", live, true),
-            (Icon::Picture, "Clear media", false, false),
+            (Icon::Picture, "Clear the media: take the picture off the screen", media_live, true),
             (Icon::Camera, "Clear video input", false, false),
         ];
         for (index, (icon, hint, lit, built)) in layers.into_iter().enumerate() {
@@ -488,8 +556,12 @@ fn live_panel(
                 6 => CornerRadius { se: CARD, nw: 0, sw: 0, ne: 0 },
                 _ => CornerRadius::ZERO,
             };
-            if layer_button(ui, rect, corners, icon, lit, built, hint) && icon == Icon::Slide {
-                commands.push(Command::Clear(Layer::Slides));
+            if layer_button(ui, rect, corners, icon, lit, built, hint) {
+                match icon {
+                    Icon::Slide => commands.push(Command::Clear(Layer::Slides)),
+                    Icon::Picture => commands.push(Command::Clear(Layer::Media)),
+                    _ => {}
+                }
             }
         }
 
@@ -715,8 +787,15 @@ fn transition_controls(ui: &mut egui::Ui) {
     ui.label(egui::RichText::new("0.4s").size(11.5).color(DIM)).on_hover_text(not_built("Transition time"));
 }
 
-/// The media bin's thumbnails, along the bottom of the middle column.
-fn media_bin(ui: &mut egui::Ui) {
+/// The media bin, along the bottom of the middle column: pictures dropped onto the window,
+/// as thumbnails. Clicking one puts it on screen behind the words.
+fn media_bin(
+    ui: &mut egui::Ui,
+    show: &Show,
+    state: &mut HomeState,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
+    commands: &mut Vec<Command>,
+) {
     egui::Panel::bottom("media bin").resizable(false).exact_size(MEDIA_BIN).frame(panel_frame(CANVAS, 0)).show(
         ui,
         |ui| {
@@ -727,7 +806,13 @@ fn media_bin(ui: &mut egui::Ui) {
                     ghost(ui, Icon::ChevronLeft, "Back");
                     ghost(ui, Icon::ChevronRight, "Forward");
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Playlists").size(12.0).color(DIM));
+                    ui.label(egui::RichText::new("All media").size(12.0).color(Color32::from_gray(200)));
+                    if let Some(notice) = &state.notice {
+                        ui.add_space(12.0);
+                        ui.label(
+                            egui::RichText::new(notice.as_str()).size(12.0).color(Color32::from_rgb(255, 150, 120)),
+                        );
+                    }
                 });
             });
             egui::Panel::bottom("media bar").resizable(false).frame(panel_frame(BAR, 5)).show(ui, |ui| {
@@ -735,8 +820,8 @@ fn media_bin(ui: &mut egui::Ui) {
                     transition_controls(ui);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
-                        let mut size = 0.5_f32;
-                        ui.add_enabled(false, egui::Slider::new(&mut size, 0.0..=1.0).show_value(false));
+                        ui.add(egui::Slider::new(&mut state.media_width, 90.0..=260.0).show_value(false))
+                            .on_hover_text("Thumbnail size");
                         ghost(ui, Icon::Rows, "List view");
                         ghost(ui, Icon::Grid, "Grid view");
                         ui.add_space(8.0);
@@ -748,11 +833,124 @@ fn media_bin(ui: &mut egui::Ui) {
                     });
                 });
             });
-            ui.centered_and_justified(|ui| {
-                ui.label(egui::RichText::new("Backgrounds and videos will appear here (not built yet)").color(DIM));
-            });
+
+            let area = ui.available_rect_before_wrap();
+            if show.media().is_empty() {
+                ui.centered_and_justified(|ui| {
+                    ui.label(egui::RichText::new("Drop pictures here to add them").color(DIM));
+                });
+            } else {
+                let width = state.media_width;
+                let image_size = vec2(width, width * 9.0 / 16.0);
+                let cell = vec2(width, image_size.y + 18.0);
+                egui::ScrollArea::vertical().id_salt("media grid").auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add_space(10.0);
+                    Frame::new().inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(12.0, 10.0);
+                            for (index, item) in show.media().iter().enumerate() {
+                                let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
+                                if response.clicked() {
+                                    commands.push(Command::ShowMedia(index));
+                                }
+                                if !ui.is_rect_visible(rect) {
+                                    continue;
+                                }
+                                let image = Rect::from_min_size(rect.min, image_size);
+                                ui.painter().rect_filled(image, 3.0, Color32::BLACK);
+                                match thumb(ThumbOf::Media(index)) {
+                                    Some((texture, _)) => {
+                                        egui::Image::from_texture((texture, image_size))
+                                            .corner_radius(3.0)
+                                            .paint_at(ui, image);
+                                    }
+                                    None => ui.ctx().request_repaint(),
+                                }
+                                if show.live_media() == Some(index) {
+                                    ui.painter().rect_stroke(
+                                        image,
+                                        3.0,
+                                        Stroke::new(2.5, MEDIA_LIVE),
+                                        StrokeKind::Outside,
+                                    );
+                                } else if response.hovered() {
+                                    ui.painter().rect_stroke(
+                                        image,
+                                        3.0,
+                                        Stroke::new(1.0, Color32::from_gray(150)),
+                                        StrokeKind::Outside,
+                                    );
+                                }
+                                let label = Rect::from_min_max(pos2(rect.min.x, image.max.y + 2.0), rect.max);
+                                ui.painter().with_clip_rect(label).text(
+                                    label.left_center(),
+                                    Align2::LEFT_CENTER,
+                                    format!("{}  {}", index + 1, item.name),
+                                    FontId::proportional(11.5),
+                                    Color32::from_gray(190),
+                                );
+                                response.on_hover_text(item.name.as_str());
+                            }
+                        });
+                    });
+                    ui.add_space(8.0);
+                });
+            }
+            if state.drop_hover {
+                let painter = ui.painter();
+                painter.rect_filled(area, 0.0, Color32::from_rgba_unmultiplied(1, 121, 255, 40));
+                painter.rect_stroke(area.shrink(3.0), 8.0, Stroke::new(2.0, TAB_BLUE), StrokeKind::Inside);
+                painter.text(
+                    area.center(),
+                    Align2::CENTER_CENTER,
+                    "Drop to add to the media bin",
+                    FontId::proportional(15.0),
+                    Color32::WHITE,
+                );
+            }
         },
     );
+}
+
+/// The slide editor: a small window with one box for each language.
+fn editor(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
+    let Some(draft) = state.editing.as_mut() else { return };
+    let title = show.presentations().get(draft.at.presentation).map_or("", |p| p.title.as_str());
+    let mut save = false;
+    let mut cancel = false;
+    egui::Window::new(format!("Edit slide {}", draft.at.slide + 1))
+        .collapsible(false)
+        .resizable(false)
+        .fade_in(false)
+        .fade_out(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, -40.0])
+        .show(ui.ctx(), |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.label(egui::RichText::new(title).color(DIM));
+            section_label(ui, "MAIN LANGUAGE");
+            ui.add(egui::TextEdit::multiline(&mut draft.primary).desired_rows(4).desired_width(460.0));
+            section_label(ui, "TRANSLATION");
+            ui.add(egui::TextEdit::multiline(&mut draft.translation).desired_rows(4).desired_width(460.0));
+            ui.label(
+                egui::RichText::new("Leave a box empty to remove it. Blank lines are taken out.").size(11.0).color(DIM),
+            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add_enabled(draft.can_save(), egui::Button::new("Save")).clicked() {
+                        save = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        });
+    if save {
+        state.finished_edit = state.editing.take();
+    } else if cancel {
+        state.editing = None;
+    }
 }
 
 /// The middle: the library's title bar, the selected song's bar, and its slides as a grid of
@@ -761,7 +959,7 @@ fn slide_area(
     ui: &mut egui::Ui,
     show: &Show,
     state: &mut HomeState,
-    thumb: &mut dyn FnMut(&Slide) -> Option<(TextureId, bool)>,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
     commands: &mut Vec<Command>,
 ) {
     egui::CentralPanel::default().frame(panel_frame(CANVAS, 0)).show(ui, |ui| {
@@ -832,6 +1030,14 @@ fn slide_area(
                         if response.clicked() {
                             commands.push(Command::GoTo(here));
                         }
+                        // Editing is on the right-click menu, so reaching for it never puts a
+                        // slide on screen by accident.
+                        response.context_menu(|ui| {
+                            if ui.button("Edit words…").clicked() {
+                                state.editing = EditDraft::of(show, here);
+                                ui.close();
+                            }
+                        });
                         // Slides scrolled out of view cost nothing: no thumbnail is asked for.
                         if !ui.is_rect_visible(rect) {
                             continue;
@@ -839,7 +1045,7 @@ fn slide_area(
                         let image = Rect::from_min_size(rect.min, image_size);
                         let painter = ui.painter();
                         painter.rect_filled(image, CornerRadius { nw: 3, ne: 3, sw: 0, se: 0 }, Color32::BLACK);
-                        match thumb(slide) {
+                        match thumb(ThumbOf::Slide(slide)) {
                             Some((texture, overflow)) => {
                                 egui::Image::from_texture((texture, image_size)).paint_at(ui, image);
                                 if overflow {
@@ -960,6 +1166,60 @@ mod tests {
     fn group_bar_text_contrasts_with_its_colour() {
         assert_eq!(text_on(Rgba::rgb(250, 240, 200)), Color32::BLACK);
         assert_eq!(text_on(Rgba::rgb(20, 40, 120)), Color32::WHITE);
+    }
+
+    #[test]
+    fn an_edit_draft_starts_with_the_slides_words() {
+        let show = Show::new(vec![Arc::new(parse_song_text("S", "One\n--\nОдин\n\nTwo\n"))]);
+        let both = EditDraft::of(&show, SlideRef { presentation: 0, slide: 0 }).unwrap();
+        assert_eq!((both.primary.as_str(), both.translation.as_str()), ("One", "Один"));
+        let one = EditDraft::of(&show, SlideRef { presentation: 0, slide: 1 }).unwrap();
+        assert_eq!((one.primary.as_str(), one.translation.as_str()), ("Two", ""));
+        assert!(EditDraft::of(&show, SlideRef { presentation: 0, slide: 9 }).is_none());
+        assert!(EditDraft::of(&show, SlideRef { presentation: 3, slide: 0 }).is_none());
+    }
+
+    #[test]
+    fn a_draft_with_no_words_cannot_be_saved() {
+        let at = SlideRef { presentation: 0, slide: 0 };
+        assert!(!EditDraft { at, primary: " \n".into(), translation: String::new() }.can_save());
+        assert!(EditDraft { at, primary: String::new(), translation: "Слова".into() }.can_save());
+    }
+
+    #[test]
+    fn the_window_draws_with_media_a_notice_a_drag_and_the_editor_open() {
+        let ctx = egui::Context::default();
+        let mut show = show(3);
+        for name in ["a.png", "b.png"] {
+            show.add_media(pc_model::MediaItem { id: pc_model::Uuid::new_v4(), name: name.into(), path: name.into() });
+        }
+        show.apply(Command::ShowMedia(1));
+        let mut state = HomeState {
+            drop_hover: true,
+            notice: Some("x.mp4: videos are not supported yet, only pictures.".into()),
+            ..HomeState::default()
+        };
+        state.editing = EditDraft::of(&show, SlideRef { presentation: 0, slide: 0 });
+        let mut media_asked = 0;
+        for _ in 0..2 {
+            let output = ctx.run_ui(input(None), |ui| {
+                home_ui(
+                    ui,
+                    &show,
+                    &mut state,
+                    &mut |which| {
+                        if matches!(which, ThumbOf::Media(_)) {
+                            media_asked += 1;
+                        }
+                        None
+                    },
+                    None,
+                );
+            });
+            output.drop_without_applying_deltas();
+        }
+        assert!(media_asked >= 2, "the two media thumbnails should be asked for");
+        assert!(state.editing.is_some(), "drawing must not close the editor");
     }
 
     #[test]

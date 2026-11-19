@@ -6,11 +6,13 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 
 use pc_model::{Slide, Theme};
-use pc_render::{Fonts, Painter, build_scene, target_texture, wgpu};
+use pc_render::{Fonts, Layers, Painter, Picture, build_layers, target_texture, wgpu};
 
 /// Everything the output needs to draw one picture. Immutable once sent.
 #[derive(Clone)]
 pub struct Frame {
+    /// The picture behind the words, if any.
+    pub media: Option<Picture>,
     pub slide: Option<Arc<Slide>>,
     pub theme: Arc<Theme>,
     /// When false the output is black whatever the slide is.
@@ -113,7 +115,7 @@ fn run(
         target: target_texture(&device, config.width, config.height),
         painter,
         fonts: Fonts::new(),
-        frame: Frame { slide: None, theme, enabled: true },
+        frame: Frame { media: None, slide: None, theme, enabled: true },
         device,
         queue,
         surface,
@@ -151,8 +153,12 @@ impl Output {
 
     fn draw(&mut self) {
         let (w, h) = (self.config.width, self.config.height);
-        let slide = if self.frame.enabled { self.frame.slide.as_deref() } else { None };
-        let built = build_scene(&mut self.fonts, slide, &self.frame.theme, w, h);
+        let layers = if self.frame.enabled {
+            Layers { media: self.frame.media.as_ref(), slide: self.frame.slide.as_deref() }
+        } else {
+            Layers::default()
+        };
+        let built = build_layers(&mut self.fonts, &layers, &self.frame.theme, w, h);
         let view = self.target.create_view(&wgpu::TextureViewDescriptor::default());
         if let Err(e) = self.painter.paint(&self.device, &self.queue, &built.scene, &view, w, h) {
             return eprintln!("The output could not draw a frame: {e}");

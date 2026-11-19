@@ -4,7 +4,7 @@ use vello::kurbo::{Affine, Join, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use vello::{Glyph, Scene};
 
-use crate::Fonts;
+use crate::{Fonts, Picture};
 
 /// A scene ready to paint, and whether any text did not fit its box.
 pub struct Built {
@@ -23,17 +23,42 @@ pub fn fit_rect(target_w: u32, target_h: u32) -> (f64, f64, f64, f64) {
     ((tw - w) / 2.0, (th - h) / 2.0, w, h)
 }
 
+/// What is on screen, bottom layer first. A layer that is `None` is clear.
+#[derive(Clone, Copy, Default)]
+pub struct Layers<'a> {
+    /// A picture behind the words. It fills the slide, cropped at the edges if its shape differs.
+    pub media: Option<&'a Picture>,
+    pub slide: Option<&'a Slide>,
+}
+
 /// Draws a slide for a target of the given pixel size: black, with the slide fitted inside.
 /// `None` draws black only, which is what a cleared layer looks like.
 pub fn build_scene(fonts: &mut Fonts, slide: Option<&Slide>, theme: &Theme, target_w: u32, target_h: u32) -> Built {
+    build_layers(fonts, &Layers { media: None, slide }, theme, target_w, target_h)
+}
+
+/// Draws every layer for a target of the given pixel size: black, then the media, then the
+/// slide's words, all fitted inside the 16:9 slide area.
+pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w: u32, target_h: u32) -> Built {
     let mut scene = Scene::new();
     let whole = Rect::new(0.0, 0.0, f64::from(target_w), f64::from(target_h));
     scene.fill(Fill::NonZero, Affine::IDENTITY, Color::BLACK, None, &whole);
+    let (x, y, w, _) = fit_rect(target_w, target_h);
+    let to_target = Affine::translate((x, y)) * Affine::scale(w / f64::from(SLIDE_WIDTH));
+
+    if let Some(picture) = layers.media {
+        let (slide_w, slide_h) = (f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
+        let (pic_w, pic_h) = (f64::from(picture.width()), f64::from(picture.height()));
+        // Scale the picture to cover the slide, centre it, and cut off what hangs over.
+        let cover = (slide_w / pic_w).max(slide_h / pic_h);
+        let offset = ((slide_w - pic_w * cover) / 2.0, (slide_h - pic_h * cover) / 2.0);
+        scene.push_clip_layer(Fill::NonZero, to_target, &Rect::new(0.0, 0.0, slide_w, slide_h));
+        scene.draw_image(&picture.image, to_target * Affine::translate(offset) * Affine::scale(cover));
+        scene.pop_layer();
+    }
 
     let mut overflow = false;
-    if let Some(slide) = slide {
-        let (x, y, w, _) = fit_rect(target_w, target_h);
-        let to_target = Affine::translate((x, y)) * Affine::scale(w / f64::from(SLIDE_WIDTH));
+    if let Some(slide) = layers.slide {
         let alone = slide.boxes.len() == 1;
         for text_box in &slide.boxes {
             let (style, rect) = placement(theme, &text_box.role, alone);

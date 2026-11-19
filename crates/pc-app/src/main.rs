@@ -4,6 +4,7 @@ mod displays;
 mod home;
 mod icons;
 mod load;
+mod media;
 mod output;
 mod thumbs;
 
@@ -13,9 +14,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pc_engine::{Command, Layer, Show};
-use pc_model::{Theme, parse_song_text};
+use pc_model::{MediaItem, Theme, Uuid, parse_song_text};
 use pc_render::vello::util::RenderContext;
 use pc_render::wgpu;
+use pc_render::{Layers, Picture};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -23,7 +25,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::displays::{DisplayInfo, Placement, choose_output};
-use crate::home::{HomeState, home_ui};
+use crate::home::{EditDraft, HomeState, ThumbOf, home_ui};
 use crate::output::{Frame, OutputHandle, OutputMsg};
 use crate::thumbs::Thumbs;
 
@@ -36,9 +38,10 @@ pub struct Gpu {
 const HELP: &str = "\
 PresenterCraft
 
-Usage: presentercraft [options] [song.txt | folder]...
+Usage: presentercraft [options] [song.txt | folder | picture]...
 
-With no files, a sample song is loaded.
+Songs are text files; pictures (PNG, JPEG, WebP, BMP, GIF) go into the media bin.
+With no songs, a sample song is loaded. Pictures can also be dropped onto the window.
 
 Options:
   --list-displays        Print the connected displays and quit
@@ -196,6 +199,10 @@ struct Running {
 struct App {
     options: Options,
     show: Show,
+    /// The file each song came from, in the show's order; `None` for the bundled sample.
+    sources: Vec<Option<PathBuf>>,
+    /// The decoded picture of each media item, in the show's order.
+    pictures: Vec<Picture>,
     theme: Arc<Theme>,
     running: Option<Running>,
     failed: bool,
@@ -307,7 +314,7 @@ impl App {
         let mut egui_renderer =
             egui_wgpu::Renderer::new(&gpu.device, home_format, egui_wgpu::RendererOptions::default());
         let mut thumbs = Thumbs::new(&gpu.device)?;
-        let preview = thumbs.preview(&gpu, &mut egui_renderer, None, &self.theme);
+        let preview = thumbs.preview(&gpu, &mut egui_renderer, &Layers::default(), &self.theme);
 
         Ok(Some(Running {
             home_window,
@@ -337,27 +344,90 @@ impl App {
         let mut output_changed = false;
         for command in commands {
             let changes = self.show.apply(command);
-            output_changed |= changes.slides || changes.output_enabled;
+            output_changed |= changes.slides || changes.media || changes.output_enabled;
             if changes.selection {
-                running.thumbs.clear(&mut running.egui_renderer);
+                let media: Vec<Uuid> = self.show.media().iter().map(|m| m.id).collect();
+                running.thumbs.clear_except(&mut running.egui_renderer, |id| media.contains(id));
             }
-            any |= changes.slides || changes.output_enabled || changes.selection;
+            any |= changes.slides || changes.media || changes.output_enabled || changes.selection;
         }
         if output_changed {
-            let live = self.show.live_slide().map(|(_, slide)| Arc::new(slide.clone()));
-            // The audience comes first: tell the output before drawing anything for the operator.
-            if let Some(output) = &running.output {
-                let frame =
-                    Frame { slide: live.clone(), theme: self.theme.clone(), enabled: self.show.output_enabled() };
-                if !output.send(OutputMsg::Show(frame)) {
-                    running.home_state.output_stopped = true;
-                }
-            }
-            running.preview =
-                running.thumbs.preview(&running.gpu, &mut running.egui_renderer, live.as_deref(), &self.theme);
+            self.refresh_output();
         }
-        if any {
+        if any && let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
+        }
+    }
+
+    /// Tells the output what is on each layer now, then redraws the operator's preview.
+    fn refresh_output(&mut self) {
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let slide = self.show.live_slide().map(|(_, slide)| Arc::new(slide.clone()));
+        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).cloned();
+        // The audience comes first: tell the output before drawing anything for the operator.
+        if let Some(output) = &running.output {
+            let frame = Frame {
+                media: media.clone(),
+                slide: slide.clone(),
+                theme: self.theme.clone(),
+                enabled: self.show.output_enabled(),
+            };
+            if !output.send(OutputMsg::Show(frame)) {
+                running.home_state.output_stopped = true;
+            }
+        }
+        let layers = Layers { media: media.as_ref(), slide: slide.as_deref() };
+        running.preview = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &self.theme);
+    }
+
+    /// Adds a file dropped on the window to the media bin, or says why it could not be added.
+    fn add_dropped_file(&mut self, path: &std::path::Path) {
+        let result = media::load_picture(path);
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        running.home_state.drop_hover = false;
+        match result {
+            Ok(picture) => {
+                let name = path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
+                self.show.add_media(MediaItem { id: Uuid::new_v4(), name, path: path.to_owned() });
+                self.pictures.push(picture);
+                running.home_state.notice = None;
+            }
+            Err(message) => running.home_state.notice = Some(message),
+        }
+        running.home_window.request_redraw();
+    }
+
+    /// Puts an edited slide into its song, saves the song's file, and updates the screen if
+    /// that slide is on it.
+    fn apply_edit(&mut self, edit: EditDraft) {
+        let Some(song) = self.show.presentations().get(edit.at.presentation).cloned() else {
+            return;
+        };
+        let Some(edited) = song.with_slide_text(edit.at.slide, &edit.primary, &edit.translation) else {
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.notice = Some("A slide needs words in at least one box.".to_owned());
+            }
+            return;
+        };
+        let slide_id = edited.slide(edit.at.slide).map(|(_, slide)| slide.id);
+        let saved = match self.sources.get(edit.at.presentation) {
+            Some(Some(path)) => load::save_song(path, &edited),
+            _ => Ok(()),
+        };
+        let changes = self.show.replace_presentation(edit.at.presentation, Arc::new(edited));
+        if let Some(running) = self.running.as_mut() {
+            if let Some(id) = slide_id {
+                running.thumbs.forget(id, &mut running.egui_renderer);
+            }
+            running.home_state.notice = saved.err().map(|e| format!("The change is on screen but was not saved. {e}"));
+            running.home_window.request_redraw();
+        }
+        if changes.slides {
+            self.refresh_output();
         }
     }
 
@@ -375,14 +445,19 @@ impl App {
             running.home_state.output_stopped = true;
         }
         let mut commands = Vec::new();
-        let (show, theme, preview) = (&self.show, &self.theme, running.preview);
+        let (show, theme, preview, pictures) = (&self.show, &self.theme, running.preview, &self.pictures);
         let home_state = &mut running.home_state;
         let mut full = egui_ctx.run_ui(raw_input, |ui| {
             // The toolkit may run this closure twice in one frame, and input arrives only the
             // first time, so add to the list rather than replace it.
-            let asked =
-                home_ui(ui, show, home_state, &mut |slide| thumbs.get(gpu, egui_renderer, slide, theme), preview);
-            commands.extend(asked);
+            let mut thumb = |which: ThumbOf| match which {
+                ThumbOf::Slide(slide) => thumbs.get(gpu, egui_renderer, slide, theme),
+                ThumbOf::Media(index) => {
+                    let (item, picture) = (show.media().get(index)?, pictures.get(index)?);
+                    thumbs.get_media(gpu, egui_renderer, item.id, picture, theme).map(|texture| (texture, false))
+                }
+            };
+            commands.extend(home_ui(ui, show, home_state, &mut thumb, preview));
         });
         egui_state.handle_platform_output(home_window, full.platform_output);
 
@@ -455,6 +530,12 @@ impl App {
             const CAPTURE_AT: u32 = 30;
             if running.frames == GO_LIVE_AT {
                 commands.push(Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 2 }));
+                commands.push(Command::ShowMedia(0));
+            }
+            // Testing aid: also open the slide editor, to check how it looks.
+            if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_EDITOR").is_some() {
+                let at = pc_engine::SlideRef { presentation: 0, slide: 2 };
+                running.home_state.editing = EditDraft::of(&self.show, at);
             }
             if running.frames == CAPTURE_AT {
                 match capture(gpu, egui_renderer, &jobs, &screen, home_config.format, path) {
@@ -534,6 +615,7 @@ impl ApplicationHandler for App {
         if let WindowEvent::KeyboardInput { event: key, .. } = &event
             && key.state == ElementState::Pressed
             && !running.egui_ctx.text_edit_focused()
+            && running.home_state.editing.is_none()
             && let Some(command) = show_key_command(&key.logical_key)
         {
             self.apply(vec![command]);
@@ -548,6 +630,15 @@ impl ApplicationHandler for App {
             running.home_window.request_redraw();
         }
         match event {
+            WindowEvent::HoveredFile(_) => {
+                running.home_state.drop_hover = true;
+                running.home_window.request_redraw();
+            }
+            WindowEvent::HoveredFileCancelled => {
+                running.home_state.drop_hover = false;
+                running.home_window.request_redraw();
+            }
+            WindowEvent::DroppedFile(path) => self.add_dropped_file(&path),
             WindowEvent::CloseRequested => self.quit(el),
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
@@ -560,6 +651,9 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let commands = self.draw_home();
                 self.apply(commands);
+                if let Some(edit) = self.running.as_mut().and_then(|r| r.home_state.finished_edit.take()) {
+                    self.apply_edit(edit);
+                }
                 if self.capture_done {
                     self.quit(el);
                 }
@@ -598,10 +692,12 @@ fn main() -> ExitCode {
         }
     };
 
-    let songs = if options.paths.is_empty() {
-        vec![parse_song_text("Sample song", load::SAMPLE_SONG)]
+    let (media_paths, song_paths): (Vec<PathBuf>, Vec<PathBuf>) =
+        options.paths.iter().cloned().partition(|path| media::is_media(path));
+    let songs = if song_paths.is_empty() {
+        vec![(parse_song_text("Sample song", load::SAMPLE_SONG), None)]
     } else {
-        let (songs, problems) = load::load_songs(&options.paths);
+        let (songs, problems) = load::load_songs(&song_paths);
         for problem in &problems {
             eprintln!("{problem}");
         }
@@ -609,8 +705,9 @@ fn main() -> ExitCode {
             eprintln!("Nothing to show.");
             return ExitCode::from(2);
         }
-        songs
+        songs.into_iter().map(|loaded| (loaded.song, Some(loaded.path))).collect()
     };
+    let (songs, sources): (Vec<_>, Vec<_>) = songs.into_iter().unzip();
 
     let event_loop = match EventLoop::new() {
         Ok(event_loop) => event_loop,
@@ -623,11 +720,23 @@ fn main() -> ExitCode {
     let mut app = App {
         options,
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
+        sources,
+        pictures: Vec::new(),
         theme: Arc::new(Theme::builtin()),
         running: None,
         failed: false,
         capture_done: false,
     };
+    for path in &media_paths {
+        match media::load_picture(path) {
+            Ok(picture) => {
+                let name = path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
+                app.show.add_media(MediaItem { id: Uuid::new_v4(), name, path: path.clone() });
+                app.pictures.push(picture);
+            }
+            Err(message) => eprintln!("{message}"),
+        }
+    }
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("The window system stopped: {e}");
         return ExitCode::FAILURE;

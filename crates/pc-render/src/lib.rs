@@ -4,10 +4,12 @@
 
 mod fonts;
 mod gpu;
+mod picture;
 mod scene;
 
 pub use fonts::Fonts;
 pub use gpu::{Painter, read_pixels, target_texture};
-pub use scene::{Built, build_scene, fit_rect};
+pub use picture::Picture;
+pub use scene::{Built, Layers, build_layers, build_scene, fit_rect};
 pub use vello;
 pub use vello::wgpu;

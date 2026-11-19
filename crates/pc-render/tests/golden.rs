@@ -223,3 +223,56 @@ fn odd_width_reads_back_without_padding() {
     let px = render(None, 333, 77);
     assert_eq!(px.len(), 333 * 77 * 4);
 }
+
+fn render_layers(media: Option<&pc_render::Picture>, slide: Option<&Slide>, w: u32, h: u32) -> Vec<u8> {
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let layers = pc_render::Layers { media, slide };
+    let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), w, h);
+    let texture = target_texture(device, w, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    painter.paint(device, queue, &built.scene, &view, w, h).expect("paint");
+    read_pixels(device, queue, &texture).expect("read back")
+}
+
+/// A picture of one flat colour, of any shape.
+fn flat(width: u32, height: u32, rgb: [u8; 3]) -> pc_render::Picture {
+    let rgba = [rgb[0], rgb[1], rgb[2], 255].repeat((width * height) as usize);
+    pc_render::Picture::from_rgba(width, height, rgba).expect("picture")
+}
+
+fn is_about(p: [u8; 4], rgb: [u8; 3]) -> bool {
+    p[0].abs_diff(rgb[0]) < 12 && p[1].abs_diff(rgb[1]) < 12 && p[2].abs_diff(rgb[2]) < 12
+}
+
+#[test]
+fn media_fills_the_slide_whatever_its_shape() {
+    let green = [20, 200, 60];
+    for (pw, ph) in [(64, 36), (40, 40), (120, 20), (20, 90)] {
+        let px = render_layers(Some(&flat(pw, ph, green)), None, 640, 360);
+        for (x, y) in [(2, 2), (637, 2), (2, 357), (637, 357), (320, 180)] {
+            assert!(is_about(pixel(&px, 640, x, y), green), "{pw}x{ph} picture left a gap at {x},{y}");
+        }
+    }
+}
+
+#[test]
+fn media_stays_inside_the_slide_when_the_screen_is_another_shape() {
+    let px = render_layers(Some(&flat(100, 10, [255, 0, 0])), None, 400, 300);
+    // 400x300 holds a 400x225 slide with bars above and below.
+    for y in [2, 30, 270, 297] {
+        assert_eq!(pixel(&px, 400, 200, y), [0, 0, 0, 255], "the picture spilled into the bar at row {y}");
+    }
+    assert!(is_about(pixel(&px, 400, 200, 150), [255, 0, 0]));
+}
+
+#[test]
+fn words_are_drawn_over_the_media() {
+    let blue = [0, 0, 200];
+    let s = slide("WORDS", None);
+    let px = render_layers(Some(&flat(16, 9, blue)), Some(&s), 1920, 1080);
+    assert!(is_about(pixel(&px, 1920, 20, 20), blue), "the corner should show the picture");
+    assert!(count_lit(&px) > 3_000, "the white words should be on top of the picture");
+}

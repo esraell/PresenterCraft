@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use pc_model::{Slide, Theme, Uuid};
-use pc_render::{Fonts, Painter, build_scene, target_texture, wgpu};
+use pc_render::{Fonts, Layers, Painter, Picture, build_layers, target_texture, wgpu};
 
 use crate::Gpu;
 
@@ -63,7 +63,38 @@ impl Thumbs {
         slide: &Slide,
         theme: &Theme,
     ) -> Option<(egui::TextureId, bool)> {
-        if let Some(thumb) = self.cache.get_mut(&slide.id) {
+        self.get_layers(gpu, egui_renderer, slide.id, &Layers { media: None, slide: Some(slide) }, theme)
+    }
+
+    /// The thumbnail for a picture in the media bin. `None` means it will be ready on a later
+    /// frame.
+    pub fn get_media(
+        &mut self,
+        gpu: &Gpu,
+        egui_renderer: &mut egui_wgpu::Renderer,
+        id: Uuid,
+        picture: &Picture,
+        theme: &Theme,
+    ) -> Option<egui::TextureId> {
+        self.get_layers(gpu, egui_renderer, id, &Layers { media: Some(picture), slide: None }, theme).map(|(id, _)| id)
+    }
+
+    /// Drops one thumbnail so it is drawn again, for when a slide's words change.
+    pub fn forget(&mut self, key: Uuid, egui_renderer: &mut egui_wgpu::Renderer) {
+        if let Some(thumb) = self.cache.remove(&key) {
+            egui_renderer.free_texture(&thumb.id);
+        }
+    }
+
+    fn get_layers(
+        &mut self,
+        gpu: &Gpu,
+        egui_renderer: &mut egui_wgpu::Renderer,
+        key: Uuid,
+        layers: &Layers,
+        theme: &Theme,
+    ) -> Option<(egui::TextureId, bool)> {
+        if let Some(thumb) = self.cache.get_mut(&key) {
             thumb.last_used = self.frame;
             return Some((thumb.id, thumb.overflow));
         }
@@ -71,7 +102,7 @@ impl Thumbs {
             return None;
         }
         self.drawn_this_frame += 1;
-        let built = build_scene(&mut self.fonts, Some(slide), theme, THUMB_W, THUMB_H);
+        let built = build_layers(&mut self.fonts, layers, theme, THUMB_W, THUMB_H);
         let texture = target_texture(&gpu.device, THUMB_W, THUMB_H);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         if let Err(e) = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, THUMB_W, THUMB_H) {
@@ -79,7 +110,7 @@ impl Thumbs {
             return None;
         }
         let id = egui_renderer.register_native_texture(&gpu.device, &view, wgpu::FilterMode::Linear);
-        self.cache.insert(slide.id, Thumb { id, overflow: built.overflow, last_used: self.frame, _texture: texture });
+        self.cache.insert(key, Thumb { id, overflow: built.overflow, last_used: self.frame, _texture: texture });
         let ages: Vec<(Uuid, u64)> = self.cache.iter().map(|(id, thumb)| (*id, thumb.last_used)).collect();
         for old in to_evict(&ages, MAX_CACHED, self.frame) {
             if let Some(thumb) = self.cache.remove(&old) {
@@ -89,22 +120,24 @@ impl Thumbs {
         Some((id, built.overflow))
     }
 
-    /// Forgets every thumbnail, for when another song is selected.
-    pub fn clear(&mut self, egui_renderer: &mut egui_wgpu::Renderer) {
-        for (_, thumb) in self.cache.drain() {
-            egui_renderer.free_texture(&thumb.id);
+    /// Forgets the thumbnails of slides that are no longer shown, for when another song is
+    /// selected. `keep` says which ones to hold on to (the media bin's).
+    pub fn clear_except(&mut self, egui_renderer: &mut egui_wgpu::Renderer, keep: impl Fn(&Uuid) -> bool) {
+        let gone: Vec<Uuid> = self.cache.keys().filter(|id| !keep(id)).copied().collect();
+        for id in gone {
+            self.forget(id, egui_renderer);
         }
     }
 
-    /// Redraws the live preview and returns its texture. `None` draws black.
+    /// Redraws the live preview from what is on each layer and returns its texture.
     pub fn preview(
         &mut self,
         gpu: &Gpu,
         egui_renderer: &mut egui_wgpu::Renderer,
-        slide: Option<&Slide>,
+        layers: &Layers,
         theme: &Theme,
     ) -> Option<egui::TextureId> {
-        let built = build_scene(&mut self.fonts, slide, theme, PREVIEW_W, PREVIEW_H);
+        let built = build_layers(&mut self.fonts, layers, theme, PREVIEW_W, PREVIEW_H);
         if self.preview.is_none() {
             let texture = target_texture(&gpu.device, PREVIEW_W, PREVIEW_H);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

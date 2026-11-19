@@ -94,8 +94,45 @@ impl Presentation {
         None
     }
 
+    /// A copy with the words of one slide replaced. The slide keeps its id. An empty text
+    /// removes that box; if both are empty, or there is no such slide, returns `None`.
+    pub fn with_slide_text(&self, index: usize, primary: &str, translation: &str) -> Option<Presentation> {
+        let primary = crate::clean_box_text(primary);
+        let translation = crate::clean_box_text(translation);
+        let mut boxes = Vec::new();
+        if !primary.is_empty() {
+            boxes.push(TextBox { role: Role::primary(), text: primary });
+        }
+        if !translation.is_empty() {
+            boxes.push(TextBox { role: Role::translation(), text: translation });
+        }
+        if boxes.is_empty() {
+            return None;
+        }
+        let mut copy = self.clone();
+        let mut remaining = index;
+        for group in &mut copy.groups {
+            if let Some(slide) = group.slides.get_mut(remaining) {
+                slide.boxes = boxes;
+                return Some(copy);
+            }
+            remaining -= group.slides.len();
+        }
+        None
+    }
+
     /// Every slide with its group, in order.
     pub fn slides(&self) -> impl Iterator<Item = (&Group, &Slide)> {
         self.groups.iter().flat_map(|g| g.slides.iter().map(move |s| (g, s)))
     }
+}
+
+/// A picture (later a video) that can be shown behind the words. Only what identifies it is
+/// kept here; the pixels are loaded by the app.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaItem {
+    pub id: Uuid,
+    /// The file's name, shown under its thumbnail.
+    pub name: String,
+    pub path: std::path::PathBuf,
 }

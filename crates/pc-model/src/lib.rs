@@ -5,9 +5,9 @@ mod song_text;
 mod theme;
 mod types;
 
-pub use song_text::{group_color, parse_song_text};
+pub use song_text::{clean_box_text, group_color, parse_song_text, to_song_text};
 pub use theme::{Align, BoxStyle, SlideRect, Theme};
-pub use types::{Group, Presentation, Rgba, Role, Slide, TextBox};
+pub use types::{Group, MediaItem, Presentation, Rgba, Role, Slide, TextBox};
 pub use uuid::Uuid;
 
 /// Slides are authored at this size and scaled to the screen.
