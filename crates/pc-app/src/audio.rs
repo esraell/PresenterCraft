@@ -169,11 +169,34 @@ mod tests {
         assert!(open(&missing).err().unwrap_or_default().contains("Could not open none"));
     }
 
+    /// Plays a quiet file at no volume and checks the player moves through it, pauses and stops.
+    /// Needs a sound output, so it is run by hand: `cargo test -p pc-app plays_ -- --ignored`.
     #[test]
-    fn a_wave_file_is_read_with_its_length() {
-        use rodio::Source;
-        // Two seconds of silence at 8000 samples a second, one channel, 16 bits.
-        let samples = 16_000u32;
+    #[ignore = "needs the computer's sound output"]
+    fn plays_pauses_and_stops_a_track() {
+        let path = std::env::temp_dir().join(format!("pc-play-{}.wav", Uuid::new_v4()));
+        std::fs::write(&path, quiet_wav(8000 * 3)).unwrap();
+        let track = Track::of(path.clone());
+        let mut player = Player::default();
+        player.set_volume(0.0);
+        player.play(&track).unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+        let playing = player.playing();
+        assert_eq!(playing.track, Some(track.id));
+        assert!(playing.position > Duration::from_millis(200), "{:?}", playing.position);
+        assert!(playing.length.is_some_and(|length| (length.as_secs_f32() - 3.0).abs() < 0.1));
+        player.toggle_pause();
+        let paused_at = player.playing().position;
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(player.playing().paused);
+        assert!(player.playing().position.abs_diff(paused_at) < Duration::from_millis(60));
+        player.stop();
+        assert_eq!(player.playing(), Playing::default());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// A wave file of silence: one channel, 16 bits, 8000 samples a second.
+    fn quiet_wav(samples: u32) -> Vec<u8> {
         let mut wav = Vec::new();
         wav.extend_from_slice(b"RIFF");
         wav.extend_from_slice(&(36 + samples * 2).to_le_bytes());
@@ -188,6 +211,14 @@ mod tests {
         wav.extend_from_slice(b"data");
         wav.extend_from_slice(&(samples * 2).to_le_bytes());
         wav.resize(wav.len() + samples as usize * 2, 0);
+        wav
+    }
+
+    #[test]
+    fn a_wave_file_is_read_with_its_length() {
+        use rodio::Source;
+        // Two seconds of silence.
+        let wav = quiet_wav(16_000);
         let dir = std::env::temp_dir().join(format!("pc-audio-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Quiet.wav");
