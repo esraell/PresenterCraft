@@ -2683,7 +2683,7 @@ pub fn settings_ui(ui: &mut egui::Ui, state: &mut HomeState) {
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(
-                        "A song's writer, publisher and CCLI song number are set with Info beside its title.",
+                        "A song's writer, publisher and CCLI song number are set with the Info icon in its header.",
                     )
                     .size(11.5)
                     .color(TEXT_DIM),
@@ -3950,17 +3950,27 @@ fn rulers(painter: &egui::Painter, area: Rect, ruler: f32, slide: Rect, scale: f
 
 /// The Arrangement button beside a song's title: play the song as written or in one of its
 /// arrangements, make a new one, rename, duplicate or delete the one in use.
-fn arrangement_menu(ui: &mut egui::Ui, index: usize, song: &pc_model::Presentation, state: &mut HomeState) {
+/// A small icon button in the song's header, lit while what it shows is on.
+fn header_icon(ui: &mut egui::Ui, icon: crate::icons::Icon, hint: &str, on: bool) -> egui::Response {
+    let (cell, response) = ui.allocate_exact_size(vec2(30.0, 26.0), Sense::click());
+    if on {
+        ui.painter().rect_filled(cell, 6.0, crate::studio::SELECTED);
+    } else if response.hovered() {
+        ui.painter().rect_filled(cell, 6.0, crate::studio::HOVER);
+    }
+    let ink = if on || response.hovered() { crate::studio::TEXT } else { crate::studio::TEXT_DIM };
+    crate::icons::paint(ui.painter(), icon, Rect::from_center_size(cell.center(), vec2(15.0, 15.0)), ink);
+    response.on_hover_text(hint)
+}
+
+fn arrangement_menu(index: usize, song: &pc_model::Presentation, state: &mut HomeState, button: &egui::Response) {
     let active = song.active_arrangement();
     let named = |arrangement: &pc_model::Arrangement| {
         if arrangement.name.trim().is_empty() { "Untitled".to_owned() } else { arrangement.name.clone() }
     };
-    let label =
-        active.map_or_else(|| "Arrangement".to_owned(), |arrangement| format!("Arrangement: {}", named(arrangement)));
-    let button = ui.small_button(label).on_hover_text("Play the song's groups in another order");
     let mut arrangements = song.arrangements.clone();
     let mut chosen = song.arrangement;
-    egui::Popup::from_toggle_button_response(&button)
+    egui::Popup::from_toggle_button_response(button)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_min_width(220.0);
@@ -4159,56 +4169,82 @@ fn slide_area(
                 let count = if slides == 1 { "1 slide".to_owned() } else { format!("{slides} slides") };
                 ui.label(egui::RichText::new(count).size(12.0).color(crate::studio::TEXT_FAINT));
                 let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&show.selected()));
-                if !from_bible {
-                    let info = ui.small_button("Info").on_hover_text("The song's writer, publisher and CCLI number");
-                    egui::Popup::from_toggle_button_response(&info)
-                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                        .show(|ui| {
-                            ui.set_width(320.0);
-                            let mut details = presentation.copyright.clone();
-                            egui::Grid::new("song info").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                                for (label, value) in [
-                                    ("Artist", &mut details.artist),
-                                    ("Author", &mut details.author),
-                                    ("Publisher", &mut details.publisher),
-                                    ("Year", &mut details.year),
-                                    ("CCLI Song #", &mut details.ccli_song),
-                                ] {
-                                    ui.label(egui::RichText::new(label).color(DIM));
-                                    ui.add(egui::TextEdit::singleline(value).desired_width(200.0));
-                                    ui.end_row();
-                                }
-                            });
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new("Settings, General says when the copyright line is shown.")
-                                    .size(11.0)
-                                    .color(DIM),
-                            );
-                            if details != presentation.copyright {
-                                state.copyright_request = Some((show.selected(), details));
-                            }
-                        });
-                }
-                if !from_bible
-                    && ui.small_button("Reflow").on_hover_text("Edit the song's words as text (Control-R)").clicked()
-                {
-                    state.reflow = Some((show.selected(), pc_model::to_song_text(presentation)));
-                }
-                if !from_bible {
-                    arrangement_menu(ui, show.selected(), presentation, state);
-                }
-                if ui
-                    .add(egui::Button::selectable(state.show_notes, "Notes"))
-                    .on_hover_text("Show the notes of the slide on screen, for whoever runs the slides")
-                    .clicked()
-                {
-                    state.show_notes = !state.show_notes;
-                }
                 missing_font_notice(
                     ui,
                     &pc_model::missing_fonts(&pc_model::fonts_used(presentation, theme), &state.fonts),
                 );
+                // The song's tools, as small icons at the right as ProPresenter has them, lit
+                // while what they show is on. Laid out right to left: Notes is rightmost.
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if header_icon(
+                        ui,
+                        crate::icons::Icon::Notes,
+                        "Notes: show the notes of the slide on screen",
+                        state.show_notes,
+                    )
+                    .clicked()
+                    {
+                        state.show_notes = !state.show_notes;
+                    }
+                    if !from_bible {
+                        let on = presentation.active_arrangement().is_some();
+                        let button = header_icon(
+                            ui,
+                            crate::icons::Icon::Arrangement,
+                            "Arrangement: play the song's groups in another order",
+                            on,
+                        );
+                        arrangement_menu(show.selected(), presentation, state, &button);
+                    }
+                    if !from_bible
+                        && header_icon(
+                            ui,
+                            crate::icons::Icon::Reflow,
+                            "Reflow: edit the song's words as text (Control-R)",
+                            false,
+                        )
+                        .clicked()
+                    {
+                        state.reflow = Some((show.selected(), pc_model::to_song_text(presentation)));
+                    }
+                    if !from_bible {
+                        let info = header_icon(
+                            ui,
+                            crate::icons::Icon::Status,
+                            "Info: the song's writer, publisher and CCLI number",
+                            false,
+                        );
+                        egui::Popup::from_toggle_button_response(&info)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                ui.set_width(320.0);
+                                let mut details = presentation.copyright.clone();
+                                egui::Grid::new("song info").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                                    for (label, value) in [
+                                        ("Artist", &mut details.artist),
+                                        ("Author", &mut details.author),
+                                        ("Publisher", &mut details.publisher),
+                                        ("Year", &mut details.year),
+                                        ("CCLI Song #", &mut details.ccli_song),
+                                    ] {
+                                        ui.label(egui::RichText::new(label).color(DIM));
+                                        ui.add(egui::TextEdit::singleline(value).desired_width(200.0));
+                                        ui.end_row();
+                                    }
+                                });
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new("Settings, General says when the copyright line is shown.")
+                                        .size(11.0)
+                                        .color(DIM),
+                                );
+                                if details != presentation.copyright {
+                                    state.copyright_request = Some((show.selected(), details));
+                                }
+                            });
+                    }
+                });
             });
         });
         // The arrangement the song is played in, as a row of its groups.

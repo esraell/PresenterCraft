@@ -43,7 +43,7 @@ ProPresenter.
   slider. Click a slide, or use the keys below, to put it on the audience screen.
 - Groups (Verse 1, Chorus, Bridge…) with coloured bars and one-key jumps.
 - **Arrangements**: a song's groups in the order to sing them (Verse 1, Chorus, Verse 2, Chorus…),
-  from Arrangement beside its title. Next and Previous follow it, a group can come more than
+  from the Arrangement icon at the right of its header. Next and Previous follow it, a group can come more than
   once, the stage screens show what comes next in it, and a row of its
   groups shows the one on screen; click one to go to it, right-click to move, repeat or
   remove it, + to add a group.
@@ -191,7 +191,7 @@ drawn with the Bible's theme.
 <img src="docs/images/screens.png" alt="The Screens window" width="620">
 
 **Copyright and settings**
-- Each song's Artist, Author, Publisher, Year and CCLI Song # (Info beside its title), and a
+- Each song's Artist, Author, Publisher, Year and CCLI Song # (the Info icon at the right of its header, beside Reflow, Arrangement and Notes), and a
   copyright line on the screens on a song's first slide, last slide or every slide, with the
   church's CCLI licence number, chosen in Settings.
 - A Settings window (Cmd+,) with General, Screens, Groups and Key Mappings panes.
