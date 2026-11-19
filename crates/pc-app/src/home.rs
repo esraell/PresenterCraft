@@ -59,6 +59,8 @@ pub struct HomeState {
     /// as typed; and a name just typed, with the song's and group's places, for the app to take.
     pub renaming_group: Option<(usize, String)>,
     pub pending_group_name: Option<(usize, usize, String)>,
+    /// The open theme's name while it is being retyped in the list of themes.
+    pub renaming_theme: Option<String>,
     /// Objects copied in the editor, and the words that went to the system clipboard with them.
     pub object_clip: Vec<pc_model::Object>,
     pub object_clip_text: String,
@@ -526,6 +528,7 @@ impl Default for HomeState {
             pending_title: None,
             renaming_group: None,
             pending_group_name: None,
+            renaming_theme: None,
             object_clip: Vec::new(),
             object_clip_text: String::new(),
             services: crate::service::Services::default(),
@@ -793,80 +796,24 @@ fn edit_view(
     // Left: the slide navigator, with the slide's objects below it.
     let mut chosen = None;
     let mut chosen_template = None;
-    egui::Panel::left("edit slides").resizable(false).exact_size(186.0).frame(panel_frame(EDIT_PANEL, 0)).show(
+    // The Theme Editor's column is a little wider, for the list of themes.
+    let column = if theme_mode { 224.0 } else { 186.0 };
+    egui::Panel::left("edit slides").resizable(false).exact_size(column).frame(panel_frame(EDIT_PANEL, 0)).show(
         ui,
         |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            Frame::new().fill(EDIT_HEADER).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(presentation) = presentation.filter(|_| !theme_mode) {
+            if theme_mode {
+                theme_list(ui, state);
+            } else if let Some(presentation) = presentation {
+                Frame::new().fill(EDIT_HEADER).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(presentation.title.as_str()).strong().size(12.5).color(Color32::WHITE),
                         );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Plus, "Add a slide"));
-                    } else {
-                        // The theme being edited. Choosing another edits that one.
-                        let editing = state.theme_edit.as_ref().map_or(0, |edit| edit.index);
-                        let in_use = state.theme_names.get(editing).cloned().unwrap_or_default();
-                        egui::ComboBox::from_id_salt("theme picker").selected_text(in_use).width(120.0).show_ui(
-                            ui,
-                            |ui| {
-                                for (index, name) in state.theme_names.iter().enumerate() {
-                                    if ui.selectable_label(index == editing, name.as_str()).clicked() {
-                                        state.theme_request = Some(ThemeRequest::Edit(index));
-                                    }
-                                }
-                                ui.separator();
-                                if ui.button("New Theme…").clicked() {
-                                    state.theme_request = Some(ThemeRequest::New);
-                                }
-                            },
-                        );
-                    }
-                });
-                // Which kinds of slide use this theme. Ticking one moves that kind to this theme;
-                // to take it away, tick it on another theme.
-                if let Some(index) = state.theme_edit.as_ref().map(|edit| edit.index) {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("USED BY").size(10.0).color(DIM));
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        let (mut songs, mut bible) = (state.theme_for_songs == index, state.theme_for_bible == index);
-                        let hint = "To change this, tick it on the theme that should be used instead";
-                        if ui
-                            .add_enabled(!songs, egui::Checkbox::new(&mut songs, "Songs"))
-                            .on_disabled_hover_text(hint)
-                            .changed()
-                        {
-                            state.theme_request = Some(ThemeRequest::UseForSongs(index));
-                        }
-                        if ui
-                            .add_enabled(!bible, egui::Checkbox::new(&mut bible, "Bible"))
-                            .on_disabled_hover_text(hint)
-                            .changed()
-                        {
-                            state.theme_request = Some(ThemeRequest::UseForBible(index, state.bible_layout));
-                        }
+                        ui.add_space(ui.available_width());
                     });
-                }
-                // The theme's name, always in reach: type to rename it.
-                if let Some(edit) = state.theme_edit.as_mut() {
-                    ui.add_space(4.0);
-                    let before = edit.theme.name.clone();
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut edit.theme.name)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("Theme name"),
-                    );
-                    if edit.theme.name != before && !edit.theme.name.trim().is_empty() {
-                        edit.changed = true;
-                    }
-                    // An emptied name goes back to what it was when the field is left.
-                    if field.lost_focus() && edit.theme.name.trim().is_empty() {
-                        edit.theme.name = state.theme_names.get(edit.index).cloned().unwrap_or(before);
-                    }
-                }
-            });
+                });
+            }
 
             egui::Panel::bottom("edit objects")
                 .resizable(false)
@@ -1623,6 +1570,141 @@ fn missing_font_notice(ui: &mut egui::Ui, missing: &[String]) {
         }
         ui.separator();
         ui.label(egui::RichText::new("After installing a font, restart PresenterCraft.").size(11.5).color(DIM));
+    });
+}
+
+/// The top of the Theme Editor's left column: every theme in a plain list. A click opens a
+/// theme; a click on the open theme's name renames it; a tag shows which kinds of slide use
+/// each one, and a right-click changes that. The plus makes a new theme.
+fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
+    use crate::studio::{ACCENT, CARD, TEXT, TEXT_DIM, TEXT_FAINT};
+    let editing = state.theme_edit.as_ref().map_or(0, |edit| edit.index);
+    Frame::new().inner_margin(egui::Margin { left: 10, right: 10, top: 10, bottom: 6 }).show(ui, |ui| {
+        ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
+        ui.horizontal(|ui| {
+            crate::studio::caption(ui, "THEMES");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
+                let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
+                icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
+                if response.on_hover_text("New theme: a copy of the one songs use").clicked() {
+                    state.theme_request = Some(ThemeRequest::New);
+                }
+            });
+        });
+        ui.add_space(4.0);
+        let names = state.theme_names.clone();
+        let mut start_rename = false;
+        let mut renamed: Option<Option<String>> = None;
+        egui::ScrollArea::vertical().id_salt("theme list").max_height(150.0).auto_shrink([false, true]).show(
+            ui,
+            |ui| {
+                for (index, name) in names.iter().enumerate() {
+                    let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+                    let open = index == editing;
+                    if open {
+                        ui.painter().rect_filled(row, 7.0, ACCENT.gamma_multiply(0.22));
+                    } else if response.hovered() {
+                        ui.painter().rect_filled(row, 7.0, CARD);
+                    }
+                    // Tags at the right say what uses this theme.
+                    let mut right = row.max.x - 6.0;
+                    for (used, tag) in
+                        [(state.theme_for_bible == index, "Bible"), (state.theme_for_songs == index, "Songs")]
+                    {
+                        if !used {
+                            continue;
+                        }
+                        let text = ui.painter().layout_no_wrap(tag.to_owned(), FontId::proportional(10.0), TEXT_DIM);
+                        let pill = Rect::from_min_size(
+                            pos2(right - text.size().x - 10.0, row.center().y - 8.0),
+                            vec2(text.size().x + 10.0, 16.0),
+                        );
+                        ui.painter().rect_filled(pill, 8.0, Color32::from_white_alpha(18));
+                        ui.painter().galley(
+                            pos2(pill.min.x + 5.0, pill.center().y - text.size().y / 2.0),
+                            text,
+                            TEXT_DIM,
+                        );
+                        right = pill.min.x - 4.0;
+                    }
+                    let name_area =
+                        Rect::from_min_max(pos2(row.min.x + 6.0, row.min.y + 3.0), pos2(right - 2.0, row.max.y - 3.0));
+                    if open && let Some(typed) = state.renaming_theme.as_mut() {
+                        let field = ui.put(
+                            name_area,
+                            crate::studio::rename_field(typed, FontId::proportional(13.5), TEXT, ACCENT),
+                        );
+                        if std::mem::take(&mut state.rename_started) {
+                            field.request_focus();
+                        }
+                        let (enter, escape) = ui
+                            .input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+                        if escape {
+                            renamed = Some(None);
+                        } else if enter || field.lost_focus() {
+                            renamed = Some(Some(typed.clone()));
+                        }
+                    } else {
+                        ui.painter().with_clip_rect(name_area).text(
+                            pos2(row.min.x + 10.0, row.center().y),
+                            Align2::LEFT_CENTER,
+                            name.as_str(),
+                            FontId::proportional(13.5),
+                            if open { Color32::WHITE } else { TEXT },
+                        );
+                        // A click opens the theme; a click on the open theme's name, or a double
+                        // click, renames it, as in a file list.
+                        if response.double_clicked() || (response.clicked() && open) {
+                            if !open {
+                                state.theme_request = Some(ThemeRequest::Edit(index));
+                            } else {
+                                start_rename = true;
+                            }
+                        } else if response.clicked() {
+                            state.theme_request = Some(ThemeRequest::Edit(index));
+                        }
+                    }
+                    response.context_menu(|ui| {
+                        if ui.add_enabled(state.theme_for_songs != index, egui::Button::new("Use for Songs")).clicked()
+                        {
+                            state.theme_request = Some(ThemeRequest::UseForSongs(index));
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(state.theme_for_bible != index, egui::Button::new("Use for Bible Slides"))
+                            .clicked()
+                        {
+                            state.theme_request = Some(ThemeRequest::UseForBible(index, state.bible_layout));
+                            ui.close();
+                        }
+                        if open {
+                            ui.separator();
+                            if ui.button("Rename").clicked() {
+                                start_rename = true;
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            },
+        );
+        if start_rename {
+            state.renaming_theme = names.get(editing).cloned();
+            state.rename_started = true;
+        }
+        if let Some(outcome) = renamed {
+            state.renaming_theme = None;
+            if let (Some(name), Some(edit)) = (outcome, state.theme_edit.as_mut())
+                && !name.trim().is_empty()
+                && name.trim() != edit.theme.name
+            {
+                edit.theme.name = name.trim().to_owned();
+                edit.changed = true;
+            }
+        }
+        ui.add_space(8.0);
+        crate::studio::caption(ui, "LAYOUTS");
     });
 }
 
