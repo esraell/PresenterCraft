@@ -1,5 +1,6 @@
 //! Image tests: draw through the real GPU path, read the pixels back and compare with stored
-//! pictures in `tests/golden/`. A missing picture, or `PC_UPDATE_GOLDEN=1`, writes it instead.
+//! pictures in `tests/golden/`. Run with `PC_UPDATE_GOLDEN=1` to write the pictures; without
+//! it a missing picture is a failure, so a deleted file cannot pass quietly.
 //! They use the system font and need a GPU.
 
 use std::path::PathBuf;
@@ -9,11 +10,15 @@ use pc_render::vello::util::RenderContext;
 use pc_render::{Fonts, Painter, build_scene, read_pixels, target_texture, wgpu};
 
 fn render(slide: Option<&Slide>, w: u32, h: u32) -> Vec<u8> {
+    render_with(slide, &Theme::builtin(), w, h)
+}
+
+fn render_with(slide: Option<&Slide>, theme: &Theme, w: u32, h: u32) -> Vec<u8> {
     let mut cx = RenderContext::new();
     let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
     let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
     let mut painter = Painter::new(device).expect("painter");
-    let built = build_scene(&mut Fonts::new(), slide, &Theme::builtin(), w, h);
+    let built = build_scene(&mut Fonts::new(), slide, theme, w, h);
     let texture = target_texture(device, w, h);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     painter.paint(device, queue, &built.scene, &view, w, h).expect("paint");
@@ -53,11 +58,16 @@ fn read_png(path: &PathBuf) -> (Vec<u8>, u32, u32) {
 /// that differ a lot.
 fn assert_matches_golden(name: &str, pixels: &[u8], w: u32, h: u32) {
     let path = golden_path(name);
-    if std::env::var_os("PC_UPDATE_GOLDEN").is_some() || !path.exists() {
+    if std::env::var_os("PC_UPDATE_GOLDEN").is_some() {
         write_png(&path, pixels, w, h);
         eprintln!("wrote {}", path.display());
         return;
     }
+    assert!(
+        path.exists(),
+        "{name}: no stored picture at {}; run with PC_UPDATE_GOLDEN=1 and check it by eye",
+        path.display()
+    );
     let (expected, ew, eh) = read_png(&path);
     assert_eq!((ew, eh), (w, h), "{name}: size changed");
     assert_eq!(expected.len(), pixels.len(), "{name}: byte count changed");
@@ -76,7 +86,8 @@ fn assert_matches_golden(name: &str, pixels: &[u8], w: u32, h: u32) {
     }
     let mean = total as f64 / pixels.len() as f64;
     let far_share = far as f64 / (pixels.len() / 4) as f64;
-    if mean >= 2.0 || far_share >= 0.005 {
+    // 0.05% of a 1080p frame is about a thousand pixels: a missing letter fails, GPU noise does not.
+    if mean >= 1.0 || far_share >= 0.0005 {
         let actual = path.with_extension("actual.png");
         write_png(&actual, pixels, w, h);
         panic!(
@@ -157,6 +168,47 @@ fn letterbox_4_3() {
     }
     assert!(count_lit(&px) > 1_000);
     assert_matches_golden("letterbox_4_3", &px, 1600, 1200);
+}
+
+/// The built-in theme's outline and shadow are black on black, so they cannot be seen in the
+/// other pictures. Here the outline is green and the shadow is switched off and on.
+#[test]
+fn outline_and_shadow_are_drawn() {
+    use pc_model::Rgba;
+    let s = slide("OUTLINE", None);
+    let mut theme = Theme::builtin();
+    for style in &mut theme.boxes {
+        style.outline_color = Rgba::rgb(0, 255, 0);
+        style.outline_width = 8.0;
+        style.fill = Rgba::rgb(255, 0, 0);
+        style.shadow = false;
+    }
+    let px = render_with(Some(&s), &theme, 1920, 1080);
+    let green = px.chunks(4).filter(|p| p[0] < 60 && p[1] > 200 && p[2] < 60).count();
+    let red = px.chunks(4).filter(|p| p[0] > 200 && p[1] < 60 && p[2] < 60).count();
+    assert!(green > 5_000, "expected a green outline, found {green} pixels");
+    assert!(red > 5_000, "expected red letters, found {red} pixels");
+
+    // Without an outline the green goes away.
+    for style in &mut theme.boxes {
+        style.outline_width = 0.0;
+    }
+    let px = render_with(Some(&s), &theme, 1920, 1080);
+    assert_eq!(px.chunks(4).filter(|p| p[0] < 60 && p[1] > 200 && p[2] < 60).count(), 0);
+
+    // The shadow is drawn underneath the letters. With white letters on black, switching it on
+    // must leave exactly the same white pixels.
+    for style in &mut theme.boxes {
+        style.outline_color = Rgba::rgb(255, 255, 255);
+        style.outline_width = 2.0;
+        style.fill = Rgba::rgb(255, 255, 255);
+    }
+    let without = render_with(Some(&s), &theme, 1920, 1080);
+    for style in &mut theme.boxes {
+        style.shadow = true;
+    }
+    let with = render_with(Some(&s), &theme, 1920, 1080);
+    assert_eq!(count_lit(&without), count_lit(&with), "a shadow must not eat into the letters");
 }
 
 #[test]

@@ -255,6 +255,28 @@ mod tests {
         assert_eq!(placement(&theme, &Role::translation(), true).1, theme.boxes[1].rect);
     }
 
+    /// A missing letter is drawn as an empty box, which the picture tests could mistake for
+    /// text. Glyph 0 is the font's "no such letter" box.
+    #[test]
+    fn latin_russian_and_ukrainian_letters_all_have_glyphs() {
+        let text =
+            "ABCXYZ abcxyz 0123456789 АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ абвгдеёжзийклмнопрстуфхцчшщъыьэюя ҐґЄєІіЇї";
+        let theme = Theme::builtin();
+        let layout = lay_out(&mut Fonts::new(), text, &theme.boxes[0], 40.0, 100_000.0);
+        let mut glyphs = 0;
+        for line in layout.lines() {
+            for item in line.items() {
+                if let PositionedLayoutItem::GlyphRun(run) = item {
+                    for glyph in run.glyphs() {
+                        glyphs += 1;
+                        assert_ne!(glyph.id, 0, "a letter has no glyph in the font that was chosen");
+                    }
+                }
+            }
+        }
+        assert!(glyphs >= text.chars().filter(|c| !c.is_whitespace()).count());
+    }
+
     #[test]
     fn parsed_song_slides_build() {
         let p = parse_song_text("T", "[V]\nA\n--\nБ\n\nC\n");

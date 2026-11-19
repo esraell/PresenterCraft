@@ -3,8 +3,7 @@
 //! This draws one frame and returns what the operator asked for. It changes nothing itself.
 
 use egui::{
-    Align, Align2, Color32, CornerRadius, FontId, Frame, Key, Layout, Rect, Sense, Stroke, StrokeKind, TextureId, pos2,
-    vec2,
+    Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Rect, Sense, Stroke, StrokeKind, TextureId, pos2, vec2,
 };
 use pc_engine::{Command, Layer, Show, SlideRef};
 use pc_model::{Rgba, Slide};
@@ -22,22 +21,15 @@ pub struct HomeState {
     pub thumb_width: f32,
     /// Text typed into the library's search box.
     pub filter: String,
+    /// Set by the app when the output has stopped drawing, so the operator is told.
+    pub output_stopped: bool,
 }
 
 impl Default for HomeState {
     fn default() -> HomeState {
-        HomeState { thumb_width: 240.0, filter: String::new() }
+        HomeState { thumb_width: 200.0, filter: String::new(), output_stopped: false }
     }
 }
-
-const KEYS: [(Key, Command); 6] = [
-    (Key::ArrowRight, Command::Next),
-    (Key::ArrowLeft, Command::Previous),
-    (Key::Space, Command::Next),
-    (Key::Home, Command::First),
-    (Key::End, Command::Last),
-    (Key::C, Command::Clear(Layer::Slides)),
-];
 
 fn color32(c: Rgba) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
@@ -84,122 +76,209 @@ pub fn home_ui(
 ) -> Vec<Command> {
     let mut commands = Vec::new();
 
-    // Keys drive the show unless the operator is typing in a text box.
-    if !ui.ctx().text_edit_focused() {
-        ui.input(|input| {
-            for (key, command) in KEYS {
-                if input.key_pressed(key) {
-                    commands.push(command);
-                }
-            }
-        });
-    }
-
     toolbar(ui, show, &mut commands);
     library(ui, show, state, &mut commands);
-    live_panel(ui, show, thumb, preview, &mut commands);
+    live_panel(ui, show, state.output_stopped, thumb, preview, &mut commands);
     slide_area(ui, show, state, thumb, &mut commands);
     commands
 }
 
-/// The strip along the top: the app's name, the clear buttons and the output switch.
+/// One toolbar item: a symbol above a small label, the way operators expect a show toolbar
+/// to read. Items for parts that are not built yet are drawn dim and say so.
+fn tool(ui: &mut egui::Ui, symbol: &str, label: &str, selected: bool, built: bool) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(54.0, 40.0), if built { Sense::click() } else { Sense::hover() });
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, 6.0, Color32::from_gray(64));
+    } else if built && response.hovered() {
+        painter.rect_filled(rect, 6.0, Color32::from_gray(52));
+    }
+    let ink = if !built {
+        Color32::from_gray(90)
+    } else if selected {
+        Color32::WHITE
+    } else {
+        Color32::from_gray(200)
+    };
+    painter.text(rect.center_top() + vec2(0.0, 13.0), Align2::CENTER_CENTER, symbol, FontId::proportional(17.0), ink);
+    painter.text(rect.center_bottom() - vec2(0.0, 8.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), ink);
+    if built { response } else { response.on_hover_text("Not built yet") }
+}
+
+/// A toolbar item for a screen: a status light above its name.
+fn screen_light(ui: &mut egui::Ui, label: &str, on: Option<bool>) -> egui::Response {
+    let built = on.is_some();
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(62.0, 40.0), if built { Sense::click() } else { Sense::hover() });
+    let painter = ui.painter();
+    if built && response.hovered() {
+        painter.rect_filled(rect, 6.0, Color32::from_gray(52));
+    }
+    let light = match on {
+        Some(true) => ON,
+        Some(false) => OFF,
+        None => Color32::from_gray(70),
+    };
+    painter.circle_filled(rect.center_top() + vec2(0.0, 13.0), 6.5, light);
+    let ink = if built { Color32::from_gray(200) } else { Color32::from_gray(90) };
+    painter.text(rect.center_bottom() - vec2(0.0, 8.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), ink);
+    if built { response } else { response.on_hover_text("Not built yet") }
+}
+
+/// The strip along the top: the views on the left, the screens on the right.
 fn toolbar(ui: &mut egui::Ui, show: &Show, commands: &mut Vec<Command>) {
-    egui::Panel::top("toolbar").resizable(false).frame(panel_frame(BAR, 8)).show(ui, |ui| {
+    egui::Panel::top("toolbar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("PresenterCraft").strong().size(15.0));
-            ui.add_space(16.0);
-            if ui.button("Clear slide").on_hover_text("Take the words off the screen (C)").clicked() {
-                commands.push(Command::Clear(Layer::Slides));
-            }
-            if ui.button("Clear all").on_hover_text("Take everything off the screen").clicked() {
-                commands.push(Command::ClearAll);
-            }
+            ui.spacing_mut().item_spacing.x = 4.0;
+            tool(ui, "▶", "Show", true, true);
+            tool(ui, "✎", "Edit", false, false);
+            tool(ui, "≡", "Reflow", false, false);
+            tool(ui, "§", "Bible", false, false);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // One switch for the audience output: a light, a name, and what it is doing.
+                ui.spacing_mut().item_spacing.x = 4.0;
+                screen_light(ui, "Stage", None);
                 let on = show.output_enabled();
-                let label = if on { "Audience  ON" } else { "Audience  OFF" };
-                let button = egui::Button::new(egui::RichText::new(label).strong())
-                    .fill(if on { Color32::from_rgb(28, 60, 38) } else { Color32::from_rgb(70, 30, 30) })
-                    .stroke(Stroke::new(1.0, if on { ON } else { OFF }));
-                if ui.add(button).on_hover_text("Switch the audience output on or off").clicked() {
+                let audience = screen_light(ui, "Audience", Some(on)).on_hover_text(if on {
+                    "The audience output is on. Click to switch it off."
+                } else {
+                    "The audience output is off. Click to switch it on."
+                });
+                if audience.clicked() {
                     commands.push(Command::SetOutputEnabled(!on));
+                }
+                ui.add_space(10.0);
+                tool(ui, "▣", "Media", false, false);
+            });
+        });
+    });
+}
+
+/// The left column: the libraries on top, the selected library's songs below, and a filter
+/// box at the bottom.
+fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
+    egui::Panel::left("library").resizable(false).exact_size(230.0).frame(panel_frame(SIDE, 0)).show(ui, |ui| {
+        let total = show.presentations().len();
+        Frame::new().inner_margin(8).show(ui, |ui| {
+            section_label(ui, "LIBRARY");
+            ui.add_space(2.0);
+            // One library for now: everything that was opened.
+            ui.add_sized(
+                [ui.available_width(), 22.0],
+                egui::Button::selectable(true, "▤  Songs")
+                    .right_text(egui::RichText::new(total.to_string()).weak().size(11.0)),
+            );
+            ui.add_space(8.0);
+            section_label(ui, "PLAYLIST");
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("Playlists are not built yet").size(11.5).color(Color32::from_gray(95)));
+        });
+        ui.separator();
+
+        egui::Panel::bottom("library filter").resizable(false).frame(panel_frame(SIDE, 8)).show(ui, |ui| {
+            ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text("Filter").desired_width(f32::INFINITY));
+        });
+
+        Frame::new().inner_margin(8).show(ui, |ui| {
+            let shown = show.presentations().iter().filter(|p| matches_filter(&p.title, &state.filter)).count();
+            section_label(ui, &format!("{shown} ITEMS"));
+            ui.add_space(2.0);
+            egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
+                for (index, presentation) in show.presentations().iter().enumerate() {
+                    if !matches_filter(&presentation.title, &state.filter) {
+                        continue;
+                    }
+                    let row = ui.add_sized(
+                        [ui.available_width(), 22.0],
+                        egui::Button::selectable(index == show.selected(), presentation.title.as_str())
+                            .right_text(egui::RichText::new(presentation.slide_count().to_string()).weak().size(11.0)),
+                    );
+                    if row.clicked() {
+                        commands.push(Command::Select(index));
+                    }
+                }
+                if total == 0 {
+                    ui.weak("No songs loaded.");
+                } else if shown == 0 {
+                    ui.weak("No song matches.");
                 }
             });
         });
     });
 }
 
-/// The left column: a search box and the songs that match it.
-fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
-    egui::Panel::left("library").resizable(false).exact_size(220.0).frame(panel_frame(SIDE, 8)).show(ui, |ui| {
-        section_label(ui, "LIBRARY");
-        ui.add_space(4.0);
-        ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text("Search songs").desired_width(f32::INFINITY));
-        ui.add_space(6.0);
-        let total = show.presentations().len();
-        let mut shown = 0;
-        egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
-            for (index, presentation) in show.presentations().iter().enumerate() {
-                if !matches_filter(&presentation.title, &state.filter) {
-                    continue;
-                }
-                shown += 1;
-                let selected = index == show.selected();
-                let row = ui.add_sized(
-                    [ui.available_width(), 22.0],
-                    egui::Button::selectable(selected, presentation.title.as_str())
-                        .right_text(egui::RichText::new(presentation.slide_count().to_string()).weak().size(11.0)),
-                );
-                if row.clicked() {
-                    commands.push(Command::Select(index));
-                }
-            }
-            if total == 0 {
-                ui.weak("No songs loaded.");
-            } else if shown == 0 {
-                ui.weak("No song matches.");
-            }
-        });
-    });
+/// A square button in the column beside the preview that clears one thing from the screen.
+/// It is lit while that thing is showing.
+fn clear_button(ui: &mut egui::Ui, symbol: &str, lit: bool, hint: &str) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+    let fill = if lit {
+        Color32::from_rgb(120, 34, 34)
+    } else if response.hovered() {
+        Color32::from_gray(60)
+    } else {
+        Color32::from_gray(44)
+    };
+    ui.painter().rect_filled(rect, 5.0, fill);
+    let ink = if lit { Color32::WHITE } else { Color32::from_gray(170) };
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, symbol, FontId::proportional(15.0), ink);
+    response.on_hover_text(hint).clicked()
 }
 
-/// The right column: what the audience sees now, what comes next, and the keys.
+/// The right column: what the audience sees now with the clear buttons beside it, then what
+/// comes next, and the keys.
 fn live_panel(
     ui: &mut egui::Ui,
     show: &Show,
+    output_stopped: bool,
     thumb: &mut dyn FnMut(&Slide) -> Option<(TextureId, bool)>,
     preview: Option<TextureId>,
     commands: &mut Vec<Command>,
 ) {
-    egui::Panel::right("live").resizable(false).exact_size(300.0).frame(panel_frame(SIDE, 8)).show(ui, |ui| {
-        section_label(ui, "LIVE");
-        ui.add_space(4.0);
-        let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(vec2(width, width * 9.0 / 16.0), Sense::hover());
-        ui.painter().rect_filled(rect, 4.0, Color32::BLACK);
-        if let Some(texture) = preview {
-            egui::Image::from_texture((texture, rect.size())).paint_at(ui, rect);
-        }
+    egui::Panel::right("live").resizable(false).exact_size(320.0).frame(panel_frame(SIDE, 8)).show(ui, |ui| {
         let live = show.live().is_some();
-        if !show.output_enabled() {
-            ui.painter().rect_filled(rect, 4.0, Color32::from_black_alpha(190));
-            ui.painter().text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                "Audience output is off",
-                FontId::proportional(15.0),
-                OFF,
-            );
+        let strip = 28.0;
+        let gap = 6.0;
+        let width = ui.available_width() - strip - gap;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing = vec2(gap, 4.0);
+            let (rect, _) = ui.allocate_exact_size(vec2(width, width * 9.0 / 16.0), Sense::hover());
+            ui.painter().rect_filled(rect, 4.0, Color32::BLACK);
+            if let Some(texture) = preview {
+                egui::Image::from_texture((texture, rect.size())).paint_at(ui, rect);
+            }
+            if !show.output_enabled() {
+                ui.painter().rect_filled(rect, 4.0, Color32::from_black_alpha(190));
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    "Audience output is off",
+                    FontId::proportional(14.0),
+                    OFF,
+                );
+            }
+            let edge = if !show.output_enabled() {
+                OFF
+            } else if live {
+                ON
+            } else {
+                Color32::from_gray(70)
+            };
+            ui.painter().rect_stroke(rect, 4.0, Stroke::new(2.0, edge), StrokeKind::Outside);
+
+            ui.vertical(|ui| {
+                if clear_button(ui, "✖", live, "Clear everything from the screen (F1)") {
+                    commands.push(Command::ClearAll);
+                }
+                if clear_button(ui, "T", live, "Clear the slide: take the words off the screen (C)") {
+                    commands.push(Command::Clear(Layer::Slides));
+                }
+            });
+        });
+        ui.add_space(4.0);
+        if output_stopped {
+            ui.label(egui::RichText::new("The output has stopped. Quit and start again.").strong().color(OFF));
         }
-        let edge = if !show.output_enabled() {
-            OFF
-        } else if live {
-            ON
-        } else {
-            Color32::from_gray(70)
-        };
-        ui.painter().rect_stroke(rect, 4.0, Stroke::new(2.0, edge), StrokeKind::Outside);
-        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Audience screen").size(11.5).color(Color32::from_gray(140)));
         match show.live_slide() {
             Some((presentation, _)) => {
                 let at = show.live().map_or(0, |l| l.slide + 1);
@@ -210,7 +289,8 @@ fn live_panel(
             }
         }
 
-        ui.add_space(14.0);
+        ui.add_space(12.0);
+        ui.separator();
         section_label(ui, "NEXT");
         ui.add_space(4.0);
         let small = vec2(width * 0.6, width * 0.6 * 9.0 / 16.0);
@@ -238,7 +318,8 @@ fn live_panel(
             }
         }
 
-        ui.add_space(14.0);
+        ui.add_space(12.0);
+        ui.separator();
         section_label(ui, "KEYS");
         ui.add_space(2.0);
         egui::Grid::new("keys").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
@@ -247,6 +328,7 @@ fn live_panel(
                 ("←", "Previous slide"),
                 ("Home  End", "First, last slide"),
                 ("C", "Clear slide"),
+                ("F1", "Clear all"),
             ] {
                 ui.label(egui::RichText::new(key).monospace().size(12.0));
                 ui.weak(what);
@@ -361,7 +443,7 @@ fn slide_area(
 mod tests {
     use std::sync::Arc;
 
-    use egui::{Event, Modifiers, RawInput};
+    use egui::{Event, Key, Modifiers, RawInput};
     use pc_model::parse_song_text;
 
     use super::*;
@@ -436,24 +518,6 @@ mod tests {
     fn group_bar_text_contrasts_with_its_colour() {
         assert_eq!(text_on(Rgba::rgb(250, 240, 200)), Color32::BLACK);
         assert_eq!(text_on(Rgba::rgb(20, 40, 120)), Color32::WHITE);
-    }
-
-    #[test]
-    fn keys_map_to_commands() {
-        let ctx = egui::Context::default();
-        let show = show(3);
-        for (key, expected) in [
-            (Key::ArrowRight, Command::Next),
-            (Key::ArrowLeft, Command::Previous),
-            (Key::Space, Command::Next),
-            (Key::Home, Command::First),
-            (Key::End, Command::Last),
-            (Key::C, Command::Clear(Layer::Slides)),
-        ] {
-            assert_eq!(frame(&ctx, &show, Some(key)).0, vec![expected], "{key:?}");
-        }
-        assert!(frame(&ctx, &show, Some(Key::Q)).0.is_empty());
-        assert!(frame(&ctx, &show, None).0.is_empty());
     }
 
     #[test]

@@ -46,7 +46,8 @@ Options:
                          home window to FILE (PNG) and quit
   -h, --help             Show this help
 
-Keys: Right or Space next, Left previous, Home first, End last, C clear slide.
+Keys: Right or Space next, Left previous, Home first, End last, C clear slide,
+      F1 clear all.
 ";
 
 #[derive(Debug)]
@@ -82,13 +83,15 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
     Ok(Some(options))
 }
 
-/// The keys that work while the output window has the keyboard (useful with one display).
-fn output_key_command(key: &Key) -> Option<Command> {
+/// The keys that run the show. They are read straight from the window, before the interface
+/// draws, so a key press reaches the output without waiting for the home window.
+fn show_key_command(key: &Key) -> Option<Command> {
     match key {
         Key::Named(NamedKey::ArrowRight | NamedKey::Space) => Some(Command::Next),
         Key::Named(NamedKey::ArrowLeft) => Some(Command::Previous),
         Key::Named(NamedKey::Home) => Some(Command::First),
         Key::Named(NamedKey::End) => Some(Command::Last),
+        Key::Named(NamedKey::F1) => Some(Command::ClearAll),
         Key::Character(c) if c.eq_ignore_ascii_case("c") => Some(Command::Clear(Layer::Slides)),
         _ => None,
     }
@@ -252,6 +255,8 @@ impl App {
             .ok_or("No graphics device was found that PresenterCraft can use.")?;
         let handle = &context.devices[device_id];
         let gpu = Gpu { device: handle.device.clone(), queue: handle.queue.clone() };
+        // By default a graphics error ends the program; in a service it is better to say so and carry on.
+        gpu.device.on_uncaptured_error(Arc::new(|error| eprintln!("Graphics error: {error}")));
         let home_format = surface_format(&home_surface, handle.adapter())?;
 
         let output_surface = context
@@ -339,15 +344,16 @@ impl App {
         }
         if output_changed {
             let live = self.show.live_slide().map(|(_, slide)| Arc::new(slide.clone()));
+            // The audience comes first: tell the output before drawing anything for the operator.
+            if let Some(output) = &running.output {
+                let frame =
+                    Frame { slide: live.clone(), theme: self.theme.clone(), enabled: self.show.output_enabled() };
+                if !output.send(OutputMsg::Show(frame)) {
+                    running.home_state.output_stopped = true;
+                }
+            }
             running.preview =
                 running.thumbs.preview(&running.gpu, &mut running.egui_renderer, live.as_deref(), &self.theme);
-            if let Some(output) = &running.output {
-                output.send(OutputMsg::Show(Frame {
-                    slide: live,
-                    theme: self.theme.clone(),
-                    enabled: self.show.output_enabled(),
-                }));
-            }
         }
         if any {
             running.home_window.request_redraw();
@@ -364,6 +370,9 @@ impl App {
         } = running;
         let raw_input = egui_state.take_egui_input(home_window);
         thumbs.begin_frame();
+        if running.output.as_ref().is_none_or(OutputHandle::is_finished) {
+            running.home_state.output_stopped = true;
+        }
         let mut commands = Vec::new();
         let (show, theme, preview) = (&self.show, &self.theme, running.preview);
         let home_state = &mut running.home_state;
@@ -491,8 +500,15 @@ impl ApplicationHandler for App {
                         output.send(OutputMsg::Resized(size.width, size.height));
                     }
                 }
+                // Uncovered, moved to another display, or asked to redraw: a frame skipped while
+                // the window was hidden must not leave old words on screen.
+                WindowEvent::Occluded(false) | WindowEvent::RedrawRequested => {
+                    if let Some(output) = &running.output {
+                        output.send(OutputMsg::Redraw);
+                    }
+                }
                 WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                    if let Some(command) = output_key_command(&event.logical_key) {
+                    if let Some(command) = show_key_command(&event.logical_key) {
                         self.apply(vec![command]);
                     }
                 }
@@ -501,6 +517,16 @@ impl ApplicationHandler for App {
             return;
         }
         if id != running.home_window.id() {
+            return;
+        }
+        // Show keys act at once and are not passed on, so Space can never also press whatever
+        // control happens to have the keyboard. Typing in a text box is left alone.
+        if let WindowEvent::KeyboardInput { event: key, .. } = &event
+            && key.state == ElementState::Pressed
+            && !running.egui_ctx.text_edit_focused()
+            && let Some(command) = show_key_command(&key.logical_key)
+        {
+            self.apply(vec![command]);
             return;
         }
         if running.egui_state.on_window_event(&running.home_window, &event).repaint {
@@ -624,11 +650,16 @@ mod tests {
     }
 
     #[test]
-    fn output_window_keys() {
-        assert_eq!(output_key_command(&Key::Named(NamedKey::ArrowRight)), Some(Command::Next));
-        assert_eq!(output_key_command(&Key::Named(NamedKey::Space)), Some(Command::Next));
-        assert_eq!(output_key_command(&Key::Named(NamedKey::ArrowLeft)), Some(Command::Previous));
-        assert_eq!(output_key_command(&Key::Character("C".into())), Some(Command::Clear(Layer::Slides)));
-        assert_eq!(output_key_command(&Key::Character("x".into())), None);
+    fn show_keys() {
+        assert_eq!(show_key_command(&Key::Named(NamedKey::ArrowRight)), Some(Command::Next));
+        assert_eq!(show_key_command(&Key::Named(NamedKey::Space)), Some(Command::Next));
+        assert_eq!(show_key_command(&Key::Named(NamedKey::ArrowLeft)), Some(Command::Previous));
+        assert_eq!(show_key_command(&Key::Character("C".into())), Some(Command::Clear(Layer::Slides)));
+        assert_eq!(show_key_command(&Key::Character("x".into())), None);
+        assert_eq!(show_key_command(&Key::Named(NamedKey::Home)), Some(Command::First));
+        assert_eq!(show_key_command(&Key::Named(NamedKey::End)), Some(Command::Last));
+        assert_eq!(show_key_command(&Key::Named(NamedKey::F1)), Some(Command::ClearAll));
+        assert_eq!(show_key_command(&Key::Character("c".into())), Some(Command::Clear(Layer::Slides)));
+        assert_eq!(show_key_command(&Key::Named(NamedKey::Tab)), None);
     }
 }

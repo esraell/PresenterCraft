@@ -21,6 +21,8 @@ pub enum OutputMsg {
     Show(Frame),
     /// The output's surface changed size, in pixels.
     Resized(u32, u32),
+    /// Draw the current frame again: the window was uncovered or asked to be redrawn.
+    Redraw,
     Shutdown,
 }
 
@@ -48,9 +50,14 @@ impl OutputHandle {
         Ok(OutputHandle { tx, thread: Some(thread) })
     }
 
-    /// Never blocks. A message to a thread that has ended is dropped.
-    pub fn send(&self, msg: OutputMsg) {
-        let _ = self.tx.send(msg);
+    /// Never blocks. Returns false when the thread has ended and the message went nowhere.
+    pub fn send(&self, msg: OutputMsg) -> bool {
+        self.tx.send(msg).is_ok()
+    }
+
+    /// True once the thread has stopped, which it only does on shutdown or a fatal error.
+    pub fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
     /// Stops the thread and waits for it.
@@ -121,6 +128,7 @@ fn run(
             match msg {
                 OutputMsg::Show(frame) => output.frame = frame,
                 OutputMsg::Resized(w, h) => output.resize(w, h),
+                OutputMsg::Redraw => {}
                 OutputMsg::Shutdown => return,
             }
             next = rx.try_recv().ok();
