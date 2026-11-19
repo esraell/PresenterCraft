@@ -95,6 +95,9 @@ ProPresenter.
   and fifteen more can be downloaded from Options › Bibles.
 - Passages can be saved to the service and brought back with the same settings.
 
+Save as Song makes the passage a song in the library, named like "John 3:16-18 (KJV, SYN)" and
+drawn with the Bible's theme.
+
 ![The Bible view: John 3:16-18 in English and Russian](docs/images/bible.png)
 
 **Editing**
@@ -183,7 +186,6 @@ Among the things PresenterCraft can't do yet:
 - Fills other than a colour (gradients, media, cut-out text), feathering, objects shown only
   under conditions, and pen, web and sticker objects; baseline and paragraph spacing; builds
   delivered bullet by bullet.
-- Saving a Bible passage as a song of its own.
 - Importing songs from other presentation apps or from CCLI SongSelect; exporting and printing.
 - Undo that names what it undoes, editable key mappings, and a Slide Labels settings pane.
 - Tested builds for Windows and Linux.

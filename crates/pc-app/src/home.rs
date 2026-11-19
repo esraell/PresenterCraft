@@ -54,6 +54,8 @@ pub struct HomeState {
     /// The New Song sheet while it is open, and a song it asked to be made.
     pub new_song_sheet: Option<NewSong>,
     pub new_song_request: Option<NewSong>,
+    /// The Bible page's passage to be made a song: which of its two pages, and the song's title.
+    pub bible_song_request: Option<(usize, String)>,
     /// The song's title while it is being retyped in the heading, and the title just typed,
     /// with the song's place, for the app to take.
     pub renaming_song: Option<String>,
@@ -691,6 +693,7 @@ impl Default for HomeState {
             new_song: false,
             new_song_sheet: None,
             new_song_request: None,
+            bible_song_request: None,
             renaming_song: None,
             pending_title: None,
             renaming_group: None,
@@ -3511,9 +3514,25 @@ fn bible_area(
                         .on_hover_text("Keep this passage in the service, ready to open again")
                         .on_disabled_hover_text("Look a passage up first");
                     if save.clicked()
-                        && let Some(saved) = saved
+                        && let Some(saved) = saved.clone()
                     {
                         state.services.add(crate::service::Item::Passage(saved));
+                    }
+                    // A song of its own, named by the passage and its Bibles: "John 3:16-18 (KJV, SYN)".
+                    let as_song = ui
+                        .add_enabled(saved.is_some(), egui::Button::new("Save as Song"))
+                        .on_hover_text("Make this passage a song in the library, drawn with the Bible's theme")
+                        .on_disabled_hover_text("Look a passage up first");
+                    if as_song.clicked()
+                        && let Some(saved) = saved
+                    {
+                        let bibles: Vec<String> = saved.rows.iter().map(|row| row.bible.to_uppercase()).collect();
+                        let title = if bibles.is_empty() {
+                            saved.lookup.clone()
+                        } else {
+                            format!("{} ({})", saved.lookup, bibles.join(", "))
+                        };
+                        state.bible_song_request = Some((state.bible.showing, title));
                     }
                 });
             });
