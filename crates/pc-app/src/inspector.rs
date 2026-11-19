@@ -244,6 +244,38 @@ fn tick_later(ui: &mut egui::Ui, on: &mut bool, title: &str) {
 }
 
 /// A dim label on the left and a control filling the rest of the row.
+/// The spacing pop-up under the gear: room between letters, between lines, and inside the
+/// box's edges.
+fn spacing_popup(ui: &mut egui::Ui, wanted: &mut pc_model::BoxStyle) {
+    ui.set_width(250.0);
+    egui::Grid::new("text spacing").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        ui.label(egui::RichText::new("Character Spacing").size(12.5).color(DIM));
+        ui.add(egui::DragValue::new(&mut wanted.letter_spacing).speed(0.2).range(-20.0..=100.0).max_decimals(1))
+            .on_hover_text("Extra room between letters, in points at the box's font size");
+        ui.end_row();
+        ui.label(egui::RichText::new("Line Height").size(12.5).color(DIM));
+        ui.add(egui::DragValue::new(&mut wanted.line_height).speed(0.01).range(0.5..=3.0).fixed_decimals(2))
+            .on_hover_text("The distance from one line to the next, as a multiple of the font size");
+        ui.end_row();
+    });
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Margins").size(12.5).color(DIM));
+    ui.horizontal(|ui| {
+        for (margin, name) in wanted.margins.iter_mut().zip(["Left", "Top", "Right", "Bottom"]) {
+            ui.vertical(|ui| {
+                ui.add(egui::DragValue::new(margin).speed(1.0).range(0.0..=400.0).max_decimals(0));
+                ui.label(egui::RichText::new(name).size(10.5).color(DIM));
+            });
+        }
+    });
+    ui.add_space(8.0);
+    if ui.button("Reset Spacing").clicked() {
+        wanted.letter_spacing = 0.0;
+        wanted.line_height = pc_model::LINE_HEIGHT;
+        wanted.margins = [0.0; 4];
+    }
+}
+
 fn labelled(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, f32)) {
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(104.0, ROW), Layout::right_to_left(Align::Center), |ui| {
@@ -778,10 +810,13 @@ fn text_look(
             None => {}
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let gear = ui.add_enabled(false, egui::Button::new("").min_size(vec2(80.0, ROW)));
+            // Spacing: between letters, between lines, and inside the box's edges.
+            let gear = ui.add(egui::Button::new("").min_size(vec2(80.0, ROW))).on_hover_text("Spacing");
             let mark = Rect::from_center_size(gear.rect.center(), vec2(14.0, 14.0));
-            crate::icons::paint(ui.painter(), crate::icons::Icon::Gear, mark, DIM);
-            gear.on_disabled_hover_text(not_built("More text options"));
+            crate::icons::paint(ui.painter(), crate::icons::Icon::Gear, mark, INK);
+            egui::Popup::from_toggle_button_response(&gear)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| spacing_popup(ui, wanted));
         });
     });
     labelled(ui, "Capitalization", |ui, width| {

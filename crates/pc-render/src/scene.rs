@@ -127,7 +127,11 @@ fn lay_out(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: f3
     }
     builder.push_default(StyleProperty::Underline(style.underline));
     builder.push_default(StyleProperty::Strikethrough(style.strike));
-    builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(1.25)));
+    builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(style.line_height.clamp(0.5, 4.0))));
+    // Letter spacing is set at the box's font size; text shrunk to fit keeps it in proportion.
+    if style.letter_spacing != 0.0 {
+        builder.push_default(StyleProperty::LetterSpacing(style.letter_spacing * size / style.size.max(1.0)));
+    }
     builder.push_default(StyleProperty::FontFamily(style.font_family.as_str().into()));
     let mut layout: Layout<()> = builder.build(text);
     let alignment = match style.align {
@@ -193,6 +197,14 @@ fn draw_text_box(
 ) -> bool {
     let text = &*style.line_transform.apply(text);
     let text = &*style.caps.apply(text);
+    // The text is laid out inside the box's margins.
+    let [left, top, right, bottom] = style.margins.map(|margin| margin.max(0.0));
+    let rect = SlideRect {
+        x: rect.x + left,
+        y: rect.y + top,
+        w: (rect.w - left - right).max(1.0),
+        h: (rect.h - top - bottom).max(1.0),
+    };
     let (layout, overflow) = fit(fonts, text, style, rect);
     // Place the text block in its box (in the middle it may spill both ways when it overflows).
     let spare = f64::from(rect.h) - f64::from(layout.height());
@@ -442,6 +454,30 @@ mod tests {
         // A lone main-language object sits in the theme's centred place.
         let alone = slide("A", None);
         assert_eq!(object_frame(&alone, &alone.objects[0], &theme), theme.templates[1].boxes[0].rect);
+    }
+
+    #[test]
+    fn spacing_widens_letters_spreads_lines_and_margins_squeeze_the_text() {
+        let mut fonts = Fonts::new();
+        let theme = Theme::builtin();
+        let base = theme.templates[0].boxes[0].clone();
+        let text = "Light rises\nover the hills";
+        let plain = lay_out(&mut fonts, text, &base, 60.0, 10_000.0);
+        let spaced = BoxStyle { letter_spacing: 10.0, ..base.clone() };
+        assert!(lay_out(&mut fonts, text, &spaced, 60.0, 10_000.0).width() > plain.width() + 50.0);
+        let tall = BoxStyle { line_height: 2.0, ..base.clone() };
+        assert!(lay_out(&mut fonts, text, &tall, 60.0, 10_000.0).height() > plain.height() * 1.4);
+        // Text that fits its box no longer fits once wide margins are kept clear inside it.
+        let fixed = |margins| {
+            let look = BoxStyle { margins, scaling: Scaling::None, ..base.clone() };
+            let mut object = Object::text(Role::primary(), "Light rises over the hills");
+            let ObjectKind::Text { style, .. } = &mut object.kind;
+            *style = pc_model::TextStyle::all(&look);
+            object.frame = Some(SlideRect { x: 100.0, y: 100.0, w: 1700.0, h: 300.0 });
+            build_scene(&mut Fonts::new(), Some(&Slide::new(vec![object])), &theme, 1920, 1080).overflow
+        };
+        assert!(!fixed([0.0; 4]));
+        assert!(fixed([600.0, 120.0, 600.0, 120.0]));
     }
 
     #[test]

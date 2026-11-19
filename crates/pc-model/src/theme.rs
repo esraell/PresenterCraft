@@ -137,7 +137,10 @@ impl BoxStyle {
             underline,
             strike,
             scaling,
-            line_transform
+            line_transform,
+            line_height,
+            letter_spacing,
+            margins
         );
         self.min_size = self.min_size.min(self.size);
     }
@@ -198,6 +201,22 @@ pub struct BoxStyle {
     pub scaling: Scaling,
     #[serde(default)]
     pub line_transform: LineTransform,
+    /// The distance from one line to the next, as a multiple of the font size.
+    #[serde(default = "usual_line_height")]
+    pub line_height: f32,
+    /// Extra room between letters, in slide units at the box's font size.
+    #[serde(default)]
+    pub letter_spacing: f32,
+    /// Room kept clear inside the box's edges, in slide units: left, top, right, bottom.
+    #[serde(default)]
+    pub margins: [f32; 4],
+}
+
+/// The distance from one line to the next that text has unless it is given another.
+pub const LINE_HEIGHT: f32 = 1.25;
+
+fn usual_line_height() -> f32 {
+    LINE_HEIGHT
 }
 
 /// One layout of a theme: a set of named boxes, each with its place and its look. A slide is
@@ -418,6 +437,9 @@ impl Theme {
             strike: false,
             scaling: Scaling::TextDown,
             line_transform: LineTransform::None,
+            line_height: LINE_HEIGHT,
+            letter_spacing: 0.0,
+            margins: [0.0; 4],
         };
         let main =
             base(Role::primary(), SlideRect { x: 120.0, y: 170.0, w: 1680.0, h: 400.0 }, 96.0, 40.0, Rgba::WHITE, 6.0);
@@ -586,6 +608,12 @@ pub struct TextStyle {
     pub scaling: Option<Scaling>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_transform: Option<LineTransform>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_height: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub letter_spacing: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margins: Option<[f32; 4]>,
 }
 
 impl TextStyle {
@@ -613,6 +641,9 @@ impl TextStyle {
             strike: Some(look.strike),
             scaling: Some(look.scaling),
             line_transform: Some(look.line_transform),
+            line_height: Some(look.line_height),
+            letter_spacing: Some(look.letter_spacing),
+            margins: Some(look.margins),
         }
     }
 
@@ -641,6 +672,9 @@ impl TextStyle {
             strike: self.strike.unwrap_or(base.strike),
             scaling: self.scaling.unwrap_or(base.scaling),
             line_transform: self.line_transform.unwrap_or(base.line_transform),
+            line_height: self.line_height.unwrap_or(base.line_height),
+            letter_spacing: self.letter_spacing.unwrap_or(base.letter_spacing),
+            margins: self.margins.unwrap_or(base.margins),
         }
     }
 
@@ -663,6 +697,9 @@ impl TextStyle {
             strike: (wanted.strike != base.strike).then_some(wanted.strike),
             scaling: (wanted.scaling != base.scaling).then_some(wanted.scaling),
             line_transform: (wanted.line_transform != base.line_transform).then_some(wanted.line_transform),
+            line_height: (wanted.line_height != base.line_height).then_some(wanted.line_height),
+            letter_spacing: (wanted.letter_spacing != base.letter_spacing).then_some(wanted.letter_spacing),
+            margins: (wanted.margins != base.margins).then_some(wanted.margins),
         }
     }
 }
@@ -863,6 +900,32 @@ mod tests {
         // An old file with none of these fields still reads, and looks as the theme has it.
         let old: TextStyle = serde_json::from_str("{\"size\": 80.0}").unwrap();
         assert_eq!(old.over(base).valign, VAlign::Middle);
+        assert_eq!((old.over(base).line_height, old.over(base).letter_spacing), (LINE_HEIGHT, 0.0));
+    }
+
+    #[test]
+    fn spacing_is_kept_only_where_changed_and_survives_the_file() {
+        let base = Theme::builtin().templates[0].boxes[0].clone();
+        let wanted =
+            BoxStyle { line_height: 1.6, letter_spacing: 4.0, margins: [10.0, 20.0, 10.0, 0.0], ..base.clone() };
+        let own = TextStyle::between(&base, &wanted);
+        assert_eq!(own.line_height, Some(1.6));
+        assert_eq!(own.margins, Some([10.0, 20.0, 10.0, 0.0]));
+        assert_eq!(own.size, None);
+        assert_eq!(own.over(&base), wanted);
+        let again: TextStyle = serde_json::from_str(&serde_json::to_string(&own).unwrap()).unwrap();
+        assert_eq!(again, own);
+        // A box style from a file written before spacing could be set reads with the usual spacing.
+        let mut json = serde_json::to_value(&base).unwrap();
+        for field in ["line_height", "letter_spacing", "margins"] {
+            json.as_object_mut().unwrap().remove(field);
+        }
+        let old: BoxStyle = serde_json::from_value(json).unwrap();
+        assert_eq!((old.line_height, old.letter_spacing, old.margins), (LINE_HEIGHT, 0.0, [0.0; 4]));
+        // A change to spacing made on one box is carried to another.
+        let mut other = Theme::builtin().templates[0].boxes[1].clone();
+        other.follow_change(&base, &wanted);
+        assert_eq!((other.line_height, other.letter_spacing), (1.6, 4.0));
     }
 
     #[test]

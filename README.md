@@ -63,6 +63,7 @@ ProPresenter.
 - An editor for a song's slides: move, resize and restyle text boxes, with alignment guides
   and a safe-area edge, multi-select (Shift or Command, or drag a box around them), copy and
   paste, undo, renaming by clicking a name, font search, and typing straight on the slide.
+- Character spacing, line height and margins for a text box, under the gear beside B I U S.
 - A plus tile after the last slide adds a slide laid out like the one before it.
 - **Cmd+N** makes a new song.
 
@@ -99,7 +100,7 @@ Among the things PresenterCraft can't do yet:
 - Videos, audio, and live video inputs.
 - Stage layouts other than the built-in one; timers, messages, props, macros.
 - Transitions other than Cut and Dissolve.
-- Formatting one word differently from the rest of its box; line and letter spacing.
+- Formatting one word differently from the rest of its box.
 - Importing songs from other presentation apps or from CCLI SongSelect.
 - Tested builds for Windows and Linux.
 - Remote control, an API, and MCP.

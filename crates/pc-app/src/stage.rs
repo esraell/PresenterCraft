@@ -96,6 +96,9 @@ fn base_box() -> BoxStyle {
         strike: false,
         scaling: pc_model::Scaling::TextDown,
         line_transform: pc_model::LineTransform::None,
+        line_height: pc_model::LINE_HEIGHT,
+        letter_spacing: 0.0,
+        margins: [0.0; 4],
     }
 }
 
