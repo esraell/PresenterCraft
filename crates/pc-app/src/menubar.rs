@@ -57,6 +57,10 @@ pub enum Action {
     MacrosTab,
     StageTab,
     AudioTab,
+    MediaBin,
+    NextBackground,
+    PreviousBackground,
+    ShowLiveSong,
     GridView,
     EasyView,
     TableView,
@@ -112,6 +116,10 @@ const fn option_shift_cmd(key: char) -> Option<Shortcut> {
 
 const fn ctrl(key: char) -> Option<Shortcut> {
     Some(Shortcut { command: false, control: true, option: false, shift: false, key })
+}
+
+const fn ctrl_shift(key: char) -> Option<Shortcut> {
+    Some(Shortcut { command: false, control: true, option: false, shift: true, key })
 }
 
 /// Items the system provides and runs itself.
@@ -250,9 +258,10 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Check(Action::TimersTab, "Timers", ctrl('C')),
             Check(Action::MessagesTab, "Messages", ctrl('M')),
             Check(Action::PropsTab, "Props", ctrl('P')),
-            Check(Action::MacrosTab, "Macros", None),
+            Check(Action::MacrosTab, "Macros", ctrl_shift('M')),
             Check(Action::StageTab, "Stage", shift_cmd('S')),
             Check(Action::AudioTab, "Audio", ctrl('A')),
+            Check(Action::MediaBin, "Media Bin", ctrl('V')),
             Line,
             Check(Action::Continuous, "Continuous Playlist", None),
             Line,
@@ -275,6 +284,10 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Do(Action::ClearProps, "Clear Props", None),
             Do(Action::ClearMessages, "Clear Messages", None),
             Do(Action::ClearAudio, "Clear Audio", None),
+            Line,
+            Do(Action::NextBackground, "Next Background", None),
+            Do(Action::PreviousBackground, "Previous Background", None),
+            Do(Action::ShowLiveSong, "Show Live Song", cmd('L')),
         ],
     ),
     (

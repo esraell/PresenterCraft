@@ -356,6 +356,38 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 if response.on_hover_text(hint).clicked() {
                     commands.push(Command::SetOutputEnabled(!on));
                 }
+                // The stage screens: a light and whether they are on.
+                let stage_on = state.stage_on;
+                let (rect, response) = ui.allocate_exact_size(vec2(118.0, 30.0), Sense::click());
+                let painter = ui.painter();
+                painter.rect_filled(rect, RADIUS, if response.hovered() { HOVER } else { CARD });
+                painter.circle_filled(
+                    rect.left_center() + vec2(15.0, 0.0),
+                    4.5,
+                    if stage_on { READY } else { TEXT_FAINT },
+                );
+                painter.text(
+                    rect.left_center() + vec2(28.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    "Stage",
+                    FontId::proportional(13.5),
+                    TEXT,
+                );
+                painter.text(
+                    rect.right_center() - vec2(12.0, 0.0),
+                    Align2::RIGHT_CENTER,
+                    if stage_on { "ON" } else { "OFF" },
+                    FontId::proportional(11.0),
+                    if stage_on { READY } else { TEXT_DIM },
+                );
+                let hint = if stage_on {
+                    "The stage screens are on. Click to switch them off (Command-2)."
+                } else {
+                    "The stage screens are off. Click to switch them on (Command-2)."
+                };
+                if response.on_hover_text(hint).clicked() {
+                    state.stage_on = !stage_on;
+                }
             });
         });
     });
@@ -1065,6 +1097,10 @@ pub fn media_strip(
     thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
     commands: &mut Vec<Command>,
 ) {
+    // Folded away from the View menu, unless there is something to say or a file is being dropped.
+    if state.media_hidden && state.notice.is_none() && !state.drop_hover {
+        return;
+    }
     let empty = show.media().is_empty();
     let height = if empty && !state.drop_hover { 40.0 } else { 148.0 };
     let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(16, 10));

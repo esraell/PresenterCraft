@@ -206,6 +206,9 @@ fn action_commands(show: &Show, state: &home::HomeState, action: &pc_model::Show
             ClearWhat::Messages => Command::Clear(pc_engine::Layer::Messages),
         }]),
         ShowAction::Audience { on } => Some(vec![Command::SetOutputEnabled(*on)]),
+        ShowAction::Media { id } => {
+            Some(show.media().iter().position(|item| item.id == *id).map(Command::ShowMedia).into_iter().collect())
+        }
         ShowAction::Song { key } => {
             // The song's first slide in its play order that is not disabled.
             let at = state.song_keys.iter().position(|have| have == key);
@@ -252,7 +255,8 @@ fn do_state_action(state: &mut home::HomeState, action: &pc_model::ShowAction, n
                 }
             }
         }
-        ShowAction::Clear { .. } | ShowAction::Audience { .. } | ShowAction::Song { .. } => {}
+        ShowAction::Clear { .. } | ShowAction::Audience { .. } | ShowAction::Song { .. } | ShowAction::Media { .. } => {
+        }
     }
 }
 
@@ -2738,6 +2742,28 @@ impl App {
             A::MacrosTab => state.live_tab = 3,
             A::StageTab => state.live_tab = 4,
             A::AudioTab => state.live_tab = 5,
+            A::MediaBin => state.media_hidden = !state.media_hidden,
+            A::NextBackground | A::PreviousBackground => {
+                // The next (or last) picture in the media bin, round to the start (or end).
+                let count = self.show.media().len();
+                if count > 0 {
+                    let at = match (self.show.live_media(), action == A::NextBackground) {
+                        (Some(live), true) => (live + 1) % count,
+                        (Some(live), false) => (live + count - 1) % count,
+                        (None, true) => 0,
+                        (None, false) => count - 1,
+                    };
+                    commands.push(Command::ShowMedia(at));
+                }
+            }
+            A::ShowLiveSong => {
+                // The song on screen, chosen in the Show view.
+                if let Some(live) = self.show.live() {
+                    commands.push(Command::Select(live.presentation));
+                    state.editing = None;
+                    state.bible_open = false;
+                }
+            }
             A::ClearAudio => commands.push(Command::Clear(pc_engine::Layer::Audio)),
             A::ClearProps => commands.push(Command::Clear(pc_engine::Layer::Props)),
             A::ClearMessages => commands.push(Command::Clear(pc_engine::Layer::Messages)),
@@ -2814,6 +2840,7 @@ impl App {
                 A::MacrosTab => state.live_tab == 3,
                 A::StageTab => state.live_tab == 4,
                 A::AudioTab => state.live_tab == 5,
+                A::MediaBin => !state.media_hidden,
                 A::IdentifyScreens => state.identify,
                 _ => action == view || action == slide_view,
             });
@@ -3418,6 +3445,14 @@ mod tests {
         );
         let gone = pc_model::ShowAction::Song { key: "nowhere".to_owned() };
         assert_eq!(action_commands(&show, &state, &gone), Some(Vec::new()));
+        // A media action shows its picture from the media bin, found by its id.
+        let mut show = show;
+        let picture = pc_model::MediaItem { id: Uuid::new_v4(), name: "Sky".to_owned(), path: "/sky.png".into() };
+        let at = show.add_media(picture.clone());
+        let media = pc_model::ShowAction::Media { id: picture.id };
+        assert_eq!(action_commands(&show, &state, &media), Some(vec![Command::ShowMedia(at)]));
+        let missing = pc_model::ShowAction::Media { id: Uuid::new_v4() };
+        assert_eq!(action_commands(&show, &state, &missing), Some(Vec::new()));
     }
 
     #[test]

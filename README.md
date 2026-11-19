@@ -76,7 +76,7 @@ ProPresenter.
   **Props** (things that stay over the slides until taken off, made in the editor, with an
   optional time to clear themselves), **Macros** (coloured buttons that clear layers, show or
   hide messages and props, start, stop or reset timers, switch the audience screens and go to
-  songs, optionally when the app starts), **Audio** (tracks such as walk-in music: play, pause,
+  songs, show a picture from the media bin, optionally when the app starts), **Audio** (tracks such as walk-in music: play, pause,
   skip 15 seconds, volume; F5 or Clear All stops it), and a **Stage Message** for the people on
   stage, in tabs under the Program panel. A slide can carry the same actions, done when it goes on screen.
 - The Program preview shows what the audience sees, or (from the chooser beside PROGRAM) what

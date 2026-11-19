@@ -55,10 +55,29 @@ impl TimerDo {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "do", rename_all = "snake_case")]
 pub enum ShowAction {
-    Clear { what: ClearWhat },
-    Message { id: Uuid, show: bool },
-    Prop { id: Uuid, show: bool },
-    Timer { id: Uuid, act: TimerDo },
-    Audience { on: bool },
-    Song { key: String },
+    Clear {
+        what: ClearWhat,
+    },
+    Message {
+        id: Uuid,
+        show: bool,
+    },
+    Prop {
+        id: Uuid,
+        show: bool,
+    },
+    Timer {
+        id: Uuid,
+        act: TimerDo,
+    },
+    Audience {
+        on: bool,
+    },
+    Song {
+        key: String,
+    },
+    /// Puts a picture from the media bin behind the words, by its id.
+    Media {
+        id: Uuid,
+    },
 }

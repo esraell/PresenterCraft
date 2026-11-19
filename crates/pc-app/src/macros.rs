@@ -44,6 +44,7 @@ pub fn describe(
     prop_name: impl Fn(Uuid) -> Option<String>,
     timer_name: impl Fn(Uuid) -> Option<String>,
     song_name: impl Fn(&str) -> Option<String>,
+    media_name: impl Fn(Uuid) -> Option<String>,
 ) -> String {
     let gone = || "(gone)".to_owned();
     match action {
@@ -57,6 +58,7 @@ pub fn describe(
         ShowAction::Timer { id, act } => format!("{} Timer: {}", act.name(), timer_name(*id).unwrap_or_else(gone)),
         ShowAction::Audience { on } => format!("Audience Screens {}", if *on { "On" } else { "Off" }),
         ShowAction::Song { key } => format!("Go to Song: {}", song_name(key).unwrap_or_else(gone)),
+        ShowAction::Media { id } => format!("Show Media: {}", media_name(*id).unwrap_or_else(gone)),
     }
 }
 
@@ -97,8 +99,11 @@ mod tests {
             ShowAction::Audience { on: true },
         ];
         let named = |id: Uuid| (id == timer).then(|| "Countdown".to_owned());
-        let words: Vec<String> =
-            start.actions.iter().map(|action| describe(action, |_| None, |_| None, named, |_| None)).collect();
+        let words: Vec<String> = start
+            .actions
+            .iter()
+            .map(|action| describe(action, |_| None, |_| None, named, |_| None, |_| None))
+            .collect();
         assert_eq!(words, ["Clear All", "Start Timer: Countdown", "Audience Screens On"]);
         let copy = start.duplicate();
         assert_ne!(copy.id, start.id);

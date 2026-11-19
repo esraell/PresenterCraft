@@ -213,6 +213,8 @@ pub struct HomeState {
     pub messages: Vec<crate::messages::Message>,
     pub messages_changed: bool,
     pub message_selected: Option<pc_model::Uuid>,
+    /// True when the media bin is folded away (View > Media Bin).
+    pub media_hidden: bool,
     /// How large the Edit view shows the slide: 0 fits it to the window, otherwise how many
     /// screen pixels each of the slide's pixels takes. How far it has been moved when it is
     /// larger than the window, and whether the grid shows.
@@ -770,6 +772,7 @@ impl Default for HomeState {
             messages: Vec::new(),
             messages_changed: false,
             message_selected: None,
+            media_hidden: false,
             edit_zoom: 0.0,
             edit_pan: egui::Vec2::ZERO,
             edit_grid: false,
@@ -4170,9 +4173,9 @@ fn slide_grid(
                             });
                             // What the slide does when it goes on screen.
                             ui.menu_button("Actions", |ui| {
-                                let songs = crate::live_tabs::song_list(show, state);
+                                let names = crate::live_tabs::action_names(show, state);
                                 for (at, action) in slide.actions.iter().enumerate() {
-                                    let words = crate::live_tabs::describe_action(state, &songs, action);
+                                    let words = crate::live_tabs::describe_action(state, &names, action);
                                     if ui.button(format!("Remove: {words}")).clicked() {
                                         let mut kept = slide.clone();
                                         kept.actions.remove(at);
@@ -4184,7 +4187,7 @@ fn slide_grid(
                                     ui.separator();
                                 }
                                 ui.menu_button("Add Action", |ui| {
-                                    if let Some(action) = crate::live_tabs::add_action_menu(ui, state, &songs) {
+                                    if let Some(action) = crate::live_tabs::add_action_menu(ui, state, &names) {
                                         let mut more = slide.clone();
                                         more.actions.push(action);
                                         state.pending_edit = Some((here, more));
