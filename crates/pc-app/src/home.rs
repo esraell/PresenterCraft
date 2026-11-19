@@ -63,10 +63,13 @@ pub struct HomeState {
     /// A short message for the operator, shown in the media bin (a file that could not be
     /// added, a song that could not be saved).
     pub notice: Option<String>,
-    /// The slide being edited, while the editor is open.
+    /// The slide being edited. While this is set the window shows the Edit view.
     pub editing: Option<EditDraft>,
-    /// An edit the operator has just saved. The app takes it and applies it.
-    pub finished_edit: Option<EditDraft>,
+    /// The words as they were just changed in the Edit view. The app takes this and puts it
+    /// into the song.
+    pub pending_edit: Option<EditDraft>,
+    /// When on, edits to a slide that is on screen go to the output as they are typed.
+    pub live_edit: bool,
 }
 
 /// The words of one slide as they are being edited.
@@ -112,7 +115,8 @@ impl Default for HomeState {
             drop_hover: false,
             notice: None,
             editing: None,
-            finished_edit: None,
+            pending_edit: None,
+            live_edit: false,
         }
     }
 }
@@ -318,22 +322,28 @@ fn screen_light(ui: &mut egui::Ui, label: &str, on: Option<bool>) -> egui::Respo
 ///
 /// `thumb` returns the thumbnail of a slide or a media item and whether its text overflows, or
 /// `None` while the thumbnail is still being made. It is only called for what is on screen.
+/// `preview` is the picture of the audience screen and `canvas` the picture of the slide being
+/// edited.
 pub fn home_ui(
     ui: &mut egui::Ui,
     show: &Show,
     state: &mut HomeState,
     thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
     preview: Option<TextureId>,
+    canvas: Option<TextureId>,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
     // Text boxes are dark wells in the lighter side columns.
     ui.visuals_mut().extreme_bg_color = FIELD;
     toolbar(ui, show, state, &mut commands);
+    if state.editing.is_some() {
+        edit_view(ui, show, state, thumb, canvas);
+        return commands;
+    }
     library(ui, show, state, &mut commands);
     live_panel(ui, show, state.output_stopped, preview, &mut commands);
     media_bin(ui, show, state, thumb, &mut commands);
     slide_area(ui, show, state, thumb, &mut commands);
-    editor(ui, show, state);
     commands
 }
 
@@ -912,44 +922,311 @@ fn media_bin(
     );
 }
 
-/// The slide editor: a small window with one box for each language.
-fn editor(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
-    let Some(draft) = state.editing.as_mut() else { return };
-    let title = show.presentations().get(draft.at.presentation).map_or("", |p| p.title.as_str());
-    let mut save = false;
-    let mut cancel = false;
-    egui::Window::new(format!("Edit slide {}", draft.at.slide + 1))
-        .collapsible(false)
-        .resizable(false)
-        .fade_in(false)
-        .fade_out(false)
-        .anchor(Align2::CENTER_CENTER, [0.0, -40.0])
-        .show(ui.ctx(), |ui| {
-            ui.spacing_mut().item_spacing.y = 6.0;
-            ui.label(egui::RichText::new(title).color(DIM));
-            section_label(ui, "MAIN LANGUAGE");
-            ui.add(egui::TextEdit::multiline(&mut draft.primary).desired_rows(4).desired_width(460.0));
-            section_label(ui, "TRANSLATION");
-            ui.add(egui::TextEdit::multiline(&mut draft.translation).desired_rows(4).desired_width(460.0));
-            ui.label(
-                egui::RichText::new("Leave a box empty to remove it. Blank lines are taken out.").size(11.0).color(DIM),
-            );
-            ui.add_space(4.0);
+const EDIT_PANEL: Color32 = Color32::from_rgb(29, 29, 29);
+const EDIT_HEADER: Color32 = Color32::from_rgb(36, 36, 36);
+const EDIT_SURROUND: Color32 = Color32::from_rgb(113, 117, 122);
+const EDIT_STATUS: Color32 = Color32::from_rgb(52, 54, 55);
+const EDIT_SELECTED: Color32 = Color32::from_rgb(49, 115, 185);
+const EDIT_OUTLINE: Color32 = Color32::from_rgb(220, 194, 87);
+
+/// The Edit view. It replaces the whole window below the toolbar: the song's slides down the
+/// left with the objects of the chosen slide under them, a large canvas showing that slide in
+/// the middle, and an inspector on the right where its words are changed.
+fn edit_view(
+    ui: &mut egui::Ui,
+    show: &Show,
+    state: &mut HomeState,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
+    canvas: Option<TextureId>,
+) {
+    let Some(at) = state.editing.as_ref().map(|draft| draft.at) else { return };
+    let Some(presentation) = show.presentations().get(at.presentation) else {
+        state.editing = None;
+        return;
+    };
+
+    // Left: the slide navigator, with the slide's objects below it.
+    let mut chosen = None;
+    egui::Panel::left("edit slides").resizable(false).exact_size(186.0).frame(panel_frame(EDIT_PANEL, 0)).show(
+        ui,
+        |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            Frame::new().fill(EDIT_HEADER).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(presentation.title.as_str()).strong().size(12.5).color(Color32::WHITE),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Plus, "Add a slide"));
+                });
+            });
+
+            egui::Panel::bottom("edit objects")
+                .resizable(false)
+                .exact_size(190.0)
+                .frame(panel_frame(EDIT_PANEL, 0))
+                .show(ui, |ui| {
+                    Frame::new().fill(EDIT_HEADER).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Objects").strong().size(12.5).color(Color32::WHITE));
+                            ui.add_space(ui.available_width());
+                        });
+                    });
+                    Frame::new().inner_margin(8).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        let draft = state.editing.as_ref();
+                        for (name, has) in [
+                            ("Main", draft.is_some_and(|d| !d.primary.trim().is_empty())),
+                            ("Translation", draft.is_some_and(|d| !d.translation.trim().is_empty())),
+                        ] {
+                            ui.horizontal(|ui| {
+                                let ink = if has { Color32::from_gray(225) } else { Color32::from_gray(110) };
+                                ui.label(egui::RichText::new("T").strong().size(16.0).color(ink));
+                                ui.add_space(6.0);
+                                ui.label(egui::RichText::new(name).size(13.0).color(ink));
+                            });
+                        }
+                    });
+                });
+
+            egui::ScrollArea::vertical().id_salt("edit slide list").auto_shrink([false, false]).show(ui, |ui| {
+                let width = ui.available_width();
+                let image_size = vec2(width - 16.0, (width - 16.0) * 9.0 / 16.0);
+                let mut index = 0;
+                for group in &presentation.groups {
+                    // The group's name on a bar in its colour.
+                    let (bar, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
+                    ui.painter().rect_filled(bar, 0.0, color32(group.color).gamma_multiply(0.8));
+                    let ink = text_on(group.color);
+                    icons::paint(
+                        ui.painter(),
+                        Icon::ChevronDown,
+                        Rect::from_center_size(bar.left_center() + vec2(9.0, 0.0), vec2(8.0, 8.0)),
+                        ink,
+                    );
+                    let name = if group.name.is_empty() { "No group" } else { group.name.as_str() };
+                    ui.painter().text(
+                        bar.left_center() + vec2(18.0, 0.0),
+                        Align2::LEFT_CENTER,
+                        name,
+                        FontId::proportional(12.5),
+                        ink,
+                    );
+
+                    for slide in &group.slides {
+                        let here = SlideRef { presentation: at.presentation, slide: index };
+                        let (cell, response) = ui.allocate_exact_size(vec2(width, image_size.y + 30.0), Sense::click());
+                        let selected = here == at;
+                        if ui.is_rect_visible(cell) {
+                            ui.painter().rect_filled(
+                                cell,
+                                0.0,
+                                if selected { EDIT_SELECTED } else { color32(group.color).gamma_multiply(0.22) },
+                            );
+                            let image = Rect::from_min_size(cell.min + vec2(8.0, 8.0), image_size);
+                            ui.painter().rect_filled(image, 0.0, Color32::BLACK);
+                            match thumb(ThumbOf::Slide(slide)) {
+                                Some((texture, _)) => {
+                                    egui::Image::from_texture((texture, image_size)).paint_at(ui, image)
+                                }
+                                None => ui.ctx().request_repaint(),
+                            }
+                            if selected {
+                                ui.painter().rect_stroke(
+                                    image,
+                                    0.0,
+                                    Stroke::new(2.0, EDIT_OUTLINE),
+                                    StrokeKind::Outside,
+                                );
+                            }
+                            ui.painter().text(
+                                pos2(cell.min.x + 9.0, image.max.y + 10.0),
+                                Align2::LEFT_CENTER,
+                                format!("{}.", index + 1),
+                                FontId::proportional(11.5),
+                                Color32::from_gray(230),
+                            );
+                        }
+                        if response.clicked() && !selected {
+                            chosen = Some(here);
+                        }
+                        index += 1;
+                    }
+                }
+            });
+        },
+    );
+
+    // Right: the inspector.
+    let mut leave = false;
+    egui::Panel::right("edit inspector").resizable(false).exact_size(292.0).frame(panel_frame(EDIT_PANEL, 0)).show(
+        ui,
+        |ui| {
+            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+            let (tabs, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+            let tab_width = tabs.width() / 3.0;
+            for (index, name) in ["Presentation", "Slide", "Build"].into_iter().enumerate() {
+                let rect = Rect::from_min_size(
+                    pos2(tabs.min.x + tab_width * index as f32, tabs.min.y),
+                    vec2(tab_width, tabs.height()),
+                );
+                let selected = index == 1;
+                ui.painter().rect_filled(
+                    rect.shrink2(vec2(0.5, 0.0)),
+                    0.0,
+                    if selected { TAB_BLUE } else { Color32::from_gray(62) },
+                );
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    name,
+                    FontId::proportional(12.0),
+                    Color32::from_gray(235),
+                );
+                if !selected {
+                    ui.interact(rect, ui.scope_id().with(("inspector tab", index)), Sense::hover())
+                        .on_hover_text(not_built(name));
+                }
+            }
+
+            egui::Panel::bottom("edit footer").resizable(false).frame(panel_frame(EDIT_PANEL, 8)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.add_enabled(false, egui::Button::new("Slide Notes"))
+                        .on_disabled_hover_text(not_built("Slide Notes"));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Show").on_hover_text("Go back to the Show view").clicked() {
+                            leave = true;
+                        }
+                        ui.checkbox(&mut state.live_edit, "Live Edit").on_hover_text(
+                            "When on, changes to a slide that is on screen appear on the output as you type",
+                        );
+                    });
+                });
+            });
+
+            Frame::new().inner_margin(egui::Margin { left: 16, right: 16, top: 12, bottom: 8 }).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = vec2(8.0, 7.0);
+                ui.visuals_mut().extreme_bg_color = Color32::from_rgb(23, 23, 23);
+                let before = state.editing.clone();
+                if let Some(draft) = state.editing.as_mut() {
+                    ui.label(egui::RichText::new("Main").strong().size(12.5).color(Color32::from_gray(225)));
+                    ui.add(egui::TextEdit::multiline(&mut draft.primary).desired_rows(4).desired_width(f32::INFINITY));
+                    ui.label(egui::RichText::new("Translation").strong().size(12.5).color(Color32::from_gray(225)));
+                    ui.add(
+                        egui::TextEdit::multiline(&mut draft.translation).desired_rows(4).desired_width(f32::INFINITY),
+                    );
+                    if !draft.can_save() {
+                        ui.label(
+                            egui::RichText::new("A slide needs words in at least one box.")
+                                .size(11.5)
+                                .color(Color32::from_rgb(255, 150, 120)),
+                        );
+                    }
+                }
+                if state.editing != before {
+                    state.pending_edit = state.editing.clone();
+                }
+                ui.separator();
+                // The rest of the Slide tab, in place for when it is built.
+                let dim = Color32::from_gray(120);
+                for name in
+                    ["Enabled", "Hot Key", "Label", "Background", "Chord Chart", "Media Action", "Video Input Action"]
+                {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(name).size(12.5).color(dim)).on_hover_text(not_built(name));
+                        if name.ends_with("Action") {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Plus, name));
+                        }
+                    });
+                    ui.add_space(2.0);
+                }
+                if let Some(notice) = &state.notice {
+                    ui.separator();
+                    ui.label(egui::RichText::new(notice.as_str()).size(12.0).color(Color32::from_rgb(255, 150, 120)));
+                }
+            });
+        },
+    );
+
+    // Middle: the canvas.
+    egui::CentralPanel::default().frame(panel_frame(EDIT_SURROUND, 0)).show(ui, |ui| {
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+        egui::Panel::bottom("edit status").resizable(false).frame(panel_frame(EDIT_STATUS, 4)).show(ui, |ui| {
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                for label in ["X: ----", "Y: ----", "W: ----", "H: ----"] {
+                    ui.label(egui::RichText::new(label).size(11.5).color(Color32::from_gray(200)));
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add_enabled(draft.can_save(), egui::Button::new("Save")).clicked() {
-                        save = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.label(egui::RichText::new("Fit").size(11.5).color(Color32::from_gray(200)));
+                    ghost(ui, Icon::Search, "Zoom");
+                    ghost(ui, Icon::Grid, "Guides");
                 });
             });
         });
-    if save {
-        state.finished_edit = state.editing.take();
-    } else if cancel {
+        // Rulers along the top and left edges.
+        let area = ui.available_rect_before_wrap();
+        let ruler = 14.0;
+        ui.painter().rect_filled(
+            Rect::from_min_size(area.min, vec2(area.width(), ruler)),
+            0.0,
+            Color32::from_rgb(12, 12, 12),
+        );
+        ui.painter().rect_filled(
+            Rect::from_min_size(area.min, vec2(ruler, area.height())),
+            0.0,
+            Color32::from_rgb(12, 12, 12),
+        );
+        let inner = Rect::from_min_max(area.min + vec2(ruler, ruler), area.max).shrink(28.0);
+        let width = inner.width().min(inner.height() * 16.0 / 9.0).max(1.0);
+        let slide =
+            Rect::from_min_size(pos2(inner.center().x - width / 2.0, inner.min.y), vec2(width, width * 9.0 / 16.0));
+        ui.painter().rect_filled(slide.expand(1.0), 0.0, Color32::from_black_alpha(90));
+        ui.painter().rect_filled(slide, 0.0, Color32::BLACK);
+        if let Some(texture) = canvas {
+            egui::Image::from_texture((texture, slide.size())).paint_at(ui, slide);
+        }
+        for x in (0..=4).map(|i| slide.min.x + slide.width() * i as f32 / 4.0) {
+            ui.painter().line_segment(
+                [pos2(x, area.min.y + 6.0), pos2(x, area.min.y + ruler)],
+                Stroke::new(1.0, Color32::from_gray(150)),
+            );
+        }
+
+        // The floating row of object tools.
+        let tools = [
+            (Face::Text("T"), "Text"),
+            (Face::Icon(Icon::Layers), "Shape"),
+            (Face::Icon(Icon::Pencil), "Draw"),
+            (Face::Icon(Icon::Picture), "Picture"),
+            (Face::Icon(Icon::Camera), "Video"),
+            (Face::Icon(Icon::Live), "Web page"),
+            (Face::Icon(Icon::Look), "Mask"),
+        ];
+        let bar =
+            Rect::from_center_size(pos2(slide.center().x, slide.min.y + 22.0), vec2(tools.len() as f32 * 40.0, 30.0));
+        ui.painter().rect_filled(bar, 6.0, Color32::from_rgb(35, 35, 35));
+        ui.painter().rect_stroke(bar, 6.0, Stroke::new(1.0, Color32::from_gray(70)), StrokeKind::Inside);
+        for (index, (face, name)) in tools.into_iter().enumerate() {
+            let cell = Rect::from_min_size(pos2(bar.min.x + 40.0 * index as f32, bar.min.y), vec2(40.0, 30.0));
+            paint_face(
+                ui,
+                face,
+                Rect::from_center_size(cell.center(), vec2(15.0, 15.0)),
+                15.0,
+                Color32::from_gray(220),
+            );
+            ui.interact(cell, ui.scope_id().with(("object tool", index)), Sense::hover())
+                .on_hover_text(not_built(name));
+        }
+        ui.allocate_rect(area, Sense::hover());
+    });
+
+    if leave {
         state.editing = None;
+    } else if let Some(here) = chosen {
+        state.editing = EditDraft::of(show, here);
     }
 }
 
@@ -1142,6 +1419,7 @@ mod tests {
                     None
                 },
                 None,
+                None,
             ));
         });
         output.drop_without_applying_deltas();
@@ -1186,40 +1464,74 @@ mod tests {
         assert!(EditDraft { at, primary: String::new(), translation: "Слова".into() }.can_save());
     }
 
-    #[test]
-    fn the_window_draws_with_media_a_notice_a_drag_and_the_editor_open() {
-        let ctx = egui::Context::default();
-        let mut show = show(3);
-        for name in ["a.png", "b.png"] {
-            show.add_media(pc_model::MediaItem { id: pc_model::Uuid::new_v4(), name: name.into(), path: name.into() });
-        }
-        show.apply(Command::ShowMedia(1));
-        let mut state = HomeState {
-            drop_hover: true,
-            notice: Some("x.mp4: videos are not supported yet, only pictures.".into()),
-            ..HomeState::default()
-        };
-        state.editing = EditDraft::of(&show, SlideRef { presentation: 0, slide: 0 });
-        let mut media_asked = 0;
+    /// Runs two frames and returns how many slide and media thumbnails the last one asked for.
+    fn count_thumbs(ctx: &egui::Context, show: &Show, state: &mut HomeState) -> (usize, usize) {
+        let (mut slides, mut media) = (0, 0);
         for _ in 0..2 {
             let output = ctx.run_ui(input(None), |ui| {
+                (slides, media) = (0, 0);
                 home_ui(
                     ui,
-                    &show,
-                    &mut state,
+                    show,
+                    state,
                     &mut |which| {
-                        if matches!(which, ThumbOf::Media(_)) {
-                            media_asked += 1;
+                        match which {
+                            ThumbOf::Slide(_) => slides += 1,
+                            ThumbOf::Media(_) => media += 1,
                         }
                         None
                     },
+                    None,
                     None,
                 );
             });
             output.drop_without_applying_deltas();
         }
-        assert!(media_asked >= 2, "the two media thumbnails should be asked for");
-        assert!(state.editing.is_some(), "drawing must not close the editor");
+        (slides, media)
+    }
+
+    fn show_with_media() -> Show {
+        let mut show = show(3);
+        for name in ["a.png", "b.png"] {
+            show.add_media(pc_model::MediaItem { id: pc_model::Uuid::new_v4(), name: name.into(), path: name.into() });
+        }
+        show.apply(Command::ShowMedia(1));
+        show
+    }
+
+    #[test]
+    fn the_show_view_draws_the_media_bin_with_a_notice_and_a_drag() {
+        let show = show_with_media();
+        let mut state = HomeState {
+            drop_hover: true,
+            notice: Some("x.mp4: videos are not supported yet, only pictures.".into()),
+            ..HomeState::default()
+        };
+        let (slides, media) = count_thumbs(&egui::Context::default(), &show, &mut state);
+        assert_eq!(media, 2, "both media thumbnails should be asked for");
+        assert_eq!(slides, 3);
+    }
+
+    #[test]
+    fn the_edit_view_replaces_the_show_view_and_changes_nothing_by_itself() {
+        let show = show_with_media();
+        let editing = EditDraft::of(&show, SlideRef { presentation: 0, slide: 1 });
+        let mut state = HomeState { editing, ..HomeState::default() };
+        let (slides, media) = count_thumbs(&egui::Context::default(), &show, &mut state);
+        assert_eq!(media, 0, "the media bin is not part of the Edit view");
+        assert_eq!(slides, 3, "the slide list down the left shows the song's slides");
+        assert_eq!(state.editing.as_ref().map(|d| d.at.slide), Some(1), "drawing must not leave the Edit view");
+        assert!(state.pending_edit.is_none(), "nothing was typed, so nothing changed");
+    }
+
+    #[test]
+    fn the_edit_view_closes_if_its_song_is_gone() {
+        let show = show(2);
+        let at = SlideRef { presentation: 5, slide: 0 };
+        let editing = Some(EditDraft { at, primary: "x".into(), translation: String::new() });
+        let mut state = HomeState { editing, ..HomeState::default() };
+        count_thumbs(&egui::Context::default(), &show, &mut state);
+        assert!(state.editing.is_none());
     }
 
     #[test]

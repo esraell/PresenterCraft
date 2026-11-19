@@ -34,9 +34,12 @@ picture button beside the preview takes it off again. Videos are not supported y
 
 ## Editing
 
-Right-click a slide and choose "Edit words…", or press Edit in the toolbar, to change a
-slide's two text boxes. Saving writes the song's text file. The bundled sample is not a file,
-so edits to it last until the app closes.
+Press Edit in the toolbar, or right-click a slide and choose "Edit words…". The window changes
+to the Edit view: the song's slides down the left, a large picture of the chosen slide in the
+middle, and its two text boxes on the right. The picture follows what you type. Changes are
+written to the song's text file a second after you stop typing, and when you press Show to go
+back. What is on the audience screen does not change while you type unless Live Edit is ticked.
+The bundled sample is not a file, so edits to it last until the app closes.
 
 ## Song files
 

@@ -34,6 +34,7 @@ pub struct Thumbs {
     drawn_this_frame: usize,
     frame: u64,
     preview: Option<(wgpu::Texture, egui::TextureId)>,
+    canvas: Option<(wgpu::Texture, egui::TextureId)>,
 }
 
 impl Thumbs {
@@ -45,6 +46,7 @@ impl Thumbs {
             drawn_this_frame: 0,
             frame: 0,
             preview: None,
+            canvas: None,
         })
     }
 
@@ -127,6 +129,31 @@ impl Thumbs {
         for id in gone {
             self.forget(id, egui_renderer);
         }
+    }
+
+    /// Redraws the Edit view's large picture of the slide being edited and returns its texture.
+    pub fn canvas(
+        &mut self,
+        gpu: &Gpu,
+        egui_renderer: &mut egui_wgpu::Renderer,
+        slide: &Slide,
+        theme: &Theme,
+    ) -> Option<egui::TextureId> {
+        const W: u32 = 1280;
+        const H: u32 = 720;
+        let built = build_layers(&mut self.fonts, &Layers { media: None, slide: Some(slide) }, theme, W, H);
+        if self.canvas.is_none() {
+            let texture = target_texture(&gpu.device, W, H);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let id = egui_renderer.register_native_texture(&gpu.device, &view, wgpu::FilterMode::Linear);
+            self.canvas = Some((texture, id));
+        }
+        let (texture, id) = self.canvas.as_ref()?;
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        if let Err(e) = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, W, H) {
+            eprintln!("Could not draw the slide being edited: {e}");
+        }
+        Some(*id)
     }
 
     /// Redraws the live preview from what is on each layer and returns its texture.

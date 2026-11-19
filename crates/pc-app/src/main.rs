@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pc_engine::{Command, Layer, Show};
-use pc_model::{MediaItem, Theme, Uuid, parse_song_text};
+use pc_model::{MediaItem, Role, Slide, TextBox, Theme, Uuid, clean_box_text, parse_song_text};
 use pc_render::vello::util::RenderContext;
 use pc_render::wgpu;
 use pc_render::{Layers, Picture};
@@ -191,6 +191,9 @@ struct Running {
     preview: Option<egui::TextureId>,
     home_state: HomeState,
     next_repaint: Option<Instant>,
+    /// The Edit view's picture of the slide being edited, and the words it was drawn from.
+    canvas: Option<egui::TextureId>,
+    canvas_for: Option<EditDraft>,
     frames: u32,
     // Kept so the GPU instance outlives its surfaces.
     _context: RenderContext,
@@ -203,6 +206,10 @@ struct App {
     sources: Vec<Option<PathBuf>>,
     /// The decoded picture of each media item, in the show's order.
     pictures: Vec<Picture>,
+    /// Songs changed in the Edit view and not yet written to their files, and when the last
+    /// change was made.
+    unsaved: Vec<usize>,
+    unsaved_since: Option<Instant>,
     theme: Arc<Theme>,
     running: Option<Running>,
     failed: bool,
@@ -330,6 +337,8 @@ impl App {
             preview,
             home_state: HomeState::default(),
             next_repaint: None,
+            canvas: None,
+            canvas_for: None,
             frames: 0,
             _context: context,
         }))
@@ -401,34 +410,75 @@ impl App {
         running.home_window.request_redraw();
     }
 
-    /// Puts an edited slide into its song, saves the song's file, and updates the screen if
-    /// that slide is on it.
+    /// Puts the words typed in the Edit view into their song. The song's file is written a
+    /// moment later (see `save_unsaved`). The output is left alone unless Live Edit is on, so
+    /// typing never changes what the audience sees by surprise.
     fn apply_edit(&mut self, edit: EditDraft) {
         let Some(song) = self.show.presentations().get(edit.at.presentation).cloned() else {
             return;
         };
+        // A slide with no words at all is not put into the song; the Edit view says so.
         let Some(edited) = song.with_slide_text(edit.at.slide, &edit.primary, &edit.translation) else {
-            if let Some(running) = self.running.as_mut() {
-                running.home_state.notice = Some("A slide needs words in at least one box.".to_owned());
-            }
             return;
         };
         let slide_id = edited.slide(edit.at.slide).map(|(_, slide)| slide.id);
-        let saved = match self.sources.get(edit.at.presentation) {
-            Some(Some(path)) => load::save_song(path, &edited),
-            _ => Ok(()),
-        };
         let changes = self.show.replace_presentation(edit.at.presentation, Arc::new(edited));
+        if !self.unsaved.contains(&edit.at.presentation) {
+            self.unsaved.push(edit.at.presentation);
+        }
+        self.unsaved_since = Some(Instant::now());
+        let mut live_edit = false;
         if let Some(running) = self.running.as_mut() {
             if let Some(id) = slide_id {
                 running.thumbs.forget(id, &mut running.egui_renderer);
             }
-            running.home_state.notice = saved.err().map(|e| format!("The change is on screen but was not saved. {e}"));
+            live_edit = running.home_state.live_edit;
             running.home_window.request_redraw();
         }
-        if changes.slides {
+        if changes.slides && live_edit {
             self.refresh_output();
         }
+    }
+
+    /// Writes every song changed in the Edit view to its file. The bundled sample has no file.
+    fn save_unsaved(&mut self) {
+        let mut problem = None;
+        for index in std::mem::take(&mut self.unsaved) {
+            if let (Some(Some(path)), Some(song)) = (self.sources.get(index), self.show.presentations().get(index))
+                && let Err(e) = load::save_song(path, song)
+            {
+                problem = Some(format!("The change was not saved. {e}"));
+            }
+        }
+        self.unsaved_since = None;
+        if let Some(running) = self.running.as_mut() {
+            running.home_state.notice = problem;
+            running.home_window.request_redraw();
+        }
+    }
+
+    /// Redraws the Edit view's picture of the slide when the words being edited change.
+    fn update_canvas(&mut self) {
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let draft = running.home_state.editing.clone();
+        if draft == running.canvas_for {
+            return;
+        }
+        if let Some(draft) = &draft {
+            let mut boxes = Vec::new();
+            for (role, text) in [(Role::primary(), &draft.primary), (Role::translation(), &draft.translation)] {
+                let text = clean_box_text(text);
+                if !text.is_empty() {
+                    boxes.push(TextBox { role, text });
+                }
+            }
+            running.canvas =
+                running.thumbs.canvas(&running.gpu, &mut running.egui_renderer, &Slide::new(boxes), &self.theme);
+        }
+        running.canvas_for = draft;
+        running.home_window.request_redraw();
     }
 
     /// Draws one frame of the home window and returns what the operator asked for.
@@ -446,6 +496,7 @@ impl App {
         }
         let mut commands = Vec::new();
         let (show, theme, preview, pictures) = (&self.show, &self.theme, running.preview, &self.pictures);
+        let canvas = running.canvas;
         let home_state = &mut running.home_state;
         let mut full = egui_ctx.run_ui(raw_input, |ui| {
             // The toolkit may run this closure twice in one frame, and input arrives only the
@@ -457,7 +508,7 @@ impl App {
                     thumbs.get_media(gpu, egui_renderer, item.id, picture, theme).map(|texture| (texture, false))
                 }
             };
-            commands.extend(home_ui(ui, show, home_state, &mut thumb, preview));
+            commands.extend(home_ui(ui, show, home_state, &mut thumb, preview, canvas));
         });
         egui_state.handle_platform_output(home_window, full.platform_output);
 
@@ -553,6 +604,7 @@ impl App {
     }
 
     fn quit(&mut self, el: &ActiveEventLoop) {
+        self.save_unsaved();
         if let Some(output) = self.running.as_mut().and_then(|r| r.output.take()) {
             output.shutdown();
         }
@@ -651,8 +703,14 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 let commands = self.draw_home();
                 self.apply(commands);
-                if let Some(edit) = self.running.as_mut().and_then(|r| r.home_state.finished_edit.take()) {
+                if let Some(edit) = self.running.as_mut().and_then(|r| r.home_state.pending_edit.take()) {
                     self.apply_edit(edit);
+                }
+                self.update_canvas();
+                // Leaving the Edit view writes the songs changed there straight away.
+                let editing = self.running.as_ref().is_some_and(|r| r.home_state.editing.is_some());
+                if !editing && !self.unsaved.is_empty() {
+                    self.save_unsaved();
                 }
                 if self.capture_done {
                     self.quit(el);
@@ -663,16 +721,23 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        // Songs changed in the Edit view are written once typing has paused for a second.
+        const SAVE_AFTER: Duration = Duration::from_secs(1);
+        let save_at = self.unsaved_since.map(|since| since + SAVE_AFTER);
+        if save_at.is_some_and(|at| at <= Instant::now()) {
+            self.save_unsaved();
+        }
+        let save_at = self.unsaved_since.map(|since| since + SAVE_AFTER);
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        // The interface asks to be drawn again after a delay (animations); otherwise sleep.
-        match running.next_repaint {
-            Some(at) if at <= Instant::now() => {
-                running.next_repaint = None;
-                running.home_window.request_redraw();
-                el.set_control_flow(ControlFlow::Wait);
-            }
+        // The interface asks to be drawn again after a delay (animations); otherwise sleep
+        // until then, or until a save is due.
+        if running.next_repaint.is_some_and(|at| at <= Instant::now()) {
+            running.next_repaint = None;
+            running.home_window.request_redraw();
+        }
+        match [running.next_repaint, save_at].into_iter().flatten().min() {
             Some(at) => el.set_control_flow(ControlFlow::WaitUntil(at)),
             None => el.set_control_flow(ControlFlow::Wait),
         }
@@ -722,6 +787,8 @@ fn main() -> ExitCode {
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
         sources,
         pictures: Vec::new(),
+        unsaved: Vec::new(),
+        unsaved_since: None,
         theme: Arc::new(Theme::builtin()),
         running: None,
         failed: false,
