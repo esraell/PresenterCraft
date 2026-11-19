@@ -24,6 +24,12 @@ publishing or selling anything that includes NDI.
   protocols, or let anyone else do so.
 - Ship a version that is not compatible with other NDI products, or that falls behind: the
   agreement asks products to use the latest SDK available when they are built or distributed.
+- Pass on NDI-enabled builds without NDI's agreement, for now. Clause 3(d)(viii) asks that
+  anyone who builds on the product be required to follow NDI's SDK licence and to put the
+  terms of clause 3(d) in their own licence. PresenterCraft's own code is under the GNU GPL,
+  which forbids adding conditions like that to it, so the GPL can't carry that requirement.
+  Until NDI agrees in writing to how PresenterCraft handles this (the additional permission
+  and `NOTICE.md`), public releases are built without NDI.
 
 ## What a published PresenterCraft must carry
 
@@ -35,7 +41,13 @@ publishing or selling anything that includes NDI.
   NDI part before publishing a build with NDI in it.
 - **Trademark notes.** "NDI" may be used only to say the product is compatible with NDI
   products, with a clear note that NDI® is a registered trademark of Vizrt NDI AB. Nothing may
-  suggest NDI sponsors or endorses PresenterCraft.
+  suggest NDI sponsors or endorses PresenterCraft. The SDK documentation also asks for a link
+  to <https://ndi.video/> wherever NDI is offered (the Screens window has one) and for the
+  trademark line in the About box (not there yet; needed before a release).
+- **How PresenterCraft carries these terms.** They are in [`NOTICE.md`](../../NOTICE.md),
+  limited to NDI's own components, and the additional permission in
+  [`ADDITIONAL-PERMISSION.md`](../../ADDITIONAL-PERMISSION.md) requires every NDI-enabled copy
+  to carry them. They place no limits on what the GNU GPL allows for PresenterCraft's code.
 - **Third-party notices.** The runtime's own licence list
   (`libndi_licenses.txt`, in the SDK's `lib` folder) goes beside the runtime wherever the
   runtime is shipped.
