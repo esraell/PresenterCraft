@@ -1484,7 +1484,7 @@ fn slide_area(
         let heading = Frame::new().inner_margin(egui::Margin { left: 20, right: 16, top: 12, bottom: 6 });
         egui::Panel::top("song header").resizable(false).frame(heading).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(presentation.title.as_str()).size(18.0).strong());
+                ui.label(egui::RichText::new(presentation.title.as_str()).font(crate::studio::semibold(18.0)));
                 let slides = presentation.slide_count();
                 let count = if slides == 1 { "1 slide".to_owned() } else { format!("{slides} slides") };
                 ui.label(egui::RichText::new(count).size(12.0).color(crate::studio::TEXT_FAINT));
@@ -1699,7 +1699,13 @@ fn slide_grid(
                         painter.rect_stroke(framed, 6.0, stroke, StrokeKind::Outside);
                     }
                     if is_live {
-                        crate::studio::live_tag(&painter, framed);
+                        // Under the slide at the right, or at the end of a table row.
+                        let at = if view == SlideView::Table {
+                            pos2(rect.max.x - 10.0, rect.min.y + 16.0)
+                        } else {
+                            pos2(rect.max.x, rect.max.y - bar_height / 2.0 + 1.0)
+                        };
+                        crate::studio::live_tag(&painter, at);
                     }
                 }
             });

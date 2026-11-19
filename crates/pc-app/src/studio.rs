@@ -82,28 +82,55 @@ pub fn apply_style(ctx: &egui::Context) {
     });
 }
 
+/// The name of the heavier cut of the interface font, for headings and buttons.
+const SEMIBOLD: &str = "semibold";
+
+/// The heavier cut of the interface font at a size.
+pub fn semibold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
+}
+
 /// Uses the computer's own interface font, so the app looks at home on it, with a
 /// wide-coverage font behind it so song titles in any script show as letters. Without either
 /// the app still works with its built-in font.
 fn load_fonts(ctx: &egui::Context) {
-    // Each is the system's interface font where it exists, then a common one.
-    const INTERFACE: [&str; 4] = [
-        "/System/Library/Fonts/SFNS.ttf",
-        "/System/Library/Fonts/HelveticaNeue.ttc",
-        "C:\\Windows\\Fonts\\segoeui.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    use egui::epaint::text::VariationCoords;
+    // Each is the system's interface font where it exists, then a common one, with the file
+    // that holds its heavier cut.
+    const INTERFACE: [(&str, &str); 4] = [
+        ("/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/SFNS.ttf"),
+        ("/System/Library/Fonts/HelveticaNeue.ttc", "/System/Library/Fonts/HelveticaNeue.ttc"),
+        ("C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\seguisb.ttf"),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
     ];
     const WIDE: [&str; 2] =
         ["/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "C:\\Windows\\Fonts\\arialuni.ttf"];
-    let read = |paths: &[&str]| paths.iter().find_map(|path| std::fs::read(path).ok());
+    // Apple's system font is one file that can be drawn at any weight, and in a cut made for
+    // small sizes or one made for headlines. Left alone it uses the headline cut, which looks
+    // cramped and thin at the size of a label; ask for the small-text cut, a touch heavier
+    // because light text on dark looks thinner than it is. Fonts without these settings
+    // ignore them.
+    let cut = |weight: f32| egui::FontTweak {
+        coords: VariationCoords::new([(b"opsz", 17.0), (b"wght", weight)]),
+        ..egui::FontTweak::default()
+    };
     let mut fonts = egui::FontDefinitions::default();
-    if let Some(bytes) = read(&INTERFACE) {
-        fonts.font_data.insert("interface".to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
-        if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
-            family.insert(0, "interface".to_owned());
-        }
+    let mut regular_first = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    let mut heavy_first = regular_first.clone();
+    let found =
+        INTERFACE.iter().find_map(|(regular, heavy)| Some((std::fs::read(regular).ok()?, std::fs::read(heavy).ok())));
+    if let Some((regular, heavy)) = found {
+        let heavy = heavy.unwrap_or_else(|| regular.clone());
+        fonts.font_data.insert("interface".to_owned(), Arc::new(egui::FontData::from_owned(regular).tweak(cut(440.0))));
+        fonts
+            .font_data
+            .insert("interface heavy".to_owned(), Arc::new(egui::FontData::from_owned(heavy).tweak(cut(620.0))));
+        regular_first.insert(0, "interface".to_owned());
+        heavy_first.insert(0, "interface heavy".to_owned());
     }
-    if let Some(bytes) = read(&WIDE) {
+    fonts.families.insert(FontFamily::Proportional, regular_first);
+    fonts.families.insert(FontFamily::Name(SEMIBOLD.into()), heavy_first);
+    if let Some(bytes) = WIDE.iter().find_map(|path| std::fs::read(path).ok()) {
         fonts.font_data.insert("wide".to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
         for family in fonts.families.values_mut() {
             family.push("wide".to_owned());
@@ -114,7 +141,7 @@ fn load_fonts(ctx: &egui::Context) {
 
 /// A small heading in capitals, as each section starts with.
 pub fn caption(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(10.5).strong().color(TEXT_FAINT).extra_letter_spacing(0.8));
+    ui.label(egui::RichText::new(text).font(semibold(10.5)).color(TEXT_FAINT).extra_letter_spacing(0.8));
 }
 
 /// A button drawn as a rounded block with its words in the middle. `emphasis` picks its
@@ -140,7 +167,7 @@ pub fn block_button(ui: &mut egui::Ui, size: egui::Vec2, text: &str, key: &str, 
     };
     let painter = ui.painter();
     painter.rect_filled(rect, RADIUS, fill);
-    painter.text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(13.5), ink);
+    painter.text(rect.center(), Align2::CENTER_CENTER, text, semibold(13.5), ink);
     if !key.is_empty() {
         // The key that does the same thing, small at the right.
         painter.text(
@@ -169,7 +196,8 @@ fn segmented(ui: &mut egui::Ui, salt: &str, each: egui::Vec2, labels: &[&str], c
             ui.painter().rect_filled(cell, RADIUS, PANEL);
         }
         let ink = if on { TEXT } else { TEXT_DIM };
-        ui.painter().text(cell.center(), Align2::CENTER_CENTER, *label, FontId::proportional(13.5), ink);
+        let font = if on { semibold(13.5) } else { FontId::proportional(13.5) };
+        ui.painter().text(cell.center(), Align2::CENTER_CENTER, *label, font, ink);
         if response.clicked() {
             clicked = Some(index);
         }
@@ -368,7 +396,7 @@ pub fn program_panel(
                     (true, true) => ("ON SCREEN", TALLY),
                     (true, false) => ("CLEAR", TEXT_FAINT),
                 };
-                ui.label(egui::RichText::new(text).size(10.5).strong().color(ink).extra_letter_spacing(0.8));
+                ui.label(egui::RichText::new(text).font(semibold(10.5)).color(ink).extra_letter_spacing(0.8));
             });
         });
 
@@ -521,7 +549,7 @@ pub fn media_strip(
                         let live = show.live_media() == Some(index);
                         if live {
                             ui.painter().rect_stroke(image, 6.0, Stroke::new(2.0, TALLY), StrokeKind::Outside);
-                            live_tag(ui.painter(), image);
+                            live_tag(ui.painter(), pos2(rect.max.x, image.max.y + 10.0));
                         } else if response.hovered() {
                             ui.painter().rect_stroke(image, 6.0, Stroke::new(1.0, TEXT_FAINT), StrokeKind::Outside);
                         }
@@ -553,11 +581,12 @@ pub fn media_strip(
     });
 }
 
-/// The small red "LIVE" tag in the corner of whatever is on screen.
-pub fn live_tag(painter: &egui::Painter, image: Rect) {
-    let tag = Rect::from_min_size(image.min + vec2(6.0, 6.0), vec2(34.0, 16.0));
-    painter.rect_filled(tag, 4.0, TALLY);
-    painter.text(tag.center(), Align2::CENTER_CENTER, "LIVE", FontId::proportional(10.0), Color32::WHITE);
+/// The small red "LIVE" tag for whatever is on screen. It sits beside the picture, never
+/// over it, so nothing on the slide is hidden. `right_centre` is where its right edge goes.
+pub fn live_tag(painter: &egui::Painter, right_centre: egui::Pos2) {
+    let tag = Rect::from_min_size(right_centre - vec2(36.0, 8.5), vec2(36.0, 17.0));
+    painter.rect_filled(tag, 8.5, TALLY);
+    painter.text(tag.center(), Align2::CENTER_CENTER, "LIVE", semibold(10.0), Color32::WHITE);
 }
 
 /// The right end of a slide area's heading: the three ways to lay slides out, and their size.
