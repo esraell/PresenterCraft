@@ -11,10 +11,12 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// How often the current picture is sent again while nothing changes. A receiver that joins
-/// late, or a mixer that expects a steady source, gets a picture within this time.
+/// late, or a mixer that expects a steady source, gets a picture within this time. Each send is
+/// compressed again by NDI, so this is kept slow: every 100 ms, two idle sources took about a
+/// tenth of the computer's time; every second, about a fortieth.
 // Unused in a build without the SDK, which has nothing to send to.
 #[cfg_attr(not(feature = "sdk"), allow(dead_code))]
-const RESEND_EVERY: Duration = Duration::from_millis(100);
+const RESEND_EVERY: Duration = Duration::from_millis(1000);
 
 /// One picture to send: tightly packed RGBA rows.
 #[cfg_attr(not(feature = "sdk"), allow(dead_code))]
