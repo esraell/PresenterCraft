@@ -1933,7 +1933,7 @@ fn slide_grid(
     let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&which));
     let view = state.slide_view;
     let gap = 16.0;
-    let bar_height = 26.0;
+    let bar_height = 22.0;
     egui::ScrollArea::vertical().id_salt("slide grid").auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(10.0);
         Frame::new().inner_margin(egui::Margin::symmetric(20, 0)).show(ui, |ui| {
@@ -1983,12 +1983,12 @@ fn slide_grid(
                     let ink = text_on(group.color);
                     let words = || slide.texts().into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n");
                     let mut picture = |ui: &mut egui::Ui, image: Rect| {
-                        painter.rect_filled(image, 6.0, Color32::BLACK);
+                        painter.rect_filled(image, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Color32::BLACK);
                         let of = if from_bible { ThumbOf::BibleSlide(slide) } else { ThumbOf::Slide(slide) };
                         match thumb(of) {
                             Some((texture, overflow)) => {
                                 egui::Image::from_texture((texture, image.size()))
-                                    .corner_radius(6.0)
+                                    .corner_radius(egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 })
                                     .paint_at(ui, image);
                                 if overflow {
                                     let mark = image.right_top() + vec2(-14.0, 14.0);
@@ -2056,56 +2056,52 @@ fn slide_grid(
                             } else {
                                 picture(ui, image);
                             }
-                            // Under the slide: its number, then its group as a chip on the
-                            // group's first slide and a dot of the group's colour on the rest.
+                            // Under the slide, a bar in its group's colour across the whole width:
+                            // the slide's number, the group's name on the group's first slide, and
+                            // the key that jumps to the group at the right.
                             let foot = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
+                            let corners = egui::CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 };
+                            painter.rect_filled(foot, corners, color32(group.color));
                             let number = painter.text(
-                                foot.left_center() + vec2(2.0, 1.0),
+                                foot.left_center() + vec2(8.0, 0.0),
                                 Align2::LEFT_CENTER,
                                 (index + 1).to_string(),
-                                FontId::monospace(11.5),
-                                crate::studio::TEXT_FAINT,
+                                crate::studio::semibold(12.0),
+                                ink,
                             );
-                            let after = number.max.x + 8.0;
                             if starts_group && !group.name.is_empty() {
-                                let name = painter.layout_no_wrap(group.name.clone(), FontId::proportional(11.5), ink);
-                                let chip = Rect::from_min_size(
-                                    pos2(after, foot.center().y - 8.0),
-                                    vec2((name.size().x + 14.0).min(foot.max.x - after), 17.0),
+                                let key = if from_bible { None } else { pc_model::key_for_group(&group.name) };
+                                let name_end = foot.max.x - if key.is_some() { 22.0 } else { 8.0 };
+                                let clip = Rect::from_min_max(
+                                    pos2(number.max.x + 6.0, foot.min.y),
+                                    pos2(name_end, foot.max.y),
                                 );
-                                painter.rect_filled(chip, 8.5, color32(group.color));
-                                painter.with_clip_rect(chip).galley(
-                                    pos2(chip.min.x + 7.0, chip.center().y - name.size().y / 2.0),
-                                    name,
+                                painter.with_clip_rect(clip).text(
+                                    pos2(number.max.x + 8.0, foot.center().y),
+                                    Align2::LEFT_CENTER,
+                                    group.name.as_str(),
+                                    FontId::proportional(12.0),
                                     ink,
                                 );
-                                // The key that jumps to this group, faint beside its chip.
-                                if !from_bible && let Some(key) = pc_model::key_for_group(&group.name) {
+                                if let Some(key) = key {
                                     painter.text(
-                                        pos2(chip.max.x + 7.0, foot.center().y + 1.0),
-                                        Align2::LEFT_CENTER,
+                                        foot.right_center() - vec2(8.0, 0.0),
+                                        Align2::RIGHT_CENTER,
                                         key,
                                         FontId::monospace(10.5),
-                                        crate::studio::TEXT_FAINT,
+                                        ink.gamma_multiply(0.7),
                                     );
                                 }
-                            } else {
-                                painter.circle_filled(
-                                    pos2(after + 3.0, foot.center().y + 1.0),
-                                    3.0,
-                                    color32(group.color),
-                                );
                             }
                         }
                     }
+                    // A hairline round the slide and its bar, so black slides do not melt into the background.
                     if view != SlideView::Table {
-                        let image = Rect::from_min_size(rect.min, image_size);
-                        painter.rect_stroke(image, 6.0, Stroke::new(1.0, crate::studio::LINE), StrokeKind::Outside);
+                        painter.rect_stroke(rect, 6.0, Stroke::new(1.0, crate::studio::LINE), StrokeKind::Outside);
                     }
                     // Tally red for the slide on screen; the accent for one picked
                     // out; a dim red for the slide that was on screen before it was cleared.
-                    let framed =
-                        if view == SlideView::Table { rect } else { Rect::from_min_size(rect.min, image_size) };
+                    let framed = rect;
                     let is_live = show.live() == Some(here);
                     let outline = if is_live {
                         Some(Stroke::new(2.5, LIVE_OUTLINE))
