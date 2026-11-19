@@ -3850,45 +3850,56 @@ fn bible_area(
                             state.bible.remove_bible(index);
                         }
                     }
-                    // Save As…: the passage as a presentation of its own in
-                    // the library, or kept in a playlist, ready to open again with its settings.
+                    // One click each: the passage into the playlist in front (named on the
+                    // button; the arrow beside it picks another), or a presentation of its own.
                     let saved = state.bible.saved();
-                    let menu = ui
-                        .add_enabled(saved.is_some(), egui::Button::new("Save As… ▾"))
-                        .on_hover_text("Keep this passage: as a presentation in the library, or in a playlist")
+                    let front = state.services.front().name.clone();
+                    let add = ui
+                        .add_enabled(saved.is_some(), egui::Button::new(format!("Add to \u{201c}{front}\u{201d}")))
+                        .on_hover_text("Put this passage in the playlist, to open again with these settings")
                         .on_disabled_hover_text("Look a passage up first");
-                    egui::Popup::from_toggle_button_response(&menu)
-                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                        .show(|ui| {
-                            ui.set_min_width(220.0);
-                            let Some(saved) = saved else { return };
-                            // Named by the passage and its Bibles: "John 3:16-18 (KJV, SYN)".
-                            if ui
-                                .button("Save as Presentation")
-                                .on_hover_text("A presentation in the library, drawn with the Bible's theme")
-                                .clicked()
-                            {
-                                let bibles: Vec<String> = saved.rows.iter().map(|row| row.bible.to_uppercase()).collect();
-                                let title = if bibles.is_empty() {
-                                    saved.lookup.clone()
-                                } else {
-                                    format!("{} ({})", saved.lookup, bibles.join(", "))
-                                };
-                                state.bible_song_request = Some((state.bible.showing, title));
-                                ui.close();
-                            }
-                            ui.menu_button("Add to Playlist", |ui| {
+                    if add.clicked()
+                        && let Some(saved) = saved.clone()
+                    {
+                        state.notice = Some(format!("Added {} to {front}.", saved.lookup));
+                        state.services.add(crate::service::Item::Passage(saved));
+                    }
+                    if state.services.list.len() > 1 {
+                        let other = ui
+                            .add_enabled(saved.is_some(), egui::Button::new("▾"))
+                            .on_hover_text("Add to another playlist");
+                        egui::Popup::from_toggle_button_response(&other)
+                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                            .show(|ui| {
+                                let Some(saved) = saved.clone() else { return };
                                 let names: Vec<String> =
                                     state.services.list.iter().map(|playlist| playlist.name.clone()).collect();
                                 for (at, name) in names.iter().enumerate() {
-                                    if ui.button(name.as_str()).clicked() {
+                                    if ui.button(format!("Add to \u{201c}{name}\u{201d}")).clicked() {
                                         state.services.add_to(at, crate::service::Item::Passage(saved.clone()));
                                         state.notice = Some(format!("Added {} to {name}.", saved.lookup));
                                         ui.close();
                                     }
                                 }
                             });
-                        });
+                    }
+                    // A presentation of its own in the library, named by the passage and its
+                    // Bibles: "John 3:16-18 (KJV, SYN)".
+                    let as_presentation = ui
+                        .add_enabled(saved.is_some(), egui::Button::new("Save as Presentation"))
+                        .on_hover_text("Make this passage a presentation in the library, drawn with the Bible's theme")
+                        .on_disabled_hover_text("Look a passage up first");
+                    if as_presentation.clicked()
+                        && let Some(saved) = saved
+                    {
+                        let bibles: Vec<String> = saved.rows.iter().map(|row| row.bible.to_uppercase()).collect();
+                        let title = if bibles.is_empty() {
+                            saved.lookup.clone()
+                        } else {
+                            format!("{} ({})", saved.lookup, bibles.join(", "))
+                        };
+                        state.bible_song_request = Some((state.bible.showing, title));
+                    }
                 });
             });
 

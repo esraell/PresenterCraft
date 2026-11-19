@@ -1219,8 +1219,8 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
         if items.is_empty() {
             ui.label(
                 egui::RichText::new(
-                    "Nothing yet. Drag songs onto this playlist, use + on a song in a library, or Save As… \
-                     › Add to Playlist on the Bible page.",
+                    "Nothing yet. Drag songs onto this playlist, use + on a song in a library, or Add to \
+                     on the Bible page.",
                 )
                 .size(12.0)
                 .color(TEXT_FAINT),
