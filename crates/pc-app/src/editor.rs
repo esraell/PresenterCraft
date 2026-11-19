@@ -591,6 +591,64 @@ impl EditDraft {
         true
     }
 
+    /// Changes the look of every selected text object the same way. Each keeps only what differs
+    /// from its theme box, so it still follows the theme in everything else. Returns true if
+    /// anything changed.
+    pub fn restyle(&mut self, theme: &Theme, change: impl Fn(&mut pc_model::BoxStyle)) -> bool {
+        let ids = self.selection();
+        let Some(template) = theme.template_for(&self.slide).cloned() else { return false };
+        let mut changed = false;
+        for object in self.slide.objects.iter_mut().filter(|object| ids.contains(&object.id)) {
+            let Some(base) = template.box_for(object.role.as_ref()).cloned() else { continue };
+            let ObjectKind::Text { style, .. } = &mut object.kind;
+            let mut look = style.over(&base);
+            change(&mut look);
+            let own = TextStyle::between(&base, &look);
+            if own != *style {
+                *style = own;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Changes the words of every selected text object. Returns true if any changed.
+    pub fn retext(&mut self, change: impl Fn(&str) -> String) -> bool {
+        let ids = self.selection();
+        let mut changed = false;
+        for object in self.slide.objects.iter_mut().filter(|object| ids.contains(&object.id)) {
+            let ObjectKind::Text { text, .. } = &mut object.kind;
+            let new = change(text);
+            if new != *text {
+                *text = new;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Moves the selected object to the front of the slide, or to the back.
+    pub fn move_to_end_of_stack(&mut self, front: bool) -> bool {
+        let Some(id) = self.selected else { return false };
+        let slot = if front { 0 } else { self.slide.objects.len() };
+        self.move_in_stack(id, slot)
+    }
+
+    /// Locks the selected objects, or unlocks every object on the slide.
+    pub fn lock(&mut self, lock: bool) -> bool {
+        let ids = self.selection();
+        let mut changed = false;
+        for object in &mut self.slide.objects {
+            let wanted = if lock { object.locked || ids.contains(&object.id) } else { false };
+            changed |= object.locked != wanted;
+            object.locked = wanted;
+        }
+        if lock {
+            self.select_only(None);
+        }
+        changed
+    }
+
     pub fn restack(&mut self, forward: bool) -> bool {
         let Some(id) = self.selected else { return false };
         let Some(index) = self.slide.objects.iter().position(|o| o.id == id) else { return false };
@@ -967,6 +1025,32 @@ mod tests {
         assert!(!d.move_in_stack(back, 1));
         assert!(d.move_in_stack(back, 2));
         assert_eq!(names(&d), ["o1", "o0"]);
+    }
+
+    #[test]
+    fn menu_changes_restyle_retext_restack_and_lock_the_selection() {
+        let theme = Theme::builtin();
+        let mut d = draft();
+        let (back, front) = (d.slide.objects[0].id, d.slide.objects[1].id);
+        d.select_only(Some(back));
+        assert!(d.restyle(&theme, |look| look.weight = 400));
+        let ObjectKind::Text { style, .. } = &d.slide.objects[0].kind;
+        assert_eq!((style.weight, style.size), (Some(400), None), "only what changed is kept");
+        // Setting it back to the theme's own look leaves nothing of its own.
+        assert!(d.restyle(&theme, |look| look.weight = 700));
+        let ObjectKind::Text { style, .. } = &d.slide.objects[0].kind;
+        assert!(style.is_default());
+        assert!(d.retext(str::to_uppercase));
+        assert!(d.slide.objects[0].as_text().is_some_and(|text| text == text.to_uppercase()));
+        assert!(d.move_to_end_of_stack(true));
+        assert_eq!(d.slide.objects.last().map(|o| o.id), Some(back));
+        assert!(d.move_to_end_of_stack(false));
+        assert_eq!(d.slide.objects[0].id, back);
+        assert!(d.lock(true));
+        assert!(d.slide.objects.iter().any(|o| o.id == back && o.locked));
+        assert!(d.slide.objects.iter().any(|o| o.id == front && !o.locked));
+        assert!(d.lock(false));
+        assert!(d.slide.objects.iter().all(|o| !o.locked));
     }
 
     #[test]

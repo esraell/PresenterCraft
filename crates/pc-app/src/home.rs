@@ -98,6 +98,8 @@ pub struct HomeState {
     pub fonts: std::sync::Arc<Vec<String>>,
     /// True while the Bible page is showing in place of the slide grid.
     pub bible_open: bool,
+    /// A change to the selected objects asked for from the menu bar.
+    pub edit_request: Option<EditRequest>,
     /// A view asked for from the menu bar: 0 Show, 1 Edit, 2 Bible, 3 Themes. The toolbar
     /// takes it as if its tab had been clicked.
     pub view_request: Option<usize>,
@@ -566,6 +568,7 @@ impl Default for HomeState {
             settings_open: false,
             displays: Vec::new(),
             view_request: None,
+            edit_request: None,
             screens: crate::screens::starting(None),
             screens_changed: false,
             screen_status: Vec::new(),
@@ -841,6 +844,81 @@ fn edit_view(
             } else if all {
                 draft.select_all();
             }
+        }
+    }
+    // A change asked for from the menu bar.
+    if let (Some(request), Some(draft)) = (state.edit_request.take(), state.editing.as_mut()) {
+        match request {
+            EditRequest::Bold => {
+                let bold = draft
+                    .selected_object()
+                    .and_then(|object| theme.text_style_on(&draft.slide, object.role.as_ref(), object.text_style()?))
+                    .is_some_and(|look| look.weight >= 600);
+                draft.restyle(theme, |look| look.weight = if bold { 400 } else { 700 });
+            }
+            EditRequest::Italic => {
+                let italic = draft
+                    .selected_object()
+                    .and_then(|object| theme.text_style_on(&draft.slide, object.role.as_ref(), object.text_style()?))
+                    .is_some_and(|look| look.italic);
+                draft.restyle(theme, |look| look.italic = !italic);
+            }
+            EditRequest::Underline => {
+                let underline = draft
+                    .selected_object()
+                    .and_then(|object| theme.text_style_on(&draft.slide, object.role.as_ref(), object.text_style()?))
+                    .is_some_and(|look| look.underline);
+                draft.restyle(theme, |look| look.underline = !underline);
+            }
+            EditRequest::Bigger => {
+                draft.restyle(theme, |look| look.size = (look.size * 1.1).round().min(1000.0));
+            }
+            EditRequest::Smaller => {
+                draft.restyle(theme, |look| look.size = (look.size / 1.1).round().max(8.0));
+            }
+            EditRequest::Align(align) => {
+                draft.restyle(theme, |look| look.align = align);
+            }
+            EditRequest::UpperCase => {
+                draft.retext(str::to_uppercase);
+            }
+            EditRequest::LowerCase => {
+                draft.retext(str::to_lowercase);
+            }
+            EditRequest::Capitalize => {
+                draft.retext(capitalize);
+            }
+            EditRequest::CopyStyle => {
+                state.inspector.copied_style = draft.selected_object().and_then(|object| object.text_style().cloned());
+            }
+            EditRequest::PasteStyle => {
+                if let Some(copied) = state.inspector.copied_style.clone() {
+                    let ids = draft.selection();
+                    for object in draft.slide.objects.iter_mut().filter(|object| ids.contains(&object.id)) {
+                        let pc_model::ObjectKind::Text { style, .. } = &mut object.kind;
+                        *style = copied.clone();
+                    }
+                }
+            }
+            EditRequest::BringForward => {
+                draft.restack(true);
+            }
+            EditRequest::SendBackward => {
+                draft.restack(false);
+            }
+            EditRequest::BringToFront => {
+                draft.move_to_end_of_stack(true);
+            }
+            EditRequest::SendToBack => {
+                draft.move_to_end_of_stack(false);
+            }
+            EditRequest::Lock => {
+                draft.lock(true);
+            }
+            EditRequest::UnlockAll => {
+                draft.lock(false);
+            }
+            EditRequest::DeselectAll => draft.select_only(None),
         }
     }
     if let Some(draft) = state.editing.as_mut() {
@@ -1739,6 +1817,50 @@ fn output_choices(current: &Output, screen_name: &str, displays: &[DisplayInfo])
     });
     choices.push(Output::Off);
     choices
+}
+
+/// A change the menu bar asks the editor to make to the selected objects. The editor makes it
+/// during its own frame, so it can be undone and is saved like any other edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditRequest {
+    Bold,
+    Italic,
+    Underline,
+    Bigger,
+    Smaller,
+    Align(pc_model::Align),
+    UpperCase,
+    LowerCase,
+    Capitalize,
+    CopyStyle,
+    PasteStyle,
+    BringForward,
+    BringToFront,
+    SendBackward,
+    SendToBack,
+    Lock,
+    UnlockAll,
+    DeselectAll,
+}
+
+/// Each word with a capital first letter, the rest as they are.
+fn capitalize(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut start = true;
+    for c in text.chars() {
+        if start && c.is_alphabetic() {
+            out.extend(c.to_uppercase());
+            start = false;
+        } else {
+            out.push(c);
+            if c.is_whitespace() {
+                start = true;
+            } else if c.is_alphabetic() {
+                start = false;
+            }
+        }
+    }
+    out
 }
 
 /// Room after a song's title, for the field it turns into when renamed to fit in.
@@ -3154,6 +3276,13 @@ mod tests {
         assert!(page.remove_row(0) && page.remove_row(0));
         assert_eq!(page.rows.len(), 1);
         assert!(!page.remove_row(0), "one row always stays");
+    }
+
+    #[test]
+    fn capitalize_makes_each_word_start_with_a_capital() {
+        assert_eq!(capitalize("light rises over the hills"), "Light Rises Over The Hills");
+        assert_eq!(capitalize("свет встаёт\nи утро"), "Свет Встаёт\nИ Утро");
+        assert_eq!(capitalize("don't stop"), "Don't Stop");
     }
 
     #[test]

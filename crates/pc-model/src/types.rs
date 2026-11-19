@@ -140,6 +140,12 @@ impl Object {
     }
 
     /// The object's words, if it is a text object.
+    /// The object's own text settings, over its theme box.
+    pub fn text_style(&self) -> Option<&crate::TextStyle> {
+        let ObjectKind::Text { style, .. } = &self.kind;
+        Some(style)
+    }
+
     pub fn as_text(&self) -> Option<&str> {
         match &self.kind {
             ObjectKind::Text { text, .. } => Some(text),

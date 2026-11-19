@@ -20,6 +20,26 @@ pub enum Action {
     Duplicate,
     Delete,
     SelectAll,
+    DeselectAll,
+    Bold,
+    Italic,
+    Underline,
+    Bigger,
+    Smaller,
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
+    UpperCase,
+    LowerCase,
+    Capitalize,
+    CopyStyle,
+    PasteStyle,
+    BringForward,
+    BringToFront,
+    SendBackward,
+    SendToBack,
+    Lock,
+    UnlockAll,
     ShowView,
     EditView,
     BibleView,
@@ -61,6 +81,10 @@ const fn shift_cmd(key: char) -> Option<Shortcut> {
 
 const fn option_cmd(key: char) -> Option<Shortcut> {
     Some(Shortcut { command: true, control: false, option: true, shift: false, key })
+}
+
+const fn option_shift_cmd(key: char) -> Option<Shortcut> {
+    Some(Shortcut { command: true, control: false, option: true, shift: true, key })
 }
 
 const fn ctrl(key: char) -> Option<Shortcut> {
@@ -133,6 +157,41 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Do(Action::Duplicate, "Duplicate", cmd('D')),
             Do(Action::Delete, "Delete", None),
             Do(Action::SelectAll, "Select All", cmd('A')),
+            Do(Action::DeselectAll, "Deselect All", shift_cmd('A')),
+        ],
+    ),
+    (
+        "Format",
+        &[
+            Do(Action::Bold, "Bold", cmd('B')),
+            Do(Action::Italic, "Italic", cmd('I')),
+            Do(Action::Underline, "Underline", cmd('U')),
+            Line,
+            Do(Action::Bigger, "Bigger", cmd('=')),
+            Do(Action::Smaller, "Smaller", cmd('-')),
+            Line,
+            Do(Action::AlignLeft, "Align Left", shift_cmd('[')),
+            Do(Action::AlignCenter, "Center", shift_cmd('\\')),
+            Do(Action::AlignRight, "Align Right", shift_cmd(']')),
+            Line,
+            Do(Action::UpperCase, "Make Upper Case", None),
+            Do(Action::LowerCase, "Make Lower Case", None),
+            Do(Action::Capitalize, "Capitalize", None),
+            Line,
+            Do(Action::CopyStyle, "Copy Style", option_cmd('C')),
+            Do(Action::PasteStyle, "Paste Style", option_cmd('V')),
+        ],
+    ),
+    (
+        "Arrange",
+        &[
+            Do(Action::BringForward, "Bring Forward", option_shift_cmd('F')),
+            Do(Action::BringToFront, "Bring to Front", shift_cmd('F')),
+            Do(Action::SendBackward, "Send Backward", option_shift_cmd('B')),
+            Do(Action::SendToBack, "Send to Back", shift_cmd('B')),
+            Line,
+            Do(Action::Lock, "Lock", None),
+            Do(Action::UnlockAll, "Unlock All", None),
         ],
     ),
     (
@@ -242,8 +301,41 @@ pub fn key_code(key: char) -> Option<KeyCode> {
         'A'..='Z' => LETTERS.get(usize::from(key as u8 - b'A')).copied(),
         '0'..='9' => DIGITS.get(usize::from(key as u8 - b'0')).copied(),
         ',' => Some(KeyCode::Comma),
+        '=' => Some(KeyCode::Equal),
+        '-' => Some(KeyCode::Minus),
+        '[' => Some(KeyCode::BracketLeft),
+        ']' => Some(KeyCode::BracketRight),
+        '\\' => Some(KeyCode::Backslash),
         _ => None,
     }
+}
+
+/// The actions that change the objects selected in the editor, and only work there.
+pub fn needs_editor(action: Action) -> bool {
+    use Action as A;
+    matches!(
+        action,
+        A::DeselectAll
+            | A::Bold
+            | A::Italic
+            | A::Underline
+            | A::Bigger
+            | A::Smaller
+            | A::AlignLeft
+            | A::AlignCenter
+            | A::AlignRight
+            | A::UpperCase
+            | A::LowerCase
+            | A::Capitalize
+            | A::CopyStyle
+            | A::PasteStyle
+            | A::BringForward
+            | A::BringToFront
+            | A::SendBackward
+            | A::SendToBack
+            | A::Lock
+            | A::UnlockAll
+    )
 }
 
 /// True when a key pressed with these modifiers is one of the menus' shortcuts. Such a key
@@ -302,6 +394,11 @@ mod mac {
             '1' => Some(Code::Digit1),
             '2' => Some(Code::Digit2),
             ',' => Some(Code::Comma),
+            '=' => Some(Code::Equal),
+            '-' => Some(Code::Minus),
+            '[' => Some(Code::BracketLeft),
+            ']' => Some(Code::BracketRight),
+            '\\' => Some(Code::Backslash),
             _ => None,
         }
     }
@@ -326,6 +423,8 @@ mod mac {
     pub struct MenuBar {
         _menu: Menu,
         checks: Vec<(Action, CheckMenuItem, bool)>,
+        /// Items that only work in the editor, and whether they are enabled now.
+        editor_items: Vec<(MenuItem, bool)>,
     }
 
     impl MenuBar {
@@ -333,12 +432,17 @@ mod mac {
         pub fn install() -> Result<MenuBar, String> {
             let menu = Menu::new();
             let mut checks = Vec::new();
+            let mut editor_items = Vec::new();
             for (title, entries) in MENUS {
                 let submenu = Submenu::new(*title, true);
                 for entry in *entries {
                     let item: Box<dyn IsMenuItem> = match entry {
                         Entry::Do(action, label, shortcut) => {
-                            Box::new(MenuItem::with_id(id_of(*action), *label, true, accelerator(*shortcut)))
+                            let item = MenuItem::with_id(id_of(*action), *label, true, accelerator(*shortcut));
+                            if super::needs_editor(*action) {
+                                editor_items.push((item.clone(), true));
+                            }
+                            Box::new(item)
                         }
                         Entry::Check(action, label, shortcut) => {
                             let item =
@@ -380,7 +484,17 @@ mod mac {
                 }
             }
             menu.init_for_nsapp();
-            Ok(MenuBar { _menu: menu, checks })
+            Ok(MenuBar { _menu: menu, checks, editor_items })
+        }
+
+        /// Greys out the items that only work in the editor while it is not open.
+        pub fn set_editing(&mut self, editing: bool) {
+            for (item, enabled) in &mut self.editor_items {
+                if *enabled != editing {
+                    item.set_enabled(editing);
+                    *enabled = editing;
+                }
+            }
         }
 
         /// Ticks the items that are on and clears the others. Cheap when nothing changed.
@@ -428,6 +542,8 @@ mod tests {
         assert!(claims(KeyCode::Comma, command));
         assert!(claims(KeyCode::Digit1, command | ModifiersState::ALT));
         assert!(claims(KeyCode::KeyS, ModifiersState::CONTROL));
+        assert!(claims(KeyCode::BracketLeft, command | ModifiersState::SHIFT));
+        assert!(claims(KeyCode::KeyF, command | ModifiersState::SHIFT | ModifiersState::ALT));
         // Plain keys belong to typing and the show.
         assert!(!claims(KeyCode::KeyZ, ModifiersState::empty()));
         assert!(!claims(KeyCode::KeyS, ModifiersState::empty()));

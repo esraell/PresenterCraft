@@ -1494,7 +1494,53 @@ impl App {
             }
         };
         let command = egui::Modifiers::COMMAND;
+        // A change to the selected objects is made by the editor, in its own frame.
+        let request = |which| state.editing.is_some().then_some(which);
         match action {
+            A::DeselectAll
+            | A::Bold
+            | A::Italic
+            | A::Underline
+            | A::Bigger
+            | A::Smaller
+            | A::AlignLeft
+            | A::AlignCenter
+            | A::AlignRight
+            | A::UpperCase
+            | A::LowerCase
+            | A::Capitalize
+            | A::CopyStyle
+            | A::PasteStyle
+            | A::BringForward
+            | A::BringToFront
+            | A::SendBackward
+            | A::SendToBack
+            | A::Lock
+            | A::UnlockAll => {
+                use home::EditRequest as E;
+                state.edit_request = request(match action {
+                    A::DeselectAll => E::DeselectAll,
+                    A::Bold => E::Bold,
+                    A::Italic => E::Italic,
+                    A::Underline => E::Underline,
+                    A::Bigger => E::Bigger,
+                    A::Smaller => E::Smaller,
+                    A::AlignLeft => E::Align(pc_model::Align::Left),
+                    A::AlignCenter => E::Align(pc_model::Align::Center),
+                    A::AlignRight => E::Align(pc_model::Align::Right),
+                    A::UpperCase => E::UpperCase,
+                    A::LowerCase => E::LowerCase,
+                    A::Capitalize => E::Capitalize,
+                    A::CopyStyle => E::CopyStyle,
+                    A::PasteStyle => E::PasteStyle,
+                    A::BringForward => E::BringForward,
+                    A::BringToFront => E::BringToFront,
+                    A::SendBackward => E::SendBackward,
+                    A::SendToBack => E::SendToBack,
+                    A::Lock => E::Lock,
+                    _ => E::UnlockAll,
+                });
+            }
             A::Quit => {}
             A::Settings | A::ConfigureScreens => state.settings_open = true,
             A::NewSong => state.new_song = true,
@@ -1587,6 +1633,7 @@ impl App {
                 home::SlideView::Table => A::TableView,
             };
             let output_on = self.show.output_enabled();
+            menu.set_editing(state.editing.is_some());
             menu.set_checked(|action| match action {
                 A::Audience => output_on,
                 A::Stage => state.stage_on,
