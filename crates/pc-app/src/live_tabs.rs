@@ -897,16 +897,59 @@ fn macros_tab(ui: &mut egui::Ui, show: &pc_engine::Show, state: &mut HomeState) 
     }
 }
 
+/// The audio playlists: the one shown, with a menu to choose another, make one, rename it or
+/// delete it.
+fn audio_playlists(ui: &mut egui::Ui, state: &mut HomeState) {
+    let name = state.audio.shown().name.clone();
+    let picker = ui
+        .add(egui::Label::new(egui::RichText::new(format!("{name} ▾")).size(12.5).color(TEXT)).sense(Sense::click()))
+        .on_hover_text("Choose an audio playlist");
+    egui::Popup::from_toggle_button_response(&picker)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(200.0);
+            let names: Vec<String> = state.audio.playlists.iter().map(|playlist| playlist.name.clone()).collect();
+            for (at, other) in names.iter().enumerate() {
+                if ui.add(egui::Button::selectable(at == state.audio.current, other.as_str())).clicked() {
+                    state.audio.current = at;
+                    state.audio_changed = true;
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button("New Playlist").clicked() {
+                let made = crate::audio::Playlist::new(state.audio.new_name());
+                state.audio.playlists.push(made);
+                state.audio.current = state.audio.playlists.len() - 1;
+                state.audio_changed = true;
+            }
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Name").color(TEXT_DIM));
+                let field = ui.add(egui::TextEdit::singleline(&mut state.audio.shown_mut().name).desired_width(140.0));
+                state.audio_changed |= field.changed();
+            });
+            if ui.add_enabled(names.len() > 1, egui::Button::new("Delete Playlist")).clicked() {
+                let at = state.audio.current.min(state.audio.playlists.len() - 1);
+                state.audio.playlists.remove(at);
+                state.audio.current = at.saturating_sub(1);
+                state.audio_changed = true;
+                ui.close();
+            }
+        });
+    ui.add_space(4.0);
+}
+
 fn audio_tab(ui: &mut egui::Ui, state: &mut HomeState) {
     use crate::audio::clock;
     use crate::home::AudioRequest;
-    if heading_with_add(ui, "AUDIO", "Add audio files") {
+    if heading_with_add(ui, "AUDIO", "Add audio files to this playlist") {
         state.audio_request = Some(AudioRequest::Add);
     }
+    audio_playlists(ui, state);
     let playing = state.audio_playing;
     // What is playing: its name, how far in, and the controls.
     if let Some(id) = playing.track {
-        let name = state.audio_tracks.iter().find(|track| track.id == id).map_or("", |track| track.name.as_str());
+        let name = state.audio.track(id).map_or("", |track| track.name.as_str());
         egui::Frame::new().fill(CARD).corner_radius(8).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(egui::RichText::new(name).size(13.0).color(TEXT));
@@ -948,7 +991,35 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut HomeState) {
             state.audio_request = Some(AudioRequest::Volume(volume));
         }
     });
-    if state.audio_tracks.is_empty() {
+    // How tracks follow one another.
+    ui.horizontal(|ui| {
+        if ui
+            .selectable_label(state.audio.through, "Play Through")
+            .on_hover_text("When a track ends, play the next")
+            .clicked()
+        {
+            state.audio.through = !state.audio.through;
+            state.audio_changed = true;
+        }
+        if ui
+            .selectable_label(state.audio.shuffle, "Shuffle")
+            .on_hover_text("Play the tracks in a random order")
+            .clicked()
+        {
+            state.audio.shuffle = !state.audio.shuffle;
+            state.audio_changed = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Crossfade").size(12.0).color(TEXT_DIM));
+        let mut seconds = state.audio.crossfade;
+        let slider = egui::Slider::new(&mut seconds, 0.0..=10.0).suffix(" s").max_decimals(1);
+        if ui.add(slider).on_hover_text("How long one track fades into the next").changed() {
+            state.audio.crossfade = seconds;
+            state.audio_changed = true;
+        }
+    });
+    if state.audio.shown().tracks.is_empty() {
         ui.label(
             egui::RichText::new("No audio. Press + to add music to play, such as walk-in music.")
                 .size(12.0)
@@ -956,7 +1027,7 @@ fn audio_tab(ui: &mut egui::Ui, state: &mut HomeState) {
         );
         return;
     }
-    for track in &state.audio_tracks {
+    for track in &state.audio.shown().tracks {
         let on = playing.track == Some(track.id);
         let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
         if on {

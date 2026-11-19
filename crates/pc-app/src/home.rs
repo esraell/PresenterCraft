@@ -213,7 +213,7 @@ pub struct HomeState {
     /// slide the operator put on screen.
     pub actions_depth: u8,
     /// The audio tracks, and true when the list has changed and is to be saved.
-    pub audio_tracks: Vec<crate::audio::Track>,
+    pub audio: crate::audio::Library,
     pub audio_changed: bool,
     /// Something asked of the audio player, what it is playing, and its volume.
     pub audio_request: Option<AudioRequest>,
@@ -784,7 +784,7 @@ impl Default for HomeState {
             props: Vec::new(),
             props_changed: false,
             macros: Vec::new(),
-            audio_tracks: Vec::new(),
+            audio: crate::audio::Library::default(),
             audio_changed: false,
             audio_request: None,
             video_live: None,

@@ -998,16 +998,19 @@ impl App {
                     .add_filter("Audio", &audio::AUDIO_ENDINGS)
                     .pick_files()
                     .unwrap_or_default();
+                let tracks = &mut state.audio.shown_mut().tracks;
                 for path in chosen {
-                    if !state.audio_tracks.iter().any(|track| track.path == path) {
-                        state.audio_tracks.push(audio::Track::of(path));
+                    if !tracks.iter().any(|track| track.path == path) {
+                        tracks.push(audio::Track::of(path));
                         state.audio_changed = true;
                     }
                 }
             }
             Some(AudioRequest::Play(id)) => {
-                if let Some(track) = state.audio_tracks.iter().find(|track| track.id == id)
-                    && let Err(problem) = self.player.play(track)
+                // A track chosen while another plays crossfades from it, if a crossfade is set.
+                let fade = Duration::from_secs_f32(state.audio.crossfade.clamp(0.0, 10.0));
+                if let Some(track) = state.audio.track(id)
+                    && let Err(problem) = self.player.play_fading(track, fade)
                 {
                     state.notice = Some(problem);
                 }
@@ -1020,25 +1023,52 @@ impl App {
                 if state.audio_playing.track == Some(id) {
                     self.player.stop();
                 }
-                state.audio_tracks.retain(|track| track.id != id);
+                state.audio.shown_mut().tracks.retain(|track| track.id != id);
                 state.audio_changed = true;
             }
             None => {}
         }
         if std::mem::take(&mut state.audio_changed)
-            && let Err(problem) = audio::save(&state.audio_tracks)
+            && let Err(problem) = audio::save(&state.audio)
+        {
+            state.notice = Some(problem);
+        }
+        self.tick_audio();
+    }
+
+    /// Keeps the audio going by the clock: fades finish, and with Play Through on the next track
+    /// starts as one ends (fading in over its end, if a crossfade is set). Tells the Audio tab
+    /// what is playing, and says when to look again.
+    fn tick_audio(&mut self) -> Option<Instant> {
+        let fading = self.player.tick();
+        let running = self.running.as_mut()?;
+        let state = &mut running.home_state;
+        let fade = Duration::from_secs_f32(state.audio.crossfade.clamp(0.0, 10.0));
+        let pick = |count: usize| (Uuid::new_v4().as_u128() % count as u128) as usize;
+        if let Some(ended) = self.player.ended() {
+            if state.audio.through
+                && let Some(next) = state.audio.after(ended, pick)
+                && let Err(problem) = self.player.play(next)
+            {
+                state.notice = Some(problem);
+            }
+        } else if state.audio.through
+            && !fade.is_zero()
+            && let Some(id) = self.player.playing().track
+            && self.player.left().is_some_and(|left| left <= fade)
+            && let Some(next) = state.audio.after(id, pick)
+            && let Err(problem) = self.player.play_fading(next, fade)
         {
             state.notice = Some(problem);
         }
         let playing = self.player.playing();
-        if playing != state.audio_playing {
-            state.audio_playing = playing;
+        let shown = |p: &audio::Playing| (p.track, p.position.as_secs(), p.paused);
+        if shown(&playing) != shown(&state.audio_playing) {
+            running.home_window.request_redraw();
         }
-        // While a track plays, the tab shows how far in it is.
-        if playing.track.is_some() && !playing.paused {
-            let soon = Instant::now() + Duration::from_millis(250);
-            running.next_repaint = Some(running.next_repaint.map_or(soon, |at| at.min(soon)));
-        }
+        state.audio_playing = playing;
+        // While a track plays or fades, look again soon.
+        ((playing.track.is_some() && !playing.paused) || fading).then(|| Instant::now() + Duration::from_millis(100))
     }
 
     /// Carries out the actions waiting to be done: a macro's, or a slide's.
@@ -3129,7 +3159,7 @@ impl ApplicationHandler<String> for App {
                 running.home_state.libraries = libraries::load();
                 running.home_state.media_playlists = std::mem::take(&mut self.media_playlists);
                 running.home_state.stage_layouts = stage::load_layouts();
-                running.home_state.audio_tracks = audio::load();
+                running.home_state.audio = audio::load();
                 // Macros set to run when PresenterCraft starts.
                 let startup: Vec<pc_model::ShowAction> = running
                     .home_state
@@ -3452,6 +3482,7 @@ impl ApplicationHandler<String> for App {
         self.tick_advance();
         self.sync_overlay();
         let video_at = self.tick_video();
+        let audio_at = self.tick_audio();
         // Songs changed in the Edit view are written once typing has paused for a second.
         const SAVE_AFTER: Duration = Duration::from_secs(1);
         let save_at = self.unsaved_since.map(|since| since + SAVE_AFTER);
@@ -3476,7 +3507,7 @@ impl ApplicationHandler<String> for App {
             }
             panel_at = [panel_at, panel.next_repaint].into_iter().flatten().min();
         }
-        match [running.next_repaint, panel_at, save_at, video_at].into_iter().flatten().min() {
+        match [running.next_repaint, panel_at, save_at, video_at, audio_at].into_iter().flatten().min() {
             Some(at) => el.set_control_flow(ControlFlow::WaitUntil(at)),
             None => el.set_control_flow(ControlFlow::Wait),
         }

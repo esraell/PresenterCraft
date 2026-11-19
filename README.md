@@ -88,8 +88,9 @@ ProPresenter.
   **Props** (things that stay over the slides until taken off, made in the editor, with an
   optional time to clear themselves), **Macros** (coloured buttons that clear layers, show or
   hide messages and props, start, stop or reset timers, switch the audience screens and go to
-  songs, show a picture from the media bin, optionally when the app starts), **Audio** (tracks such as walk-in music: play, pause,
-  skip 15 seconds, volume; F5 or Clear All stops it), and a **Stage Message** for the people on
+  songs, show a picture from the media bin, optionally when the app starts), **Audio** (playlists of tracks such as walk-in music: play, pause,
+  skip 15 seconds, volume, Play Through to the next track, Shuffle, and a crossfade of up to ten
+  seconds from one track into the next; F5 or Clear All stops it), and a **Stage Message** for the people on
   stage, in tabs under the Program panel. A slide can carry the same actions, done when it goes on screen.
 - The Program preview shows what the audience sees, or (from the chooser beside PROGRAM) what
   the stage screens show, with the time kept up to date.
@@ -191,7 +192,7 @@ Among the things PresenterCraft can't do yet:
   time, and a song can loop).
 - ProPresenter's other transitions, chiefly the 3D ones (Cube, Page Curl, Swing and the like),
   and transitions for props of their own.
-- In and out points for media; audio playlists, shuffle and crossfade.
+- In and out points for media and audio.
 - The Announcements layer, Clear Groups, and Show Slide on Stage Screens Only.
 - Saved looks to switch between, masks other than covered edges, corner pin, alpha and NDI
   modes, and a theme for each screen.
