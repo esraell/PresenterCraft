@@ -117,6 +117,10 @@ pub struct HomeState {
     pub theme_edit: Option<ThemeEdit>,
     /// Every theme's name, and the places of the ones songs and Bible slides use.
     pub theme_names: Vec<String>,
+    /// What each theme calls its two templates, the one for two languages first.
+    pub template_names: Vec<[String; 2]>,
+    /// The template being renamed in the Theme Editor, and its name as typed so far.
+    pub renaming_template: Option<(Template, String)>,
     /// Each theme's two layouts as boxes, for the pictures in the theme picker.
     pub theme_layouts: Vec<[Vec<(pc_model::Role, SlideRect)>; 2]>,
     /// Which layout of its theme Bible slides use.
@@ -157,14 +161,6 @@ pub fn layout_labels(theme: &Theme, layout: Template) -> Vec<String> {
         .filter(|style| layout == Template::Full || style.role != pc_model::Role::translation())
         .map(pc_model::BoxStyle::label)
         .collect()
-}
-
-/// What a layout is called.
-pub fn layout_name(layout: Template) -> &'static str {
-    match layout {
-        Template::Full => "Two languages",
-        Template::Alone => "One language",
-    }
 }
 
 /// A small picture of a slide with its boxes outlined and one of them filled, to show which
@@ -300,10 +296,13 @@ impl BiblePage {
 
     /// The passage now shown, as something a service can keep.
     pub fn saved(&self) -> Option<crate::service::SavedPassage> {
+        (!self.shown.is_empty()).then(|| self.settings())
+    }
+
+    /// How the page is set up now: its translations, the boxes their words and references
+    /// go in, and the slide options. Kept between runs, and with each saved passage.
+    pub fn settings(&self) -> crate::service::SavedPassage {
         use crate::bible::ReferenceStyle;
-        if self.shown.is_empty() {
-            return None;
-        }
         let rows = self
             .rows
             .iter()
@@ -316,7 +315,7 @@ impl BiblePage {
             })
             .collect();
         let o = &self.options;
-        Some(crate::service::SavedPassage {
+        crate::service::SavedPassage {
             lookup: self.shown.clone(),
             rows,
             show_verse_numbers: o.show_verse_numbers,
@@ -329,12 +328,23 @@ impl BiblePage {
                 ReferenceStyle::NoReference => "none",
             }
             .to_owned(),
-        })
+        }
     }
 
     /// Brings a saved passage back: its translations and options are set as they were, and
     /// it is looked up. A translation that is no longer installed is left out, and said so.
     pub fn open_saved(&mut self, saved: &crate::service::SavedPassage, live: Option<usize>) {
+        let missing = self.apply_settings(saved);
+        self.lookup = saved.lookup.clone();
+        self.look_up(live);
+        if !missing.is_empty() && self.message.is_none() {
+            self.message = Some(format!("Not installed, so left out: {}.", missing.join(", ")));
+        }
+    }
+
+    /// Sets the page up as it was saved: translations, boxes and slide options. Returns the
+    /// translations that are no longer installed, which are left out.
+    pub fn apply_settings(&mut self, saved: &crate::service::SavedPassage) -> Vec<String> {
         use crate::bible::ReferenceStyle;
         let mut rows = Vec::new();
         let mut missing = Vec::new();
@@ -361,15 +371,11 @@ impl BiblePage {
             "none" => ReferenceStyle::NoReference,
             _ => ReferenceStyle::VerseReferences,
         };
-        self.lookup = saved.lookup.clone();
-        self.look_up(live);
-        if !missing.is_empty() && self.message.is_none() {
-            self.message = Some(format!("Not installed, so left out: {}.", missing.join(", ")));
-        }
+        missing
     }
 
     /// The choices a passage is made with, as text, so a change to any of them can be noticed.
-    fn choices(&self) -> String {
+    pub fn choices(&self) -> String {
         let o = &self.options;
         format!(
             "{:?} {} {} {} {:?}",
@@ -560,6 +566,8 @@ impl Default for HomeState {
             inspector: crate::inspector::InspectorState::default(),
             theme_edit: None,
             theme_names: Vec::new(),
+            template_names: Vec::new(),
+            renaming_template: None,
             theme_layouts: Vec::new(),
             bible_layout: Template::Full,
             theme_for_songs: 0,
@@ -572,6 +580,41 @@ impl Default for HomeState {
 }
 
 impl HomeState {
+    /// The small choices kept between runs, as they are now.
+    pub fn prefs(&self) -> crate::service::Prefs {
+        crate::service::Prefs {
+            dissolve: self.dissolve,
+            dissolve_time: self.dissolve_time,
+            columns: self.columns,
+            slide_view: match self.slide_view {
+                SlideView::Grid => "grid",
+                SlideView::Easy => "easy",
+                SlideView::Table => "table",
+            }
+            .to_owned(),
+            ndi_name: self.ndi_name.clone(),
+            ndi_on: !matches!(self.ndi_status, NdiStatus::Off),
+        }
+    }
+
+    /// Sets the small choices as they were saved. NDI is only asked for here; the app starts it.
+    pub fn apply_prefs(&mut self, prefs: &crate::service::Prefs) {
+        self.dissolve = prefs.dissolve;
+        self.dissolve_time = prefs.dissolve_time.clamp(0.1, 5.0);
+        self.columns = prefs.columns.clamp(2, 7);
+        self.slide_view = match prefs.slide_view.as_str() {
+            "easy" => SlideView::Easy,
+            "table" => SlideView::Table,
+            _ => SlideView::Grid,
+        };
+        if !prefs.ndi_name.trim().is_empty() {
+            self.ndi_name = prefs.ndi_name.clone();
+        }
+        if prefs.ndi_on && self.ndi_available {
+            self.requested_ndi = Some(Some(self.ndi_name.clone()));
+        }
+    }
+
     /// How long a new picture takes to fade in on the output; zero when slides cut.
     pub fn dissolve_seconds(&self) -> f32 {
         if self.dissolve { self.dissolve_time.clamp(0.0, 5.0) } else { 0.0 }
@@ -1049,7 +1092,11 @@ fn edit_view(
                     (state.theme_for_songs == theme_index, state.theme_for_bible == theme_index);
                 let bible_template = state.bible_layout;
                 let mut link_bible = None;
-                let layouts = [(Template::Full, "Two languages"), (Template::Alone, "One language")];
+                let layouts =
+                    [Template::Full, Template::Alone].map(|template| (template, edit.theme.template_name(template)));
+                let mut renamed_template: Option<Option<(Template, String)>> = None;
+                let mut rename_started = std::mem::take(&mut state.rename_started);
+                let mut start_rename = None;
                 let slides: Vec<Slide> =
                     layouts.iter().map(|(template, _)| edit.theme.template_slide(*template)).collect();
                 let current = edit.template;
@@ -1080,13 +1127,51 @@ fn edit_view(
                         if selected {
                             ui.painter().rect_stroke(image, 0.0, Stroke::new(2.0, EDIT_OUTLINE), StrokeKind::Outside);
                         }
-                        ui.painter().text(
+                        // The template's number and name. A click on the name of the template
+                        // on the canvas, or a double click, turns the name into a field.
+                        let ink = Color32::from_gray(230);
+                        let number = ui.painter().text(
                             pos2(cell.min.x + 9.0, image.max.y + 10.0),
                             Align2::LEFT_CENTER,
-                            format!("{}.  {name}", index + 1),
+                            format!("{}.", index + 1),
                             FontId::proportional(11.5),
-                            Color32::from_gray(230),
+                            ink,
                         );
+                        let name_area = Rect::from_min_max(
+                            pos2(number.max.x + 2.0, image.max.y + 1.0),
+                            pos2(cell.max.x - 96.0, cell.max.y - 1.0),
+                        );
+                        let being_renamed =
+                            state.renaming_template.as_ref().is_some_and(|(which, _)| *which == template);
+                        if being_renamed && let Some((_, typed)) = state.renaming_template.as_mut() {
+                            let field = ui.put(
+                                name_area,
+                                crate::studio::rename_field(typed, FontId::proportional(11.5), ink, ink),
+                            );
+                            if std::mem::take(&mut rename_started) {
+                                field.request_focus();
+                            }
+                            let (enter, escape) = ui.input(|input| {
+                                (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape))
+                            });
+                            if escape {
+                                renamed_template = Some(None);
+                            } else if enter || field.lost_focus() {
+                                renamed_template = Some(Some((template, typed.clone())));
+                            }
+                        } else {
+                            ui.painter().with_clip_rect(name_area).text(
+                                pos2(number.max.x + 6.0, image.max.y + 10.0),
+                                Align2::LEFT_CENTER,
+                                name.as_str(),
+                                FontId::proportional(11.5),
+                                ink,
+                            );
+                            let on_name = response.interact_pointer_pos().is_some_and(|at| name_area.contains(at));
+                            if response.double_clicked() || (response.clicked() && selected && on_name) {
+                                start_rename = Some((template, name.clone()));
+                            }
+                        }
                         // What is linked to this template, at the right of its name.
                         let mut right = cell.max.x - 8.0;
                         for (linked, tag) in
@@ -1123,6 +1208,19 @@ fn edit_view(
                 });
                 if let Some(template) = link_bible {
                     state.theme_request = Some(ThemeRequest::UseForBible(theme_index, template));
+                }
+                if let Some(start) = start_rename {
+                    state.renaming_template = Some(start);
+                    rename_started = true;
+                }
+                state.rename_started = rename_started;
+                if let Some(outcome) = renamed_template {
+                    state.renaming_template = None;
+                    if let (Some((template, name)), Some(edit)) = (outcome, state.theme_edit.as_mut()) {
+                        let before = edit.theme.template_names.clone();
+                        edit.theme.name_template(template, &name);
+                        edit.changed |= edit.theme.template_names != before;
+                    }
                 }
             } else {
                 egui::ScrollArea::vertical().id_salt("edit slide list").auto_shrink([false, false]).show(ui, |ui| {
@@ -1666,9 +1764,13 @@ fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
                     }
                 });
             });
-            // Return does nothing here on purpose; Escape cancels.
-            if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            // Return deletes, as pressing the Delete button does; Escape cancels.
+            let (enter, escape) =
+                ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+            if escape {
                 decided = Some(false);
+            } else if enter {
+                decided = Some(true);
             }
         });
     if let Some(delete) = decided {
@@ -2003,6 +2105,7 @@ fn bible_area(
                             "Songs",
                             &crate::bible::ThemeChoice {
                                 names: &state.theme_names,
+                                template_names: &state.template_names,
                                 layouts: &state.theme_layouts,
                                 theme: state.theme_for_bible,
                                 layout: state.bible_layout,

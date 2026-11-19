@@ -448,10 +448,20 @@ impl Default for BibleOptions {
 /// The themes to choose from for Bible slides, and the choice now made.
 pub struct ThemeChoice<'a> {
     pub names: &'a [String],
+    /// What each theme calls its two templates.
+    pub template_names: &'a [[String; 2]],
     /// Each theme's two layouts, as boxes, for the pictures.
     pub layouts: &'a [[Vec<(Role, pc_model::SlideRect)>; 2]],
     pub theme: usize,
     pub layout: Template,
+}
+
+impl ThemeChoice<'_> {
+    /// What a theme calls one of its templates.
+    fn template_name(&self, theme: usize, template: Template) -> &str {
+        let usual = if template == Template::Alone { "One language" } else { "Two languages" };
+        self.template_names.get(theme).map_or(usual, |names| names[usize::from(template == Template::Alone)].as_str())
+    }
 }
 
 /// Draws the pop-up under the Options button, its right edge in line with the button's.
@@ -602,7 +612,7 @@ fn slide_options(
         let chosen = format!(
             "{} › {}",
             themes.names.get(themes.theme).map_or("", String::as_str),
-            crate::home::layout_name(themes.layout)
+            themes.template_name(themes.theme, themes.layout)
         );
         egui::ComboBox::from_id_salt("bible theme")
             .selected_text(chosen)
@@ -625,7 +635,7 @@ fn slide_options(
                         ui.painter().text(
                             pos2(picture.max.x + 10.0, row.center().y),
                             Align2::LEFT_CENTER,
-                            crate::home::layout_name(layout),
+                            themes.template_name(index, layout),
                             FontId::proportional(13.0),
                             INK,
                         );

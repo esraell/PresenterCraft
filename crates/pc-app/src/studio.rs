@@ -143,9 +143,15 @@ fn load_fonts(ctx: &egui::Context) {
 /// (same font, same colour, no filled box) and adds only a thin outline, so the words stay
 /// where they were and it is plain that they can now be typed over.
 pub fn rename_field<'t>(text: &'t mut String, font: FontId, ink: Color32, outline: Color32) -> egui::TextEdit<'t> {
-    egui::TextEdit::singleline(text).font(font).text_color(ink).background_color(Color32::TRANSPARENT).frame(
-        Frame::new().stroke(Stroke::new(1.0, outline)).corner_radius(4).inner_margin(egui::Margin::symmetric(4, 1)),
-    )
+    egui::TextEdit::singleline(text)
+        .font(font)
+        .text_color(ink)
+        .background_color(Color32::TRANSPARENT)
+        // No taller than the line of text it replaces, so nothing around it moves.
+        .min_size(egui::Vec2::ZERO)
+        .frame(
+            Frame::new().stroke(Stroke::new(1.0, outline)).corner_radius(4).inner_margin(egui::Margin::symmetric(4, 0)),
+        )
 }
 
 /// A small heading in capitals, as each section starts with.
@@ -360,7 +366,15 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
     egui::Panel::left("library").resizable(false).exact_size(256.0).frame(frame).show(ui, |ui| {
         let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
         let listed = |index: usize| !hidden.contains(&index);
-        let song_at = |keys: &[String], key: &str| keys.iter().position(|have| have == key).filter(|index| listed(*index));
+        // A song in a service is found by the name its file gave it; one saved before it had a
+        // file is found by its title.
+        let song_at = |keys: &[String], key: &str| {
+            let by_title = key.strip_prefix("title:");
+            keys.iter()
+                .position(|have| have == key)
+                .or_else(|| by_title.and_then(|title| show.presentations().iter().position(|song| song.title == title)))
+                .filter(|index| listed(*index))
+        };
 
         // The library is on top, as operators are used to. The service has its own strip fixed
         // to the bottom of the column, so however many songs there are it is never pushed out

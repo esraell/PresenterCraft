@@ -212,6 +212,10 @@ pub struct Theme {
     /// The colour behind everything on a slide. `None` is black.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<Rgba>,
+    /// The names given to the two templates, the one for two languages first. `None` keeps
+    /// the usual name.
+    #[serde(default)]
+    pub template_names: [Option<String>; 2],
 }
 
 /// The two layouts a theme has, each shown as a slide in the Theme Editor.
@@ -309,6 +313,27 @@ impl Theme {
             ],
             solo_primary: SlideRect { x: 120.0, y: 240.0, w: 1680.0, h: 600.0 },
             background: None,
+            template_names: [None, None],
+        }
+    }
+
+    /// What one of the theme's templates is called: the name it was given, or the usual one.
+    pub fn template_name(&self, template: Template) -> String {
+        let (at, usual) = match template {
+            Template::Full => (0, "Two languages"),
+            Template::Alone => (1, "One language"),
+        };
+        self.template_names[at].clone().unwrap_or_else(|| usual.to_owned())
+    }
+
+    /// Gives one of the theme's templates a name. An empty name, or the usual one, goes back
+    /// to the usual name.
+    pub fn name_template(&mut self, template: Template, name: &str) {
+        let name = name.trim();
+        let at = usize::from(template == Template::Alone);
+        self.template_names[at] = None;
+        if !name.is_empty() && name != self.template_name(template) {
+            self.template_names[at] = Some(name.to_owned());
         }
     }
 
@@ -664,6 +689,25 @@ mod tests {
         assert_eq!(translation.fill, orange);
         assert_eq!(translation.role, Role::translation());
         assert_eq!(translation.rect, theme.style_for(&Role::translation()).unwrap().rect);
+    }
+
+    #[test]
+    fn templates_can_be_named_and_the_names_survive_the_file() {
+        let mut theme = Theme::builtin();
+        assert_eq!(theme.template_name(Template::Full), "Two languages");
+        theme.name_template(Template::Full, "  Lyrics ");
+        theme.name_template(Template::Alone, "One language");
+        assert_eq!(theme.template_names, [Some("Lyrics".to_owned()), None]);
+        let again = Theme::from_json(&theme.to_json()).unwrap();
+        assert_eq!(
+            (again.template_name(Template::Full), again.template_name(Template::Alone)),
+            ("Lyrics".to_owned(), "One language".to_owned())
+        );
+        // An emptied name goes back to the usual one; a file without names still reads.
+        theme.name_template(Template::Full, "");
+        assert_eq!(theme.template_name(Template::Full), "Two languages");
+        let old = Theme::builtin().to_json().replace("\"template_names\"", "\"unknown\"");
+        assert_eq!(Theme::from_json(&old).unwrap().template_names, [None, None]);
     }
 
     #[test]

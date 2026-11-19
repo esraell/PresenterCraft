@@ -210,6 +210,81 @@ impl Services {
     }
 }
 
+/// The small choices that are not part of any song, theme or service, kept between runs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    /// Whether one slide fades into the next, and over how many seconds.
+    pub dissolve: bool,
+    pub dissolve_time: f32,
+    /// How many slides fit across the grid, and the view: `grid`, `easy` or `table`.
+    pub columns: usize,
+    pub slide_view: String,
+    /// The name the audience screen is sent under over NDI, and whether it was on.
+    pub ndi_name: String,
+    pub ndi_on: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Prefs {
+        Prefs {
+            dissolve: true,
+            dissolve_time: 0.4,
+            columns: 4,
+            slide_view: "grid".to_owned(),
+            ndi_name: "PresenterCraft Audience".to_owned(),
+            ndi_on: false,
+        }
+    }
+}
+
+fn prefs_file() -> Option<std::path::PathBuf> {
+    crate::bible_store::data_dir().map(|dir| dir.join("preferences.json"))
+}
+
+/// The choices as last saved, or the usual ones.
+pub fn load_prefs() -> Prefs {
+    prefs_file()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Remembers the choices for the next start.
+pub fn save_prefs(prefs: &Prefs) -> Result<(), String> {
+    let path = prefs_file().ok_or_else(|| "Could not find where to keep settings on this computer.".to_owned())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not make the app's folder: {e}"))?;
+    }
+    let partial = path.with_extension("json.part");
+    std::fs::write(&partial, serde_json::to_string_pretty(prefs).unwrap_or_default())
+        .and_then(|()| std::fs::rename(&partial, &path))
+        .map_err(|e| format!("Could not save the settings: {e}"))
+}
+
+fn bible_page_file() -> Option<std::path::PathBuf> {
+    crate::bible_store::data_dir().map(|dir| dir.join("bible-page.json"))
+}
+
+/// How the Bible page was last set up: its translations, boxes and slide options.
+pub fn load_bible_page() -> Option<SavedPassage> {
+    let text = std::fs::read_to_string(bible_page_file()?).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Remembers how the Bible page is set up, for the next start.
+pub fn save_bible_page(page: &SavedPassage) -> Result<(), String> {
+    let path = bible_page_file().ok_or_else(|| "Could not find where to keep settings on this computer.".to_owned())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not make the app's folder: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(page).unwrap_or_default();
+    let partial = path.with_extension("json.part");
+    std::fs::write(&partial, text)
+        .and_then(|()| std::fs::rename(&partial, &path))
+        .map_err(|e| format!("Could not save the Bible page's settings: {e}"))
+}
+
 fn file() -> Option<std::path::PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("services.json"))
 }
@@ -302,6 +377,16 @@ mod tests {
         assert!(services.remove_service());
         assert_eq!(services.front().name, "Sunday");
         assert!(!services.remove_service());
+    }
+
+    #[test]
+    fn preferences_read_back_and_a_missing_one_takes_its_usual_value() {
+        let prefs = Prefs { dissolve: false, columns: 6, ndi_on: true, ..Prefs::default() };
+        let again: Prefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(again, prefs);
+        // A file from an older version, with fewer choices in it, still reads.
+        let old: Prefs = serde_json::from_str("{\"columns\": 3}").unwrap();
+        assert_eq!((old.columns, old.dissolve, old.dissolve_time), (3, true, 0.4));
     }
 
     #[test]

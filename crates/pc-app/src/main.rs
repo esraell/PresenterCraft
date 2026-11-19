@@ -95,6 +95,11 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
     Ok(Some(options))
 }
 
+/// What a theme calls its two templates, the one for two languages first.
+fn template_names(theme: &Theme) -> [String; 2] {
+    [theme.template_name(pc_model::Template::Full), theme.template_name(pc_model::Template::Alone)]
+}
+
 /// The keys that run the show. They are read straight from the window, before the interface
 /// draws, so a key press reaches the output without waiting for the home window. A letter
 /// jumps to the group it stands for (A for the first verse, C for the chorus, and so on).
@@ -242,6 +247,12 @@ struct App {
     bible_layout: pc_model::Template,
     /// The themes with changes not yet written to their files, by place.
     themes_unsaved: Vec<usize>,
+    /// The Bible page's set-up as last written to its file, to notice when it changes.
+    bible_page_saved: String,
+    /// The small choices as last written, and how many frames have been drawn: NDI takes a
+    /// moment to start, and the choices are not written until it has had that moment.
+    prefs_saved: Option<service::Prefs>,
+    frames_since_start: u32,
     /// The modifier keys held down now. A letter pressed with Command or Control is a
     /// shortcut, not a jump to a group.
     held: winit::keyboard::ModifiersState,
@@ -379,6 +390,7 @@ impl App {
                 theme_names: self.themes.iter().map(|theme| theme.name.clone()).collect(),
                 theme_for_songs: self.songs_theme,
                 theme_layouts: self.theme_layouts(),
+                template_names: self.themes.iter().map(template_names).collect(),
                 bible_layout: self.bible_layout,
                 services: service::load(),
                 // A song is found again by its file, without the ending (which changes when
@@ -523,12 +535,28 @@ impl App {
         if changes.slides && live_edit {
             self.refresh_output();
         }
+        // The song is written at once, so nothing is lost if the app stops without warning.
+        // While a box is being dragged it waits for the drag to end.
+        let dragging =
+            self.running.as_ref().is_some_and(|r| r.home_state.editing.as_ref().is_some_and(|d| d.drag.is_some()));
+        if !dragging {
+            self.save_unsaved();
+        }
     }
 
     /// Writes every song changed in the Edit view to its file. The bundled sample has no file.
     fn save_unsaved(&mut self) {
         let mut problem = None;
         for index in std::mem::take(&mut self.unsaved) {
+            // A song with no file yet (the sample) is given one in the app's Songs folder, so
+            // a change to it is kept like any other. Bible passages are never saved as songs.
+            if !self.bible_slots.contains(&index)
+                && let (Some(None), Some(song)) = (self.sources.get(index), self.show.presentations().get(index))
+                && let Some(folder) = bible_store::data_dir().map(|dir| dir.join("Songs"))
+            {
+                let _ = std::fs::create_dir_all(&folder);
+                self.sources[index] = Some(folder.join(format!("{}.pcpres", song.id)));
+            }
             let (Some(Some(path)), Some(song)) = (self.sources.get(index), self.show.presentations().get(index)) else {
                 continue;
             };
@@ -664,6 +692,7 @@ impl App {
             state.theme_for_songs = self.songs_theme;
             state.theme_for_bible = self.bible_theme;
             state.theme_layouts = layouts;
+            state.template_names = self.themes.iter().map(template_names).collect();
             state.bible_layout = self.bible_layout;
             state.bible.boxes = home::layout_boxes(&self.theme_for_bible, self.bible_layout);
             state.bible.box_labels = home::layout_labels(&self.theme_for_bible, self.bible_layout);
@@ -1086,6 +1115,15 @@ impl ApplicationHandler for App {
         }
         match self.start(el) {
             Ok(Some(mut running)) => {
+                // The Bible page and the small choices are as they were left.
+                if let Some(page) = service::load_bible_page() {
+                    running.home_state.bible.apply_settings(&page);
+                }
+                self.bible_page_saved = running.home_state.bible.choices();
+                let prefs = service::load_prefs();
+                running.home_state.apply_prefs(&prefs);
+                // NDI counts as on from the moment it is asked for, so the saved choice is kept.
+                self.prefs_saved = Some(prefs);
                 // Testing aid: start with NDI on under this name.
                 if let Ok(name) = std::env::var("PRESENTERCRAFT_NDI") {
                     running.home_state.requested_ndi = Some(Some(name));
@@ -1207,6 +1245,32 @@ impl ApplicationHandler for App {
                 }
                 self.handle_themes();
                 self.handle_songs();
+                // The Bible page's set-up (translations, boxes, options) is remembered the
+                // moment it changes, so it is as it was left at the next start.
+                if let Some(running) = self.running.as_mut() {
+                    let now = running.home_state.bible.choices();
+                    if now != self.bible_page_saved {
+                        let page =
+                            service::SavedPassage { lookup: String::new(), ..running.home_state.bible.settings() };
+                        if let Err(problem) = service::save_bible_page(&page) {
+                            running.home_state.notice = Some(problem);
+                        }
+                        self.bible_page_saved = now;
+                    }
+                }
+                // So are the small choices: transition, view, slide size, NDI.
+                if let Some(running) = self.running.as_mut() {
+                    let mut now = running.home_state.prefs();
+                    // While NDI is being started it is not "on" yet; keep what was asked for.
+                    now.ndi_on |= running.home_state.requested_ndi.as_ref().is_some_and(Option::is_some);
+                    if self.prefs_saved.as_ref() != Some(&now) && self.frames_since_start > 10 {
+                        if let Err(problem) = service::save_prefs(&now) {
+                            running.home_state.notice = Some(problem);
+                        }
+                        self.prefs_saved = Some(now);
+                    }
+                    self.frames_since_start = self.frames_since_start.saturating_add(1);
+                }
                 // The services are written as soon as they change; the file is small.
                 if let Some(running) = self.running.as_mut()
                     && std::mem::take(&mut running.home_state.services.changed)
@@ -1297,6 +1361,12 @@ fn main() -> ExitCode {
         eprintln!("{problem}");
     }
     made_here.sort_by_key(|loaded| loaded.song.title.to_lowercase());
+    // The sample song is only for an empty library: once the app has songs of its own (the
+    // sample itself, if it was changed, is one of them) it is not added again.
+    if song_paths.is_empty() && !made_here.is_empty() {
+        songs.clear();
+        sources.clear();
+    }
     for loaded in made_here {
         if !sources.contains(&Some(loaded.path.clone())) {
             songs.push(loaded.song);
@@ -1345,6 +1415,9 @@ fn main() -> ExitCode {
         bible_theme,
         bible_layout,
         themes_unsaved: Vec::new(),
+        bible_page_saved: String::new(),
+        prefs_saved: None,
+        frames_since_start: 0,
         held: winit::keyboard::ModifiersState::empty(),
         capture_selects_box: false,
         running: None,
