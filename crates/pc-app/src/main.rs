@@ -877,7 +877,7 @@ impl App {
         let message = state.message_live.and_then(|(id, _)| {
             let message = state.messages.iter().find(|message| message.id == id)?;
             let words = messages::fill_in(&message.text, &state.timers, Instant::now(), timers::seconds_into_day());
-            Some(messages::slide(&words))
+            Some(messages::slide(&words, message.look))
         });
         let mut live_props: Vec<Slide> = state
             .props_live
@@ -2087,7 +2087,7 @@ impl App {
         let message = state
             .message_live
             .and_then(|(id, _)| state.messages.iter().find(|message| message.id == id))
-            .map(|message| message.text.clone());
+            .map(|message| (message.text.clone(), message.look));
         let overlay = output::Overlay {
             message,
             stage_message: state.stage_message_live.then(|| state.stage_message.clone()),

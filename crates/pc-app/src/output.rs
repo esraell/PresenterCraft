@@ -29,8 +29,8 @@ pub struct Frame {
 /// timers on the stage screens.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Overlay {
-    /// The message's words, tokens and all; they are filled in as it is drawn.
-    pub message: Option<String>,
+    /// The message's words, tokens and all (they are filled in as it is drawn), and its look.
+    pub message: Option<(String, crate::messages::Look)>,
     pub stage_message: Option<String>,
     pub timers: Vec<crate::timers::Timer>,
     /// The props on screen, in the order they were put on.
@@ -224,7 +224,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             match rx.recv_timeout(Duration::from_secs(1).saturating_sub(into_second) + Duration::from_millis(5)) {
                 Ok(msg) => Some(msg),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if output.overlay.message.as_deref().is_some_and(crate::messages::has_tokens) {
+                    if output.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text)) {
                         output.draw(false);
                     } else {
                         output.draw_stage();
@@ -371,10 +371,10 @@ impl Output {
             return (None, None, None, frame.theme.clone());
         }
         // A message shows over whatever is on the audience screens.
-        let message = self.overlay.message.as_deref().map(|text| {
+        let message = self.overlay.message.as_ref().map(|(text, look)| {
             let words =
                 crate::messages::fill_in(text, &self.overlay.timers, Instant::now(), crate::timers::seconds_into_day());
-            crate::messages::slide(&words)
+            crate::messages::slide(&words, *look)
         });
         // Props and the message share the layer over the slide.
         let copyright = self.overlay.copyright.as_deref().map(crate::props::copyright_slide);
@@ -474,7 +474,7 @@ impl Output {
     /// True when something on the screens changes by itself each second: the time on a stage
     /// screen, or a message with the time or a timer in it.
     fn ticks(&self) -> bool {
-        self.has_stage() || self.overlay.message.as_deref().is_some_and(crate::messages::has_tokens)
+        self.has_stage() || self.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text))
     }
 
     /// True when there is a stage screen to keep the time on.

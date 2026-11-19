@@ -191,6 +191,9 @@ pub struct HomeState {
     pub messages: Vec<crate::messages::Message>,
     pub messages_changed: bool,
     pub message_selected: Option<pc_model::Uuid>,
+    /// A message cut or copied, to paste; and one being renamed in its row, with its name so far.
+    pub message_clip: Option<crate::messages::Message>,
+    pub message_rename: Option<(pc_model::Uuid, String)>,
     /// The message showing over the slides, and since when.
     pub message_live: Option<(pc_model::Uuid, std::time::Instant)>,
     /// The note for the people on stage, and whether it is showing on the stage screens.
@@ -720,6 +723,8 @@ impl Default for HomeState {
             messages: Vec::new(),
             messages_changed: false,
             message_selected: None,
+            message_clip: None,
+            message_rename: None,
             message_live: None,
             stage_message: String::new(),
             stage_message_live: false,

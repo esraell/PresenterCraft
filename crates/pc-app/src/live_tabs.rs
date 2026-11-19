@@ -239,6 +239,9 @@ fn messages_tab(ui: &mut egui::Ui, state: &mut HomeState) {
     }
     let live = state.message_live.map(|(id, _)| id);
     let mut action: Option<(usize, &str)> = None;
+    let mut renamed: Option<Option<(pc_model::Uuid, String)>> = None;
+    let mut rename_started = std::mem::take(&mut state.rename_started);
+    let has_clip = state.message_clip.is_some();
     for (index, message) in state.messages.iter().enumerate() {
         let selected = state.message_selected == Some(message.id);
         let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
@@ -250,42 +253,115 @@ fn messages_tab(ui: &mut egui::Ui, state: &mut HomeState) {
         if live == Some(message.id) {
             ui.painter().circle_filled(row.left_center() + vec2(10.0, 0.0), 4.0, TALLY);
         }
-        ui.painter().text(
-            row.left_center() + vec2(22.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            message.name.as_str(),
-            FontId::proportional(13.0),
-            TEXT,
-        );
+        match state.message_rename.as_mut().filter(|(id, _)| *id == message.id) {
+            Some((_, typed)) => {
+                let field = crate::studio::rename_field_at(
+                    ui,
+                    typed,
+                    FontId::proportional(13.0),
+                    TEXT,
+                    ACCENT,
+                    row.left_center() + vec2(22.0, 0.0),
+                    row.max.x - 6.0,
+                );
+                if std::mem::take(&mut rename_started) {
+                    field.request_focus();
+                }
+                let (enter, escape) =
+                    ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+                if escape {
+                    renamed = Some(None);
+                } else if enter || field.lost_focus() {
+                    renamed = Some(Some((message.id, typed.clone())));
+                }
+            }
+            None => {
+                ui.painter().text(
+                    row.left_center() + vec2(22.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    message.name.as_str(),
+                    FontId::proportional(13.0),
+                    TEXT,
+                );
+            }
+        }
         if response.clicked() {
             state.message_selected = Some(message.id);
         }
+        if response.double_clicked() {
+            action = Some((index, "Rename"));
+        }
         response.context_menu(|ui| {
-            for name in ["Duplicate", "Delete"] {
+            for name in ["Rename", "Duplicate"] {
                 if ui.button(name).clicked() {
                     action = Some((index, name));
                     ui.close();
                 }
             }
+            ui.separator();
+            for name in ["Cut", "Copy"] {
+                if ui.button(name).clicked() {
+                    action = Some((index, name));
+                    ui.close();
+                }
+            }
+            if ui.add_enabled(has_clip, egui::Button::new("Paste")).clicked() {
+                action = Some((index, "Paste"));
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Delete").clicked() {
+                action = Some((index, "Delete"));
+                ui.close();
+            }
         });
     }
+    state.rename_started = rename_started;
+    match renamed {
+        Some(Some((id, name))) => {
+            if let Some(message) = state.messages.iter_mut().find(|message| message.id == id)
+                && !name.trim().is_empty()
+            {
+                message.name = name.trim().to_owned();
+                state.messages_changed = true;
+            }
+            state.message_rename = None;
+        }
+        Some(None) => state.message_rename = None,
+        None => {}
+    }
+    let remove = |state: &mut HomeState, index: usize| {
+        let gone = state.messages.remove(index);
+        if live == Some(gone.id) {
+            state.message_live = None;
+        }
+        state.messages_changed = true;
+        gone
+    };
     match action {
+        Some((index, "Rename")) => {
+            state.message_rename = Some((state.messages[index].id, state.messages[index].name.clone()));
+            state.rename_started = true;
+        }
         Some((index, "Duplicate")) => {
-            let copy = Message {
-                id: pc_model::Uuid::new_v4(),
-                name: format!("{} copy", state.messages[index].name),
-                ..state.messages[index].clone()
-            };
+            let copy = state.messages[index].duplicate();
             state.message_selected = Some(copy.id);
             state.messages.insert(index + 1, copy);
             state.messages_changed = true;
         }
-        Some((index, _)) => {
-            let gone = state.messages.remove(index);
-            if live == Some(gone.id) {
-                state.message_live = None;
+        Some((index, "Copy")) => state.message_clip = Some(state.messages[index].clone()),
+        Some((index, "Cut")) => state.message_clip = Some(remove(state, index)),
+        Some((index, "Paste")) => {
+            if let Some(clip) = &state.message_clip {
+                // A pasted message is a new one: it gets an id of its own, so it can be pasted again.
+                let pasted = Message { id: pc_model::Uuid::new_v4(), ..clip.clone() };
+                state.message_selected = Some(pasted.id);
+                state.messages.insert(index + 1, pasted);
+                state.messages_changed = true;
             }
-            state.messages_changed = true;
+        }
+        Some((index, _)) => {
+            remove(state, index);
         }
         None => {}
     }
@@ -321,6 +397,19 @@ fn messages_tab(ui: &mut egui::Ui, state: &mut HomeState) {
                 }
             }
         });
+        egui::ComboBox::from_id_salt("message look").selected_text(message.look.name()).width(150.0).show_ui(
+            ui,
+            |ui| {
+                for look in crate::messages::Look::ALL {
+                    if ui.add(egui::Button::selectable(message.look == look, look.name())).clicked() {
+                        message.look = look;
+                        changed = true;
+                    }
+                }
+            },
+        );
+    });
+    ui.horizontal(|ui| {
         let dismiss = match message.dismiss_after {
             None => "Dismiss: Manually".to_owned(),
             Some(seconds) => format!("Dismiss: After {seconds} s"),

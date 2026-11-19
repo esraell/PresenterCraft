@@ -197,7 +197,7 @@ mod tests {
         let b = a.duplicate();
         assert_ne!((a.id, a.slide.objects[0].id), (b.id, b.slide.objects[0].id));
         assert_eq!(b.name, "Logo copy");
-        let message = crate::messages::slide("Hello");
+        let message = crate::messages::slide("Hello", crate::messages::Look::default());
         let layer = overlay(&[a.slide.clone(), b.slide.clone()], Some(&message)).unwrap();
         assert_eq!(layer.objects.len(), 3);
         assert_eq!(layer.objects[2].as_text(), Some("Hello"), "the message is on top");

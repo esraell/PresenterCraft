@@ -18,11 +18,50 @@ pub struct Message {
     /// Taken off the screen by itself after this many seconds; `None` waits to be cleared.
     #[serde(default)]
     pub dismiss_after: Option<u32>,
+    /// Where and how the message is drawn.
+    #[serde(default)]
+    pub look: Look,
 }
 
 impl Message {
     pub fn new(name: String) -> Message {
-        Message { id: Uuid::new_v4(), name, text: String::new(), dismiss_after: None }
+        Message { id: Uuid::new_v4(), name, text: String::new(), dismiss_after: None, look: Look::default() }
+    }
+
+    /// A copy with an id of its own.
+    pub fn duplicate(&self) -> Message {
+        Message { id: Uuid::new_v4(), name: format!("{} copy", self.name), ..self.clone() }
+    }
+}
+
+/// Where and how a message is drawn over the slides.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Look {
+    /// A dark band across the bottom of the screen.
+    #[default]
+    BottomBand,
+    /// A dark band across the top of the screen.
+    TopBand,
+    /// A dark box in the middle of the screen, in larger words.
+    Centre,
+    /// Words on a dark strip in the lower left, like a name caption.
+    LowerThird,
+    /// Small outlined words along the bottom edge, with no band.
+    Caption,
+}
+
+impl Look {
+    pub const ALL: [Look; 5] = [Look::BottomBand, Look::TopBand, Look::Centre, Look::LowerThird, Look::Caption];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Look::BottomBand => "Band at the Bottom",
+            Look::TopBand => "Band at the Top",
+            Look::Centre => "Box in the Middle",
+            Look::LowerThird => "Lower Third",
+            Look::Caption => "Caption, No Band",
+        }
     }
 }
 
@@ -51,8 +90,8 @@ pub fn fill_in(text: &str, timers: &[Timer], now: Instant, seconds_into_day: u32
     out
 }
 
-/// A message as a layer over the slide: its words in a dark band along the bottom.
-pub fn slide(words: &str) -> Slide {
+/// A message as a layer over the slide, drawn in its look.
+pub fn slide(words: &str, look_of: Look) -> Slide {
     let builtin = pc_model::Theme::builtin();
     let mut look = builtin.templates[0].boxes[0].clone();
     look.size = 60.0;
@@ -64,9 +103,29 @@ pub fn slide(words: &str) -> Slide {
     look.outline_width = 0.0;
     look.shadow = false;
     look.margins = [60.0, 16.0, 60.0, 16.0];
+    let band = Some(Rgba { r: 0, g: 0, b: 0, a: 200 });
+    let (frame, fill) = match look_of {
+        Look::BottomBand => (SlideRect { x: 0.0, y: 890.0, w: 1920.0, h: 190.0 }, band),
+        Look::TopBand => (SlideRect { x: 0.0, y: 0.0, w: 1920.0, h: 190.0 }, band),
+        Look::Centre => {
+            look.size = 84.0;
+            (SlideRect { x: 260.0, y: 340.0, w: 1400.0, h: 400.0 }, Some(Rgba { r: 12, g: 12, b: 14, a: 242 }))
+        }
+        Look::LowerThird => {
+            look.align = Align::Left;
+            look.size = 54.0;
+            (SlideRect { x: 80.0, y: 820.0, w: 1100.0, h: 150.0 }, band)
+        }
+        Look::Caption => {
+            look.size = 40.0;
+            look.shadow = true;
+            look.outline_width = 3.0;
+            (SlideRect { x: 0.0, y: 980.0, w: 1920.0, h: 90.0 }, None)
+        }
+    };
     let mut object = Object::text(Role("message".to_owned()), words);
-    object.frame = Some(SlideRect { x: 0.0, y: 890.0, w: 1920.0, h: 190.0 });
-    object.fill = Some(Rgba { r: 0, g: 0, b: 0, a: 200 });
+    object.frame = Some(frame);
+    object.fill = fill;
     if let Some(style) = object.text_style_mut() {
         *style = TextStyle::all(&look);
     }
@@ -110,10 +169,18 @@ mod tests {
         assert!(!filled.contains('{'));
         assert!(!has_tokens("Welcome"));
         assert_eq!(fill_in("Welcome", &[], now, 0), "Welcome");
-        // A message is one box in a band along the bottom.
-        let band = slide("Welcome");
+        // A message is one box, in a band along the bottom unless its look says otherwise.
+        let band = slide("Welcome", Look::default());
         assert_eq!(band.objects.len(), 1);
         assert!(band.objects[0].frame.is_some_and(|frame| frame.y > 800.0));
+        for look in Look::ALL {
+            let drawn = slide("Welcome", look);
+            let frame = drawn.objects[0].frame.unwrap();
+            assert!(frame.x >= 0.0 && frame.y >= 0.0 && frame.x + frame.w <= 1920.0 && frame.y + frame.h <= 1080.0);
+        }
+        assert!(slide("Welcome", Look::TopBand).objects[0].frame.is_some_and(|frame| frame.y == 0.0));
+        let copy = Message::new("M".to_owned()).duplicate();
+        assert_eq!(copy.name, "M copy");
         let saved = vec![Message { text: "Hi".to_owned(), dismiss_after: Some(10), ..Message::new("M".to_owned()) }];
         assert_eq!(serde_json::from_str::<Vec<Message>>(&serde_json::to_string(&saved).unwrap()).unwrap(), saved);
     }

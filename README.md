@@ -57,7 +57,9 @@ ProPresenter.
 - A song's right-click menu: Add to Service, Rename, Duplicate, Theme (a theme of its own, or
   the songs theme), Reflow, and Delete (a song made in the app goes to the Trash).
 - **Timers** (count down, count down to a time of day, or count up), **Messages** shown over
-  the slides (with the time or a timer in them, and an optional time to leave by themselves),
+  the slides (with the time or a timer in them, an optional time to leave by themselves, a look
+  of their own such as a band, a box in the middle or a lower third, and Rename, Cut, Copy,
+  Paste and Duplicate),
   **Props** (things that stay over the slides until taken off, made in the editor, with an
   optional time to clear themselves), **Macros** (coloured buttons that clear layers, show or
   hide messages and props, start, stop or reset timers, switch the audience screens and go to
@@ -125,7 +127,7 @@ ProPresenter.
 
 Among the things PresenterCraft can't do yet:
 
-- Videos, audio, and live video inputs.
+- Videos and live video inputs.
 - Stage layouts other than the built-in one.
 - Most of ProPresenter's 37 transitions (ten are built).
 - Formatting one word differently from the rest of its box.
