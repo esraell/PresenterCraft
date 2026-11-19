@@ -106,6 +106,51 @@ fn song_templates(theme: &Theme) -> Vec<(Uuid, String)> {
     theme.templates.iter().map(|template| (template.id, template.name.clone())).collect()
 }
 
+/// Opens the Screens window: a window of its own, drawn with its own interface.
+fn open_panel_window(el: &ActiveEventLoop, running: &mut Running, quiet: bool) -> Result<PanelWindow, String> {
+    let attrs = Window::default_attributes()
+        .with_title("Screens")
+        .with_inner_size(winit::dpi::LogicalSize::new(760.0, 520.0))
+        .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 440.0));
+    let attrs = if quiet {
+        attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom)
+    } else {
+        attrs
+    };
+    let window = Arc::new(el.create_window(attrs).map_err(|e| format!("Could not open the Screens window: {e}"))?);
+    let surface = running
+        .context
+        .instance
+        .create_surface(window.clone())
+        .map_err(|e| format!("Could not draw the Screens window: {e}"))?;
+    let format = surface_format(&surface, running.context.devices[running.device_id].adapter())?;
+    let size = window.inner_size();
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        width: size.width.max(1),
+        height: size.height.max(1),
+        present_mode: wgpu::PresentMode::AutoVsync,
+        color_space: wgpu::SurfaceColorSpace::Auto,
+        desired_maximum_frame_latency: 2,
+        alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        view_formats: vec![],
+    };
+    surface.configure(&running.gpu.device, &config);
+    let ctx = egui::Context::default();
+    studio::apply_style(&ctx);
+    let state = egui_winit::State::new(
+        ctx.clone(),
+        egui::ViewportId::ROOT,
+        &window,
+        Some(window.scale_factor() as f32),
+        None,
+        Some(running.gpu.device.limits().max_texture_dimension_2d as usize),
+    );
+    let renderer = egui_wgpu::Renderer::new(&running.gpu.device, format, egui_wgpu::RendererOptions::default());
+    Ok(PanelWindow { window, surface, config, ctx, state, renderer, next_repaint: None, frames: 0 })
+}
+
 /// What a theme calls its templates, in order.
 fn template_names(theme: &Theme) -> Vec<String> {
     theme.templates.iter().map(|template| template.name.clone()).collect()
@@ -207,6 +252,93 @@ fn capture(
     png.write_header().and_then(|mut writer| writer.write_image_data(&pixels)).map_err(|e| e.to_string())
 }
 
+/// A window drawn with the interface toolkit, and what is needed to draw one frame in it.
+struct UiTarget<'a> {
+    window: &'a Window,
+    surface: &'a wgpu::Surface<'static>,
+    config: &'a wgpu::SurfaceConfiguration,
+    renderer: &'a mut egui_wgpu::Renderer,
+    ctx: &'a egui::Context,
+    label: &'static str,
+}
+
+/// Draws one frame of the interface in a window and returns what was drawn, for a capture.
+fn paint_ui(
+    gpu: &Gpu,
+    target: UiTarget<'_>,
+    mut full: egui::FullOutput,
+) -> (Vec<egui::ClippedPrimitive>, egui_wgpu::ScreenDescriptor) {
+    let UiTarget { window, surface, config, renderer, ctx, label } = target;
+    let jobs = ctx.tessellate(std::mem::take(&mut full.shapes), full.pixels_per_point);
+    for (id, deltas) in &full.textures_delta.set {
+        for delta in deltas {
+            renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
+        }
+    }
+    let screen = egui_wgpu::ScreenDescriptor {
+        size_in_pixels: [config.width, config.height],
+        pixels_per_point: full.pixels_per_point,
+    };
+    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let extra = renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &jobs, &screen);
+    let frame = match surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            surface.configure(&gpu.device, config);
+            window.request_redraw();
+            None
+        }
+        _ => None,
+    };
+    if let Some(frame) = frame {
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(label),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                })
+                .forget_lifetime();
+            renderer.render(&mut pass, &jobs, &screen);
+        }
+        gpu.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
+        gpu.queue.present(frame);
+    } else {
+        // No frame to draw into (the window is hidden or covered). The interface's data for
+        // this frame has already been handed to the GPU queue, and it stays in memory until
+        // something is submitted, so submit it anyway. Skipping this leaked memory on every
+        // frame drawn while the window could not be seen.
+        gpu.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
+    }
+    for id in &full.textures_delta.free {
+        renderer.free_texture(id);
+    }
+    // The toolkit insists on being told its texture changes were applied.
+    full.textures_delta.clear();
+    (jobs, screen)
+}
+
+/// The Screens window: a window of its own with its own interface.
+struct PanelWindow {
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    ctx: egui::Context,
+    state: egui_winit::State,
+    renderer: egui_wgpu::Renderer,
+    next_repaint: Option<Instant>,
+    frames: u32,
+}
+
 /// Everything that exists once the windows are open.
 struct Running {
     home_window: Arc<Window>,
@@ -222,6 +354,8 @@ struct Running {
     /// The names the screens were last told to show while being identified.
     identify_sent: Option<Vec<(Uuid, String)>>,
     output: Option<OutputHandle>,
+    /// The Screens window, while it is open.
+    screens_window: Option<PanelWindow>,
     gpu: Gpu,
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
@@ -387,6 +521,7 @@ impl App {
             ndi_sent: Vec::new(),
             identify_sent: None,
             output: Some(output),
+            screens_window: None,
             gpu,
             egui_ctx,
             egui_state,
@@ -1033,6 +1168,7 @@ impl App {
 
         // What each screen is doing, for the Screens window.
         let mut starting = false;
+        let status_before = std::mem::take(&mut home_state.screen_status);
         home_state.screen_status = list
             .iter()
             .zip(&placed)
@@ -1049,6 +1185,11 @@ impl App {
                 Placed::Nothing(_) => (screens::describe(place, &displays), false),
             })
             .collect();
+        if home_state.screen_status != status_before
+            && let Some(panel) = &running.screens_window
+        {
+            panel.window.request_redraw();
+        }
         // Starting NDI takes a moment on the output thread; look again shortly.
         if starting || ndi_moved {
             running.next_repaint = Some(Instant::now() + Duration::from_millis(400));
@@ -1133,69 +1274,22 @@ impl App {
             };
             commands.extend(home_ui(ui, show, home_state, theme, &mut thumb, preview, canvas));
         });
-        egui_state.handle_platform_output(home_window, full.platform_output);
+        egui_state.handle_platform_output(home_window, std::mem::take(&mut full.platform_output));
 
         let delay = full.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
         // Testing aid: redraw continuously, to check that memory stays flat under load.
         let delay = if std::env::var_os("PRESENTERCRAFT_STRESS").is_some() { Duration::ZERO } else { delay };
         running.next_repaint = Instant::now().checked_add(delay);
 
-        let jobs = egui_ctx.tessellate(full.shapes, full.pixels_per_point);
-        for (id, deltas) in &full.textures_delta.set {
-            for delta in deltas {
-                egui_renderer.update_texture(&gpu.device, &gpu.queue, *id, delta);
-            }
-        }
-        let screen = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [home_config.width, home_config.height],
-            pixels_per_point: full.pixels_per_point,
+        let target = UiTarget {
+            window: home_window,
+            surface: home_surface,
+            config: home_config,
+            renderer: egui_renderer,
+            ctx: egui_ctx,
+            label: "home window",
         };
-        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let extra = egui_renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &jobs, &screen);
-
-        let frame = match home_surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                home_surface.configure(&gpu.device, home_config);
-                home_window.request_redraw();
-                None
-            }
-            _ => None,
-        };
-        if let Some(frame) = frame {
-            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            {
-                let mut pass = encoder
-                    .begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("home window"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        ..Default::default()
-                    })
-                    .forget_lifetime();
-                egui_renderer.render(&mut pass, &jobs, &screen);
-            }
-            gpu.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
-            gpu.queue.present(frame);
-        } else {
-            // No frame to draw into (the window is hidden or covered). The interface's data for
-            // this frame has already been handed to the GPU queue, and it stays in memory until
-            // something is submitted, so submit it anyway. Skipping this leaked memory on every
-            // frame drawn while the window could not be seen.
-            gpu.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
-        }
-        for id in &full.textures_delta.free {
-            egui_renderer.free_texture(id);
-        }
-        // The toolkit insists on being told its texture changes were applied.
-        full.textures_delta.clear();
+        let (jobs, screen) = paint_ui(gpu, target, full);
 
         // Testing aid: show a slide, let the thumbnails fill in, then save what was drawn.
         running.frames += 1;
@@ -1280,6 +1374,70 @@ impl App {
                 self.capture_done = true;
             }
             home_window.request_redraw();
+        }
+        commands
+    }
+
+    /// Opens the Screens window when it is asked for, and closes it when it is not.
+    fn sync_screens_window(&mut self, el: &ActiveEventLoop) {
+        let quiet = self.quiet();
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let wanted = running.home_state.settings_open;
+        if !wanted {
+            running.screens_window = None;
+            return;
+        }
+        if running.screens_window.is_some() {
+            return;
+        }
+        match open_panel_window(el, running, quiet) {
+            Ok(panel) => {
+                panel.window.request_redraw();
+                running.screens_window = Some(panel);
+            }
+            Err(problem) => {
+                running.home_state.settings_open = false;
+                running.home_state.notice = Some(problem);
+            }
+        }
+    }
+
+    /// Draws one frame of the Screens window and returns what was asked for in it.
+    fn draw_screens_window(&mut self) -> Vec<Command> {
+        let output_on = self.show.output_enabled();
+        let Some(running) = self.running.as_mut() else {
+            return Vec::new();
+        };
+        let Running { screens_window, gpu, home_state, .. } = running;
+        let Some(panel) = screens_window.as_mut() else {
+            return Vec::new();
+        };
+        let raw_input = panel.state.take_egui_input(&panel.window);
+        let mut commands = Vec::new();
+        let mut full = panel.ctx.run_ui(raw_input, |ui| commands.extend(home::screens_ui(ui, home_state, output_on)));
+        panel.state.handle_platform_output(&panel.window, std::mem::take(&mut full.platform_output));
+        let delay = full.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
+        panel.next_repaint = Instant::now().checked_add(delay);
+        let target = UiTarget {
+            window: &panel.window,
+            surface: &panel.surface,
+            config: &panel.config,
+            renderer: &mut panel.renderer,
+            ctx: &panel.ctx,
+            label: "screens window",
+        };
+        let (jobs, screen) = paint_ui(gpu, target, full);
+        panel.frames += 1;
+        // Testing aid: a capture run with Settings asked for also saves this window, every
+        // frame once it has settled, so the last one saved is the latest.
+        if let Some(path) = &self.options.capture_home
+            && panel.frames >= 2
+            && let Err(e) =
+                capture(gpu, &panel.renderer, &jobs, &screen, panel.config.format, &path.with_extension("screens.png"))
+        {
+            eprintln!("Could not save the Screens window: {e}");
         }
         commands
     }
@@ -1479,6 +1637,10 @@ impl ApplicationHandler<String> for App {
     fn user_event(&mut self, el: &ActiveEventLoop, id: String) {
         if let Some(action) = menubar::action_of(&id) {
             self.menu_action(el, action);
+            self.sync_screens_window(el);
+            if let Some(panel) = self.running.as_ref().and_then(|r| r.screens_window.as_ref()) {
+                panel.window.request_redraw();
+            }
         }
     }
 
@@ -1501,6 +1663,35 @@ impl ApplicationHandler<String> for App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
+        if let Some(panel) = running.screens_window.as_mut().filter(|panel| panel.window.id() == id) {
+            match &event {
+                WindowEvent::CloseRequested => {
+                    running.home_state.settings_open = false;
+                    running.home_state.identify = false;
+                    running.screens_window = None;
+                    running.home_window.request_redraw();
+                }
+                WindowEvent::Resized(size) => {
+                    if size.width > 0 && size.height > 0 {
+                        panel.config.width = size.width;
+                        panel.config.height = size.height;
+                        panel.surface.configure(&running.gpu.device, &panel.config);
+                    }
+                    panel.window.request_redraw();
+                }
+                WindowEvent::RedrawRequested => {
+                    let commands = self.draw_screens_window();
+                    self.apply(commands);
+                    self.sync_screens(el);
+                }
+                _ => {
+                    if panel.state.on_window_event(&panel.window, &event).repaint {
+                        panel.window.request_redraw();
+                    }
+                }
+            }
+            return;
+        }
         if let Some(screen) = running.screen_windows.iter().find(|have| have.window.id() == id).map(|have| have.screen)
         {
             match event {
@@ -1649,6 +1840,7 @@ impl ApplicationHandler<String> for App {
                 }
                 self.update_canvas();
                 self.sync_screens(el);
+                self.sync_screens_window(el);
                 self.tick_menu();
                 // Leaving the Edit view writes the songs changed there straight away.
                 let editing = self.running.as_ref().is_some_and(|r| r.home_state.editing.is_some());
@@ -1680,7 +1872,15 @@ impl ApplicationHandler<String> for App {
             running.next_repaint = None;
             running.home_window.request_redraw();
         }
-        match [running.next_repaint, save_at].into_iter().flatten().min() {
+        let mut panel_at = None;
+        if let Some(panel) = running.screens_window.as_mut() {
+            if panel.next_repaint.is_some_and(|at| at <= Instant::now()) {
+                panel.next_repaint = None;
+                panel.window.request_redraw();
+            }
+            panel_at = panel.next_repaint;
+        }
+        match [running.next_repaint, panel_at, save_at].into_iter().flatten().min() {
             Some(at) => el.set_control_flow(ControlFlow::WaitUntil(at)),
             None => el.set_control_flow(ControlFlow::Wait),
         }

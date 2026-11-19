@@ -653,10 +653,6 @@ fn command_key(input: &egui::InputState, key: egui::Key, shift: bool) -> bool {
     })
 }
 
-fn section_label(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(11.0).strong().color(Color32::from_gray(140)));
-}
-
 fn panel_frame(fill: Color32, margin: i8) -> Frame {
     Frame::new().fill(fill).inner_margin(margin)
 }
@@ -729,7 +725,6 @@ pub fn home_ui(
     if !ui.ctx().text_edit_focused() && ui.input(|input| command_key(input, egui::Key::N, false)) {
         state.new_song = true;
     }
-    settings_window(ui, state);
     confirm_delete_theme(ui, state);
     if state.editing.is_some() {
         edit_view(ui, show, state, theme, thumb, canvas);
@@ -1706,55 +1701,51 @@ fn output_choices(current: &Output, screen_name: &str, displays: &[DisplayInfo])
     choices
 }
 
-/// The Screens window: the audience screens, and where each one's picture goes. Every screen
-/// shows the same picture. Changes take effect, and are saved, as they are made.
-fn settings_window(ui: &mut egui::Ui, state: &mut HomeState) {
-    if !state.settings_open {
-        return;
-    }
-    let mut open = true;
+/// A switch drawn the way the Mac draws one: a capsule, green with the knob at the right when
+/// on. Returns true when it was clicked.
+fn switch(ui: &mut egui::Ui, on: bool, hint: &str) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(34.0, 20.0), Sense::click());
+    let how_far = ui.ctx().animate_bool(response.id, on);
+    let track = Color32::from_gray(70).lerp_to_gamma(ON, how_far);
+    ui.painter().rect_filled(rect, 10.0, track);
+    let knob = pos2(egui::lerp(rect.left() + 10.0..=rect.right() - 10.0, how_far), rect.center().y);
+    ui.painter().circle_filled(knob, 8.0, Color32::WHITE);
+    response.on_hover_text(hint).clicked()
+}
+
+/// The Screens window's contents: the audience screens on the left, and where the chosen one's
+/// picture goes on the right. Every screen shows the same picture. Changes take effect, and are
+/// saved, as they are made. `output_on` is whether the audience output is on; switching it is
+/// returned as a command.
+pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> Vec<Command> {
+    use crate::studio::{ACCENT, CARD, HOVER, LINE, PANEL, TEXT, TEXT_DIM, TEXT_FAINT};
+    let mut commands = Vec::new();
     let mut changed = false;
-    egui::Window::new("Screens")
-        .open(&mut open)
-        .collapsible(false)
+    state.screen_selected = state.screen_selected.min(state.screens.len().saturating_sub(1));
+
+    // The list of screens, with + and − under it, as Mac lists have.
+    egui::Panel::left("screen list")
         .resizable(false)
-        .fade_in(false)
-        .fade_out(false)
-        .default_size([640.0, 360.0])
-        .anchor(Align2::CENTER_CENTER, [0.0, -20.0])
-        .show(ui.ctx(), |ui| {
-            state.screen_selected = state.screen_selected.min(state.screens.len().saturating_sub(1));
-            ui.horizontal_top(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(180.0);
-                    ui.set_min_height(300.0);
-                    section_label(ui, "AUDIENCE");
-                    for index in 0..state.screens.len() {
-                        let shown = state.screen_status.get(index).is_some_and(|(_, shown)| *shown);
-                        let (row, response) = ui.allocate_exact_size(vec2(180.0, 28.0), Sense::click());
-                        let selected = state.screen_selected == index;
-                        if selected {
-                            ui.painter().rect_filled(row, 6.0, crate::studio::ACCENT.gamma_multiply(0.3));
-                        } else if response.hovered() {
-                            ui.painter().rect_filled(row, 6.0, crate::studio::HOVER);
-                        }
-                        // A green light when the screen is being shown somewhere.
-                        let light = if shown { ON } else { Color32::from_gray(90) };
-                        ui.painter().circle_filled(row.left_center() + vec2(12.0, 0.0), 4.0, light);
-                        ui.painter().with_clip_rect(row).text(
-                            row.left_center() + vec2(24.0, 0.0),
-                            Align2::LEFT_CENTER,
-                            state.screens[index].name.as_str(),
-                            FontId::proportional(13.5),
-                            crate::studio::TEXT,
-                        );
-                        if response.clicked() {
-                            state.screen_selected = index;
-                            state.ndi_draft = None;
-                        }
+        .exact_size(214.0)
+        .frame(Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 12 }))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                crate::studio::caption(ui, "AUDIENCE");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let hint = if output_on { "The audience screens are on" } else { "The audience screens are off" };
+                    if switch(ui, output_on, hint) {
+                        commands.push(Command::SetOutputEnabled(!output_on));
                     }
-                    ui.add_space(6.0);
-                    if ui.button("+  Add Screen").on_hover_text("Add a screen. Choose where it goes on the right.").clicked() {
+                });
+            });
+            ui.add_space(8.0);
+            egui::Panel::bottom("screen list buttons").resizable(false).frame(Frame::new()).show(ui, |ui| {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let small = vec2(26.0, 22.0);
+                    let add = ui.add_sized(small, egui::Button::new("+")).on_hover_text("Add a screen");
+                    if add.clicked() {
                         let name = crate::screens::next_name(&state.screens);
                         // A new screen goes nowhere until it is told where, so nothing
                         // changes on any display by surprise.
@@ -1763,102 +1754,166 @@ fn settings_window(ui: &mut egui::Ui, state: &mut HomeState) {
                         state.ndi_draft = None;
                         changed = true;
                     }
-                    ui.add_space(12.0);
-                    ui.checkbox(&mut state.identify, "Identify Screens")
-                        .on_hover_text("Show each screen's name on it, in place of the show, to tell them apart");
-                });
-                ui.separator();
-                ui.vertical(|ui| {
-                    ui.set_width(410.0);
-                    let index = state.screen_selected;
-                    let Some(screen) = state.screens.get(index).cloned() else { return };
-                    egui::Grid::new("screen settings").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-                        ui.label("Name");
-                        let mut name = screen.name.clone();
-                        if ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0)).changed() {
-                            state.screens[index].name = name;
-                            changed = true;
-                        }
-                        ui.end_row();
-
-                        ui.label("Output");
-                        egui::ComboBox::from_id_salt("screen output")
-                            .selected_text(output_label(&screen.output, &state.displays))
-                            .width(260.0)
-                            .show_ui(ui, |ui| {
-                                for choice in output_choices(&screen.output, &screen.name, &state.displays) {
-                                    let is_ndi = matches!(choice, Output::Ndi(_));
-                                    let label = output_label(&choice, &state.displays);
-                                    let on = std::mem::discriminant(&choice) == std::mem::discriminant(&screen.output)
-                                        && (is_ndi || choice == screen.output);
-                                    let entry = ui.add_enabled(
-                                        !is_ndi || state.ndi_available,
-                                        egui::Button::selectable(on, label),
-                                    );
-                                    let entry = entry.on_disabled_hover_text("This build of PresenterCraft does not include NDI.");
-                                    if entry.clicked() && choice != screen.output {
-                                        state.screens[index].output = choice;
-                                        state.ndi_draft = None;
-                                        changed = true;
-                                    }
-                                }
-                            });
-                        ui.end_row();
-
-                        if let Output::Ndi(current) = &screen.output {
-                            ui.label("NDI name");
-                            let mut typed = match &state.ndi_draft {
-                                Some((id, typed)) if *id == screen.id => typed.clone(),
-                                _ => current.clone(),
-                            };
-                            let field = ui.add(egui::TextEdit::singleline(&mut typed).desired_width(260.0));
-                            if field.changed() {
-                                state.ndi_draft = Some((screen.id, typed.clone()));
-                            }
-                            // The name is used once the field is left, or Return is pressed.
-                            if field.lost_focus() && state.ndi_draft.take().is_some() && typed != *current {
-                                state.screens[index].output = Output::Ndi(typed);
-                                changed = true;
-                            }
-                            ui.end_row();
-                        }
-                    });
-                    ui.add_space(10.0);
-                    if let Some((status, shown)) = state.screen_status.get(index) {
-                        ui.label(egui::RichText::new(status.as_str()).color(if *shown { ON } else { DIM }));
-                    }
-                    let about = match &screen.output {
-                        Output::Automatic => {
-                            "Automatic fills the first display this window is not on. With one display it uses a window."
-                        }
-                        Output::Display(_) => {
-                            "If this display is unplugged the screen shows nowhere until it is back; it never moves to another display."
-                        }
-                        Output::Window => "An ordinary window, for trying things out or for capturing in other software.",
-                        Output::Ndi(_) => {
-                            "Other computers on the network can show this screen, at 1920 x 1080. NDI® is a registered trademark of Vizrt NDI AB."
-                        }
-                        Output::Off => "This screen is kept in the list and shows nowhere.",
-                    };
-                    ui.add_space(2.0);
-                    ui.label(egui::RichText::new(about).size(11.5).color(DIM));
-                    ui.add_space(14.0);
                     let only = state.screens.len() <= 1;
-                    let remove = ui.add_enabled(!only, egui::Button::new("Remove Screen"));
-                    if remove.on_disabled_hover_text("There is always one screen. Set its output to Off to show nothing.").clicked() {
-                        state.screens.remove(index);
-                        state.screen_selected = index.saturating_sub(1);
+                    let remove = ui
+                        .add_enabled_ui(!only, |ui| ui.add_sized(small, egui::Button::new("−")))
+                        .inner
+                        .on_hover_text("Remove the selected screen")
+                        .on_disabled_hover_text("There is always one screen. Set its output to Off to show nothing.");
+                    if remove.clicked() && !only {
+                        state.screens.remove(state.screen_selected);
+                        state.screen_selected = state.screen_selected.saturating_sub(1);
                         state.ndi_draft = None;
                         changed = true;
                     }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let identify = ui
+                            .add(egui::Button::selectable(state.identify, "Identify"))
+                            .on_hover_text("Show each screen's name on it, in place of the show, to tell them apart");
+                        if identify.clicked() {
+                            state.identify = !state.identify;
+                        }
+                    });
                 });
             });
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for index in 0..state.screens.len() {
+                    let shown = state.screen_status.get(index).is_some_and(|(_, shown)| *shown);
+                    let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+                    let selected = state.screen_selected == index;
+                    if selected {
+                        ui.painter().rect_filled(row, 6.0, ACCENT.gamma_multiply(0.35));
+                    } else if response.hovered() {
+                        ui.painter().rect_filled(row, 6.0, HOVER);
+                    }
+                    // A green light when the screen is being shown somewhere.
+                    let light = if shown { ON } else { TEXT_FAINT };
+                    ui.painter().circle_filled(row.left_center() + vec2(12.0, 0.0), 4.0, light);
+                    ui.painter().with_clip_rect(row.shrink(2.0)).text(
+                        row.left_center() + vec2(24.0, 0.0),
+                        Align2::LEFT_CENTER,
+                        state.screens[index].name.as_str(),
+                        FontId::proportional(13.5),
+                        TEXT,
+                    );
+                    if response.clicked() {
+                        state.screen_selected = index;
+                        state.ndi_draft = None;
+                    }
+                }
+            });
         });
+
+    // The chosen screen.
+    egui::CentralPanel::default().frame(Frame::new().fill(crate::studio::BG).inner_margin(20)).show(ui, |ui| {
+        let index = state.screen_selected;
+        let Some(screen) = state.screens.get(index).cloned() else { return };
+        let (status, shown) = state.screen_status.get(index).cloned().unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(screen.name.as_str()).font(crate::studio::semibold(18.0)).color(TEXT));
+            ui.label(egui::RichText::new("1920 × 1080").size(13.0).color(TEXT_DIM));
+        });
+        ui.add_space(12.0);
+
+        // Where the picture goes, as a little screen.
+        let width = ui.available_width();
+        let (picture, _) = ui.allocate_exact_size(vec2(width, (width * 9.0 / 16.0).min(190.0)), Sense::hover());
+        let frame_rect = Rect::from_center_size(picture.center(), vec2(picture.height() * 16.0 / 9.0, picture.height()));
+        ui.painter().rect_filled(frame_rect, 8.0, Color32::BLACK);
+        ui.painter().rect_stroke(frame_rect, 8.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
+        let target = match &screen.output {
+            Output::Automatic => "Automatic".to_owned(),
+            Output::Display(name) => name.clone(),
+            Output::Window => "Window".to_owned(),
+            Output::Ndi(name) => format!("NDI  ·  {name}"),
+            Output::Off => "Off".to_owned(),
+        };
+        ui.painter().text(
+            frame_rect.center() - vec2(0.0, 10.0),
+            Align2::CENTER_CENTER,
+            target,
+            crate::studio::semibold(16.0),
+            if shown { TEXT } else { TEXT_DIM },
+        );
+        ui.painter().text(
+            frame_rect.center() + vec2(0.0, 14.0),
+            Align2::CENTER_CENTER,
+            status.as_str(),
+            FontId::proportional(12.0),
+            if shown { ON } else { TEXT_DIM },
+        );
+        ui.add_space(16.0);
+
+        // The settings, as rows in a rounded box, labels on the left.
+        Frame::new().fill(CARD).corner_radius(10).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::Grid::new("screen settings").num_columns(2).spacing([16.0, 12.0]).min_col_width(84.0).show(ui, |ui| {
+                ui.label(egui::RichText::new("Name").color(TEXT_DIM));
+                let mut name = screen.name.clone();
+                if ui.add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY)).changed() {
+                    state.screens[index].name = name;
+                    changed = true;
+                }
+                ui.end_row();
+
+                ui.label(egui::RichText::new("Output").color(TEXT_DIM));
+                egui::ComboBox::from_id_salt("screen output")
+                    .selected_text(output_label(&screen.output, &state.displays))
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for choice in output_choices(&screen.output, &screen.name, &state.displays) {
+                            let is_ndi = matches!(choice, Output::Ndi(_));
+                            let label = output_label(&choice, &state.displays);
+                            let on = std::mem::discriminant(&choice) == std::mem::discriminant(&screen.output)
+                                && (is_ndi || choice == screen.output);
+                            let entry = ui
+                                .add_enabled(!is_ndi || state.ndi_available, egui::Button::selectable(on, label))
+                                .on_disabled_hover_text("This build of PresenterCraft does not include NDI.");
+                            if entry.clicked() && choice != screen.output {
+                                state.screens[index].output = choice;
+                                state.ndi_draft = None;
+                                changed = true;
+                            }
+                        }
+                    });
+                ui.end_row();
+
+                if let Output::Ndi(current) = &screen.output {
+                    ui.label(egui::RichText::new("NDI name").color(TEXT_DIM));
+                    let mut typed = match &state.ndi_draft {
+                        Some((id, typed)) if *id == screen.id => typed.clone(),
+                        _ => current.clone(),
+                    };
+                    let field = ui.add(egui::TextEdit::singleline(&mut typed).desired_width(f32::INFINITY));
+                    if field.changed() {
+                        state.ndi_draft = Some((screen.id, typed.clone()));
+                    }
+                    // The name is used once the field is left, or Return is pressed, so NDI is
+                    // not restarted at every letter.
+                    if field.lost_focus() && state.ndi_draft.take().is_some() && typed != *current {
+                        state.screens[index].output = Output::Ndi(typed);
+                        changed = true;
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+        ui.add_space(10.0);
+        let about = match &screen.output {
+            Output::Automatic => "Automatic fills the first display the main window is not on. With one display it uses a window.",
+            Output::Display(_) => {
+                "If this display is unplugged the screen shows nowhere until it is back; it never moves to another display."
+            }
+            Output::Window => "An ordinary window, for trying things out or for capturing in other software.",
+            Output::Ndi(_) => {
+                "Other computers on the network can show this screen, at 1920 × 1080. NDI® is a registered trademark of Vizrt NDI AB."
+            }
+            Output::Off => "This screen is kept in the list and shows nowhere.",
+        };
+        ui.label(egui::RichText::new(about).size(11.5).color(TEXT_DIM));
+    });
     state.screens_changed |= changed;
-    if !open {
-        state.settings_open = false;
-        state.identify = false;
-    }
+    commands
 }
 
 /// Says which of a song's fonts this computer does not have, and offers a place to look for
@@ -2992,7 +3047,6 @@ mod tests {
 
     #[test]
     fn the_screens_window_draws_every_kind_of_screen_and_changes_nothing_by_itself() {
-        let show = show(2);
         let ctx = egui::Context::default();
         let screens = vec![
             Screen::new("A".to_owned(), Output::Automatic),
@@ -3013,8 +3067,12 @@ mod tests {
                 ],
                 ..HomeState::default()
             };
-            count_thumbs(&ctx, &show, &mut state);
-            assert!(state.settings_open, "drawing must not close the window");
+            for _ in 0..2 {
+                let mut drawn = ctx.run_ui(input(None), |ui| {
+                    assert!(screens_ui(ui, &mut state, true).is_empty(), "nothing was clicked");
+                });
+                drawn.textures_delta.clear();
+            }
             assert!(!state.screens_changed, "nothing was clicked, so nothing is changed");
             assert_eq!(state.screens, screens);
         }
