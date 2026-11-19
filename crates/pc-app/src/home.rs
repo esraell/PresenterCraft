@@ -140,6 +140,8 @@ pub struct BiblePage {
     pub options: crate::bible::BibleOptions,
     /// The Bibles installed.
     pub shelf: crate::bible::Shelf,
+    /// Bibles being downloaded.
+    pub downloads: crate::bible_store::Downloads,
     /// The two places among the show's presentations kept for Bible passages. A new passage
     /// goes into the one that is not on screen, so looking up the next verses never changes
     /// what the audience sees.
@@ -171,6 +173,7 @@ impl Default for BiblePage {
                 BibleRow { bible: place("syn"), verse: BibleTarget::Translation, reference: BibleTarget::None },
             ],
             shelf,
+            downloads: crate::bible_store::Downloads::default(),
             slots: None,
             showing: 0,
             shown: String::new(),
@@ -1714,9 +1717,15 @@ fn bible_area(
                         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             state.bible.options.open = false;
                         }
-                        let installed: Vec<(&str, &str)> =
-                            state.bible.shelf.bibles.iter().map(|b| (b.name, b.short)).collect();
-                        crate::bible::options_popup(ui.ctx(), &mut state.bible.options, &installed, button.rect, "Songs");
+                        let bible = &mut state.bible;
+                        crate::bible::options_popup(
+                            ui.ctx(),
+                            &mut bible.options,
+                            &mut bible.shelf,
+                            &mut bible.downloads,
+                            button.rect,
+                            "Songs",
+                        );
                     }
                 });
             });
@@ -1726,7 +1735,7 @@ fn bible_area(
             let count = state.bible.rows.len();
             for (index, row) in state.bible.rows.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
-                    let chosen = state.bible.shelf.bibles.get(row.bible).map_or("Choose a Bible", |b| b.name);
+                    let chosen = state.bible.shelf.bibles.get(row.bible).map_or("Choose a Bible", |b| b.name.as_str());
                     egui::ComboBox::from_id_salt(("bible translation", index)).selected_text(chosen).width(200.0).show_ui(
                         ui,
                         |ui| {
@@ -1764,8 +1773,10 @@ fn bible_area(
                         } else if ui.button("−").on_hover_text("Remove this translation").clicked() {
                             remove = Some(index);
                         }
-                        ui.label(egui::RichText::new("License").size(11.0).color(DIM))
-                            .on_hover_text("Public domain. See docs/licences/bibles.md for where each Bible comes from.");
+                        let terms = state.bible.shelf.bibles.get(row.bible).map_or_else(String::new, |b| {
+                            if b.credit.is_empty() { b.terms.clone() } else { format!("{}\n{}", b.terms, b.credit) }
+                        });
+                        ui.label(egui::RichText::new("License").size(11.0).color(DIM)).on_hover_text(terms);
                     });
                 });
             }
@@ -1777,6 +1788,24 @@ fn bible_area(
             }
         });
 
+        // Say so when two Bibles are shown together and one numbers its verses its own way.
+        let own: Vec<&str> = state
+            .bible
+            .rows
+            .iter()
+            .filter_map(|row| state.bible.shelf.bibles.get(row.bible))
+            .filter(|b| b.numbering == pc_bible::Numbering::Own)
+            .map(|b| b.name.as_str())
+            .collect();
+        if !own.is_empty() && state.bible.rows.len() > 1 {
+            let note = format!(
+                "{} numbers some verses its own way, so beside another Bible a few (the Psalms above all) may not be the matching verse.",
+                own.join(" and ")
+            );
+            Frame::new().inner_margin(egui::Margin::symmetric(12, 4)).show(ui, |ui| {
+                ui.label(egui::RichText::new(note).size(11.5).color(Color32::from_rgb(240, 190, 40)));
+            });
+        }
         // A change to the Bibles or the options remakes the passage that is showing.
         if !state.bible.shown.is_empty() && state.bible.made_with != state.bible.choices() {
             state.bible.lookup = state.bible.shown.clone();

@@ -5,31 +5,43 @@ use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, p
 
 use std::sync::Arc;
 
-use pc_bible::{Bible, VerseRef, convert, parse_reference};
+use pc_bible::{Bible, Numbering, VerseRef, convert, parse_reference};
 use pc_model::{
     Align as TextAlign, Group, Object, ObjectKind, Presentation, Rgba, Role, Slide, SlideRect, TextStyle, Uuid,
 };
 
 use crate::home::{BibleTarget, not_built};
 
+/// Where a Bible's file is.
+enum Kept {
+    /// Inside the app.
+    Shipped(&'static [u8]),
+    /// In the Bibles folder.
+    File(std::path::PathBuf),
+}
+
 /// A Bible the app has, and its text once it has been needed.
 pub struct Shelved {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub short: &'static str,
-    bytes: &'static [u8],
-    /// Read from `bytes` the first time it is asked for, so an unused Bible costs no memory.
+    pub id: String,
+    pub name: String,
+    pub short: String,
+    pub terms: String,
+    pub credit: String,
+    pub numbering: Numbering,
+    pub shipped: bool,
+    kept: Kept,
+    /// Read the first time it is asked for, so an unused Bible costs no memory.
     loaded: Option<Result<Arc<Bible>, String>>,
 }
 
-/// The Bibles installed: for now, the ones that come with the app.
+/// The Bibles installed: the ones that come with the app, then the ones added since.
 pub struct Shelf {
     pub bibles: Vec<Shelved>,
 }
 
 impl std::fmt::Debug for Shelf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.bibles.iter().map(|b| b.id)).finish()
+        f.debug_list().entries(self.bibles.iter().map(|b| b.id.as_str())).finish()
     }
 }
 
@@ -37,14 +49,49 @@ impl Shelf {
     /// The Bibles that come with the app. All are in the public domain; see
     /// `docs/licences/bibles.md`.
     pub fn shipped() -> Shelf {
-        let shelved = |id, name, short, bytes| Shelved { id, name, short, bytes, loaded: None };
-        Shelf {
-            bibles: vec![
-                shelved("kjv", "King James Version", "KJV", include_bytes!("../../../assets/bibles/kjv.pcbible")),
-                shelved("web", "World English Bible", "WEB", include_bytes!("../../../assets/bibles/web.pcbible")),
-                shelved("bsb", "Berean Standard Bible", "BSB", include_bytes!("../../../assets/bibles/bsb.pcbible")),
-                shelved("syn", "Синодальный перевод", "SYN", include_bytes!("../../../assets/bibles/syn.pcbible")),
-            ],
+        let files: [&'static [u8]; 4] = [
+            include_bytes!("../../../assets/bibles/kjv.pcbible"),
+            include_bytes!("../../../assets/bibles/web.pcbible"),
+            include_bytes!("../../../assets/bibles/bsb.pcbible"),
+            include_bytes!("../../../assets/bibles/syn.pcbible"),
+        ];
+        let mut shelf = Shelf { bibles: Vec::new() };
+        for bytes in files {
+            if let Ok(info) = Bible::read_info(bytes) {
+                shelf.put(info, Kept::Shipped(bytes), true);
+            }
+        }
+        shelf
+    }
+
+    /// The Bibles that come with the app and the ones in the Bibles folder.
+    pub fn with_installed() -> Shelf {
+        let mut shelf = Shelf::shipped();
+        for (path, info) in crate::bible_store::installed() {
+            shelf.add_file(path, info);
+        }
+        shelf
+    }
+
+    fn put(&mut self, info: pc_bible::Info, kept: Kept, shipped: bool) {
+        self.bibles.push(Shelved {
+            id: info.id,
+            name: info.name,
+            short: info.short,
+            terms: info.terms,
+            credit: info.credit,
+            numbering: info.numbering,
+            shipped,
+            kept,
+            loaded: None,
+        });
+    }
+
+    /// Puts a Bible from the Bibles folder on the shelf. One already there under the same
+    /// short name stays, at its place, so the translations chosen do not shift.
+    pub fn add_file(&mut self, path: std::path::PathBuf, info: pc_bible::Info) {
+        if self.position(&info.id).is_none() {
+            self.put(info, Kept::File(path), false);
         }
     }
 
@@ -55,7 +102,15 @@ impl Shelf {
     /// The Bible at a place on the shelf, reading it the first time.
     pub fn get(&mut self, index: usize) -> Result<Arc<Bible>, String> {
         let shelved = self.bibles.get_mut(index).ok_or_else(|| "Choose a Bible first.".to_owned())?;
-        shelved.loaded.get_or_insert_with(|| Bible::from_bytes(shelved.bytes).map(Arc::new)).clone()
+        shelved
+            .loaded
+            .get_or_insert_with(|| match &shelved.kept {
+                Kept::Shipped(bytes) => Bible::from_bytes(bytes).map(Arc::new),
+                Kept::File(path) => std::fs::read(path)
+                    .map_err(|e| format!("Could not read the {}: {e}", shelved.name))
+                    .and_then(|bytes| Bible::from_bytes(&bytes).map(Arc::new)),
+            })
+            .clone()
     }
 }
 
@@ -189,44 +244,143 @@ pub enum ReferenceStyle {
     NoReference,
 }
 
-/// A Bible that can be offered for download. Every entry must be free to pass on, including
-/// in an app that is sold: `docs/licences/bibles.md` says where each one's terms were read and
-/// what they ask. Do not add a Bible here without adding it there.
+/// A Bible that can be downloaded. Every entry must be free to pass on, including in an app
+/// that is sold: `docs/licences/bibles.md` says where each one's terms were read and what they
+/// ask. Do not add a Bible here without adding it there.
 pub struct Offered {
     pub language: &'static str,
     pub name: &'static str,
     pub short: &'static str,
+    /// Its short name for files: the download is `<id>.pcbible`.
+    pub id: &'static str,
     /// The terms it is offered under, in a few words.
     pub terms: &'static str,
+    /// The SHA-256 of its file. A download with any other checksum is not installed.
+    pub checksum: &'static str,
 }
 
-/// The Bibles offered under "Free", in language order.
+/// The Bibles offered under "Free", in language order. The four that come with the app are
+/// not here.
 pub const OFFERED: &[Offered] = &[
-    Offered { language: "English", name: "King James Version", short: "KJV", terms: "Public domain" },
-    Offered { language: "English", name: "American Standard Version", short: "ASV", terms: "Public domain" },
-    Offered { language: "English", name: "World English Bible", short: "WEB", terms: "Public domain" },
-    Offered { language: "English", name: "Berean Standard Bible", short: "BSB", terms: "Public domain" },
-    Offered { language: "English", name: "Young's Literal Translation", short: "YLT", terms: "Public domain" },
-    Offered { language: "English", name: "Darby Translation", short: "DBY", terms: "Public domain" },
-    Offered { language: "English", name: "Douay-Rheims, American edition", short: "DRA", terms: "Public domain" },
-    Offered { language: "English", name: "Geneva Bible 1599", short: "GNV", terms: "Public domain" },
-    Offered { language: "French", name: "Louis Segond 1910", short: "LSG", terms: "Public domain" },
-    Offered { language: "French", name: "Bible Darby", short: "FRDBY", terms: "Public domain" },
-    Offered { language: "German", name: "Luther 1912", short: "LUT1912", terms: "Public domain" },
-    Offered { language: "German", name: "Elberfelder 1905", short: "ELB1905", terms: "Public domain" },
-    Offered { language: "Greek", name: "SBL Greek New Testament", short: "SBLGNT", terms: "CC BY 4.0" },
-    Offered { language: "Greek", name: "Byzantine Text, Robinson-Pierpont", short: "RP", terms: "Public domain" },
-    Offered { language: "Greek", name: "Septuagint, Brenton", short: "LXX", terms: "Public domain" },
-    Offered { language: "Hebrew", name: "Westminster Leningrad Codex", short: "WLC", terms: "Public domain" },
-    Offered { language: "Portuguese", name: "Bíblia Livre", short: "BLIVRE", terms: "CC BY 4.0" },
     Offered {
-        language: "Russian", name: "Синодальный перевод", short: "SYN", terms: "Public domain"
+        language: "English",
+        name: "American Standard Version",
+        short: "ASV",
+        id: "asv",
+        terms: "Public domain",
+        checksum: "2c22ff4c11a61c54290c6ed2707b0db42bfd47d45cafbb53dc99c86fb09d1145",
     },
-    Offered { language: "Russian", name: "Russian Open Bible", short: "ROB", terms: "CC BY-SA 4.0" },
-    Offered { language: "Spanish", name: "Reina-Valera 1909", short: "RV1909", terms: "Public domain" },
-    Offered { language: "Spanish", name: "Versión Biblia Libre", short: "VBL", terms: "CC BY-SA 4.0" },
     Offered {
-        language: "Ukrainian", name: "Переклад Куліша та Пулюя", short: "UKR1905", terms: "Public domain"
+        language: "English",
+        name: "Young's Literal Translation",
+        short: "YLT",
+        id: "ylt",
+        terms: "Public domain",
+        checksum: "e4fa412454a02a4d9e8b869db7f930f2bfef77fab00c06bc155fc5935cd817d5",
+    },
+    Offered {
+        language: "English",
+        name: "Darby Translation",
+        short: "DBY",
+        id: "dby",
+        terms: "Public domain",
+        checksum: "ef27866208f7b101c3aea860ed0fea9d083e982bca8c54fd7f228a61026af1f3",
+    },
+    Offered {
+        language: "English",
+        name: "Geneva Bible 1599",
+        short: "GNV",
+        id: "gnv",
+        terms: "Public domain",
+        checksum: "5dd7feac9014063c062ad314913e66f3f07e8a93763fe8ac701d3cf6b5cd10e9",
+    },
+    Offered {
+        language: "French",
+        name: "Louis Segond 1910",
+        short: "LSG",
+        id: "lsg",
+        terms: "Public domain",
+        checksum: "abbc1f94215e66f68c5d4a8a5c1a8a285a048aad8d26e56e444c34d6df5b9010",
+    },
+    Offered {
+        language: "French",
+        name: "Bible Darby",
+        short: "FRDBY",
+        id: "frdby",
+        terms: "Public domain",
+        checksum: "75fceec270c23298182f7502e87fe00eb5a69051c093afa5b2f7a9873c2f80d8",
+    },
+    Offered {
+        language: "German",
+        name: "Luther 1912",
+        short: "LUT1912",
+        id: "lut1912",
+        terms: "Public domain",
+        checksum: "d9e65a85d606686f06bf2131ebd6f00a1113c783a16b3753edf59d81183ed3b5",
+    },
+    Offered {
+        language: "German",
+        name: "Elberfelder 1905",
+        short: "ELB1905",
+        id: "elb1905",
+        terms: "Public domain",
+        checksum: "b208bc964c3889f2dc7e08fb9395e8bfdd2d276a89fe49dfed0045909752f8b2",
+    },
+    Offered {
+        language: "Greek",
+        name: "SBL Greek New Testament",
+        short: "SBLGNT",
+        id: "sblgnt",
+        terms: "CC BY 4.0",
+        checksum: "4fa6c89017ea41a429d674759325372619811c8917ad30ed936cfa6be07a9944",
+    },
+    Offered {
+        language: "Greek",
+        name: "Byzantine Text, Robinson-Pierpont",
+        short: "RP",
+        id: "rp",
+        terms: "Public domain",
+        checksum: "57876e9b5662d7095cc6cdf60412c87047e39e6943c92bfaeeb2a0f72b2979df",
+    },
+    Offered {
+        language: "Hebrew",
+        name: "Westminster Leningrad Codex",
+        short: "WLC",
+        id: "wlc",
+        terms: "Public domain",
+        checksum: "34349ded0cf4584b5735eb41c7a10cbca5045bd8a3691dc05794021cdb406257",
+    },
+    Offered {
+        language: "Portuguese",
+        name: "Bíblia Livre",
+        short: "BLIVRE",
+        id: "blivre",
+        terms: "CC BY 4.0",
+        checksum: "25d1b645b9a82bd7c8cd21f3999987b35072744056a8bdb76d627889bee4f1f4",
+    },
+    Offered {
+        language: "Spanish",
+        name: "Reina-Valera 1909",
+        short: "RV1909",
+        id: "rv1909",
+        terms: "Public domain",
+        checksum: "2e48a2e412be0471cd1dacbd4bc9c4de213c7cb00ad9d5b9080c06ed2f389fd7",
+    },
+    Offered {
+        language: "Spanish",
+        name: "Versión Biblia Libre",
+        short: "VBL",
+        id: "vbl",
+        terms: "CC BY-SA 4.0",
+        checksum: "07c50f1e213747cac53b32a515a79fe9f3f774dfbebb0cd20b172811b032119d",
+    },
+    Offered {
+        language: "Ukrainian",
+        name: "Переклад Куліша та Пулюя",
+        short: "UKR1905",
+        id: "ukr1905",
+        terms: "Public domain",
+        checksum: "b8039d9d88784dd4da7c5be6755529609c698d03e436a5b8e0aa0e800f925c32",
     },
 ];
 
@@ -242,6 +396,8 @@ pub struct BibleOptions {
     pub display_translation: bool,
     pub preserve_font_color: bool,
     pub reference: ReferenceStyle,
+    /// What went wrong with the last download, for the operator.
+    pub problem: Option<String>,
 }
 
 impl Default for BibleOptions {
@@ -255,6 +411,7 @@ impl Default for BibleOptions {
             display_translation: false,
             preserve_font_color: false,
             reference: ReferenceStyle::VerseReferences,
+            problem: None,
         }
     }
 }
@@ -263,7 +420,8 @@ impl Default for BibleOptions {
 pub fn options_popup(
     ctx: &egui::Context,
     options: &mut BibleOptions,
-    installed: &[(&str, &str)],
+    shelf: &mut Shelf,
+    downloads: &mut crate::bible_store::Downloads,
     button: Rect,
     library: &str,
 ) {
@@ -345,7 +503,7 @@ pub fn options_popup(
                                 if options.pane == 0 {
                                     slide_options(ui, options, library);
                                 } else {
-                                    bibles(ui, options, installed);
+                                    bibles(ui, options, shelf, downloads);
                                 }
                             });
                         });
@@ -406,7 +564,12 @@ fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, library: &str) {
     });
 }
 
-fn bibles(ui: &mut egui::Ui, options: &mut BibleOptions, installed: &[(&str, &str)]) {
+fn bibles(
+    ui: &mut egui::Ui,
+    options: &mut BibleOptions,
+    shelf: &mut Shelf,
+    downloads: &mut crate::bible_store::Downloads,
+) {
     // Installed | Free
     let width = ui.available_width();
     let (bar, _) = ui.allocate_exact_size(vec2(width, 22.0), Sense::hover());
@@ -424,18 +587,42 @@ fn bibles(ui: &mut egui::Ui, options: &mut BibleOptions, installed: &[(&str, &st
             options.bibles_tab = index;
         }
     }
+    // Downloads that have just ended: put the Bible on the shelf, or say what went wrong.
+    for (_, result) in downloads.finished() {
+        match result {
+            Ok((path, info)) => {
+                options.problem = None;
+                shelf.add_file(path, info);
+            }
+            Err(problem) => options.problem = Some(problem),
+        }
+    }
+    let can_download = crate::bible_store::download_base().is_some();
     egui::ScrollArea::vertical().id_salt("bibles list").auto_shrink([false, false]).max_height(196.0).show(ui, |ui| {
+        if let Some(problem) = &options.problem {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(problem.as_str()).size(12.0).color(Color32::from_rgb(255, 150, 120)));
+        }
         if options.bibles_tab == 0 {
             ui.add_space(6.0);
-            for (name, short) in installed {
+            for bible in &shelf.bibles {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{name} ({short})")).color(INK));
+                    ui.label(egui::RichText::new(format!("{} ({})", bible.name, bible.short)).color(INK));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(egui::RichText::new("Comes with the app").size(10.5).color(DIM));
+                        let note = if bible.shipped { "Comes with the app" } else { bible.terms.as_str() };
+                        ui.label(egui::RichText::new(note).size(10.5).color(DIM));
                     });
                 });
             }
             return;
+        }
+        if !can_download {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Downloads start once PresenterCraft is published. Until then, drop a Bible file (.pcbible) on the window to install it.")
+                    .size(11.5)
+                    .color(DIM),
+            );
         }
         let mut language = "";
         for bible in OFFERED {
@@ -448,11 +635,17 @@ fn bibles(ui: &mut egui::Ui, options: &mut BibleOptions, installed: &[(&str, &st
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("{} ({})", bible.name, bible.short)).color(INK));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if installed.iter().any(|(name, _)| *name == bible.name) {
+                    if shelf.position(bible.id).is_some() {
                         ui.label(egui::RichText::new("Installed").size(12.0).color(Color32::from_rgb(83, 194, 43)));
-                    } else {
-                        ui.add_enabled(false, egui::Button::new("Install"))
-                            .on_disabled_hover_text(not_built("Downloading Bibles"));
+                    } else if downloads.is_busy(bible.id) {
+                        ui.label(egui::RichText::new("Downloading…").size(12.0).color(DIM));
+                    } else if ui
+                        .add_enabled(can_download, egui::Button::new("Install"))
+                        .on_disabled_hover_text("Downloads start once PresenterCraft is published")
+                        .clicked()
+                    {
+                        let ctx = ui.ctx().clone();
+                        downloads.start(bible.id, bible.checksum, move || ctx.request_repaint());
                     }
                     ui.label(egui::RichText::new(bible.terms).size(10.5).color(DIM));
                 });
@@ -559,9 +752,12 @@ mod tests {
     fn offered_bibles_are_grouped_by_language_and_named_once() {
         let mut seen: Vec<&str> = Vec::new();
         let mut languages: Vec<&str> = Vec::new();
+        let shipped = Shelf::shipped();
         for bible in OFFERED {
-            assert!(!seen.contains(&bible.short), "{} is listed twice", bible.short);
-            seen.push(bible.short);
+            assert!(!seen.contains(&bible.id), "{} is listed twice", bible.id);
+            assert!(shipped.position(bible.id).is_none(), "{} already comes with the app", bible.id);
+            assert_eq!(bible.checksum.len(), 64);
+            seen.push(bible.id);
             if languages.last() != Some(&bible.language) {
                 assert!(!languages.contains(&bible.language), "{} is split into two groups", bible.language);
                 languages.push(bible.language);

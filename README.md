@@ -24,7 +24,8 @@ translation; where their verse numbers differ (the Russian Psalms, for one) the 
 are found. Typing words in Search and pressing Return lists the verses that hold them.
 
 Four public-domain Bibles come with the app: King James, World English, Berean Standard and
-the Russian Synodal. `docs/licences/bibles.md` lists these and the others that may be offered.
+the Russian Synodal. Fifteen more can be installed from Options, Bibles, Free, or by dropping
+a `.pcbible` file on the window. `docs/licences/bibles.md` lists them all and their terms.
 
 ## NDI output
 

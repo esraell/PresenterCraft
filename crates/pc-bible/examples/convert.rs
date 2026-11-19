@@ -22,7 +22,7 @@ fn main() {
             .to_owned()
     };
     let Some(numbering) = Numbering::from_name(&get("numbering")) else {
-        return eprintln!("numbering= must be english or synodal");
+        return eprintln!("numbering= must be english, synodal or own");
     };
     let info = Info {
         id: get("id"),

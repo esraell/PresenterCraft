@@ -71,11 +71,47 @@ impl Bible {
         Bible::from_text(&text)
     }
 
+    /// Reads only what a Bible file says about itself, without reading its verses.
+    pub fn read_info(bytes: &[u8]) -> Result<Info, String> {
+        use std::io::BufRead;
+        let not_ours = || "This is not a PresenterCraft Bible file, or it is damaged.".to_owned();
+        let mut head = String::new();
+        let mut reader = std::io::BufReader::new(flate2::read::GzDecoder::new(bytes));
+        // The lines about the Bible end at the first blank line; they are short.
+        for _ in 0..40 {
+            let before = head.len();
+            let read = reader.read_line(&mut head).map_err(|_| not_ours())?;
+            if read == 0 || head[before..].trim_end_matches('\n').is_empty() {
+                break;
+            }
+        }
+        let mut lines = head.lines();
+        if lines.next() != Some(FIRST_LINE) {
+            return Err("This is not a PresenterCraft Bible file, or it was made by a newer version.".to_owned());
+        }
+        Bible::info_from(&mut lines)
+    }
+
     fn from_text(file: &str) -> Result<Bible, String> {
         let mut lines = file.lines();
         if lines.next() != Some(FIRST_LINE) {
             return Err("This is not a PresenterCraft Bible file, or it was made by a newer version.".to_owned());
         }
+        let info = Bible::info_from(&mut lines)?;
+        let mut bible = Bible { info, text: String::new(), index: Vec::new() };
+        for line in lines {
+            let Some((place, words)) = parse_verse_line(line) else { continue };
+            bible.push(place, words);
+        }
+        if bible.index.is_empty() {
+            return Err("This Bible file has no verses in it.".to_owned());
+        }
+        bible.index.sort_by_key(|(place, _, _)| *place);
+        Ok(bible)
+    }
+
+    /// Reads the `key: value` lines up to the first blank line.
+    fn info_from<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Result<Info, String> {
         let mut info = Info {
             id: String::new(),
             name: String::new(),
@@ -86,7 +122,7 @@ impl Bible {
             source: String::new(),
             numbering: Numbering::English,
         };
-        for line in lines.by_ref() {
+        for line in lines {
             if line.is_empty() {
                 break;
             }
@@ -111,16 +147,7 @@ impl Bible {
         if info.id.is_empty() || info.name.is_empty() {
             return Err("This Bible file does not say which Bible it is.".to_owned());
         }
-        let mut bible = Bible { info, text: String::new(), index: Vec::new() };
-        for line in lines {
-            let Some((place, words)) = parse_verse_line(line) else { continue };
-            bible.push(place, words);
-        }
-        if bible.index.is_empty() {
-            return Err("This Bible file has no verses in it.".to_owned());
-        }
-        bible.index.sort_by_key(|(place, _, _)| *place);
-        Ok(bible)
+        Ok(info)
     }
 
     /// Makes a Bible from one-verse-per-line text (`GEN 1:1 words`), passing each verse's
@@ -389,6 +416,8 @@ mod tests {
         let bible = small();
         let again = Bible::from_bytes(&bible.to_bytes()).unwrap();
         assert_eq!(again.info, bible.info);
+        assert_eq!(Bible::read_info(&bible.to_bytes()), Ok(bible.info.clone()));
+        assert!(Bible::read_info(b"hello").is_err());
         assert_eq!(again.all().collect::<Vec<_>>(), bible.all().collect::<Vec<_>>());
     }
 

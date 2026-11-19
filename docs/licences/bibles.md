@@ -90,7 +90,30 @@ has bought one of these elsewhere cannot get it through PresenterCraft.
   before (Leviticus 14:57, Isaiah 3:26, Acts 19:41, 2 Corinthians 11:33 and 13:14); those
   slides show the English alone.
 
+## Downloads
+
+- The Bibles under "Free" are files attached to the project's `bibles-1` release on GitHub.
+  Install fetches `<id>.pcbible` from there, checks it against the SHA-256 written into the
+  app for that Bible, checks that it reads as that Bible, and only then keeps it in the
+  Bibles folder (`~/Library/Application Support/PresenterCraft/Bibles` on a Mac). A file with
+  any other checksum is not installed.
+- Dropping a `.pcbible` file on the window installs it too.
+- To publish a new or corrected Bible: convert it, attach it to a new release (`bibles-2`),
+  and update its checksum and the release name in the app. Files in a release that the app
+  already points at must never be replaced, or older versions of the app will refuse them.
+- Offered now (15): ASV, Young's, Darby, Geneva, Louis Segond, French Darby, Luther 1912,
+  Elberfelder 1905, SBL Greek New Testament, Byzantine, Westminster Leningrad Codex, Bíblia
+  Livre, Reina-Valera 1909, Versión Biblia Libre, Kulish.
+- Not offered yet, though free: Douay-Rheims and Brenton's Septuagint (they have books beyond
+  the sixty-six, which the app does not handle yet) and the Russian Open Bible (published in a
+  different file format).
+- **Numbering.** Geneva, both French Bibles, the Hebrew text and Kulish number some verses
+  their own way. They are marked so, and the Bible page says that beside another Bible a few
+  verses may not be the matching ones.
+- **Brackets.** Several of these texts mark words the translators added with square brackets.
+  They are shown as published; only the King James has them removed.
+
 ## Still to work out
 
-- **Downloading the others.** The Install buttons do nothing yet. The plan is to convert each
-  offered Bible to our format and host the files ourselves.
+- A matching table for the Bibles that number verses their own way.
+- Books beyond the sixty-six.

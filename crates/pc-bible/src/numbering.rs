@@ -20,6 +20,9 @@ pub enum Numbering {
     English,
     /// As in the Russian Synodal translation.
     Synodal,
+    /// Its own way, which the table does not know. Such a Bible is fine on its own; beside
+    /// another, some verses (the Psalms above all) may not be the matching ones.
+    Own,
 }
 
 impl Numbering {
@@ -27,6 +30,7 @@ impl Numbering {
         match self {
             Numbering::English => "english",
             Numbering::Synodal => "synodal",
+            Numbering::Own => "own",
         }
     }
 
@@ -34,6 +38,7 @@ impl Numbering {
         match name {
             "english" => Some(Numbering::English),
             "synodal" => Some(Numbering::Synodal),
+            "own" => Some(Numbering::Own),
             _ => None,
         }
     }

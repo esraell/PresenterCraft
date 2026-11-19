@@ -14,6 +14,9 @@ pc-engine = { path = "crates/pc-engine" }
 pc-render = { path = "crates/pc-render" }
 pc-ndi = { path = "crates/pc-ndi" }
 pc-bible = { path = "crates/pc-bible" }
+# Fetching Bibles: a small blocking HTTPS client, and the checksum each download is checked against.
+ureq = "3"
+sha2 = "0.10"
 # Graphics crates change their APIs between releases: pinned exactly.
 vello = "=0.12.0"
 parley = "=0.13.0"

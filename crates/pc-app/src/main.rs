@@ -1,6 +1,7 @@
 //! PresenterCraft: a home window with a slide grid, and a separate output for the audience.
 
 mod bible;
+mod bible_store;
 mod displays;
 mod editor;
 mod home;
@@ -348,7 +349,11 @@ impl App {
             home_state: HomeState {
                 fonts: Arc::new(pc_render::Fonts::new().family_names()),
                 output_placement: placement,
-                bible: home::BiblePage { slots: Some(self.bible_slots), ..home::BiblePage::default() },
+                bible: home::BiblePage {
+                    slots: Some(self.bible_slots),
+                    shelf: bible::Shelf::with_installed(),
+                    ..home::BiblePage::default()
+                },
                 ..HomeState::default()
             },
             next_repaint: None,
@@ -408,6 +413,22 @@ impl App {
 
     /// Adds a file dropped on the window to the media bin, or says why it could not be added.
     fn add_dropped_file(&mut self, path: &std::path::Path) {
+        // A Bible file is installed rather than added as media.
+        if path.extension().is_some_and(|ext| ext == "pcbible") {
+            let Some(running) = self.running.as_mut() else {
+                return;
+            };
+            running.home_state.drop_hover = false;
+            match bible_store::install_file(path) {
+                Ok((kept, info)) => {
+                    running.home_state.notice = Some(format!("Installed the {}.", info.name));
+                    running.home_state.bible.shelf.add_file(kept, info);
+                }
+                Err(message) => running.home_state.notice = Some(message),
+            }
+            running.home_window.request_redraw();
+            return;
+        }
         let result = media::load_picture(path);
         let Some(running) = self.running.as_mut() else {
             return;
