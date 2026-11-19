@@ -275,19 +275,47 @@ impl Bible {
         Some(Range { start: self.index[first].0, end: self.index[last].0 })
     }
 
-    /// The first verses that hold every one of the given words, without regard to case.
+    /// A range made one verse longer, at its end or at its start, staying inside the book and
+    /// crossing a chapter's end if it must. `None` when there is no verse to add.
+    pub fn extend(&self, range: Range, forward: bool) -> Option<Range> {
+        let from = self.index.partition_point(|(p, _, _)| *p < range.start);
+        let past = self.index.partition_point(|(p, _, _)| *p <= range.end);
+        if past <= from {
+            return None;
+        }
+        let book = self.index[from].0.book;
+        let in_book = |at: usize| self.index.get(at).is_some_and(|(p, _, _)| p.book == book);
+        if forward {
+            in_book(past).then(|| Range { start: self.index[from].0, end: self.index[past].0 })
+        } else {
+            let earlier = from.checked_sub(1).filter(|at| in_book(*at))?;
+            Some(Range { start: self.index[earlier].0, end: self.index[past - 1].0 })
+        }
+    }
+
+    /// The first verses that hold every one of the given words, without regard to case: those
+    /// holding the words together as typed come first, then the rest, each in Bible order.
     pub fn search(&self, words: &str, limit: usize) -> Vec<(VerseRef, &str)> {
         let wanted: Vec<String> = words.split_whitespace().map(str::to_lowercase).collect();
         if wanted.is_empty() {
             return Vec::new();
         }
-        self.all()
-            .filter(|(_, text)| {
-                let text = text.to_lowercase();
-                wanted.iter().all(|word| text.contains(word.as_str()))
-            })
-            .take(limit)
-            .collect()
+        let phrase = wanted.join(" ");
+        let (mut together, mut apart) = (Vec::new(), Vec::new());
+        for (place, text) in self.all() {
+            let lower = text.to_lowercase();
+            if lower.contains(&phrase) {
+                together.push((place, text));
+            } else if wanted.len() > 1 && wanted.iter().all(|word| lower.contains(word.as_str())) {
+                apart.push((place, text));
+            }
+            if together.len() >= limit {
+                break;
+            }
+        }
+        together.extend(apart);
+        together.truncate(limit);
+        together
     }
 
     /// A book's name as this Bible's language writes it.
@@ -500,12 +528,24 @@ mod tests {
         assert_eq!((back.start.verse, back.end.verse), (16, 17));
         assert!(bible.step(one, false).is_none());
         assert!(bible.step(parse_reference("John 9").unwrap(), true).is_none());
+        // A passage grows by one verse at either end, across a chapter's end.
+        let grown = bible.extend(parse_reference("John 3:17").unwrap(), true).unwrap();
+        assert_eq!((grown.start.verse, grown.end.verse), (17, 18));
+        let grown = bible.extend(grown, true).unwrap();
+        assert_eq!((grown.end.chapter, grown.end.verse), (4, 1));
+        assert!(bible.extend(grown, true).is_none());
+        let grown = bible.extend(parse_reference("John 3:17").unwrap(), false).unwrap();
+        assert_eq!((grown.start.verse, grown.end.verse), (16, 17));
+        assert!(bible.extend(grown, false).is_none());
     }
 
     #[test]
     fn search_wants_every_word_and_ignores_case() {
         let bible = small();
         assert_eq!(bible.search("god SON", 10).len(), 1);
+        // Words together as typed come before words that are only both present.
+        let ranked = bible.search("god sent", 10);
+        assert_eq!(ranked.first().map(|(place, _)| place.verse), Some(17));
         assert_eq!(bible.search("god", 1).len(), 1);
         assert!(bible.search("  ", 10).is_empty());
     }

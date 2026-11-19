@@ -206,10 +206,11 @@ impl BiblePage {
 
     /// Adds a translation row, up to the limit. Returns true if one was added.
     pub fn add_row(&mut self) -> bool {
-        if self.rows.len() >= Self::MAX_ROWS {
-            return false;
-        }
-        self.rows.push(BibleRow { bible: 0, verse: None, reference: None });
+        // The next Bible no row is using yet; when every installed Bible is in use there is
+        // nothing to add.
+        let unused = (0..self.shelf.bibles.len()).find(|at| self.rows.iter().all(|row| row.bible != *at));
+        let Some(bible) = unused.filter(|_| self.rows.len() < Self::MAX_ROWS) else { return false };
+        self.rows.push(BibleRow { bible, verse: None, reference: None });
         true
     }
 
@@ -312,11 +313,15 @@ impl BiblePage {
         }
         match crate::bible::build_passage(&self.lookup, &rows, &self.options) {
             Ok(passage) => {
+                let passage_name = passage.title.clone();
                 // Leave a passage that is on screen alone: use the other slot.
                 if live == Some(slots[self.showing]) {
                     self.showing = 1 - self.showing;
                 }
                 self.pending = Some((slots[self.showing], passage));
+                // The field then says the passage in full, in the first Bible's language:
+                // "john 3" becomes "John 3:1-36".
+                self.lookup = passage_name;
                 self.shown = self.lookup.clone();
                 self.made_with = self.choices();
                 self.message = None;
@@ -326,15 +331,15 @@ impl BiblePage {
         }
     }
 
-    /// Moves to the verses just after, or just before, the passage shown: as many as it has.
+    /// Makes the passage shown one verse longer, at its end or at its start.
     pub fn step(&mut self, forward: bool, live: Option<usize>) {
         let Some(row) = self.rows.first() else { return };
         let (Ok(bible), Ok(range)) = (self.shelf.get(row.bible), pc_bible::parse_reference(&self.shown)) else {
             return;
         };
-        match bible.step(range, forward) {
-            Some(next) => {
-                self.lookup = bible.label(next.start, next.end);
+        match bible.extend(range, forward) {
+            Some(longer) => {
+                self.lookup = bible.label(longer.start, longer.end);
                 self.look_up(live);
             }
             None => {
@@ -1589,10 +1594,10 @@ fn bible_area(
     egui::CentralPanel::default().frame(panel_frame(CANVAS, 0)).show(ui, |ui| {
         egui::Panel::bottom("bible bar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Step to the verses before or after the passage shown.
+                // Make the passage one verse longer, at its start or its end.
                 let shown = !state.bible.shown.is_empty();
-                let back = ui.add_enabled(shown, egui::Button::new("‹ Verse")).on_hover_text("The verses just before these");
-                let on = ui.add_enabled(shown, egui::Button::new("Verse ›")).on_hover_text("The verses just after these");
+                let back = ui.add_enabled(shown, egui::Button::new("‹ Verse")).on_hover_text("Add the verse before");
+                let on = ui.add_enabled(shown, egui::Button::new("Verse ›")).on_hover_text("Add the verse after");
                 if back.clicked() {
                     state.bible.step(false, live);
                 } else if on.clicked() {
