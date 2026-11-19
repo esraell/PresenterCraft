@@ -73,6 +73,13 @@ ProPresenter.
   right-click menu sets its Scaling (Scale to Fill, Scale to Fit, Stretch to Fill), whether a
   video loops, and the media playlists it is in; the menu beside MEDIA shows All Media or one
   playlist, and makes, renames and deletes them.
+- A media playlist can **Follow a Folder**: the pictures and videos in it join the playlist as
+  they appear, and one written over (such as a fresh announcements export from Canva) is read
+  again and, if on screen, played again. **Play This Playlist** shows its items in turn on the
+  media layer (pictures for 8 seconds, videos to their end), round and round, until other
+  media is put on or cleared.
+- Settings, Screens, **When PresenterCraft Opens**: play nothing, a media playlist, or a song on
+  the Announcements layer, for a loop before and after the service.
 - **Announcements layer**: a song's right-click menu has Play on Announcements Layer. Its
   slides go round by themselves (each for its Go to Next time, or 8 seconds) on a layer over
   the slides and media and under props and messages, dissolving from one to the next. Each

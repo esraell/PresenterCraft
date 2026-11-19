@@ -165,6 +165,12 @@ pub struct HomeState {
     pub ccli_licence: String,
     /// True to start with the audience screens off.
     pub start_audience_off: bool,
+    /// What starts playing by itself when the app opens.
+    pub start_with: crate::service::StartWith,
+    /// Every song by its key and title, for choosing one in Settings.
+    pub song_choices: Vec<(String, String)>,
+    /// The media playlist playing item after item on the media layer, if one is.
+    pub media_playing: Option<pc_model::Uuid>,
     /// New copyright details for a song, from its Info pop-over.
     pub copyright_request: Option<(usize, pc_model::Copyright)>,
     /// True while the Screens window is open.
@@ -749,6 +755,9 @@ impl Default for HomeState {
             copyright_show: crate::service::CopyrightShow::Never,
             ccli_licence: String::new(),
             start_audience_off: false,
+            start_with: crate::service::StartWith::Nothing,
+            song_choices: Vec::new(),
+            media_playing: None,
             copyright_request: None,
             edit_request: None,
             picture_request: false,
@@ -868,6 +877,7 @@ impl HomeState {
             copyright_show: self.copyright_show,
             ccli_licence: self.ccli_licence.clone(),
             start_audience_off: self.start_audience_off,
+            start_with: self.start_with.clone(),
             stage_off: !self.stage_on,
             ..crate::service::Prefs::default()
         }
@@ -894,6 +904,7 @@ impl HomeState {
         self.copyright_show = prefs.copyright_show;
         self.ccli_licence = prefs.ccli_licence.clone();
         self.start_audience_off = prefs.start_audience_off;
+        self.start_with = prefs.start_with.clone();
         self.stage_on = !prefs.stage_off;
     }
 
@@ -999,6 +1010,9 @@ const EDIT_SELECTED: Color32 = crate::studio::SELECTED;
 const EDIT_OUTLINE: Color32 = Color32::from_rgb(230, 230, 234);
 /// Half the side of a resize handle, in screen points.
 const HANDLE: f32 = 4.5;
+/// How far from a handle's middle a press still grabs it, in screen points: more than the
+/// handle drawn, so it is easy to catch.
+const HANDLE_REACH: f32 = 10.0;
 
 /// The Edit view. It replaces the whole window below the toolbar: the song's slides down the
 /// left with the chosen slide's objects under them, a canvas in the middle where objects are
@@ -1964,7 +1978,11 @@ fn edit_view(
                 let (extend, free) =
                     ui.input(|input| (input.modifiers.shift || input.modifiers.command, input.modifiers.command));
                 if response.drag_started() || response.clicked() {
-                    draft.press(theme, point, (HANDLE + 3.0) / scale, extend);
+                    // Where the button went down, not where the pointer is once the drag has
+                    // begun a few points further on: on a small handle the difference decides
+                    // between resizing the box and moving it.
+                    let pressed = ui.input(|input| input.pointer.press_origin()).map_or(point, to_slide);
+                    draft.press(theme, pressed, HANDLE_REACH / scale, extend);
                 }
                 // A double click on a text box starts typing its words right there. A theme's
                 // boxes only ever say "Text", so there is nothing to type in them.
@@ -2335,6 +2353,10 @@ pub enum MediaRequest {
     AddAsSlide(usize),
     /// How an item fills the screen, and whether a video loops.
     Look(usize, pc_model::ImageFit, bool),
+    /// Play a media playlist item after item on the media layer, or stop (`None`).
+    PlayPlaylist(Option<pc_model::Uuid>),
+    /// Choose a folder for a media playlist to follow, or stop following one (`false`).
+    WatchFolder(pc_model::Uuid, bool),
 }
 
 /// A media bin item being dragged, by its place in the bin.
@@ -2672,6 +2694,9 @@ pub fn settings_ui(ui: &mut egui::Ui, state: &mut HomeState) {
                     state.settings_open = true;
                 }
                 ui.add_space(10.0);
+                ui.add_space(14.0);
+                start_with_ui(ui, state);
+                ui.add_space(14.0);
                 ui.checkbox(&mut state.start_audience_off, "Start with the audience screens off")
                     .on_hover_text("When PresenterCraft opens, nothing is shown until Audience is switched on");
                 ui.checkbox(&mut state.stage_on, "Stage screens on");
@@ -2730,6 +2755,59 @@ pub fn settings_ui(ui: &mut egui::Ui, state: &mut HomeState) {
 
 /// A switch drawn the way the Mac draws one: a capsule, green with the knob at the right when
 /// on. Returns true when it was clicked.
+/// What starts playing by itself when the app opens: nothing, a media playlist, or a song on
+/// the Announcements layer.
+fn start_with_ui(ui: &mut egui::Ui, state: &mut HomeState) {
+    use crate::service::StartWith;
+    crate::studio::caption(ui, "WHEN PRESENTERCRAFT OPENS");
+    if ui.radio(state.start_with == StartWith::Nothing, "Play nothing").clicked() {
+        state.start_with = StartWith::Nothing;
+    }
+    let first_playlist = state.media_playlists.first().map(|playlist| playlist.id);
+    ui.horizontal(|ui| {
+        let on = matches!(state.start_with, StartWith::MediaPlaylist { .. });
+        if ui.add_enabled(first_playlist.is_some(), egui::RadioButton::new(on, "Play the media playlist")).clicked()
+            && !on
+            && let Some(id) = first_playlist
+        {
+            state.start_with = StartWith::MediaPlaylist { id };
+        }
+        if let StartWith::MediaPlaylist { id } = &mut state.start_with {
+            let shown = state.media_playlists.iter().find(|p| p.id == *id).map_or("", |p| p.name.as_str()).to_owned();
+            egui::ComboBox::from_id_salt("start playlist").selected_text(shown).show_ui(ui, |ui| {
+                for playlist in &state.media_playlists {
+                    ui.selectable_value(id, playlist.id, playlist.name.as_str());
+                }
+            });
+        }
+    });
+    let first_song = state.song_choices.first().map(|(key, _)| key.clone());
+    ui.horizontal(|ui| {
+        let on = matches!(state.start_with, StartWith::Announcements { .. });
+        if ui.add_enabled(first_song.is_some(), egui::RadioButton::new(on, "Play on the Announcements layer")).clicked()
+            && !on
+            && let Some(song) = first_song.clone()
+        {
+            state.start_with = StartWith::Announcements { song };
+        }
+        if let StartWith::Announcements { song } = &mut state.start_with {
+            let shown = state.song_choices.iter().find(|(key, _)| key == song).map_or("", |(_, title)| title.as_str());
+            egui::ComboBox::from_id_salt("start song").selected_text(shown.to_owned()).show_ui(ui, |ui| {
+                for (key, title) in &state.song_choices {
+                    ui.selectable_value(song, key.clone(), title.as_str());
+                }
+            });
+        }
+    });
+    ui.label(
+        egui::RichText::new(
+            "For a loop before and after the service. A media playlist can follow a folder (its menu beside MEDIA).",
+        )
+        .size(11.5)
+        .color(crate::studio::TEXT_DIM),
+    );
+}
+
 fn switch(ui: &mut egui::Ui, on: bool, hint: &str) -> bool {
     let (rect, response) = ui.allocate_exact_size(vec2(34.0, 20.0), Sense::click());
     let how_far = ui.ctx().animate_bool(response.id, on);

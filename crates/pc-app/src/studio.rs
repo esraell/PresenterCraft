@@ -1691,6 +1691,47 @@ fn media_playlist_picker(ui: &mut egui::Ui, state: &mut HomeState) {
             if let Some(at) =
                 state.media_playlist_shown.and_then(|id| state.media_playlists.iter().position(|p| p.id == id))
             {
+                let id = state.media_playlists[at].id;
+                ui.separator();
+                // Played item after item on the media layer, round and round.
+                if state.media_playing == Some(id) {
+                    if ui.button("Stop Playing").clicked() {
+                        state.media_request = Some(crate::home::MediaRequest::PlayPlaylist(None));
+                        ui.close();
+                    }
+                } else if ui
+                    .button("Play This Playlist")
+                    .on_hover_text("Its pictures (8 seconds each) and videos (to their end) in turn, round and round")
+                    .clicked()
+                {
+                    state.media_request = Some(crate::home::MediaRequest::PlayPlaylist(Some(id)));
+                    ui.close();
+                }
+                // A folder it follows: what is in the folder is in the playlist.
+                match state.media_playlists[at].folder.clone() {
+                    Some(folder) => {
+                        ui.label(
+                            egui::RichText::new(format!("Follows {}", folder.display())).size(11.5).color(TEXT_DIM),
+                        );
+                        if ui.button("Stop Following the Folder").clicked() {
+                            state.media_request = Some(crate::home::MediaRequest::WatchFolder(id, false));
+                            ui.close();
+                        }
+                    }
+                    None => {
+                        if ui
+                            .button("Follow a Folder…")
+                            .on_hover_text(
+                                "The pictures and videos in a folder join this playlist as they come and change",
+                            )
+                            .clicked()
+                        {
+                            state.media_request = Some(crate::home::MediaRequest::WatchFolder(id, true));
+                            ui.close();
+                        }
+                    }
+                }
+                ui.separator();
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Name").color(TEXT_DIM));
                     let field =

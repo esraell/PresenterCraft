@@ -111,6 +111,18 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
     Ok(Some(options))
 }
 
+/// A media playlist playing item after item: which, where in it, since when, and the media bin
+/// place shown.
+struct MediaCycle {
+    playlist: Uuid,
+    at: usize,
+    since: Instant,
+    shown: usize,
+}
+
+/// How long a picture stays up in a playing media playlist.
+const PICTURE_SECONDS: f32 = 8.0;
+
 /// A song going round on the Announcements layer.
 struct Announcing {
     song: usize,
@@ -637,6 +649,11 @@ struct App {
     /// The song on the Announcements layer: which, the slide shown, since when, and what was
     /// sent to the screens.
     announcing: Option<Announcing>,
+    /// A media playlist playing, the files seen in followed folders with when each changed, and
+    /// when the folders were last looked at.
+    media_cycle: Option<MediaCycle>,
+    folders_seen: std::collections::HashMap<std::path::PathBuf, std::time::SystemTime>,
+    folders_checked: Instant,
     /// The media playlists read at the start, handed to the window's state once it is made.
     media_playlists: Vec<media::Playlist>,
     unsaved_since: Option<Instant>,
@@ -929,6 +946,159 @@ impl App {
         }
     }
 
+    /// Plays a media playlist item after item on the media layer, starting with its first.
+    fn play_media_playlist(&mut self, id: Uuid) {
+        self.check_folders(true);
+        let Some(first) = self.playlist_media(id).first().copied() else {
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.notice = Some("That media playlist has nothing in it to play.".to_owned());
+            }
+            return;
+        };
+        self.media_cycle = Some(MediaCycle { playlist: id, at: 0, since: Instant::now(), shown: first });
+        if let Some(running) = self.running.as_mut() {
+            running.home_state.media_playing = Some(id);
+        }
+        applog::event("media", &format!("playing media playlist {id}"));
+        self.apply(vec![Command::ShowMedia(first)]);
+    }
+
+    fn stop_media_playlist(&mut self) {
+        if self.media_cycle.take().is_some() {
+            applog::event("media", "stopped the media playlist");
+        }
+        if let Some(running) = self.running.as_mut() {
+            running.home_state.media_playing = None;
+        }
+    }
+
+    /// The media bin places of a media playlist's files, in its order.
+    fn playlist_media(&self, id: Uuid) -> Vec<usize> {
+        let Some(running) = self.running.as_ref() else { return Vec::new() };
+        let Some(playlist) = running.home_state.media_playlists.iter().find(|p| p.id == id) else { return Vec::new() };
+        playlist.files.iter().filter_map(|file| self.show.media().iter().position(|item| &item.path == file)).collect()
+    }
+
+    /// Moves a playing media playlist on: a picture after 8 seconds, a video when it ends. It
+    /// stops if the operator puts other media on, or clears it. Says when to look again.
+    fn tick_media_cycle(&mut self) -> Option<Instant> {
+        let cycle = self.media_cycle.as_ref()?;
+        let (id, at, since, shown) = (cycle.playlist, cycle.at, cycle.since, cycle.shown);
+        if self.show.live_media() != Some(shown) {
+            self.stop_media_playlist();
+            return None;
+        }
+        let items = self.playlist_media(id);
+        let is_video = self.show.media().get(shown).is_some_and(|item| media::is_video(&item.path));
+        let done = if is_video {
+            // One video on its own loops, so it never ends; with others, it plays to its end.
+            items.len() > 1 && self.video.as_ref().is_some_and(|(_, player)| player.ended())
+        } else {
+            since.elapsed() >= Duration::from_secs_f32(PICTURE_SECONDS)
+        };
+        if done && items.len() > 1 {
+            let next_at = (at + 1) % items.len();
+            let next = items[next_at];
+            self.media_cycle = Some(MediaCycle { playlist: id, at: next_at, since: Instant::now(), shown: next });
+            self.apply(vec![Command::ShowMedia(next)]);
+        }
+        Some(Instant::now() + Duration::from_millis(if is_video { 200 } else { 500 }))
+    }
+
+    /// Keeps the media playlists that follow folders up to date: new files are added to the
+    /// media bin and the playlist, gone ones leave the playlist, and a file that changed (a new
+    /// export written over the old) is read again, and played again if it is on screen. Looks
+    /// every few seconds, or at once when `now`.
+    fn check_folders(&mut self, now: bool) {
+        if !now && self.folders_checked.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        self.folders_checked = Instant::now();
+        let Some(running) = self.running.as_ref() else { return };
+        let followed: Vec<(Uuid, std::path::PathBuf)> = running
+            .home_state
+            .media_playlists
+            .iter()
+            .filter_map(|playlist| playlist.folder.clone().map(|folder| (playlist.id, folder)))
+            .collect();
+        let mut changed_list = false;
+        for (id, folder) in followed {
+            let files = media::folder_files(&folder);
+            for (path, modified) in &files {
+                let known = self.folders_seen.get(path).copied();
+                let in_bin = self.show.media().iter().position(|item| &item.path == path);
+                match (in_bin, known) {
+                    (None, _) => {
+                        if let Ok(picture) = media::load_picture(path) {
+                            let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                            self.show.add_media(MediaItem::new(name, path.clone()));
+                            self.pictures.push(picture);
+                            applog::event("media", &format!("{} appeared in a followed folder", path.display()));
+                            changed_list = true;
+                        }
+                    }
+                    (Some(index), Some(seen)) if seen != *modified => {
+                        // Written over: read it again; if it is on screen, show the new one.
+                        if let Ok(picture) = media::load_picture(path)
+                            && let Some(slot) = self.pictures.get_mut(index)
+                        {
+                            *slot = picture;
+                            applog::event("media", &format!("{} changed in a followed folder", path.display()));
+                            if let (Some(running), Some(item)) = (self.running.as_mut(), self.show.media().get(index)) {
+                                running.thumbs.forget(item.id, &mut running.egui_renderer);
+                            }
+                            if self.show.live_media() == Some(index) {
+                                self.video = None;
+                                self.refresh_output();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                self.folders_seen.insert(path.clone(), *modified);
+            }
+            if let Some(running) = self.running.as_mut()
+                && let Some(playlist) = running.home_state.media_playlists.iter_mut().find(|p| p.id == id)
+            {
+                let now_files: Vec<std::path::PathBuf> = files.into_iter().map(|(path, _)| path).collect();
+                if playlist.files != now_files {
+                    playlist.files = now_files;
+                    changed_list = true;
+                }
+            }
+        }
+        if changed_list {
+            self.save_media_list();
+            if let Some(running) = self.running.as_ref() {
+                running.home_window.request_redraw();
+            }
+        }
+    }
+
+    /// Starts what Settings says to play when the app opens.
+    fn start_playing(&mut self) {
+        use service::StartWith;
+        let Some(start) = self.running.as_ref().map(|r| r.home_state.start_with.clone()) else { return };
+        match start {
+            StartWith::Nothing => {}
+            StartWith::MediaPlaylist { id } => self.play_media_playlist(id),
+            StartWith::Announcements { song } => {
+                if let Some(running) = self.running.as_mut()
+                    && let Some(index) = running.home_state.song_keys.iter().position(|key| *key == song)
+                {
+                    running.home_state.announcement_request = Some(Some(index));
+                }
+            }
+        }
+    }
+
+    /// Whether a video loops now: as it is set, unless a media playlist of several items is
+    /// playing, when it plays to its end so the next can follow.
+    fn loops_now(&self, item: &MediaItem) -> bool {
+        let many = self.media_cycle.as_ref().is_some_and(|cycle| self.playlist_media(cycle.playlist).len() > 1);
+        item.looping && !many
+    }
+
     /// How the media on screen fills the screen.
     fn live_media_fit(&self) -> pc_model::ImageFit {
         self.show
@@ -947,12 +1117,13 @@ impl App {
             .cloned();
         if self.video.as_ref().map(|(id, _)| *id) == live.as_ref().map(|item| item.id) {
             // The same video: it may have been told to loop or not.
-            if let (Some((_, player)), Some(item), Some(running)) = (self.video.as_mut(), &live, self.running.as_mut())
+            let loops = live.as_ref().is_some_and(|item| self.loops_now(item));
+            if let (Some((_, player)), Some(running)) = (self.video.as_mut(), self.running.as_mut())
                 && let Some(shown) = running.home_state.video_live.as_mut()
-                && shown.looping != item.looping
+                && shown.looping != loops
             {
-                player.set_looping(item.looping);
-                shown.looping = item.looping;
+                player.set_looping(loops);
+                shown.looping = loops;
             }
             return;
         }
@@ -963,17 +1134,19 @@ impl App {
         running.home_state.video_live = None;
         let Some(item) = live else { return };
         let started = Instant::now();
+        let loops = self.loops_now(&item);
+        let Some(running) = self.running.as_mut() else { return };
         match pc_video::Player::open(&item.path) {
             Ok(mut player) => {
                 applog::event("video", &format!("opened {} in {:?}", item.path.display(), started.elapsed()));
-                player.set_looping(item.looping);
+                player.set_looping(loops);
                 player.play();
                 running.home_state.video_live = Some(home::VideoLive {
                     name: item.name.clone(),
                     position: 0.0,
                     duration: None,
                     playing: true,
-                    looping: item.looping,
+                    looping: loops,
                     muted: false,
                 });
                 self.video = Some((item.id, player));
@@ -1714,6 +1887,28 @@ impl App {
         }
         let Some(request) = self.running.as_mut().and_then(|r| r.home_state.media_request.take()) else { return };
         match request {
+            MediaRequest::PlayPlaylist(Some(id)) => self.play_media_playlist(id),
+            MediaRequest::PlayPlaylist(None) => self.stop_media_playlist(),
+            MediaRequest::WatchFolder(id, follow) => {
+                let folder = if follow {
+                    let Some(folder) = rfd::FileDialog::new().set_title("Choose a Folder to Follow").pick_folder()
+                    else {
+                        return;
+                    };
+                    Some(folder)
+                } else {
+                    None
+                };
+                if let Some(running) = self.running.as_mut()
+                    && let Some(playlist) = running.home_state.media_playlists.iter_mut().find(|p| p.id == id)
+                {
+                    applog::event("media", &format!("playlist {} follows {:?}", playlist.name, folder));
+                    playlist.folder = folder;
+                }
+                self.folders_seen.clear();
+                self.check_folders(true);
+                self.save_media_list();
+            }
             MediaRequest::Choose => {
                 // The system's own window for choosing files, as any Mac app has.
                 let chosen = rfd::FileDialog::new()
@@ -2465,6 +2660,15 @@ impl App {
         let (show, pictures) = (&self.show, &self.pictures);
         let (songs_theme, bible_theme): (&Theme, &Theme) = (&front_theme, &self.theme_for_bible);
         running.home_state.song_templates = song_templates(songs_theme);
+        // Every song by its key and title, for choosing one in Settings.
+        let removed = &running.home_state.removed_songs;
+        running.home_state.song_choices = show
+            .presentations()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !self.bible_slots.contains(index) && !removed.contains(index))
+            .filter_map(|(index, song)| Some((running.home_state.song_keys.get(index)?.clone(), song.title.clone())))
+            .collect();
         // The theme the part of the window in front works with: the one being edited, the
         // Bible's on the Bible page or when a Bible slide is being edited, otherwise the songs'.
         let state = &running.home_state;
@@ -3409,6 +3613,9 @@ impl ApplicationHandler<String> for App {
                 if std::env::var_os("PRESENTERCRAFT_GO_LIVE_MEDIA").is_some() {
                     self.apply(vec![Command::ShowMedia(0)]);
                 }
+                // Followed folders are read, and what Settings says to play at the start plays.
+                self.check_folders(true);
+                self.start_playing();
             }
             Ok(None) => el.exit(),
             Err(message) => {
@@ -3704,6 +3911,13 @@ impl ApplicationHandler<String> for App {
         let video_at = self.tick_video();
         let audio_at = self.tick_audio();
         let announce_at = self.tick_announcements();
+        let cycle_at = self.tick_media_cycle();
+        self.check_folders(false);
+        let folders_at = self
+            .running
+            .as_ref()
+            .filter(|r| r.home_state.media_playlists.iter().any(|p| p.folder.is_some()))
+            .map(|_| self.folders_checked + Duration::from_secs(5));
         // Songs changed in the Edit view are written once typing has paused for a second.
         const SAVE_AFTER: Duration = Duration::from_secs(1);
         let save_at = self.unsaved_since.map(|since| since + SAVE_AFTER);
@@ -3728,7 +3942,8 @@ impl ApplicationHandler<String> for App {
             }
             panel_at = [panel_at, panel.next_repaint].into_iter().flatten().min();
         }
-        match [running.next_repaint, panel_at, save_at, video_at, audio_at, announce_at].into_iter().flatten().min() {
+        let wake = [running.next_repaint, panel_at, save_at, video_at, audio_at, announce_at, cycle_at, folders_at];
+        match wake.into_iter().flatten().min() {
             Some(at) => el.set_control_flow(ControlFlow::WaitUntil(at)),
             None => el.set_control_flow(ControlFlow::Wait),
         }
@@ -3860,6 +4075,9 @@ fn main() -> ExitCode {
         video: None,
         media_playlists: Vec::new(),
         announcing: None,
+        media_cycle: None,
+        folders_seen: std::collections::HashMap::new(),
+        folders_checked: Instant::now(),
         unsaved_since: None,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),

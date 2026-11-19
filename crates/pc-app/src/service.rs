@@ -255,6 +255,21 @@ impl Services {
 }
 
 /// The small choices that are not part of any song, theme or service, kept between runs.
+/// What starts playing by itself when the app opens: nothing, a media playlist (on the media
+/// layer, item after item), or a song on the Announcements layer (by its key).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "play", rename_all = "snake_case")]
+pub enum StartWith {
+    #[default]
+    Nothing,
+    MediaPlaylist {
+        id: pc_model::Uuid,
+    },
+    Announcements {
+        song: String,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
@@ -288,6 +303,8 @@ pub struct Prefs {
     pub start_audience_off: bool,
     /// Next at the end of a song goes on to the next song in the service.
     pub continuous: bool,
+    /// What starts playing by itself when the app opens.
+    pub start_with: StartWith,
 }
 
 /// When a song's copyright line is shown.
@@ -342,6 +359,7 @@ impl Default for Prefs {
             ccli_licence: String::new(),
             start_audience_off: false,
             continuous: false,
+            start_with: StartWith::Nothing,
         }
     }
 }

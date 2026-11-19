@@ -59,11 +59,15 @@ pub struct Playlist {
     pub id: pc_model::Uuid,
     pub name: String,
     pub files: Vec<PathBuf>,
+    /// A folder the playlist follows: the pictures and videos in it are its files, kept up to
+    /// date as files come, go and change (such as an announcements video exported from Canva).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
 }
 
 impl Playlist {
     pub fn new(name: String) -> Playlist {
-        Playlist { id: pc_model::Uuid::new_v4(), name, files: Vec::new() }
+        Playlist { id: pc_model::Uuid::new_v4(), name, files: Vec::new(), folder: None }
     }
 
     pub fn has(&self, path: &Path) -> bool {
@@ -87,6 +91,24 @@ pub fn new_playlist_name(playlists: &[Playlist]) -> String {
         .chain((2..).map(|n| format!("New Playlist {n}")))
         .find(|name| !taken(name))
         .unwrap_or_default()
+}
+
+/// The pictures and videos in a folder, by name, with when each last changed. Hidden files
+/// (such as one still being downloaded) are left out.
+pub fn folder_files(folder: &Path) -> Vec<(PathBuf, std::time::SystemTime)> {
+    let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
+    let mut files: Vec<(PathBuf, std::time::SystemTime)> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| is_media(path))
+        .filter(|path| path.file_name().is_some_and(|name| !name.to_string_lossy().starts_with('.')))
+        .filter_map(|path| {
+            let changed = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok()?;
+            Some((path, changed))
+        })
+        .collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files
 }
 
 /// What `media.json` keeps: the files in the media bin with how each is shown, and the
@@ -218,6 +240,21 @@ mod tests {
             playlists: vec![backgrounds],
         };
         assert_eq!(List::from_json(&serde_json::to_string(&list).unwrap()), Some(list));
+    }
+
+    #[test]
+    fn a_folder_lists_its_pictures_and_videos_by_name_without_hidden_ones() {
+        let dir = std::env::temp_dir().join(format!("presentercraft-folder-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["b.mp4", "a.png", ".downloading.mp4", "notes.txt"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let names: Vec<String> = folder_files(&dir)
+            .into_iter()
+            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["a.png", "b.mp4"]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

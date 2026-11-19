@@ -69,11 +69,17 @@ impl Handle {
 }
 
 /// The handle of a frame within `reach` of a point, if any.
+/// The handle a press is on: the nearest within reach, so on a small box, where handles
+/// crowd together, the one meant is the one taken.
 pub fn handle_at(frame: SlideRect, point: (f32, f32), reach: f32) -> Option<Handle> {
-    Handle::ALL.into_iter().find(|handle| {
+    let distance = |handle: &Handle| {
         let (x, y) = handle.position(frame);
-        (point.0 - x).abs() <= reach && (point.1 - y).abs() <= reach
-    })
+        (point.0 - x).abs().max((point.1 - y).abs())
+    };
+    Handle::ALL
+        .into_iter()
+        .filter(|handle| distance(handle) <= reach)
+        .min_by(|a, b| distance(a).total_cmp(&distance(b)))
 }
 
 /// A frame moved by a distance.
@@ -843,6 +849,19 @@ impl EditDraft {
     pub fn press(&mut self, theme: &Theme, point: (f32, f32), handle_reach: f32, extend: bool) {
         self.drag = None;
         self.drag_others.clear();
+        // The selected object's handles come first: half of each lies outside the object, and
+        // a press there resizes it rather than starting a rectangle or picking what is behind.
+        if !extend
+            && self.also.is_empty()
+            && let Some(object) = self.selected_object()
+            && object.rotation == 0.0
+        {
+            let from = object_frame(&self.slide, object, theme);
+            if let Some(handle) = handle_at(from, point, handle_reach) {
+                self.drag = Some(Drag::Resize { id: object.id, handle, from, start: point });
+                return;
+            }
+        }
         let hit = object_at(&self.slide, theme, point);
         // A press on empty slide starts dragging out a rectangle. With Shift or Command held
         // what is already selected is kept, and the rectangle adds to it.
@@ -866,17 +885,6 @@ impl EditDraft {
                 self.toggle_selected(id);
             }
             return;
-        }
-        // Handles belong to one object: with several selected there are none to grab.
-        if self.also.is_empty()
-            && let Some(object) = self.selected_object()
-            && object.rotation == 0.0
-        {
-            let from = object_frame(&self.slide, object, theme);
-            if let Some(handle) = handle_at(from, point, handle_reach) {
-                self.drag = Some(Drag::Resize { id: object.id, handle, from, start: point });
-                return;
-            }
         }
         // A press on something already selected keeps the whole selection, so it can be
         // dragged together; a press anywhere else selects just what is there.
@@ -1015,6 +1023,24 @@ mod tests {
         assert_eq!(Handle::Bottom.position(F), (300.0, 500.0));
         assert_eq!(handle_at(F, (503.0, 497.0), 6.0), Some(Handle::BottomRight));
         assert_eq!(handle_at(F, (300.0, 350.0), 6.0), None);
+    }
+
+    #[test]
+    fn a_press_just_outside_a_selected_box_on_its_handle_resizes_it() {
+        let mut d = draft();
+        let theme = Theme::builtin();
+        d.press(&theme, (960.0, 300.0), 5.0, false);
+        d.release();
+        let frame = object_frame(&d.slide, d.selected_object().unwrap(), &theme);
+        // Outside the box, past its top-left corner, but within the handle's reach.
+        d.press(&theme, (frame.x - 6.0, frame.y - 6.0), 10.0, false);
+        d.drag_to((frame.x - 46.0, frame.y - 26.0), false, false);
+        d.release();
+        let now = object_frame(&d.slide, d.selected_object().unwrap(), &theme);
+        assert_eq!((now.x, now.y, now.w), (frame.x - 40.0, frame.y - 20.0, frame.w + 40.0));
+        // On a tiny box the nearest handle is the one taken.
+        let small = SlideRect { x: 0.0, y: 0.0, w: 12.0, h: 12.0 };
+        assert_eq!(handle_at(small, (12.0, 13.0), 10.0), Some(Handle::BottomRight));
     }
 
     #[test]
