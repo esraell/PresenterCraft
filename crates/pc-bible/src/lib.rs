@@ -230,6 +230,51 @@ impl Bible {
             .collect()
     }
 
+    /// How many chapters a book has in this Bible; 0 if it does not have the book.
+    pub fn chapter_count(&self, book: usize) -> u16 {
+        let after = VerseRef { book: book + 1, chapter: 0, verse: 0 };
+        let end = self.index.partition_point(|(p, _, _)| *p < after);
+        end.checked_sub(1).map(|last| self.index[last].0).filter(|p| p.book == book).map_or(0, |p| p.chapter)
+    }
+
+    /// The number of the last verse in a chapter; 0 if this Bible does not have the chapter.
+    pub fn last_verse(&self, book: usize, chapter: u16) -> u16 {
+        let after = VerseRef { book, chapter: chapter + 1, verse: 0 };
+        let end = self.index.partition_point(|(p, _, _)| *p < after);
+        end.checked_sub(1)
+            .map(|last| self.index[last].0)
+            .filter(|p| p.book == book && p.chapter == chapter)
+            .map_or(0, |p| p.verse)
+    }
+
+    /// The run of verses just after (or just before) a range, as many as the range has, staying
+    /// inside the book. `None` at the book's end (or start), or if the range names nothing.
+    pub fn step(&self, range: Range, forward: bool) -> Option<Range> {
+        let from = self.index.partition_point(|(p, _, _)| *p < range.start);
+        let past = self.index.partition_point(|(p, _, _)| *p <= range.end);
+        let count = past.checked_sub(from).filter(|count| *count > 0)?;
+        let book = self.index[from].0.book;
+        let in_book = |at: usize| self.index.get(at).is_some_and(|(p, _, _)| p.book == book);
+        let (first, last) = if forward {
+            if !in_book(past) {
+                return None;
+            }
+            let mut last = past;
+            while last + 1 < past + count && in_book(last + 1) {
+                last += 1;
+            }
+            (past, last)
+        } else {
+            let last = from.checked_sub(1).filter(|at| in_book(*at))?;
+            let mut first = last;
+            while first > 0 && last - first + 1 < count && in_book(first - 1) {
+                first -= 1;
+            }
+            (first, last)
+        };
+        Some(Range { start: self.index[first].0, end: self.index[last].0 })
+    }
+
     /// The first verses that hold every one of the given words, without regard to case.
     pub fn search(&self, words: &str, limit: usize) -> Vec<(VerseRef, &str)> {
         let wanted: Vec<String> = words.split_whitespace().map(str::to_lowercase).collect();
@@ -434,6 +479,27 @@ mod tests {
         assert!(Bible::from_text("something else\n").is_err());
         assert!(Bible::from_text("presentercraft-bible 1\nid: x\nname: X\n\n").unwrap_err().contains("no verses"));
         assert!(Bible::from_text("presentercraft-bible 1\n\nGEN 1:1 words\n").unwrap_err().contains("which Bible"));
+    }
+
+    #[test]
+    fn chapters_and_verses_are_counted_and_passages_are_stepped_through() {
+        let bible = small();
+        let john = book_by_code("JOH").unwrap();
+        assert_eq!(bible.chapter_count(john), 4);
+        assert_eq!(bible.last_verse(john, 3), 18);
+        assert_eq!((bible.chapter_count(5), bible.last_verse(john, 9)), (0, 0));
+        // From 3:16 one verse at a time, across the chapter's end, to the book's end.
+        let one = parse_reference("John 3:16").unwrap();
+        let next = bible.step(one, true).unwrap();
+        assert_eq!((next.start.verse, next.end.verse), (17, 17));
+        let two = bible.step(parse_reference("John 3:17-18").unwrap(), true).unwrap();
+        assert_eq!((two.start.chapter, two.start.verse, two.end), (4, 1, two.start));
+        assert!(bible.step(two, true).is_none());
+        // Backwards, as many verses as the range has, stopping at the book's start.
+        let back = bible.step(parse_reference("John 3:18-4:1").unwrap(), false).unwrap();
+        assert_eq!((back.start.verse, back.end.verse), (16, 17));
+        assert!(bible.step(one, false).is_none());
+        assert!(bible.step(parse_reference("John 9").unwrap(), true).is_none());
     }
 
     #[test]

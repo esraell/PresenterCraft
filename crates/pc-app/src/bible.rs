@@ -120,6 +120,23 @@ pub struct RowChoice {
     pub reference: BibleTarget,
 }
 
+/// A digit as its small raised form.
+fn raised(digit: char) -> char {
+    match digit {
+        '0' => '⁰',
+        '1' => '¹',
+        '2' => '²',
+        '3' => '³',
+        '4' => '⁴',
+        '5' => '⁵',
+        '6' => '⁶',
+        '7' => '⁷',
+        '8' => '⁸',
+        '9' => '⁹',
+        other => other,
+    }
+}
+
 /// Turns what was typed in Scripture Lookup into slides. The reference is read in the
 /// numbering of the first translation; the others are lined up with it. Each translation's
 /// words, and its reference, go into the theme box chosen for them; a box given both holds
@@ -141,7 +158,7 @@ pub fn build_passage(typed: &str, rows: &[RowChoice], options: &BibleOptions) ->
     let chunks: Vec<&[VerseRef]> =
         if options.break_on_new_verse { places.chunks(1).collect() } else { vec![places.as_slice()] };
     let count = chunks.len();
-    let mut slides = Vec::with_capacity(count);
+    let mut groups = Vec::with_capacity(count);
     for (index, chunk) in chunks.into_iter().enumerate() {
         let (Some(from), Some(to)) = (chunk.first().copied(), chunk.last().copied()) else { continue };
         let words_of = |row: &RowChoice| -> String {
@@ -153,7 +170,9 @@ pub fn build_passage(typed: &str, rows: &[RowChoice], options: &BibleOptions) ->
                     text.push(' ');
                 }
                 if options.show_verse_numbers {
-                    text.push_str(&format!("{} ", there.verse));
+                    // Small raised digits, as a printed Bible has them.
+                    text.extend(there.verse.to_string().chars().map(raised));
+                    text.push('\u{2009}');
                 }
                 text.push_str(words);
             }
@@ -205,14 +224,16 @@ pub fn build_passage(typed: &str, rows: &[RowChoice], options: &BibleOptions) ->
                 Object::text(role, lines.join("\n"))
             })
             .collect();
-        slides.push(Slide::new(objects));
+        // Each slide is a group of its own, named by the verses on it, so the bar under
+        // every slide says where it is from.
+        groups.push(Group {
+            id: Uuid::new_v4(),
+            name: label(lead, from, to),
+            color: Rgba::rgb(40, 110, 200),
+            slides: vec![Slide::new(objects)],
+        });
     }
-    let name = lead.bible.label(first, last);
-    Ok(Presentation {
-        id: Uuid::new_v4(),
-        title: name.clone(),
-        groups: vec![Group { id: Uuid::new_v4(), name, color: Rgba::rgb(40, 110, 200), slides }],
-    })
+    Ok(Presentation { id: Uuid::new_v4(), title: lead.bible.label(first, last), groups })
 }
 
 const BLUE: Color32 = Color32::from_rgb(47, 123, 246);
@@ -692,6 +713,8 @@ mod tests {
         let passage = build_passage("John 3:16-17", &rows, &BibleOptions::default()).unwrap();
         assert_eq!(passage.title, "John 3:16-17");
         assert_eq!(passage.slide_count(), 2);
+        // Each slide's bar names its own verse.
+        assert_eq!(passage.groups.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["John 3:16", "John 3:17"]);
         let (_, first) = passage.slide(0).unwrap();
         let shown = texts(first);
         assert!(shown[0].starts_with("For God so loved the world"));
@@ -727,7 +750,11 @@ mod tests {
         let passage = build_passage("jn 3:16-17", &rows, &options).unwrap();
         assert_eq!(passage.slide_count(), 1);
         let shown = texts(passage.slide(0).unwrap().1);
-        assert!(shown[0].starts_with("16 For God so loved") && shown[0].contains(" 17 For God"), "{}", shown[0]);
+        assert!(
+            shown[0].starts_with("¹⁶\u{2009}For God so loved") && shown[0].contains(" ¹⁷\u{2009}For God"),
+            "{}",
+            shown[0]
+        );
         assert_eq!(shown[1], "John 3:16-17 (WEB)");
 
         let last_only = BibleOptions { reference: ReferenceStyle::PassageLast, ..BibleOptions::default() };

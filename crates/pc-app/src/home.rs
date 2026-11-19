@@ -151,8 +151,8 @@ pub struct BiblePage {
     pub pending: Option<(usize, pc_model::Presentation)>,
     /// What went wrong with the last lookup, for the operator.
     pub message: Option<String>,
-    /// Verses found by the last search: the reference to type and the verse's words.
-    pub found: Vec<(String, String)>,
+    /// Verses found by the last search: the verse's reference, its chapter's, and its words.
+    pub found: Vec<(String, String, String)>,
 }
 
 impl Default for BiblePage {
@@ -312,6 +312,24 @@ impl BiblePage {
         }
     }
 
+    /// Moves to the verses just after, or just before, the passage shown: as many as it has.
+    pub fn step(&mut self, forward: bool, live: Option<usize>) {
+        let Some(row) = self.rows.first() else { return };
+        let (Ok(bible), Ok(range)) = (self.shelf.get(row.bible), pc_bible::parse_reference(&self.shown)) else {
+            return;
+        };
+        match bible.step(range, forward) {
+            Some(next) => {
+                self.lookup = bible.label(next.start, next.end);
+                self.look_up(live);
+            }
+            None => {
+                let end = if forward { "end" } else { "start" };
+                self.message = Some(format!("That is the {end} of {}.", bible.book_name(range.start.book)));
+            }
+        }
+    }
+
     /// Finds verses holding the words typed in Search, in the first translation.
     pub fn find(&mut self) {
         self.found.clear();
@@ -320,7 +338,8 @@ impl BiblePage {
         match self.shelf.get(row.bible) {
             Ok(bible) => {
                 for (place, words) in bible.search(&self.search, 60) {
-                    self.found.push((bible.label(place, place), words.to_owned()));
+                    let chapter = format!("{} {}", bible.book_name(place.book), place.chapter);
+                    self.found.push((bible.label(place, place), chapter, words.to_owned()));
                 }
                 if self.found.is_empty() && !self.search.trim().is_empty() {
                     self.message = Some(format!("Nothing in the {} has those words.", bible.info.name));
@@ -1381,7 +1400,18 @@ fn bible_area(
     let live = show.live().map(|at| at.presentation);
     egui::CentralPanel::default().frame(panel_frame(CANVAS, 0)).show(ui, |ui| {
         egui::Panel::bottom("bible bar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| crate::studio::view_controls(ui, state));
+            ui.horizontal(|ui| {
+                // Step to the verses before or after the passage shown.
+                let shown = !state.bible.shown.is_empty();
+                let back = ui.add_enabled(shown, egui::Button::new("‹ Verse")).on_hover_text("The verses just before these");
+                let on = ui.add_enabled(shown, egui::Button::new("Verse ›")).on_hover_text("The verses just after these");
+                if back.clicked() {
+                    state.bible.step(false, live);
+                } else if on.clicked() {
+                    state.bible.step(true, live);
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| crate::studio::view_controls(ui, state));
+            });
         });
 
         Frame::new().fill(SIDE).inner_margin(egui::Margin::symmetric(8, 8)).show(ui, |ui| {
@@ -1399,6 +1429,47 @@ fn bible_area(
                     .on_hover_text("Type a reference, such as John 3:16, and press Return");
                 if entered(&lookup, ui) {
                     state.bible.look_up(live);
+                }
+                // Book, then chapter, then verse, for when the reference is easier to pick than type.
+                let lead = state.bible.rows.first().map(|row| row.bible).and_then(|at| state.bible.shelf.get(at).ok());
+                let mut chosen = None;
+                ui.menu_button("Books", |ui| {
+                    let Some(bible) = &lead else { return };
+                    egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+                        for book in 0..pc_bible::BOOKS.len() {
+                            let chapters = bible.chapter_count(book);
+                            if chapters == 0 {
+                                continue;
+                            }
+                            let name = bible.book_name(book);
+                            ui.menu_button(name, |ui| {
+                                egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+                                    for chapter in 1..=chapters {
+                                        ui.menu_button(chapter.to_string(), |ui| {
+                                            egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+                                                if ui.button("Whole chapter").clicked() {
+                                                    chosen = Some(format!("{name} {chapter}"));
+                                                }
+                                                ui.separator();
+                                                for verse in 1..=bible.last_verse(book, chapter) {
+                                                    if ui.button(verse.to_string()).clicked() {
+                                                        chosen = Some(format!("{name} {chapter}:{verse}"));
+                                                    }
+                                                }
+                                            });
+                                        });
+                                    }
+                                });
+                            });
+                        }
+                    });
+                })
+                .response
+                .on_hover_text("Pick a book, chapter and verse");
+                if let Some(reference) = chosen {
+                    state.bible.lookup = reference;
+                    state.bible.look_up(live);
+                    ui.close();
                 }
                 let search =
                     ui.add(egui::TextEdit::singleline(&mut state.bible.search).hint_text("Search").desired_width(230.0))
@@ -1522,21 +1593,49 @@ fn bible_area(
             });
         }
         if !state.bible.found.is_empty() {
-            // Search results: click one to turn it into slides.
+            // Search results: each can be opened as its verse or as its whole chapter.
             let mut picked = None;
             egui::ScrollArea::vertical().id_salt("bible found").auto_shrink([false, false]).show(ui, |ui| {
-                Frame::new().inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
-                    for (reference, words) in &state.bible.found {
-                        let line = format!("{reference}   {words}");
-                        if ui.add(egui::Button::new(egui::RichText::new(line).size(13.0)).frame(false).truncate()).clicked() {
-                            picked = Some(reference.clone());
+                Frame::new().inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.horizontal(|ui| {
+                        let count = state.bible.found.len();
+                        let found = if count == 1 { "1 verse found".to_owned() } else { format!("{count} verses found") };
+                        ui.label(egui::RichText::new(found).size(12.0).color(DIM));
+                        if ui.button("Close").clicked() {
+                            picked = Some(String::new());
                         }
+                    });
+                    for (reference, chapter, words) in &state.bible.found {
+                        Frame::new().fill(crate::studio::CARD).corner_radius(8).inner_margin(egui::Margin::symmetric(12, 8)).show(
+                            ui,
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.button("Chapter").on_hover_text("Open the whole chapter as slides").clicked() {
+                                            picked = Some(chapter.clone());
+                                        }
+                                        if ui.button("Verse").on_hover_text("Open this verse as a slide").clicked() {
+                                            picked = Some(reference.clone());
+                                        }
+                                        ui.with_layout(Layout::left_to_right(Align::Center).with_main_wrap(false), |ui| {
+                                            ui.label(egui::RichText::new(reference.as_str()).font(crate::studio::semibold(13.0)));
+                                            ui.add(egui::Label::new(egui::RichText::new(words.as_str()).size(13.0).color(DIM)).truncate());
+                                        });
+                                    });
+                                });
+                            },
+                        );
                     }
                 });
             });
-            if let Some(reference) = picked {
-                state.bible.lookup = reference;
-                state.bible.look_up(live);
+            match picked {
+                Some(reference) if reference.is_empty() => state.bible.found.clear(),
+                Some(reference) => {
+                    state.bible.lookup = reference;
+                    state.bible.look_up(live);
+                }
+                None => {}
             }
             return;
         }
