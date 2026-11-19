@@ -75,6 +75,82 @@ pub struct HomeState {
     pub live_edit: bool,
     /// The font families installed on this computer, for the editor's font list.
     pub fonts: std::sync::Arc<Vec<String>>,
+    /// True while the Bible page is showing in place of the slide grid.
+    pub bible_open: bool,
+    /// What is typed in the Bible page's two fields, and its rows of translations.
+    pub bible: BiblePage,
+}
+
+/// Where a translation's verse text or reference goes on the slide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BibleTarget {
+    None,
+    Main,
+    Translation,
+}
+
+impl BibleTarget {
+    const ALL: [BibleTarget; 3] = [BibleTarget::None, BibleTarget::Main, BibleTarget::Translation];
+
+    fn label(self) -> &'static str {
+        match self {
+            BibleTarget::None => "None",
+            BibleTarget::Main => "Main",
+            BibleTarget::Translation => "Translation",
+        }
+    }
+}
+
+/// One translation on the Bible page and where its text goes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BibleRow {
+    pub verse: BibleTarget,
+    pub reference: BibleTarget,
+}
+
+/// The Bible page's fields. Looking verses up is not built yet; this holds the layout's state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BiblePage {
+    pub lookup: String,
+    pub search: String,
+    pub rows: Vec<BibleRow>,
+}
+
+impl Default for BiblePage {
+    fn default() -> BiblePage {
+        BiblePage {
+            lookup: String::new(),
+            search: String::new(),
+            // Two translations side by side is the usual case here: one for each language.
+            rows: vec![
+                BibleRow { verse: BibleTarget::Main, reference: BibleTarget::Main },
+                BibleRow { verse: BibleTarget::Translation, reference: BibleTarget::None },
+            ],
+        }
+    }
+}
+
+impl BiblePage {
+    /// The most translations that can be shown together.
+    pub const MAX_ROWS: usize = 4;
+
+    /// Adds a translation row, up to the limit. Returns true if one was added.
+    pub fn add_row(&mut self) -> bool {
+        if self.rows.len() >= Self::MAX_ROWS {
+            return false;
+        }
+        self.rows.push(BibleRow { verse: BibleTarget::None, reference: BibleTarget::None });
+        true
+    }
+
+    /// Removes a translation row, always leaving one. Returns true if one was removed.
+    pub fn remove_row(&mut self, index: usize) -> bool {
+        if self.rows.len() <= 1 || index >= self.rows.len() {
+            return false;
+        }
+        self.rows.remove(index);
+        true
+    }
 }
 
 /// Which thumbnail the window is asking for.
@@ -98,6 +174,8 @@ impl Default for HomeState {
             pending_edit: None,
             live_edit: false,
             fonts: std::sync::Arc::default(),
+            bible_open: false,
+            bible: BiblePage::default(),
         }
     }
 }
@@ -325,7 +403,11 @@ pub fn home_ui(
     library(ui, show, state, &mut commands);
     live_panel(ui, show, state.output_stopped, preview, &mut commands);
     media_bin(ui, show, state, thumb, &mut commands);
-    slide_area(ui, show, state, thumb, &mut commands);
+    if state.bible_open {
+        bible_area(ui, state);
+    } else {
+        slide_area(ui, show, state, thumb, &mut commands);
+    }
     commands
 }
 
@@ -339,15 +421,32 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
             let views = tool_group(
                 ui,
                 &[
-                    Tool { face: Icon::Play.into(), label: "Show", selected: state.editing.is_none(), built: true },
+                    Tool {
+                        face: Icon::Play.into(),
+                        label: "Show",
+                        selected: state.editing.is_none() && !state.bible_open,
+                        built: true,
+                    },
                     Tool { face: Icon::Pencil.into(), label: "Edit", selected: state.editing.is_some(), built: true },
                     Tool::ghost(Icon::Reflow, "Reflow"),
-                    Tool::ghost(Icon::Book, "Bible"),
+                    Tool {
+                        face: Icon::Book.into(),
+                        label: "Bible",
+                        selected: state.editing.is_none() && state.bible_open,
+                        built: true,
+                    },
                     Tool::ghost(Icon::More, "More"),
                 ],
             );
             match views {
-                Some(0) => state.editing = None,
+                Some(0) => {
+                    state.editing = None;
+                    state.bible_open = false;
+                }
+                Some(3) => {
+                    state.editing = None;
+                    state.bible_open = true;
+                }
                 // Edit opens the slide that was last on screen, or the song's first slide.
                 Some(1) if state.editing.is_none() => {
                     let at = show.cursor().unwrap_or(SlideRef { presentation: show.selected(), slide: 0 });
@@ -1485,6 +1584,105 @@ fn edit_view(
     }
 }
 
+/// The Bible page, in place of the slide grid: a field for a reference, a search field, and a
+/// row for each translation saying where its verse and its reference go on the slide. Looking
+/// verses up is not built yet, so this is the layout with its controls in place.
+fn bible_area(ui: &mut egui::Ui, state: &mut HomeState) {
+    egui::CentralPanel::default().frame(panel_frame(CANVAS, 0)).show(ui, |ui| {
+        egui::Panel::bottom("bible bar").resizable(false).frame(panel_frame(BAR, 5)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_enabled(false, egui::Button::new(egui::RichText::new("Save As…").size(12.0)))
+                    .on_disabled_hover_text(not_built("Save these verses as a presentation"));
+                ui.add_space(8.0);
+                transition_controls(ui);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.add(egui::Slider::new(&mut state.thumb_width, 120.0..=480.0).show_value(false))
+                        .on_hover_text("Slide size");
+                    ghost(ui, Icon::Options, "View options");
+                    ghost(ui, Icon::Rows, "Table view");
+                    ghost(ui, Icon::Grid, "Grid view");
+                });
+            });
+        });
+
+        Frame::new().fill(SIDE).inner_margin(egui::Margin::symmetric(8, 8)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.bible.lookup)
+                        .hint_text("Scripture Lookup")
+                        .desired_width(240.0),
+                )
+                .on_hover_text("Type a reference, such as John 3:16");
+                ui.add(egui::TextEdit::singleline(&mut state.bible.search).hint_text("Search").desired_width(230.0))
+                    .on_hover_text("Search the Bible for words");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_enabled(false, egui::Button::new("Options")).on_disabled_hover_text(not_built("Bible options"));
+                });
+            });
+
+            let mut add = false;
+            let mut remove = None;
+            let count = state.bible.rows.len();
+            for (index, row) in state.bible.rows.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt(("bible translation", index))
+                        .selected_text("No Bible installed")
+                        .width(200.0)
+                        .show_ui(ui, |ui| {
+                            ui.label(egui::RichText::new("Bibles are not installed yet").color(DIM));
+                        });
+                    ui.add_space(8.0);
+                    ui.label("Verse");
+                    egui::ComboBox::from_id_salt(("bible verse", index)).selected_text(row.verse.label()).width(120.0).show_ui(
+                        ui,
+                        |ui| {
+                            for target in BibleTarget::ALL {
+                                ui.selectable_value(&mut row.verse, target, target.label());
+                            }
+                        },
+                    );
+                    ui.add_space(8.0);
+                    ui.label("Reference");
+                    egui::ComboBox::from_id_salt(("bible reference", index))
+                        .selected_text(row.reference.label())
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for target in BibleTarget::ALL {
+                                ui.selectable_value(&mut row.reference, target, target.label());
+                            }
+                        });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        // The first row adds a translation; the others remove themselves.
+                        if index == 0 {
+                            if ui.add_enabled(count < BiblePage::MAX_ROWS, egui::Button::new("+")).on_hover_text("Add a translation").clicked() {
+                                add = true;
+                            }
+                        } else if ui.button("−").on_hover_text("Remove this translation").clicked() {
+                            remove = Some(index);
+                        }
+                        ui.label(egui::RichText::new("License").size(11.0).color(DIM)).on_hover_text(not_built("This Bible's licence"));
+                    });
+                });
+            }
+            if add {
+                state.bible.add_row();
+            }
+            if let Some(index) = remove {
+                state.bible.remove_row(index);
+            }
+        });
+
+        ui.centered_and_justified(|ui| {
+            ui.label(
+                egui::RichText::new("Verses will appear here as slides.\nBibles are not installed yet, so looking a verse up is not built.")
+                    .color(DIM),
+            );
+        });
+    });
+}
+
 /// The middle: the library's title bar, the selected song's bar, and its slides as a grid of
 /// thumbnails with a group bar under each.
 fn slide_area(
@@ -1773,6 +1971,29 @@ mod tests {
         let mut state = HomeState { editing, ..HomeState::default() };
         count_thumbs(&egui::Context::default(), &show, &mut state);
         assert!(state.editing.is_none());
+    }
+
+    #[test]
+    fn the_bible_page_takes_the_place_of_the_slide_grid() {
+        let show = show_with_media();
+        let mut state = HomeState { bible_open: true, ..HomeState::default() };
+        let (slides, media) = count_thumbs(&egui::Context::default(), &show, &mut state);
+        assert_eq!(slides, 0, "the slide grid is not drawn while the Bible page is open");
+        assert_eq!(media, 2, "the media bin stays");
+    }
+
+    #[test]
+    fn bible_rows_can_be_added_up_to_a_limit_and_removed_down_to_one() {
+        let mut page = BiblePage::default();
+        assert_eq!(page.rows.len(), 2);
+        assert!(page.add_row());
+        assert!(page.add_row());
+        assert!(!page.add_row(), "four translations is the limit");
+        assert!(page.remove_row(3));
+        assert!(!page.remove_row(9));
+        assert!(page.remove_row(0) && page.remove_row(0));
+        assert_eq!(page.rows.len(), 1);
+        assert!(!page.remove_row(0), "one row always stays");
     }
 
     #[test]

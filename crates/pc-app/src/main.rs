@@ -577,6 +577,10 @@ impl App {
                 commands.push(Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 2 }));
                 commands.push(Command::ShowMedia(0));
             }
+            // Testing aid: show the Bible page.
+            if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_BIBLE").is_some() {
+                running.home_state.bible_open = true;
+            }
             // Testing aid: also open the slide editor, to check how it looks.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_EDITOR").is_some() {
                 let at = pc_engine::SlideRef { presentation: 0, slide: 2 };
