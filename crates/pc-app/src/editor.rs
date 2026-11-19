@@ -138,6 +138,54 @@ pub fn object_at(slide: &Slide, theme: &Theme, point: (f32, f32)) -> Option<Uuid
         .map(|o| o.id)
 }
 
+/// A line across the slide that a dragged object is lined up with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Guide {
+    /// A line down the slide at this x.
+    Down(f32),
+    /// A line across the slide at this y.
+    Across(f32),
+}
+
+/// How near, in slide units, a dragged object must come to a line to be pulled onto it.
+const SNAP: f32 = 14.0;
+
+/// Pulls a frame being moved onto nearby lines: the slide's edges and middle, and the edges
+/// and middles of the other objects. Returns the frame, moved if it was near one, and the
+/// lines it now sits on.
+pub fn snapped(frame: SlideRect, others: &[SlideRect]) -> (SlideRect, Vec<Guide>) {
+    let mut down = vec![0.0, SLIDE_WIDTH / 2.0, SLIDE_WIDTH];
+    let mut across = vec![0.0, SLIDE_HEIGHT / 2.0, SLIDE_HEIGHT];
+    for other in others {
+        down.extend([other.x, other.x + other.w / 2.0, other.x + other.w]);
+        across.extend([other.y, other.y + other.h / 2.0, other.y + other.h]);
+    }
+    // The nearest line to any of the frame's own three (start, middle, end) along one way.
+    let nearest = |lines: &[f32], start: f32, size: f32| -> Option<(f32, f32)> {
+        let mut best: Option<(f32, f32)> = None;
+        for own in [start, start + size / 2.0, start + size] {
+            for line in lines {
+                let by = line - own;
+                if by.abs() <= SNAP && best.is_none_or(|(have, _)| by.abs() < have.abs()) {
+                    best = Some((by, *line));
+                }
+            }
+        }
+        best
+    };
+    let mut frame = frame;
+    let mut guides = Vec::new();
+    if let Some((by, line)) = nearest(&down, frame.x, frame.w) {
+        frame.x += by;
+        guides.push(Guide::Down(line));
+    }
+    if let Some((by, line)) = nearest(&across, frame.y, frame.h) {
+        frame.y += by;
+        guides.push(Guide::Across(line));
+    }
+    (frame, guides)
+}
+
 /// What a drag on the canvas is doing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Drag {
@@ -151,6 +199,15 @@ pub struct EditDraft {
     pub at: SlideRef,
     pub slide: Slide,
     pub selected: Option<Uuid>,
+    /// Other objects selected along with `selected`, by Shift or Command click. The first one
+    /// selected stays the one the inspector shows.
+    pub also: Vec<Uuid>,
+    /// Where the other selected objects were when a drag began, so they move with it.
+    drag_others: Vec<(Uuid, SlideRect)>,
+    /// The lines a dragged object is lined up with right now, for the canvas to draw.
+    pub guides: Vec<Guide>,
+    /// The object being renamed in the Objects list, and the name as typed so far.
+    pub renaming: Option<(Uuid, String)>,
     /// The text object whose words are being typed on the slide itself, and whether that has
     /// only just begun (so its field can take the keyboard once).
     pub typing: Option<Uuid>,
@@ -173,6 +230,10 @@ impl EditDraft {
             at,
             slide: slide.clone(),
             selected: None,
+            also: Vec::new(),
+            drag_others: Vec::new(),
+            guides: Vec::new(),
+            renaming: None,
             typing: None,
             typing_started: false,
             drag: None,
@@ -190,6 +251,10 @@ impl EditDraft {
             at: SlideRef { presentation: usize::MAX, slide: which },
             slide,
             selected: None,
+            also: Vec::new(),
+            drag_others: Vec::new(),
+            guides: Vec::new(),
+            renaming: None,
             typing: None,
             typing_started: false,
             drag: None,
@@ -291,15 +356,100 @@ impl EditDraft {
         self.slide.objects.push(object);
     }
 
-    /// Removes the selected object. Returns true if there was one.
+    /// Every selected object: the first selected, then the rest.
+    pub fn selection(&self) -> Vec<Uuid> {
+        self.selected.into_iter().chain(self.also.iter().copied()).collect()
+    }
+
+    pub fn is_selected(&self, id: Uuid) -> bool {
+        self.selected == Some(id) || self.also.contains(&id)
+    }
+
+    /// Selects one object and nothing else.
+    pub fn select_only(&mut self, id: Option<Uuid>) {
+        self.selected = id;
+        self.also.clear();
+    }
+
+    /// Adds an object to the selection, or takes it out if it is already in. This is what a
+    /// Shift or Command click does.
+    pub fn toggle_selected(&mut self, id: Uuid) {
+        if self.selected == Some(id) {
+            // The next one selected becomes the one the inspector shows.
+            self.selected = if self.also.is_empty() { None } else { Some(self.also.remove(0)) };
+        } else if let Some(at) = self.also.iter().position(|have| *have == id) {
+            self.also.remove(at);
+        } else if self.selected.is_none() {
+            self.selected = Some(id);
+        } else {
+            self.also.push(id);
+        }
+    }
+
+    /// Selects every object on the slide that can be clicked.
+    pub fn select_all(&mut self) {
+        let mut ids = self.slide.objects.iter().filter(|o| !o.hidden && !o.locked).map(|o| o.id);
+        self.selected = ids.next();
+        self.also = ids.collect();
+    }
+
+    /// Removes every selected object. Returns true if there was one.
     pub fn delete_selected(&mut self) -> bool {
-        let Some(id) = self.selected else { return false };
-        let Some(index) = self.slide.objects.iter().position(|o| o.id == id) else { return false };
+        let ids = self.selection();
+        if !self.slide.objects.iter().any(|o| ids.contains(&o.id)) {
+            return false;
+        }
         self.record();
-        self.slide.objects.remove(index);
-        self.selected = None;
+        self.slide.objects.retain(|o| !ids.contains(&o.id));
+        self.select_only(None);
         self.drag = None;
         true
+    }
+
+    /// Copies of the selected objects, in their order on the slide, with their places written
+    /// out so a copy lands where the original is even if the original followed the theme.
+    pub fn copied(&self, theme: &Theme) -> Vec<Object> {
+        let ids = self.selection();
+        self.slide
+            .objects
+            .iter()
+            .filter(|o| ids.contains(&o.id))
+            .map(|o| Object { frame: Some(object_frame(&self.slide, o, theme)), ..o.clone() })
+            .collect()
+    }
+
+    /// Puts copies of objects on the slide, on top, a little down and right of where they
+    /// were copied from, and selects them.
+    pub fn paste(&mut self, objects: &[Object]) {
+        if objects.is_empty() {
+            return;
+        }
+        self.record();
+        let mut ids = Vec::new();
+        for object in objects {
+            let mut copy = object.clone();
+            copy.id = Uuid::new_v4();
+            // A copy belongs to no theme box: two boxes with one role would fight over it.
+            copy.role = None;
+            if let Some(frame) = copy.frame.as_mut() {
+                frame.x += 40.0;
+                frame.y += 40.0;
+            }
+            ids.push(copy.id);
+            self.slide.objects.push(copy);
+        }
+        self.selected = ids.first().copied();
+        self.also = ids.into_iter().skip(1).collect();
+    }
+
+    /// Moves every selected object by an amount, as the arrow keys do.
+    pub fn nudge(&mut self, theme: &Theme, by: (f32, f32)) {
+        for id in self.selection() {
+            let frame = self.slide.objects.iter().find(|o| o.id == id).map(|o| object_frame(&self.slide, o, theme));
+            if let (Some(frame), Some(object)) = (frame, self.slide.objects.iter_mut().find(|o| o.id == id)) {
+                object.frame = Some(moved(frame, by));
+            }
+        }
     }
 
     /// Moves the selected object one place up (`true`) or down the stack. Returns true if it moved.
@@ -330,11 +480,22 @@ impl EditDraft {
         true
     }
 
-    /// Begins a drag at a point on the slide: on a handle of the selected object it resizes,
-    /// on an object it selects and moves it, on empty slide it clears the selection.
-    pub fn press(&mut self, theme: &Theme, point: (f32, f32), handle_reach: f32) {
+    /// A press on the slide at a point. It grabs a handle of the selected object, or selects
+    /// the object under the point and gets ready to move the selection. With `extend` (Shift
+    /// or Command held) it adds the object to the selection, or takes it out, and moves nothing.
+    pub fn press(&mut self, theme: &Theme, point: (f32, f32), handle_reach: f32, extend: bool) {
         self.drag = None;
-        if let Some(object) = self.selected_object()
+        self.drag_others.clear();
+        let hit = object_at(&self.slide, theme, point);
+        if extend {
+            if let Some(id) = hit {
+                self.toggle_selected(id);
+            }
+            return;
+        }
+        // Handles belong to one object: with several selected there are none to grab.
+        if self.also.is_empty()
+            && let Some(object) = self.selected_object()
             && object.rotation == 0.0
         {
             let from = object_frame(&self.slide, object, theme);
@@ -343,20 +504,51 @@ impl EditDraft {
                 return;
             }
         }
-        self.selected = object_at(&self.slide, theme, point);
-        if let Some(object) = self.selected_object() {
-            let from = object_frame(&self.slide, object, theme);
-            self.drag = Some(Drag::Move { id: object.id, from, start: point });
+        // A press on something already selected keeps the whole selection, so it can be
+        // dragged together; a press anywhere else selects just what is there.
+        match hit {
+            Some(id) if self.is_selected(id) => {}
+            other => self.select_only(other),
+        }
+        let frame_of = |draft: &EditDraft, id: Uuid| {
+            draft.slide.objects.iter().find(|o| o.id == id).map(|o| object_frame(&draft.slide, o, theme))
+        };
+        // The object under the pointer leads the drag; the rest follow it.
+        if let Some(lead) = hit.or(self.selected)
+            && let Some(from) = frame_of(self, lead)
+        {
+            self.drag = Some(Drag::Move { id: lead, from, start: point });
+            let followers: Vec<Uuid> = self.selection().into_iter().filter(|id| *id != lead).collect();
+            self.drag_others = followers.into_iter().filter_map(|id| Some((id, frame_of(self, id)?))).collect();
         }
     }
 
-    /// Continues the drag to a point. Returns true if the slide changed.
     /// Moves the drag to a point. `keep_shape` (Shift held) keeps a box's proportions while a
-    /// corner is dragged.
-    pub fn drag_to(&mut self, point: (f32, f32), keep_shape: bool) -> bool {
+    /// corner is dragged. `snap` pulls a moved object onto nearby lines: the slide's edges
+    /// and middle, and the other objects'.
+    pub fn drag_to(&mut self, point: (f32, f32), keep_shape: bool, snap: bool) -> bool {
         let Some(drag) = self.drag else { return false };
+        self.guides.clear();
         let (id, frame) = match drag {
-            Drag::Move { id, from, start } => (id, moved(from, (point.0 - start.0, point.1 - start.1))),
+            Drag::Move { id, from, start } => {
+                let free = moved(from, (point.0 - start.0, point.1 - start.1));
+                if snap {
+                    // Everything that is not being moved is something to line up with.
+                    let moving: Vec<Uuid> = self.drag_others.iter().map(|(id, _)| *id).chain([id]).collect();
+                    let still: Vec<SlideRect> = self
+                        .slide
+                        .objects
+                        .iter()
+                        .filter(|o| !moving.contains(&o.id) && !o.hidden)
+                        .filter_map(|o| o.frame)
+                        .collect();
+                    let (frame, guides) = snapped(free, &still);
+                    self.guides = guides;
+                    (id, frame)
+                } else {
+                    (id, free)
+                }
+            }
             Drag::Resize { id, handle, from, start } => {
                 let free = resized(from, handle, (point.0 - start.0, point.1 - start.1));
                 (id, if keep_shape { same_shape(from, handle, free) } else { free })
@@ -370,6 +562,15 @@ impl EditDraft {
         let before = self.slide.clone();
         self.slide.objects[index].frame = Some(frame);
         let (Drag::Move { from, .. } | Drag::Resize { from, .. }) = drag;
+        // The rest of the selection moves by exactly as much as the object being dragged.
+        if matches!(drag, Drag::Move { .. }) {
+            let by = (frame.x - from.x, frame.y - from.y);
+            for (other, was) in self.drag_others.clone() {
+                if let Some(object) = self.slide.objects.iter_mut().find(|o| o.id == other) {
+                    object.frame = Some(moved(was, by));
+                }
+            }
+        }
         if before.objects[index].frame.is_none() || before.objects[index].frame == Some(from) {
             self.record_slide(before);
         }
@@ -378,6 +579,8 @@ impl EditDraft {
 
     pub fn release(&mut self) {
         self.drag = None;
+        self.drag_others.clear();
+        self.guides.clear();
     }
 }
 
@@ -426,6 +629,65 @@ mod tests {
         // A side handle is left alone.
         let free = resized(F, Handle::Right, (200.0, 0.0));
         assert_eq!(same_shape(F, Handle::Right, free), free);
+    }
+
+    #[test]
+    fn a_dragged_box_is_pulled_onto_the_slides_middle_and_other_boxes() {
+        // A 400 x 300 box whose middle is 6 units left of the slide's middle and 5 above it.
+        let near = SlideRect { x: SLIDE_WIDTH / 2.0 - 206.0, y: SLIDE_HEIGHT / 2.0 - 155.0, w: 400.0, h: 300.0 };
+        let (frame, guides) = snapped(near, &[]);
+        assert_eq!((frame.x + frame.w / 2.0, frame.y + frame.h / 2.0), (SLIDE_WIDTH / 2.0, SLIDE_HEIGHT / 2.0));
+        assert_eq!(guides, [Guide::Down(SLIDE_WIDTH / 2.0), Guide::Across(SLIDE_HEIGHT / 2.0)]);
+        // Far from every line it is left alone.
+        let far = SlideRect { x: 333.0, y: 77.0, w: 400.0, h: 300.0 };
+        assert_eq!(snapped(far, &[]), (far, Vec::new()));
+        // Its left edge 8 units from another box's left edge: pulled to it.
+        let other = SlideRect { x: 341.0, y: 600.0, w: 100.0, h: 100.0 };
+        let (frame, guides) = snapped(far, &[other]);
+        assert_eq!((frame.x, guides), (341.0, vec![Guide::Down(341.0)]));
+    }
+
+    #[test]
+    fn several_objects_are_selected_moved_copied_and_deleted_together() {
+        let mut d = draft();
+        let theme = Theme::builtin();
+        let (main, translation) = (d.slide.objects[0].id, d.slide.objects[1].id);
+        // A click selects one; a click with Shift held adds another, and again takes it out.
+        d.press(&theme, (960.0, 300.0), 5.0, false);
+        d.release();
+        d.press(&theme, (960.0, 700.0), 5.0, true);
+        assert_eq!(d.selection(), [main, translation]);
+        d.press(&theme, (960.0, 700.0), 5.0, true);
+        assert_eq!(d.selection(), [main]);
+        d.press(&theme, (960.0, 700.0), 5.0, true);
+
+        // Dragging one of them moves both by the same amount.
+        let before: Vec<SlideRect> = d.slide.objects.iter().map(|o| object_frame(&d.slide, o, &theme)).collect();
+        d.press(&theme, (960.0, 300.0), 5.0, false);
+        assert_eq!(d.selection().len(), 2);
+        d.drag_to((1000.0, 333.0), false, false);
+        d.release();
+        for (object, was) in d.slide.objects.iter().zip(&before) {
+            let now = object.frame.unwrap();
+            assert_eq!((now.x - was.x, now.y - was.y), (40.0, 33.0));
+        }
+
+        // Copies land on top, offset, selected, and tied to no theme box.
+        let copies = d.copied(&theme);
+        d.paste(&copies);
+        assert_eq!(d.slide.objects.len(), 4);
+        assert_eq!(d.selection().len(), 2);
+        assert!(d.slide.objects[2..].iter().all(|o| o.role.is_none() && d.is_selected(o.id)));
+        assert_eq!(d.slide.objects[2].frame.unwrap().x, d.slide.objects[0].frame.unwrap().x + 40.0);
+
+        // Delete removes every selected object, and one undo brings them back.
+        assert!(d.delete_selected());
+        assert_eq!(d.slide.objects.len(), 2);
+        assert!(d.undo());
+        assert_eq!(d.slide.objects.len(), 4);
+
+        d.select_all();
+        assert_eq!(d.selection().len(), 4);
     }
 
     #[test]
@@ -480,10 +742,10 @@ mod tests {
         let theme = Theme::builtin();
         let mut d = draft();
         let original = d.slide.clone();
-        d.press(&theme, (960.0, 300.0), 8.0);
+        d.press(&theme, (960.0, 300.0), 8.0, false);
         assert_eq!(d.selected, Some(d.slide.objects[0].id));
-        assert!(d.drag_to((970.0, 310.0), false));
-        assert!(d.drag_to((1000.0, 350.0), false));
+        assert!(d.drag_to((970.0, 310.0), false, false));
+        assert!(d.drag_to((1000.0, 350.0), false, false));
         d.release();
         let themed = theme.boxes[0].rect;
         assert_eq!(d.slide.objects[0].frame, Some(SlideRect { x: themed.x + 40.0, y: themed.y + 50.0, ..themed }));
@@ -498,13 +760,13 @@ mod tests {
     fn dragging_a_handle_resizes_the_selected_object() {
         let theme = Theme::builtin();
         let mut d = draft();
-        d.press(&theme, (960.0, 300.0), 8.0);
+        d.press(&theme, (960.0, 300.0), 8.0, false);
         d.release();
         let themed = theme.boxes[0].rect;
         let corner = (themed.x + themed.w, themed.y + themed.h);
-        d.press(&theme, corner, 8.0);
+        d.press(&theme, corner, 8.0, false);
         assert!(matches!(d.drag, Some(Drag::Resize { handle: Handle::BottomRight, .. })));
-        d.drag_to((corner.0 - 100.0, corner.1 + 60.0), false);
+        d.drag_to((corner.0 - 100.0, corner.1 + 60.0), false, false);
         assert_eq!(d.slide.objects[0].frame, Some(SlideRect { w: themed.w - 100.0, h: themed.h + 60.0, ..themed }));
     }
 
@@ -513,14 +775,14 @@ mod tests {
         let theme = Theme::builtin();
         let mut d = draft();
         let original = d.slide.clone();
-        d.press(&theme, (960.0, 300.0), 8.0);
+        d.press(&theme, (960.0, 300.0), 8.0, false);
         d.release();
         assert!(d.selected.is_some());
         assert_eq!(d.slide, original);
         assert!(!d.can_undo());
-        d.press(&theme, (5.0, 5.0), 8.0);
+        d.press(&theme, (5.0, 5.0), 8.0, false);
         assert_eq!(d.selected, None);
-        assert!(!d.drag_to((50.0, 50.0), false));
+        assert!(!d.drag_to((50.0, 50.0), false, false));
     }
 
     #[test]
@@ -549,9 +811,9 @@ mod tests {
     fn reset_gives_the_object_back_to_the_theme() {
         let theme = Theme::builtin();
         let mut d = draft();
-        d.press(&theme, (960.0, 300.0), 8.0);
+        d.press(&theme, (960.0, 300.0), 8.0, false);
         assert!(!d.reset_to_theme(), "nothing to reset yet");
-        d.drag_to((900.0, 300.0), false);
+        d.drag_to((900.0, 300.0), false, false);
         d.release();
         d.selected_object_mut().unwrap().rotation = 12.0;
         assert!(d.reset_to_theme());

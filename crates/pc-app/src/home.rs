@@ -47,6 +47,11 @@ pub struct HomeState {
     /// Whether one slide fades into the next, and over how many seconds.
     pub dissolve: bool,
     pub dissolve_time: f32,
+    /// True on the frame a rename began in the Objects list, so its field takes the keyboard.
+    pub rename_started: bool,
+    /// Objects copied in the editor, and the words that went to the system clipboard with them.
+    pub object_clip: Vec<pc_model::Object>,
+    pub object_clip_text: String,
     /// The running orders, and the one in front.
     pub services: crate::service::Services,
     /// For each presentation, the name its song is found by again in a service.
@@ -422,6 +427,9 @@ impl Default for HomeState {
             selected_slide: None,
             dissolve: true,
             dissolve_time: 0.4,
+            rename_started: false,
+            object_clip: Vec::new(),
+            object_clip_text: String::new(),
             services: crate::service::Services::default(),
             song_keys: Vec::new(),
             renaming_service: None,
@@ -737,6 +745,50 @@ fn edit_view(
         }
         (undo, redo, delete, nudge)
     });
+    // Copy, paste, duplicate and select all act on objects unless a field is being typed in.
+    if !typing {
+        let (copy, cut, pasted, duplicate, all) = ui.input(|input| {
+            let has = |wanted: fn(&egui::Event) -> bool| input.events.iter().any(wanted);
+            let pasted = input.events.iter().find_map(|event| match event {
+                egui::Event::Paste(text) => Some(text.clone()),
+                _ => None,
+            });
+            (
+                has(|event| matches!(event, egui::Event::Copy)),
+                has(|event| matches!(event, egui::Event::Cut)),
+                pasted,
+                input.modifiers.command && input.key_pressed(egui::Key::D),
+                input.modifiers.command && input.key_pressed(egui::Key::A),
+            )
+        });
+        if let Some(draft) = state.editing.as_mut() {
+            if (copy || cut || duplicate) && draft.selected.is_some() {
+                let copies = draft.copied(theme);
+                if duplicate {
+                    draft.paste(&copies);
+                } else {
+                    // The words also go to the system clipboard, so they can be pasted
+                    // elsewhere, and so a paste here can tell these are the objects meant.
+                    let words: Vec<&str> = copies.iter().filter_map(pc_model::Object::as_text).collect();
+                    state.object_clip_text = words.join("\n");
+                    ui.ctx().copy_text(state.object_clip_text.clone());
+                    state.object_clip = copies;
+                    if cut {
+                        draft.delete_selected();
+                    }
+                }
+            } else if let Some(text) = pasted
+                && !state.object_clip.is_empty()
+                && text == state.object_clip_text
+            {
+                draft.paste(&state.object_clip);
+                // Pasting again lands further on, not on top of the last copy.
+                state.object_clip = draft.copied(theme);
+            } else if all {
+                draft.select_all();
+            }
+        }
+    }
     if let Some(draft) = state.editing.as_mut() {
         if undo && !typing {
             draft.undo();
@@ -744,14 +796,9 @@ fn edit_view(
             draft.redo();
         } else if delete {
             draft.delete_selected();
-        } else if nudge != (0.0, 0.0)
-            && let Some(object) = draft.selected_object()
-        {
+        } else if nudge != (0.0, 0.0) && draft.selected.is_some() {
             let snapshot = draft.slide.clone();
-            let frame = crate::editor::moved(object_frame(&draft.slide, object, theme), nudge);
-            if let Some(object) = draft.selected_object_mut() {
-                object.frame = Some(frame);
-            }
+            draft.nudge(theme, nudge);
             draft.record_run(snapshot, now);
         }
     }
@@ -819,11 +866,16 @@ fn edit_view(
                                 Hide(bool),
                                 Lock(bool),
                                 Delete,
-                                Rename(String),
                             }
                             let mut asked: Option<(pc_model::Uuid, Ask)> = None;
+                            // A rename that has just begun takes the keyboard once; one that has
+                            // ended is carried out after the list is drawn.
+                            let mut rename_started = std::mem::take(&mut state.rename_started);
+                            let mut rename_done: Option<Option<(pc_model::Uuid, String)>> = None;
+                            let mut start_rename = None;
+                            let extend = ui.input(|input| input.modifiers.shift || input.modifiers.command);
                             for object in draft.slide.objects.iter().rev() {
-                                let selected = draft.selected == Some(object.id);
+                                let selected = draft.is_selected(object.id);
                                 let (row, response) =
                                     ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
                                 if selected {
@@ -841,13 +893,37 @@ fn edit_view(
                                     ink,
                                 );
                                 let name_area = Rect::from_min_max(row.min, pos2(row.max.x - 46.0, row.max.y));
-                                ui.painter().with_clip_rect(name_area).text(
-                                    row.left_center() + vec2(32.0, 0.0),
-                                    Align2::LEFT_CENTER,
-                                    object.name.as_str(),
-                                    FontId::proportional(13.0),
-                                    ink,
-                                );
+                                // The name, or a field in its place while it is being retyped.
+                                let being_renamed = draft.renaming.as_ref().is_some_and(|(id, _)| *id == object.id);
+                                if being_renamed && let Some((_, name)) = draft.renaming.as_mut() {
+                                    let place = Rect::from_min_max(
+                                        pos2(row.min.x + 28.0, row.min.y + 2.0),
+                                        pos2(row.max.x - 46.0, row.max.y - 2.0),
+                                    );
+                                    let field = ui.put(
+                                        place,
+                                        egui::TextEdit::singleline(name).margin(egui::Margin::symmetric(4, 1)),
+                                    );
+                                    if std::mem::take(&mut rename_started) {
+                                        field.request_focus();
+                                    }
+                                    let (enter, escape) = ui.input(|input| {
+                                        (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape))
+                                    });
+                                    if escape {
+                                        rename_done = Some(None);
+                                    } else if enter || field.lost_focus() {
+                                        rename_done = Some(Some((object.id, name.clone())));
+                                    }
+                                } else {
+                                    ui.painter().with_clip_rect(name_area).text(
+                                        row.left_center() + vec2(32.0, 0.0),
+                                        Align2::LEFT_CENTER,
+                                        object.name.as_str(),
+                                        FontId::proportional(13.0),
+                                        ink,
+                                    );
+                                }
                                 // Hide and lock sit at the right of the row under the pointer, the
                                 // selected row, and any row that is already hidden or locked.
                                 let marks = [
@@ -905,14 +981,22 @@ fn edit_view(
                                             Some((object.id, if index == 0 { Ask::Hide(!on) } else { Ask::Lock(!on) }));
                                     }
                                 }
-                                if response.clicked() {
+                                // A click selects; a click on the name of the one already selected,
+                                // or a double click, starts renaming it, as in a file list.
+                                let on_name = response
+                                    .interact_pointer_pos()
+                                    .is_some_and(|at| name_area.contains(at) && at.x > row.min.x + 26.0);
+                                if response.double_clicked()
+                                    || (response.clicked() && !extend && selected && draft.also.is_empty() && on_name)
+                                {
+                                    start_rename = Some((object.id, object.name.clone()));
+                                } else if response.clicked() {
                                     pick = Some(object.id);
                                 }
                                 response.context_menu(|ui| {
-                                    ui.label(egui::RichText::new("Rename").size(11.0).color(DIM));
-                                    let mut name = object.name.clone();
-                                    if ui.add(egui::TextEdit::singleline(&mut name).desired_width(150.0)).changed() {
-                                        asked = Some((object.id, Ask::Rename(name)));
+                                    if ui.button("Rename").clicked() {
+                                        start_rename = Some((object.id, object.name.clone()));
+                                        ui.close();
                                     }
                                     ui.separator();
                                     if ui.button(if object.hidden { "Show" } else { "Hide" }).clicked() {
@@ -937,7 +1021,6 @@ fn edit_view(
                                     match ask {
                                         Ask::Hide(hidden) => object.hidden = hidden,
                                         Ask::Lock(locked) => object.locked = locked,
-                                        Ask::Rename(name) => object.name = name,
                                         Ask::Delete => {}
                                     }
                                 }
@@ -945,9 +1028,31 @@ fn edit_view(
                             if draft.slide.objects.is_empty() {
                                 ui.label(egui::RichText::new("   This slide is empty").size(12.0).color(DIM));
                             }
-                            if pick.is_some() {
-                                draft.selected = pick;
+                            if let Some(id) = pick {
+                                if extend {
+                                    draft.toggle_selected(id);
+                                } else {
+                                    draft.select_only(Some(id));
+                                }
                             }
+                            match rename_done {
+                                Some(Some((id, name))) => {
+                                    if !name.trim().is_empty()
+                                        && let Some(object) = draft.slide.objects.iter_mut().find(|o| o.id == id)
+                                    {
+                                        object.name = name.trim().to_owned();
+                                    }
+                                    draft.renaming = None;
+                                }
+                                Some(None) => draft.renaming = None,
+                                None => {}
+                            }
+                            if let Some((id, name)) = start_rename {
+                                draft.select_only(Some(id));
+                                draft.renaming = Some((id, name));
+                                rename_started = true;
+                            }
+                            state.rename_started = rename_started;
                         },
                     );
                 });
@@ -1146,18 +1251,22 @@ fn edit_view(
             }
             if let Some(pointer) = response.interact_pointer_pos() {
                 let point = to_slide(pointer);
+                // Shift or Command adds to the selection; while dragging, Command lets a box
+                // move freely, without being pulled onto the guide lines.
+                let (extend, free) =
+                    ui.input(|input| (input.modifiers.shift || input.modifiers.command, input.modifiers.command));
                 if response.drag_started() || response.clicked() {
-                    draft.press(theme, point, (HANDLE + 3.0) / scale);
+                    draft.press(theme, point, (HANDLE + 3.0) / scale, extend);
                 }
                 // A double click on a text box starts typing its words right there. A theme's
                 // boxes only ever say "Text", so there is nothing to type in them.
-                if response.double_clicked() && !for_theme && draft.selected.is_some() {
+                if response.double_clicked() && !for_theme && draft.selected.is_some() && draft.also.is_empty() {
                     draft.typing = draft.selected;
                     draft.typing_started = true;
                 }
                 if response.dragged() {
                     let keep_shape = ui.input(|input| input.modifiers.shift);
-                    draft.drag_to(point, keep_shape);
+                    draft.drag_to(point, keep_shape, !free);
                 }
             }
             if response.drag_stopped() || response.clicked() {
@@ -1168,7 +1277,7 @@ fn edit_view(
             for object in &draft.slide.objects {
                 let frame = object_frame(&draft.slide, object, theme);
                 let rect = to_screen(frame);
-                let selected = draft.selected == Some(object.id);
+                let selected = draft.is_selected(object.id);
                 let centre = rect.center();
                 let (sin, cos) = object.rotation.to_radians().sin_cos();
                 let corners: Vec<egui::Pos2> =
@@ -1182,13 +1291,30 @@ fn edit_view(
                 let stroke =
                     if selected { Stroke::new(1.5, TAB_BLUE) } else { Stroke::new(1.0, Color32::from_white_alpha(45)) };
                 ui.painter().add(egui::Shape::closed_line(corners, stroke));
-                if selected && object.rotation == 0.0 && draft.typing != Some(object.id) {
+                if selected && draft.also.is_empty() && object.rotation == 0.0 && draft.typing != Some(object.id) {
                     for handle in crate::editor::Handle::ALL {
                         let (x, y) = handle.position(frame);
                         let at = slide.min + vec2(x, y) * scale;
                         let knob = Rect::from_center_size(at, vec2(HANDLE * 2.0, HANDLE * 2.0));
                         ui.painter().rect_filled(knob, 1.5, Color32::WHITE);
                         ui.painter().rect_stroke(knob, 1.5, Stroke::new(1.0, TAB_BLUE), StrokeKind::Inside);
+                    }
+                }
+            }
+        }
+
+        // The lines a dragged box is sitting on: the slide's middle or edges, or another box's.
+        if let Some(draft) = state.editing.as_ref() {
+            let pen = Stroke::new(1.0, Color32::from_rgb(255, 64, 196));
+            for guide in &draft.guides {
+                match guide {
+                    crate::editor::Guide::Down(x) => {
+                        let x = slide.min.x + x * scale;
+                        ui.painter().line_segment([pos2(x, slide.min.y), pos2(x, slide.max.y)], pen);
+                    }
+                    crate::editor::Guide::Across(y) => {
+                        let y = slide.min.y + y * scale;
+                        ui.painter().line_segment([pos2(slide.min.x, y), pos2(slide.max.x, y)], pen);
                     }
                 }
             }
