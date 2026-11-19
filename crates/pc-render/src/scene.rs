@@ -60,7 +60,12 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
         scene.fill(Fill::NonZero, to_target, color(background), None, &slide_area);
     }
 
-    if let Some(picture) = layers.media {
+    // The media, or while none is showing, the theme's own picture behind its slides.
+    let theme_picture = match (layers.media, layers.slide, theme.background_picture.as_deref()) {
+        (None, Some(_), Some(file)) => crate::pictures::picture(file),
+        _ => None,
+    };
+    if let Some(picture) = layers.media.or(theme_picture.as_ref()) {
         let (slide_w, slide_h) = (f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
         let (pic_w, pic_h) = (f64::from(picture.width()), f64::from(picture.height()));
         // Scale the picture to cover the slide, centre it, and cut off what hangs over.

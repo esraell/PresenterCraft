@@ -120,6 +120,7 @@ pub fn theme_for(layout: &ThemeTemplate) -> Theme {
         name: "Stage".to_owned(),
         templates: vec![layout.clone()],
         background: None,
+        background_picture: None,
     }
 }
 

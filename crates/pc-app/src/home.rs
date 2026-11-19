@@ -129,6 +129,8 @@ pub struct HomeState {
     /// True when a picture is to be chosen for the slide being edited; the picture chosen, copied
     /// into the Images folder, waiting to be put on the slide.
     pub picture_request: bool,
+    /// True when a picture is to be chosen for the theme being edited.
+    pub theme_picture_request: bool,
     pub picture_to_add: Option<crate::images::Imported>,
     /// A view asked for from the menu bar: 0 Show, 1 Edit, 2 Bible, 3 Themes. The toolbar
     /// takes it as if its tab had been clicked.
@@ -708,6 +710,7 @@ impl Default for HomeState {
             copyright_request: None,
             edit_request: None,
             picture_request: false,
+            theme_picture_request: false,
             picture_to_add: None,
             slide_clip: None,
             slide_request: None,
@@ -868,10 +871,6 @@ fn command_key(input: &egui::InputState, key: egui::Key, shift: bool) -> bool {
 
 fn panel_frame(fill: Color32, margin: i8) -> Frame {
     Frame::new().fill(fill).inner_margin(margin)
-}
-
-pub fn not_built(what: &str) -> String {
-    format!("{what} (not built yet)")
 }
 
 /// Draws the home window for one frame and returns the commands the operator issued.

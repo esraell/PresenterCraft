@@ -10,7 +10,7 @@ use pc_model::{
 use pc_render::object_frame;
 
 use crate::editor::MIN_SIDE;
-use crate::home::{HomeState, not_built};
+use crate::home::HomeState;
 
 const PANEL: Color32 = Color32::from_rgb(29, 29, 29);
 const TAB_IDLE: Color32 = Color32::from_rgb(85, 85, 85);
@@ -384,8 +384,9 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
 
 /// The panel for a theme as a whole, shown in the Theme Editor when no box is selected.
 fn theme_slide_panel(ui: &mut egui::Ui, state: &mut HomeState) {
+    let picture_request = &mut state.theme_picture_request;
     let Some(edit) = state.theme_edit.as_mut() else { return };
-    let before = (edit.theme.name.clone(), edit.theme.background);
+    let before = (edit.theme.name.clone(), edit.theme.background, edit.theme.background_picture.clone());
     ui.add_space(4.0);
     labelled_left(ui, "Name", |ui| {
         ui.add(egui::TextEdit::singleline(&mut edit.theme.name).desired_width(f32::INFINITY));
@@ -405,16 +406,27 @@ fn theme_slide_panel(ui: &mut egui::Ui, state: &mut HomeState) {
         }
     });
     rule(ui);
+    // A picture behind every slide drawn with the theme, while no media is showing.
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Media Action").size(13.0).color(INK));
+        ui.label(egui::RichText::new("Picture").size(13.0).strong().color(INK))
+            .on_hover_text("A picture behind every slide drawn with this theme, while no media is showing");
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add_enabled(false, egui::Button::new("+")).on_disabled_hover_text(not_built("Media on a theme"));
+            if edit.theme.background_picture.is_some() {
+                if ui.button("Remove").clicked() {
+                    edit.theme.background_picture = None;
+                }
+                if ui.button("Change…").clicked() {
+                    *picture_request = true;
+                }
+            } else if ui.button("Choose…").on_hover_text("Choose a picture from a file").clicked() {
+                *picture_request = true;
+            }
         });
     });
     rule(ui);
     let about = "A slide uses the template that suits what is on it: with the main language and a translation, the first template that has a box for both; with one language, the first that has no translation box. Bible slides use the template marked Bible.";
     ui.label(egui::RichText::new(about).size(11.5).color(DIM));
-    if before != (edit.theme.name.clone(), edit.theme.background) {
+    if before != (edit.theme.name.clone(), edit.theme.background, edit.theme.background_picture.clone()) {
         // A theme always has a name.
         if edit.theme.name.trim().is_empty() {
             edit.theme.name = before.0;

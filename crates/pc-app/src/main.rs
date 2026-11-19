@@ -1248,9 +1248,29 @@ impl App {
     }
 
     /// Carries out a change to the media bin: choosing pictures to add, or removing one.
-    /// Asks for a picture to put on the slide being edited, and copies it into the Images folder.
+    /// Asks for a picture to put on the slide being edited (or behind the theme being edited),
+    /// and copies it into the Images folder.
     fn handle_picture_request(&mut self) {
         let Some(running) = self.running.as_mut() else { return };
+        if std::mem::take(&mut running.home_state.theme_picture_request) {
+            let chosen = rfd::FileDialog::new()
+                .set_title("Choose a Picture for the Theme")
+                .add_filter("Pictures", &media::PICTURES)
+                .pick_file();
+            let state = &mut running.home_state;
+            match chosen.map(|path| images::import(&path)) {
+                Some(Ok(picture)) => {
+                    if let Some(edit) = state.theme_edit.as_mut() {
+                        edit.theme.background_picture = Some(picture.file);
+                        edit.changed = true;
+                    }
+                }
+                Some(Err(problem)) => state.notice = Some(problem),
+                None => {}
+            }
+            running.home_window.request_redraw();
+            return;
+        }
         if !std::mem::take(&mut running.home_state.picture_request) {
             return;
         }

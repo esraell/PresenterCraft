@@ -376,6 +376,10 @@ pub struct Theme {
     /// The colour behind everything on a slide. `None` is black.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<Rgba>,
+    /// A picture behind every slide drawn with the theme, while no media is showing: a name in
+    /// the app's Images folder, or a whole path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_picture: Option<String>,
 }
 
 /// A theme as its file has it. Files written before themes had free templates hold one set
@@ -389,6 +393,8 @@ struct ThemeOnDisk {
     templates: Vec<ThemeTemplate>,
     #[serde(default)]
     background: Option<Rgba>,
+    #[serde(default)]
+    background_picture: Option<String>,
     #[serde(default)]
     boxes: Vec<BoxStyle>,
     #[serde(default)]
@@ -423,7 +429,13 @@ impl From<ThemeOnDisk> for Theme {
                 ThemeTemplate { id: made(2), name: second.unwrap_or_else(|| "One language".to_owned()), boxes: alone },
             ];
         }
-        Theme { id: file.id, name: file.name, templates, background: file.background }
+        Theme {
+            id: file.id,
+            name: file.name,
+            templates,
+            background: file.background,
+            background_picture: file.background_picture,
+        }
     }
 }
 
@@ -620,6 +632,7 @@ impl Theme {
                 },
             ],
             background: None,
+            background_picture: None,
         }
     }
 

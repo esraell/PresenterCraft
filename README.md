@@ -128,6 +128,8 @@ ProPresenter.
   languages or one) unless you pick one from the slide's right-click menu; Bible slides use
   the template you choose.
 - Templates can be added, duplicated, renamed and deleted. Changes save as you make them.
+- A theme can have a background colour and a picture behind all its slides (shown while no
+  media is on), set when no box is selected in the theme editor.
 
 ![The theme editor](docs/images/themes.png)
 

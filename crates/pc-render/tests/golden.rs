@@ -490,13 +490,35 @@ fn scrolling_text_starts_in_its_box_and_moves_with_time() {
         read_pixels(device, queue, &texture).expect("read back")
     };
     // Where the white letters are, across the screen.
-    let lit_columns = |px: &[u8]| -> Vec<u32> {
-        (0..640).filter(|x| (0..360).any(|y| pixel(px, 640, *x, y)[0] > 200)).collect()
-    };
+    let lit_columns =
+        |px: &[u8]| -> Vec<u32> { (0..640).filter(|x| (0..360).any(|y| pixel(px, 640, *x, y)[0] > 200)).collect() };
     let start = lit_columns(&draw(0.0));
     let later = lit_columns(&draw(1.0));
     assert!(!start.is_empty() && !later.is_empty());
     assert!(later[0] < start[0], "moving left: {} then {}", start[0], later[0]);
     assert!(pc_render::scrolls(&s, &Theme::builtin()));
     assert!(!pc_render::scrolls(&slide("Still", None), &Theme::builtin()));
+}
+
+#[test]
+fn a_themes_picture_is_behind_its_slides_until_media_shows() {
+    pc_render::set_picture_loader(wide_red);
+    let mut theme = Theme::builtin();
+    theme.background_picture = Some("church.png".to_owned());
+    let draw = |media: Option<&pc_render::Picture>| {
+        let mut cx = RenderContext::new();
+        let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+        let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+        let mut painter = Painter::new(device).expect("painter");
+        let empty = Slide::new(Vec::new());
+        let layers = pc_render::Layers { media, slide: Some(&empty), overlay: None, time: 0.0 };
+        let built = pc_render::build_layers(&mut Fonts::new(), &layers, &theme, 160, 90);
+        let texture = target_texture(device, 160, 90);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        painter.paint(device, queue, &built.scene, &view, 160, 90).expect("paint");
+        read_pixels(device, queue, &texture).expect("read back")
+    };
+    assert!(is_about(pixel(&draw(None), 160, 80, 45), [230, 30, 30]), "the theme's picture fills the slide");
+    let green = flat(16, 9, [30, 200, 60]);
+    assert!(is_about(pixel(&draw(Some(&green)), 160, 80, 45), [30, 200, 60]), "media covers it");
 }
