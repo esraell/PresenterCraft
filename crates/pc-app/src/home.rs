@@ -98,6 +98,9 @@ pub struct HomeState {
     pub fonts: std::sync::Arc<Vec<String>>,
     /// True while the Bible page is showing in place of the slide grid.
     pub bible_open: bool,
+    /// A view asked for from the menu bar: 0 Show, 1 Edit, 2 Bible, 3 Themes. The toolbar
+    /// takes it as if its tab had been clicked.
+    pub view_request: Option<usize>,
     /// True while the Screens window is open.
     pub settings_open: bool,
     /// The displays connected now, kept up to date by the app.
@@ -555,6 +558,7 @@ impl Default for HomeState {
             bible_open: false,
             settings_open: false,
             displays: Vec::new(),
+            view_request: None,
             screens: crate::screens::starting(None),
             screens_changed: false,
             screen_status: Vec::new(),
@@ -632,6 +636,16 @@ pub fn matches_filter(title: &str, filter: &str) -> bool {
     filter.is_empty() || title.to_lowercase().contains(&filter.to_lowercase())
 }
 
+/// True when this frame has a press of `key` with Command (and Shift, exactly when `shift`).
+/// It is judged by the key press itself, not by the keys held now, so a shortcut chosen from
+/// the menu bar, which arrives with no key held, counts as well.
+fn command_key(input: &egui::InputState, key: egui::Key, shift: bool) -> bool {
+    input.events.iter().any(|event| {
+        matches!(event, egui::Event::Key { key: pressed_key, pressed: true, modifiers, .. }
+            if *pressed_key == key && modifiers.command && modifiers.shift == shift)
+    })
+}
+
 fn section_label(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).size(11.0).strong().color(Color32::from_gray(140)));
 }
@@ -701,11 +715,11 @@ pub fn home_ui(
     // Text boxes are dark wells in the lighter side columns.
     ui.visuals_mut().extreme_bg_color = FIELD;
     crate::studio::toolbar(ui, show, state, &mut commands);
-    if ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Comma)) {
+    if ui.input(|input| command_key(input, egui::Key::Comma, false)) {
         state.settings_open = !state.settings_open;
     }
     // Command-N makes a new song, wherever the keyboard is not in a field.
-    if !ui.ctx().text_edit_focused() && ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::N)) {
+    if !ui.ctx().text_edit_focused() && ui.input(|input| command_key(input, egui::Key::N, false)) {
         state.new_song = true;
     }
     settings_window(ui, state);
@@ -759,9 +773,8 @@ fn edit_view(
 
     // Keys: undo and redo always; delete and nudging when not typing in a box.
     let (undo, redo, delete, nudge) = ui.input(|input| {
-        let command = input.modifiers.command;
-        let undo = command && !input.modifiers.shift && input.key_pressed(egui::Key::Z);
-        let redo = command && input.modifiers.shift && input.key_pressed(egui::Key::Z);
+        let undo = command_key(input, egui::Key::Z, false);
+        let redo = command_key(input, egui::Key::Z, true);
         let delete = !typing && (input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace));
         let step = if input.modifiers.shift { 10.0 } else { 1.0 };
         let mut nudge = (0.0, 0.0);
@@ -791,8 +804,8 @@ fn edit_view(
                 has(|event| matches!(event, egui::Event::Copy)),
                 has(|event| matches!(event, egui::Event::Cut)),
                 pasted,
-                input.modifiers.command && input.key_pressed(egui::Key::D),
-                input.modifiers.command && input.key_pressed(egui::Key::A),
+                command_key(input, egui::Key::D, false),
+                command_key(input, egui::Key::A, false),
             )
         });
         if let Some(draft) = state.editing.as_mut() {

@@ -84,11 +84,14 @@ ProPresenter.
 
 <img src="docs/images/screens.png" alt="The Screens window" width="620">
 
+**On the Mac**
+- A menu bar with the usual menus and shortcuts (New Song, Undo, Cut/Copy/Paste, the views,
+  Clear, Audience Output on/off with Cmd+1, Configure Screens), showing only what works.
+
 ## Not built yet
 
 Among the things PresenterCraft can't do yet:
 
-- A macOS menu bar (being built now).
 - Videos, audio, and live video inputs.
 - Stage screens (confidence monitors), timers, messages, props, macros.
 - Transitions other than Cut and Dissolve.
@@ -130,7 +133,9 @@ Other options: `--list-displays`, `--output-display N`.
 | B, N, M | jump to Bridge 1, 2, 3 |
 | P, T, I, E, O | Pre-chorus, Tag, Intro, Ending, Outro |
 | Cmd+N | new song |
-| Cmd+, | Screens |
+| Cmd+, or Option+Cmd+1 | Screens |
+| Cmd+1 | audience output on/off |
+| Control+S, E, B, T | Show, Edit, Bible, Themes |
 
 The letter for each group is shown on its first slide.
 

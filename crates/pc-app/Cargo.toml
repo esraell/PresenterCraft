@@ -33,5 +33,8 @@ pollster.workspace = true
 png.workspace = true
 image.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+muda.workspace = true
+
 [lints]
 workspace = true

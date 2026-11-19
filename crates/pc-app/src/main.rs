@@ -9,6 +9,7 @@ mod icons;
 mod inspector;
 mod load;
 mod media;
+mod menubar;
 mod output;
 mod screens;
 mod service;
@@ -281,6 +282,11 @@ struct App {
     held: winit::keyboard::ModifiersState,
     /// Testing aid: select a box once the Theme Editor has opened.
     capture_selects_box: bool,
+    /// The window that has the keyboard, for Close Window.
+    focused: Option<WindowId>,
+    /// The menu bar along the top of the screen.
+    #[cfg(target_os = "macos")]
+    menu: Option<menubar::MenuBar>,
     running: Option<Running>,
     failed: bool,
     /// Set when a test capture has been saved and the program should end.
@@ -1271,6 +1277,125 @@ impl App {
         commands
     }
 
+    /// Carries out a choice from the menu bar.
+    fn menu_action(&mut self, el: &ActiveEventLoop, action: menubar::Action) {
+        use menubar::Action as A;
+        if action == A::Quit {
+            return self.quit(el);
+        }
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let state = &mut running.home_state;
+        let mut commands = Vec::new();
+        // Shortcuts the views act on are handed to them as the key press they stand for.
+        let mut press = |key: egui::Key, modifiers: egui::Modifiers| {
+            let events = &mut running.egui_state.egui_input_mut().events;
+            for pressed in [true, false] {
+                events.push(egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers });
+            }
+        };
+        let command = egui::Modifiers::COMMAND;
+        match action {
+            A::Quit => {}
+            A::Settings | A::ConfigureScreens => state.settings_open = true,
+            A::NewSong => state.new_song = true,
+            A::NewSlide => {
+                let song = match (&state.editing, &state.theme_edit) {
+                    (Some(draft), None) => draft.at.presentation,
+                    _ => self.show.selected(),
+                };
+                if !self.bible_slots.contains(&song) && song < self.show.presentations().len() {
+                    state.add_slide = Some(song);
+                }
+            }
+            A::CloseWindow => {
+                // The front-most thing that can close: the Screens window, a question, or a
+                // screen's own window, which switches that screen off.
+                if state.settings_open {
+                    state.settings_open = false;
+                    state.identify = false;
+                } else if state.confirm_delete_template.is_some() || state.confirm_delete_theme.is_some() {
+                    state.confirm_delete_template = None;
+                    state.confirm_delete_theme = None;
+                } else if let Some(screen) =
+                    running.screen_windows.iter().find(|have| Some(have.window.id()) == self.focused).map(|w| w.screen)
+                    && let Some(closed) = state.screens.iter_mut().find(|have| have.id == screen)
+                {
+                    closed.output = screens::Output::Off;
+                    state.screens_changed = true;
+                }
+            }
+            A::Undo => press(egui::Key::Z, command),
+            A::Redo => press(egui::Key::Z, command | egui::Modifiers::SHIFT),
+            A::Duplicate => press(egui::Key::D, command),
+            A::SelectAll => press(egui::Key::A, command),
+            A::Delete => press(egui::Key::Delete, egui::Modifiers::NONE),
+            A::Cut => running.egui_state.egui_input_mut().events.push(egui::Event::Cut),
+            A::Copy => running.egui_state.egui_input_mut().events.push(egui::Event::Copy),
+            A::Paste => {
+                if let Some(text) = running.egui_state.clipboard_text().filter(|text| !text.is_empty()) {
+                    running.egui_state.egui_input_mut().events.push(egui::Event::Paste(text.replace("\r\n", "\n")));
+                }
+            }
+            A::ShowView => state.view_request = Some(0),
+            A::EditView => state.view_request = Some(1),
+            A::BibleView => state.view_request = Some(2),
+            A::ThemesView => state.view_request = Some(3),
+            A::GridView => state.slide_view = home::SlideView::Grid,
+            A::EasyView => state.slide_view = home::SlideView::Easy,
+            A::TableView => state.slide_view = home::SlideView::Table,
+            A::NextSlide => commands.push(Command::Next),
+            A::PreviousSlide => commands.push(Command::Previous),
+            A::ClearAll => commands.push(Command::ClearAll),
+            A::ClearSlide => commands.push(Command::Clear(pc_engine::Layer::Slides)),
+            A::ClearMedia => commands.push(Command::Clear(pc_engine::Layer::Media)),
+            A::Audience => commands.push(Command::SetOutputEnabled(!self.show.output_enabled())),
+            A::IdentifyScreens => state.identify = !state.identify,
+            A::Website => {
+                if let Err(e) =
+                    std::process::Command::new("open").arg("https://github.com/esraell/PresenterCraft").spawn()
+                {
+                    state.notice = Some(format!("Could not open the web page: {e}"));
+                }
+            }
+        }
+        running.home_window.request_redraw();
+        if !commands.is_empty() {
+            self.apply(commands);
+        }
+    }
+
+    /// Ticks the menu bar's items that are on now: the view, the slide view, the audience
+    /// output and Identify Screens.
+    fn tick_menu(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let (Some(menu), Some(running)) = (self.menu.as_mut(), self.running.as_ref()) {
+            use menubar::Action as A;
+            let state = &running.home_state;
+            let view = if state.theme_edit.is_some() {
+                A::ThemesView
+            } else if state.editing.is_some() {
+                A::EditView
+            } else if state.bible_open {
+                A::BibleView
+            } else {
+                A::ShowView
+            };
+            let slide_view = match state.slide_view {
+                home::SlideView::Grid => A::GridView,
+                home::SlideView::Easy => A::EasyView,
+                home::SlideView::Table => A::TableView,
+            };
+            let output_on = self.show.output_enabled();
+            menu.set_checked(|action| match action {
+                A::Audience => output_on,
+                A::IdentifyScreens => state.identify,
+                _ => action == view || action == slide_view,
+            });
+        }
+    }
+
     fn quit(&mut self, el: &ActiveEventLoop) {
         self.save_unsaved();
         if let Some(output) = self.running.as_mut().and_then(|r| r.output.take()) {
@@ -1280,7 +1405,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<String> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.running.is_some() {
             return;
@@ -1322,6 +1447,14 @@ impl ApplicationHandler for App {
                 running.home_window.request_redraw();
                 self.running = Some(running);
                 self.sync_screens(el);
+                // The menu bar, for a run someone is using.
+                #[cfg(target_os = "macos")]
+                if !self.quiet() {
+                    match menubar::MenuBar::install() {
+                        Ok(menu) => self.menu = Some(menu),
+                        Err(problem) => eprintln!("{problem}"),
+                    }
+                }
                 // Testing aid: start with the first slide on screen.
                 if std::env::var_os("PRESENTERCRAFT_GO_LIVE").is_some() {
                     self.apply(vec![Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 0 })]);
@@ -1336,9 +1469,27 @@ impl ApplicationHandler for App {
         }
     }
 
+    fn user_event(&mut self, el: &ActiveEventLoop, id: String) {
+        if let Some(action) = menubar::action_of(&id) {
+            self.menu_action(el, action);
+        }
+    }
+
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if let WindowEvent::ModifiersChanged(now) = &event {
-            self.held = now.state();
+        match &event {
+            WindowEvent::ModifiersChanged(now) => self.held = now.state(),
+            WindowEvent::Focused(true) => self.focused = Some(id),
+            _ => {}
+        }
+        // A key that is a menu bar shortcut belongs to the menu, which acts on it once.
+        #[cfg(target_os = "macos")]
+        if self.menu.is_some()
+            && let WindowEvent::KeyboardInput { event: key, .. } = &event
+            && key.state == ElementState::Pressed
+            && let winit::keyboard::PhysicalKey::Code(code) = key.physical_key
+            && menubar::claims(code, self.held)
+        {
+            return;
         }
         let Some(running) = self.running.as_mut() else {
             return;
@@ -1479,6 +1630,7 @@ impl ApplicationHandler for App {
                 }
                 self.update_canvas();
                 self.sync_screens(el);
+                self.tick_menu();
                 // Leaving the Edit view writes the songs changed there straight away.
                 let editing = self.running.as_ref().is_some_and(|r| r.home_state.editing.is_some());
                 if !editing && !self.unsaved.is_empty() {
@@ -1586,12 +1738,17 @@ fn main() -> ExitCode {
         sources.push(None);
     }
 
-    let mut builder = EventLoop::builder();
+    // Menu bar choices arrive as user events carrying the item's id.
+    let mut builder = EventLoop::<String>::with_user_event();
     // A run that only saves a picture must not come to the front of whatever is in use.
     #[cfg(target_os = "macos")]
-    if options.capture_home.is_some() || std::env::var_os("PRESENTERCRAFT_QUIET").is_some() {
+    {
         use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
-        builder.with_activation_policy(ActivationPolicy::Accessory).with_activate_ignoring_other_apps(false);
+        // The app puts up its own menu bar once it has started.
+        builder.with_default_menu(false);
+        if options.capture_home.is_some() || std::env::var_os("PRESENTERCRAFT_QUIET").is_some() {
+            builder.with_activation_policy(ActivationPolicy::Accessory).with_activate_ignoring_other_apps(false);
+        }
     }
     let event_loop = match builder.build() {
         Ok(event_loop) => event_loop,
@@ -1601,6 +1758,16 @@ fn main() -> ExitCode {
         }
     };
     event_loop.set_control_flow(ControlFlow::Wait);
+    // A menu bar choice wakes the event loop with the item's id.
+    #[cfg(target_os = "macos")]
+    {
+        let proxy = std::sync::Mutex::new(event_loop.create_proxy());
+        muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
+            if let Ok(proxy) = proxy.lock() {
+                let _ = proxy.send_event(event.id().as_ref().to_owned());
+            }
+        }));
+    }
     let (themes, songs_theme, bible_theme, bible_layout) = theme_store::load_all();
     let mut app = App {
         options,
@@ -1622,6 +1789,9 @@ fn main() -> ExitCode {
         frames_since_start: 0,
         held: winit::keyboard::ModifiersState::empty(),
         capture_selects_box: false,
+        focused: None,
+        #[cfg(target_os = "macos")]
+        menu: None,
         running: None,
         failed: false,
         capture_done: false,

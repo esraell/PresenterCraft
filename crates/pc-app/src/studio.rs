@@ -236,7 +236,8 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
             } else {
                 0
             };
-            let picked = segmented(ui, "views", vec2(74.0, 28.0), &["Show", "Edit", "Bible", "Themes"], Some(view));
+            let picked = segmented(ui, "views", vec2(74.0, 28.0), &["Show", "Edit", "Bible", "Themes"], Some(view))
+                .or(state.view_request.take().filter(|asked| *asked != view));
             match picked {
                 Some(3) if !editing_theme => {
                     state.theme_request = Some(crate::home::ThemeRequest::Edit(state.theme_for_songs))
