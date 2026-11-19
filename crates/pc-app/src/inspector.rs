@@ -294,12 +294,15 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
         |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             let (tabs, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
+        let theme_slide =
+            state.theme_edit.is_some() && state.editing.as_ref().is_some_and(|draft| draft.selected.is_none());
+        if theme_slide {
+            ui.painter().rect_filled(tabs, 0.0, BLUE);
+            ui.painter().text(tabs.center(), Align2::CENTER_CENTER, "Theme Slide", FontId::proportional(12.5), INK);
+        }
             let tab_width = tabs.width() / 3.0;
-            for (index, (tab, name)) in
-                [(InspectorTab::Shape, "Shape"), (InspectorTab::Text, "Text"), (InspectorTab::Build, "Build")]
-                    .into_iter()
-                    .enumerate()
-            {
+            let tab_names = [(InspectorTab::Shape, "Shape"), (InspectorTab::Text, "Text"), (InspectorTab::Build, "Build")];
+        for (index, (tab, name)) in tab_names.into_iter().enumerate().filter(|_| !theme_slide) {
                 let rect = Rect::from_min_size(
                     pos2(tabs.min.x + tab_width * index as f32, tabs.min.y),
                     vec2(tab_width, tabs.height()),
@@ -317,15 +320,20 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
                 |ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        ui.add_enabled(false, egui::Button::new("Slide Notes"))
-                            .on_disabled_hover_text(not_built("Slide Notes"));
+                        let for_theme = state.theme_edit.is_some();
+                        if !for_theme {
+                            ui.add_enabled(false, egui::Button::new("Slide Notes"))
+                                .on_disabled_hover_text(not_built("Slide Notes"));
+                        }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Show").on_hover_text("Go back to the Show view").clicked() {
                                 leave = true;
                             }
-                            ui.checkbox(&mut state.live_edit, "Live Edit").on_hover_text(
-                                "When on, changes to a slide that is on screen appear on the output as they are made",
-                            );
+                            if !for_theme {
+                                ui.checkbox(&mut state.live_edit, "Live Edit").on_hover_text(
+                                    "When on, changes to a slide that is on screen appear on the output as they are made",
+                                );
+                            }
                         });
                     });
                 },
@@ -341,11 +349,15 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
                         visuals.widgets.inactive.weak_bg_fill = CONTROL;
                         visuals.widgets.inactive.bg_fill = CONTROL;
                         visuals.selection.bg_fill = BLUE;
-                        match state.inspector.tab {
-                            InspectorTab::Shape => shape_tab(ui, state, theme),
-                            InspectorTab::Text => text_tab(ui, state, theme),
-                            InspectorTab::Build => build_tab(ui),
-                        }
+                        if theme_slide {
+                    theme_slide_panel(ui, state);
+                } else {
+                    match state.inspector.tab {
+                        InspectorTab::Shape => shape_tab(ui, state, theme),
+                        InspectorTab::Text => text_tab(ui, state, theme),
+                        InspectorTab::Build => build_tab(ui),
+                    }
+                }
                         if let Some(notice) = &state.notice {
                             rule(ui);
                             ui.label(
@@ -357,6 +369,65 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
         },
     );
     leave
+}
+
+/// The panel for a theme as a whole, shown in the Theme Editor when no box is selected.
+fn theme_slide_panel(ui: &mut egui::Ui, state: &mut HomeState) {
+    let Some(edit) = state.theme_edit.as_mut() else { return };
+    let before = (edit.theme.name.clone(), edit.theme.background);
+    ui.add_space(4.0);
+    labelled_left(ui, "Name", |ui| {
+        ui.add(egui::TextEdit::singleline(&mut edit.theme.name).desired_width(f32::INFINITY));
+    });
+    labelled_left(ui, "Size", |ui| {
+        let mut picked = 0;
+        choice_later(ui, "theme size", ui.available_width(), &mut picked, &["1920 x 1080"], "Other slide sizes");
+    });
+    rule(ui);
+    ui.horizontal(|ui| {
+        let mut filled = edit.theme.background.is_some();
+        if tick(ui, &mut filled, "Background").on_hover_text("A colour behind everything on the slide").changed() {
+            edit.theme.background = filled.then_some(Rgba { r: 20, g: 30, b: 60, a: 255 });
+        }
+        if let Some(background) = edit.theme.background.as_mut() {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| colour(ui, background, "Background colour"));
+        }
+    });
+    rule(ui);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Media Action").size(13.0).color(INK));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add_enabled(false, egui::Button::new("+")).on_disabled_hover_text(not_built("Media on a theme"));
+        });
+    });
+    rule(ui);
+    let about = match edit.template {
+        pc_model::Template::Full => {
+            "This layout is used by slides with two languages. Click a box on the slide to change it."
+        }
+        pc_model::Template::Alone => {
+            "This layout is used by slides with only the main language. The box's place is its own; its look is the main language's in both layouts."
+        }
+    };
+    ui.label(egui::RichText::new(about).size(11.5).color(DIM));
+    if before != (edit.theme.name.clone(), edit.theme.background) {
+        // A theme always has a name.
+        if edit.theme.name.trim().is_empty() {
+            edit.theme.name = before.0;
+        }
+        edit.changed = true;
+    }
+}
+
+/// A bold label on the left and a control filling the rest of the row.
+fn labelled_left(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(vec2(44.0, ROW), Layout::left_to_right(Align::Center), |ui| {
+            ui.set_min_width(44.0);
+            ui.label(egui::RichText::new(label).size(12.5).strong().color(INK));
+        });
+        add(ui);
+    });
 }
 
 fn nothing_selected(ui: &mut egui::Ui) {
@@ -374,6 +445,7 @@ fn nothing_selected(ui: &mut egui::Ui) {
 }
 
 fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
+    let for_theme = state.theme_edit.is_some();
     let later = &mut state.inspector.later;
     let lock_shape = &mut state.inspector.lock_shape;
     let Some(draft) = state.editing.as_mut() else { return };
@@ -533,10 +605,11 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         if ui.add(small("Delete")).on_hover_text("Remove this object from the slide (Delete)").clicked() {
             draft.delete_selected();
         }
-        if ui
-            .add_enabled(!follows_theme, small("Reset to theme"))
-            .on_hover_text("Put this object back where the theme has it")
-            .clicked()
+        if !for_theme
+            && ui
+                .add_enabled(!follows_theme, small("Reset to theme"))
+                .on_hover_text("Put this object back where the theme has it")
+                .clicked()
         {
             draft.reset_to_theme();
         }
@@ -544,6 +617,7 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
 }
 
 fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
+    let for_theme = state.theme_edit.is_some();
     let fonts = state.fonts.clone();
     let inspector = &mut state.inspector;
     let Some(draft) = state.editing.as_mut() else { return };
@@ -576,8 +650,11 @@ fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         }
     });
     ui.add_space(2.0);
-    ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY).hint_text("Text"));
-    ui.add_space(2.0);
+    // A theme's box only ever says "Text": there are no words to type.
+    if !for_theme {
+        ui.add(egui::TextEdit::multiline(text).desired_rows(3).desired_width(f32::INFINITY).hint_text("Text"));
+        ui.add_space(2.0);
+    }
 
     let shown = style.over(&base);
     let mut wanted = shown.clone();
@@ -586,6 +663,9 @@ fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         *style = TextStyle::between(&base, &wanted);
     }
 
+    if for_theme {
+        return;
+    }
     rule(ui);
     ui.horizontal(|ui| {
         let note = if style.is_default() { "Looks as the theme has it" } else { "Styled by hand on this slide" };

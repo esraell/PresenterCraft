@@ -9,7 +9,7 @@ use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Frame, Layout, Rect, Sense, Stroke, StrokeKind, TextureId, pos2, vec2,
 };
 use pc_engine::{Command, Layer, Show, SlideRef};
-use pc_model::{Rgba, Slide, SlideRect, Theme};
+use pc_model::{Rgba, Slide, SlideRect, Template, Theme};
 use pc_render::object_frame;
 
 use crate::displays::{DisplayInfo, Placement};
@@ -98,6 +98,17 @@ pub struct HomeState {
     pub requested_ndi: Option<Option<String>>,
     /// The Edit view's right-hand panel.
     pub inspector: crate::inspector::InspectorState,
+    /// The Theme Editor, while it is open. The layout being worked on is the draft in `editing`.
+    pub theme_edit: Option<ThemeEdit>,
+    /// Every theme's name, and the place of the one in use.
+    pub theme_names: Vec<String>,
+    pub theme_in_use: usize,
+    /// What the Theme menu or the Theme Editor has just asked for. The app takes this.
+    pub theme_request: Option<ThemeRequest>,
+    /// A menu open under a toolbar button, and where its top-left corner is.
+    pub menu: Option<(ToolMenu, egui::Pos2)>,
+    /// True on the frame a menu opened, so the click that opened it does not close it.
+    pub menu_fresh: bool,
     /// What is typed in the Bible page's two fields, and its rows of translations.
     pub bible: BiblePage,
 }
@@ -265,9 +276,47 @@ impl BiblePage {
     }
 }
 
+/// The Theme Editor's working copy of the theme in use.
+#[derive(Clone, Debug)]
+pub struct ThemeEdit {
+    pub theme: Theme,
+    /// Which of the theme's two layouts is on the canvas.
+    pub template: Template,
+    /// Set when the theme has changed this frame. The app takes the theme and clears this.
+    pub changed: bool,
+    /// Set when the operator asks to go back to the Show view.
+    pub leave: bool,
+}
+
+impl ThemeEdit {
+    pub fn of(theme: Theme) -> ThemeEdit {
+        ThemeEdit { theme, template: Template::Full, changed: false, leave: false }
+    }
+}
+
+/// Something asked of the app about themes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeRequest {
+    /// Use the theme at this place in the list.
+    Use(usize),
+    /// Make a new theme, a copy of the one in use, and open it in the Theme Editor.
+    New,
+    /// Open the Theme Editor on the theme in use.
+    Edit,
+}
+
+/// A menu that opens under a toolbar button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolMenu {
+    Theme,
+    More,
+}
+
 /// Which thumbnail the window is asking for.
 #[derive(Clone, Copy)]
 pub enum ThumbOf<'a> {
+    /// One of a theme's layouts, by its place; drawn fresh whenever the theme changes.
+    Layout(usize, &'a Slide),
     Slide(&'a Slide),
     /// A media item, by its index in the show.
     Media(usize),
@@ -297,6 +346,12 @@ impl Default for HomeState {
             ndi_available: pc_ndi::NdiOutput::AVAILABLE,
             requested_ndi: None,
             inspector: crate::inspector::InspectorState::default(),
+            theme_edit: None,
+            theme_names: Vec::new(),
+            theme_in_use: 0,
+            theme_request: None,
+            menu: None,
+            menu_fresh: false,
             bible: BiblePage::default(),
         }
     }
@@ -521,6 +576,7 @@ pub fn home_ui(
     if ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Comma)) {
         state.settings_open = !state.settings_open;
     }
+    tool_menu(ui, state);
     settings_window(ui, state);
     if state.editing.is_some() {
         edit_view(ui, show, state, theme, thumb, canvas);
@@ -537,13 +593,124 @@ pub fn home_ui(
     commands
 }
 
+/// The menu open under a toolbar button, if any. A click anywhere else closes it.
+fn tool_menu(ui: &mut egui::Ui, state: &mut HomeState) {
+    let Some((menu, corner)) = state.menu else { return };
+    let mut close = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    let area = egui::Area::new(egui::Id::unique("tool menu"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(corner)
+        .fade_in(false)
+        .constrain(true)
+        .show(ui.ctx(), |ui| {
+            Frame::new()
+                .fill(Color32::from_rgb(44, 44, 46))
+                .corner_radius(8)
+                .stroke(Stroke::new(1.0, Color32::from_gray(80)))
+                .inner_margin(6)
+                .show(ui, |ui| {
+                    ui.set_min_width(190.0);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let row = |ui: &mut egui::Ui, text: &str, ticked: bool, built: bool| -> bool {
+                        let (rect, response) =
+                            ui.allocate_exact_size(vec2(ui.available_width().max(190.0), 24.0), Sense::click());
+                        if built && response.hovered() {
+                            ui.painter().rect_filled(rect, 5.0, TAB_BLUE);
+                        }
+                        let ink = if built { Color32::from_gray(238) } else { Color32::from_gray(125) };
+                        if ticked {
+                            ui.painter().text(
+                                rect.left_center() + vec2(6.0, 0.0),
+                                Align2::LEFT_CENTER,
+                                "✓",
+                                FontId::proportional(13.0),
+                                ink,
+                            );
+                        }
+                        ui.painter().text(
+                            rect.left_center() + vec2(24.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            text,
+                            FontId::proportional(13.0),
+                            ink,
+                        );
+                        if !built {
+                            response.on_hover_text(not_built(text));
+                            return false;
+                        }
+                        response.clicked()
+                    };
+                    match menu {
+                        ToolMenu::Theme => {
+                            for (index, name) in state.theme_names.clone().iter().enumerate() {
+                                if row(ui, name, index == state.theme_in_use, true) {
+                                    state.theme_request = Some(ThemeRequest::Use(index));
+                                    close = true;
+                                }
+                            }
+                            ui.separator();
+                            if row(ui, "New Theme…", false, true) {
+                                state.theme_request = Some(ThemeRequest::New);
+                                close = true;
+                            }
+                            if row(ui, "Edit Theme…", false, true) {
+                                state.theme_request = Some(ThemeRequest::Edit);
+                                close = true;
+                            }
+                        }
+                        ToolMenu::More => {
+                            if row(ui, "Theme Editor", state.theme_edit.is_some(), true) {
+                                state.theme_request = Some(ThemeRequest::Edit);
+                                close = true;
+                            }
+                            for name in ["Stage Editor", "CCLI Editor", "Props Editor", "Mask Editor"] {
+                                row(ui, name, false, false);
+                            }
+                            ui.separator();
+                            if row(ui, "Settings…", state.settings_open, true) {
+                                state.settings_open = !state.settings_open;
+                                close = true;
+                            }
+                        }
+                    }
+                });
+        });
+    // A click outside the menu closes it; the click that opened it does not count.
+    let fresh = std::mem::take(&mut state.menu_fresh);
+    let clicked_away = ui.input(|input| {
+        input.pointer.any_click() && input.pointer.interact_pos().is_some_and(|at| !area.response.rect.contains(at))
+    });
+    if close || (clicked_away && !fresh) {
+        state.menu = None;
+    }
+}
+
 /// The strip along the top: tools and views on the left, media and screens on the right.
 fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     egui::Panel::top("toolbar").resizable(false).frame(panel_frame(TOOLBAR, 6)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             tool_group(ui, &[Tool::ghost(Icon::Search, "Search")]);
-            tool_group(ui, &[Tool::ghost("Aa", "Text"), Tool::ghost(Icon::Theme, "Theme")]);
+            let look = tool_group(
+                ui,
+                &[
+                    Tool::ghost("Aa", "Text"),
+                    Tool {
+                        face: Icon::Theme.into(),
+                        label: "Theme",
+                        selected: matches!(state.menu, Some((ToolMenu::Theme, _))),
+                        built: true,
+                    },
+                ],
+            );
+            let under_pointer = |ui: &egui::Ui| {
+                let at = ui.input(|input| input.pointer.interact_pos()).unwrap_or_default();
+                pos2((at.x - TOOL_WIDTH / 2.0).max(4.0), TOOL_HEIGHT + 10.0)
+            };
+            if look == Some(1) {
+                state.menu = Some((ToolMenu::Theme, under_pointer(ui)));
+                state.menu_fresh = true;
+            }
             let views = tool_group(
                 ui,
                 &[
@@ -553,7 +720,12 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
                         selected: state.editing.is_none() && !state.bible_open,
                         built: true,
                     },
-                    Tool { face: Icon::Pencil.into(), label: "Edit", selected: state.editing.is_some(), built: true },
+                    Tool {
+                        face: Icon::Pencil.into(),
+                        label: "Edit",
+                        selected: state.editing.is_some() && state.theme_edit.is_none(),
+                        built: true,
+                    },
                     Tool::ghost(Icon::Reflow, "Reflow"),
                     Tool {
                         face: Icon::Book.into(),
@@ -561,10 +733,22 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
                         selected: state.editing.is_none() && state.bible_open,
                         built: true,
                     },
-                    Tool { face: Icon::More.into(), label: "More", selected: state.settings_open, built: true },
+                    Tool {
+                        face: Icon::More.into(),
+                        label: "More",
+                        selected: state.theme_edit.is_some() || matches!(state.menu, Some((ToolMenu::More, _))),
+                        built: true,
+                    },
                 ],
             );
             match views {
+                // Leaving the Theme Editor goes through the app, which saves the theme.
+                Some(0 | 1 | 3) if state.theme_edit.is_some() => {
+                    if let Some(edit) = state.theme_edit.as_mut() {
+                        edit.leave = true;
+                    }
+                    state.bible_open = views == Some(3);
+                }
                 Some(0) => {
                     state.editing = None;
                     state.bible_open = false;
@@ -573,8 +757,10 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
                     state.editing = None;
                     state.bible_open = true;
                 }
-                // More opens Settings for now; other items will join it in a menu.
-                Some(4) => state.settings_open = !state.settings_open,
+                Some(4) => {
+                    state.menu = Some((ToolMenu::More, under_pointer(ui)));
+                    state.menu_fresh = true;
+                }
                 // Edit opens the slide that was last on screen, or the song's first slide.
                 Some(1) if state.editing.is_none() => {
                     let at = show.cursor().unwrap_or(SlideRef { presentation: show.selected(), slide: 0 });
@@ -1159,10 +1345,13 @@ fn edit_view(
     canvas: Option<TextureId>,
 ) {
     let Some(at) = state.editing.as_ref().map(|draft| draft.at) else { return };
-    let Some(presentation) = show.presentations().get(at.presentation) else {
+    // The draft is a song's slide, or one of a theme's layouts when the Theme Editor is open.
+    let theme_mode = state.theme_edit.is_some();
+    let presentation = show.presentations().get(at.presentation);
+    if presentation.is_none() && !theme_mode {
         state.editing = None;
         return;
-    };
+    }
     let before = state.editing.as_ref().map(|draft| draft.slide.clone());
     let now = ui.input(|input| input.time);
     let typing = ui.ctx().text_edit_focused();
@@ -1210,16 +1399,39 @@ fn edit_view(
 
     // Left: the slide navigator, with the slide's objects below it.
     let mut chosen = None;
+    let mut chosen_template = None;
     egui::Panel::left("edit slides").resizable(false).exact_size(186.0).frame(panel_frame(EDIT_PANEL, 0)).show(
         ui,
         |ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             Frame::new().fill(EDIT_HEADER).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(presentation.title.as_str()).strong().size(12.5).color(Color32::WHITE),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Plus, "Add a slide"));
+                    if let Some(presentation) = presentation.filter(|_| !theme_mode) {
+                        ui.label(
+                            egui::RichText::new(presentation.title.as_str()).strong().size(12.5).color(Color32::WHITE),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Plus, "Add a slide"));
+                    } else {
+                        // The theme being edited: choosing another edits (and uses) that one.
+                        let in_use = state.theme_names.get(state.theme_in_use).cloned().unwrap_or_default();
+                        egui::ComboBox::from_id_salt("theme picker").selected_text(in_use).width(120.0).show_ui(
+                            ui,
+                            |ui| {
+                                for (index, name) in state.theme_names.iter().enumerate() {
+                                    if ui.selectable_label(index == state.theme_in_use, name.as_str()).clicked() {
+                                        state.theme_request = Some(ThemeRequest::Use(index));
+                                    }
+                                }
+                                ui.separator();
+                                if ui.button("New Theme…").clicked() {
+                                    state.theme_request = Some(ThemeRequest::New);
+                                }
+                            },
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ghost(ui, Icon::Plus, "More layouts in a theme");
+                        });
+                    }
                 });
             });
 
@@ -1278,70 +1490,118 @@ fn edit_view(
                     );
                 });
 
-            egui::ScrollArea::vertical().id_salt("edit slide list").auto_shrink([false, false]).show(ui, |ui| {
-                let width = ui.available_width();
-                let image_size = vec2(width - 16.0, (width - 16.0) * 9.0 / 16.0);
-                let mut index = 0;
-                for group in &presentation.groups {
-                    let (bar, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
-                    ui.painter().rect_filled(bar, 0.0, color32(group.color).gamma_multiply(0.8));
-                    let ink = text_on(group.color);
-                    icons::paint(
-                        ui.painter(),
-                        Icon::ChevronDown,
-                        Rect::from_center_size(bar.left_center() + vec2(9.0, 0.0), vec2(8.0, 8.0)),
-                        ink,
-                    );
-                    let name = if group.name.is_empty() { "No group" } else { group.name.as_str() };
-                    ui.painter().text(
-                        bar.left_center() + vec2(18.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        name,
-                        FontId::proportional(12.5),
-                        ink,
-                    );
-
-                    for slide in &group.slides {
-                        let here = SlideRef { presentation: at.presentation, slide: index };
+            if let Some(edit) = state.theme_edit.as_ref() {
+                // A theme's two layouts, each drawn as it will look.
+                let layouts = [(Template::Full, "Two languages"), (Template::Alone, "One language")];
+                let slides: Vec<Slide> =
+                    layouts.iter().map(|(template, _)| edit.theme.template_slide(*template)).collect();
+                let current = edit.template;
+                egui::ScrollArea::vertical().id_salt("theme layout list").auto_shrink([false, false]).show(ui, |ui| {
+                    let width = ui.available_width();
+                    let image_size = vec2(width - 16.0, (width - 16.0) * 9.0 / 16.0);
+                    for (index, ((template, name), slide)) in layouts.into_iter().zip(&slides).enumerate() {
                         let (cell, response) = ui.allocate_exact_size(vec2(width, image_size.y + 30.0), Sense::click());
-                        let selected = here == at;
-                        if ui.is_rect_visible(cell) {
-                            ui.painter().rect_filled(
-                                cell,
-                                0.0,
-                                if selected { EDIT_SELECTED } else { color32(group.color).gamma_multiply(0.22) },
-                            );
-                            let image = Rect::from_min_size(cell.min + vec2(8.0, 8.0), image_size);
-                            ui.painter().rect_filled(image, 0.0, Color32::BLACK);
-                            match thumb(ThumbOf::Slide(slide)) {
+                        let selected = template == current;
+                        ui.painter().rect_filled(
+                            cell,
+                            0.0,
+                            if selected { EDIT_SELECTED } else { Color32::from_gray(52) },
+                        );
+                        let image = Rect::from_min_size(cell.min + vec2(8.0, 8.0), image_size);
+                        ui.painter().rect_filled(image, 0.0, Color32::BLACK);
+                        if let Some(texture) = canvas.filter(|_| selected) {
+                            // The layout on the canvas is shown as it is this instant.
+                            egui::Image::from_texture((texture, image_size)).paint_at(ui, image);
+                        } else {
+                            match thumb(ThumbOf::Layout(index, slide)) {
                                 Some((texture, _)) => {
                                     egui::Image::from_texture((texture, image_size)).paint_at(ui, image)
                                 }
                                 None => ui.ctx().request_repaint(),
                             }
-                            if selected {
-                                ui.painter().rect_stroke(
-                                    image,
+                        }
+                        if selected {
+                            ui.painter().rect_stroke(image, 0.0, Stroke::new(2.0, EDIT_OUTLINE), StrokeKind::Outside);
+                        }
+                        ui.painter().text(
+                            pos2(cell.min.x + 9.0, image.max.y + 10.0),
+                            Align2::LEFT_CENTER,
+                            format!("{}.  {name}", index + 1),
+                            FontId::proportional(11.5),
+                            Color32::from_gray(230),
+                        );
+                        if response.clicked() && !selected {
+                            chosen_template = Some(template);
+                        }
+                    }
+                });
+            } else {
+                egui::ScrollArea::vertical().id_salt("edit slide list").auto_shrink([false, false]).show(ui, |ui| {
+                    let width = ui.available_width();
+                    let image_size = vec2(width - 16.0, (width - 16.0) * 9.0 / 16.0);
+                    let mut index = 0;
+                    for group in presentation.map(|p| p.groups.as_slice()).unwrap_or_default() {
+                        let (bar, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
+                        ui.painter().rect_filled(bar, 0.0, color32(group.color).gamma_multiply(0.8));
+                        let ink = text_on(group.color);
+                        icons::paint(
+                            ui.painter(),
+                            Icon::ChevronDown,
+                            Rect::from_center_size(bar.left_center() + vec2(9.0, 0.0), vec2(8.0, 8.0)),
+                            ink,
+                        );
+                        let name = if group.name.is_empty() { "No group" } else { group.name.as_str() };
+                        ui.painter().text(
+                            bar.left_center() + vec2(18.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            name,
+                            FontId::proportional(12.5),
+                            ink,
+                        );
+
+                        for slide in &group.slides {
+                            let here = SlideRef { presentation: at.presentation, slide: index };
+                            let (cell, response) =
+                                ui.allocate_exact_size(vec2(width, image_size.y + 30.0), Sense::click());
+                            let selected = here == at;
+                            if ui.is_rect_visible(cell) {
+                                ui.painter().rect_filled(
+                                    cell,
                                     0.0,
-                                    Stroke::new(2.0, EDIT_OUTLINE),
-                                    StrokeKind::Outside,
+                                    if selected { EDIT_SELECTED } else { color32(group.color).gamma_multiply(0.22) },
+                                );
+                                let image = Rect::from_min_size(cell.min + vec2(8.0, 8.0), image_size);
+                                ui.painter().rect_filled(image, 0.0, Color32::BLACK);
+                                match thumb(ThumbOf::Slide(slide)) {
+                                    Some((texture, _)) => {
+                                        egui::Image::from_texture((texture, image_size)).paint_at(ui, image)
+                                    }
+                                    None => ui.ctx().request_repaint(),
+                                }
+                                if selected {
+                                    ui.painter().rect_stroke(
+                                        image,
+                                        0.0,
+                                        Stroke::new(2.0, EDIT_OUTLINE),
+                                        StrokeKind::Outside,
+                                    );
+                                }
+                                ui.painter().text(
+                                    pos2(cell.min.x + 9.0, image.max.y + 10.0),
+                                    Align2::LEFT_CENTER,
+                                    format!("{}.", index + 1),
+                                    FontId::proportional(11.5),
+                                    Color32::from_gray(230),
                                 );
                             }
-                            ui.painter().text(
-                                pos2(cell.min.x + 9.0, image.max.y + 10.0),
-                                Align2::LEFT_CENTER,
-                                format!("{}.", index + 1),
-                                FontId::proportional(11.5),
-                                Color32::from_gray(230),
-                            );
+                            if response.clicked() && !selected {
+                                chosen = Some(here);
+                            }
+                            index += 1;
                         }
-                        if response.clicked() && !selected {
-                            chosen = Some(here);
-                        }
-                        index += 1;
                     }
-                }
-            });
+                });
+            }
         },
     );
 
@@ -1501,12 +1761,27 @@ fn edit_view(
         if draft.drag.is_none() && !draft.stepped {
             draft.record_run(before, now);
         }
-        state.pending_edit = Some((draft.at, draft.slide.clone()));
+        match state.theme_edit.as_mut() {
+            // A theme's layout: the theme is remade from it, and the app takes the theme.
+            Some(edit) => {
+                edit.theme = edit.theme.with_template(edit.template, &draft.slide);
+                edit.changed = true;
+            }
+            None => state.pending_edit = Some((draft.at, draft.slide.clone())),
+        }
     }
     if let Some(draft) = state.editing.as_mut() {
         draft.stepped = false;
     }
-    if leave {
+    if let Some(edit) = state.theme_edit.as_mut() {
+        if leave {
+            edit.leave = true;
+        } else if let Some(template) = chosen_template {
+            edit.template = template;
+            let which = usize::from(template == Template::Alone);
+            state.editing = Some(EditDraft::of_slide(edit.theme.template_slide(template), which));
+        }
+    } else if leave {
         state.editing = None;
     } else if let Some(here) = chosen {
         state.editing = EditDraft::of(show, here);
@@ -2096,7 +2371,7 @@ mod tests {
                     &Theme::builtin(),
                     &mut |which| {
                         match which {
-                            ThumbOf::Slide(_) => slides += 1,
+                            ThumbOf::Slide(_) | ThumbOf::Layout(..) => slides += 1,
                             ThumbOf::Media(_) => media += 1,
                         }
                         None

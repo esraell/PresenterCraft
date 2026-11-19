@@ -26,9 +26,14 @@ pub fn download_base() -> Option<String> {
         .or_else(|| DOWNLOADS.map(str::to_owned))
 }
 
-/// The folder installed Bibles are kept in. `PRESENTERCRAFT_DATA` names another place for
-/// the app's files, which tests use.
+/// The folder installed Bibles are kept in.
 pub fn folder() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("Bibles"))
+}
+
+/// The folder the app keeps its own files in. `PRESENTERCRAFT_DATA` names another place,
+/// which tests use.
+pub fn data_dir() -> Option<PathBuf> {
     let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
     let base = if let Some(base) = var("PRESENTERCRAFT_DATA") {
         base
@@ -39,7 +44,7 @@ pub fn folder() -> Option<PathBuf> {
     } else {
         var("XDG_DATA_HOME").or_else(|| var("HOME").map(|home| home.join(".local/share")))?.join("presentercraft")
     };
-    Some(base.join("Bibles"))
+    Some(base)
 }
 
 /// The Bible files in the folder that read as Bibles, with what each says about itself.

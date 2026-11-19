@@ -155,6 +155,21 @@ impl EditDraft {
         })
     }
 
+    /// A draft of a slide that belongs to no song, such as one of a theme's layouts. `which`
+    /// tells such drafts apart.
+    pub fn of_slide(slide: Slide, which: usize) -> EditDraft {
+        EditDraft {
+            at: SlideRef { presentation: usize::MAX, slide: which },
+            slide,
+            selected: None,
+            drag: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            last_recorded: f64::NEG_INFINITY,
+            stepped: false,
+        }
+    }
+
     pub fn selected_object(&self) -> Option<&Object> {
         let id = self.selected?;
         self.slide.objects.iter().find(|o| o.id == id)

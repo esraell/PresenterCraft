@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Rgba, Role};
+use uuid::Uuid;
+
+use crate::types::{Object, ObjectKind, Rgba, Role, Slide};
 
 /// A rectangle in slide units (the slide is 1920 x 1080).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -87,7 +89,7 @@ impl Default for Shadow {
 }
 
 /// How the text box with one role is placed and drawn.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BoxStyle {
     pub role: Role,
     pub rect: SlideRect,
@@ -110,12 +112,52 @@ pub struct BoxStyle {
     pub strike: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Theme {
+    /// Stays the same when the theme is renamed; its file is named by it.
+    #[serde(default)]
+    pub id: Uuid,
     pub name: String,
     pub boxes: Vec<BoxStyle>,
     /// Where a lone `primary` box goes when the slide has no other box.
     pub solo_primary: SlideRect,
+    /// The colour behind everything on a slide. `None` is black.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<Rgba>,
+}
+
+/// The two layouts a theme has, each shown as a slide in the Theme Editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Template {
+    /// Every box, as slides with two languages use them.
+    Full,
+    /// The main-language box alone, as slides with one language use it.
+    Alone,
+}
+
+const THEME_FORMAT: &str = "presentercraft-theme";
+/// The newest theme file version this code reads and the one it writes.
+pub const THEME_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct ThemeFile {
+    format: String,
+    version: u32,
+    theme: Theme,
+}
+
+/// A role made from a box's name: lower case, with anything but letters and digits as dashes.
+fn role_from_name(name: &str) -> Role {
+    let mut slug = String::new();
+    for c in name.trim().chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            slug.push(c);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    Role(if slug.is_empty() { "box".to_owned() } else { slug.to_owned() })
 }
 
 impl Theme {
@@ -142,6 +184,7 @@ impl Theme {
             strike: false,
         };
         Theme {
+            id: Uuid::nil(),
             name: "Built-in".to_owned(),
             boxes: vec![
                 base(
@@ -162,7 +205,103 @@ impl Theme {
                 ),
             ],
             solo_primary: SlideRect { x: 120.0, y: 240.0, w: 1680.0, h: 600.0 },
+            background: None,
         }
+    }
+
+    /// One of the theme's layouts as a slide the editor can work on: a text box for each of the
+    /// theme's boxes, saying "Text", carrying the box's whole look and place.
+    pub fn template_slide(&self, template: Template) -> Slide {
+        let objects = self
+            .boxes
+            .iter()
+            .filter(|style| template == Template::Full || style.role == Role::primary())
+            .map(|style| {
+                let mut object = Object::text(style.role.clone(), "Text");
+                object.frame = Some(if template == Template::Alone { self.solo_primary } else { style.rect });
+                let ObjectKind::Text { style: own, .. } = &mut object.kind;
+                *own = TextStyle::all(style);
+                object
+            })
+            .collect();
+        Slide::new(objects)
+    }
+
+    /// The theme with one of its layouts replaced by what the editor made of it. Each text box
+    /// on the slide becomes a box of the theme: its role is kept, or made from its name if it
+    /// is new. In the main-language-alone layout only the box's place belongs to the layout;
+    /// its look is the main language's everywhere. A theme always keeps a main-language box.
+    pub fn with_template(&self, template: Template, slide: &Slide) -> Theme {
+        let mut theme = self.clone();
+        let starting = |role: &Role| self.style_for(role).or_else(|| self.style_for(&Role::primary())).cloned();
+        let made: Vec<BoxStyle> = slide
+            .objects
+            .iter()
+            .filter_map(|object| {
+                let ObjectKind::Text { style, .. } = &object.kind;
+                let role = object.role.clone().unwrap_or_else(|| role_from_name(&object.name));
+                let base = starting(&role)?;
+                let mut made = style.over(&base);
+                made.rect = object.frame.unwrap_or(base.rect);
+                made.role = role;
+                Some(made)
+            })
+            .collect();
+        match template {
+            Template::Full => {
+                let mut boxes: Vec<BoxStyle> = Vec::new();
+                for style in made {
+                    if !boxes.iter().any(|b| b.role == style.role) {
+                        boxes.push(style);
+                    }
+                }
+                if !boxes.iter().any(|b| b.role == Role::primary())
+                    && let Some(kept) = self.style_for(&Role::primary())
+                {
+                    boxes.insert(0, kept.clone());
+                }
+                theme.boxes = boxes;
+            }
+            Template::Alone => {
+                if let Some(alone) = made.into_iter().find(|style| style.role == Role::primary()) {
+                    theme.solo_primary = alone.rect;
+                    if let Some(primary) = theme.boxes.iter_mut().find(|b| b.role == Role::primary()) {
+                        let place = primary.rect;
+                        *primary = BoxStyle { rect: place, ..alone };
+                    }
+                }
+            }
+        }
+        theme
+    }
+
+    /// The theme as a file's text.
+    pub fn to_json(&self) -> String {
+        let file = ThemeFile { format: THEME_FORMAT.to_owned(), version: THEME_VERSION, theme: self.clone() };
+        // A theme has no value that JSON cannot hold, so this cannot fail.
+        let mut text = serde_json::to_string_pretty(&file).unwrap_or_default();
+        text.push('\n');
+        text
+    }
+
+    /// Reads a theme file. The error is a plain sentence for the operator.
+    pub fn from_json(text: &str) -> Result<Theme, String> {
+        let value: serde_json::Value =
+            serde_json::from_str(text).map_err(|e| format!("this is not a PresenterCraft theme file ({e})"))?;
+        if value.get("format").and_then(|f| f.as_str()) != Some(THEME_FORMAT) {
+            return Err("this is not a PresenterCraft theme file".to_owned());
+        }
+        let version = value.get("version").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        if version == 0 || version > u64::from(THEME_VERSION) {
+            return Err(format!(
+                "the theme file was made by a newer PresenterCraft (format {version}; this one reads up to {THEME_VERSION})"
+            ));
+        }
+        let file: ThemeFile = serde_json::from_value(value).map_err(|e| format!("the theme file is damaged ({e})"))?;
+        if file.theme.style_for(&Role::primary()).is_none() {
+            return Err("the theme file has no main-language box".to_owned());
+        }
+        Ok(file.theme)
     }
 
     /// The style a text object is drawn with: the theme's style for its role (the main
@@ -217,6 +356,26 @@ impl TextStyle {
     /// True when nothing is set, so the object looks exactly as the theme has it.
     pub fn is_default(&self) -> bool {
         *self == TextStyle::default()
+    }
+
+    /// Every setting of a box's look, so a text object carries the look whole.
+    pub fn all(look: &BoxStyle) -> TextStyle {
+        TextStyle {
+            font_family: Some(look.font_family.clone()),
+            size: Some(look.size),
+            weight: Some(look.weight),
+            italic: Some(look.italic),
+            fill: Some(look.fill),
+            align: Some(look.align),
+            outline_width: Some(look.outline_width),
+            outline_color: Some(look.outline_color),
+            shadow: Some(look.shadow),
+            shadow_look: Some(look.shadow_look),
+            valign: Some(look.valign),
+            caps: Some(look.caps),
+            underline: Some(look.underline),
+            strike: Some(look.strike),
+        }
     }
 
     /// A theme style with this object's own settings put over it.
@@ -291,6 +450,66 @@ pub fn missing_fonts(used: &[String], installed: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_theme_survives_its_file_and_other_files_are_refused() {
+        let mut theme = Theme::builtin();
+        theme.name = "Sunday".to_owned();
+        theme.background = Some(Rgba::rgb(10, 20, 30));
+        assert_eq!(Theme::from_json(&theme.to_json()), Ok(theme));
+        assert!(Theme::from_json("{}").unwrap_err().contains("not a PresenterCraft theme file"));
+        assert!(Theme::from_json("rubbish").is_err());
+        let newer = Theme::builtin().to_json().replace("\"version\": 1", "\"version\": 99");
+        assert!(Theme::from_json(&newer).unwrap_err().contains("newer"));
+    }
+
+    #[test]
+    fn a_layout_goes_to_the_editor_and_back_unchanged() {
+        let theme = Theme::builtin();
+        for template in [Template::Full, Template::Alone] {
+            let slide = theme.template_slide(template);
+            assert_eq!(theme.with_template(template, &slide), theme);
+        }
+        assert_eq!(theme.template_slide(Template::Full).objects.len(), 2);
+        assert_eq!(theme.template_slide(Template::Alone).objects.len(), 1);
+    }
+
+    #[test]
+    fn editing_a_layout_changes_the_theme() {
+        let theme = Theme::builtin();
+        let mut slide = theme.template_slide(Template::Full);
+        slide.objects[1].frame = Some(SlideRect { x: 10.0, y: 20.0, w: 300.0, h: 100.0 });
+        let ObjectKind::Text { style, .. } = &mut slide.objects[1].kind;
+        style.size = Some(48.0);
+        // A new box, with no role yet, takes one from its name.
+        let mut added = Object::text(Role::primary(), "Text");
+        added.role = None;
+        added.name = "Verse Reference".to_owned();
+        slide.objects.push(added);
+        let edited = theme.with_template(Template::Full, &slide);
+        let translation = edited.style_for(&Role::translation()).unwrap();
+        assert_eq!((translation.rect.x, translation.size), (10.0, 48.0));
+        assert!(edited.style_for(&Role("verse-reference".to_owned())).is_some());
+        assert_eq!(edited.boxes.len(), 3);
+
+        // Deleting the main box in the editor does not take it out of the theme.
+        slide.objects.remove(0);
+        assert!(theme.with_template(Template::Full, &slide).style_for(&Role::primary()).is_some());
+    }
+
+    #[test]
+    fn the_alone_layout_moves_only_the_lone_box_and_shares_its_look() {
+        let theme = Theme::builtin();
+        let mut slide = theme.template_slide(Template::Alone);
+        slide.objects[0].frame = Some(SlideRect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 });
+        let ObjectKind::Text { style, .. } = &mut slide.objects[0].kind;
+        style.italic = Some(true);
+        let edited = theme.with_template(Template::Alone, &slide);
+        assert_eq!(edited.solo_primary.w, 1920.0);
+        let primary = edited.style_for(&Role::primary()).unwrap();
+        assert!(primary.italic);
+        assert_eq!(primary.rect, theme.style_for(&Role::primary()).unwrap().rect);
+    }
 
     #[test]
     fn capitalisation_changes_only_how_text_is_drawn() {

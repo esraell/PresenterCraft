@@ -15,6 +15,15 @@ goes fullscreen on it; with one display it opens as an ordinary window.
     --list-displays        print the connected displays
     --output-display N     put the output on display N
 
+## Themes
+
+A theme says where each language's words go on a slide and how they look. More, Theme Editor
+opens the theme in use: click a box on the slide to move, resize or restyle it, or click the
+empty slide to name the theme and give it a background colour. A theme has two layouts, one
+for slides with two languages and one for slides with only the main language. The Theme button
+chooses which theme is in use and makes new ones. Themes are saved as `.pctheme` files in the
+app's Themes folder, and changes reach the audience when the editor is left.
+
 ## Bible
 
 The Bible button opens Scripture Lookup. Type a reference (`John 3:16`, `jn 3:16-18`,

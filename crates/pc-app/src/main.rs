@@ -10,6 +10,7 @@ mod inspector;
 mod load;
 mod media;
 mod output;
+mod theme_store;
 mod thumbs;
 
 use std::path::PathBuf;
@@ -233,6 +234,13 @@ struct App {
     unsaved: Vec<usize>,
     unsaved_since: Option<Instant>,
     theme: Arc<Theme>,
+    /// Every theme, and the place of the one in use. `theme` is a copy of that one.
+    themes: Vec<Theme>,
+    theme_in_use: usize,
+    /// True when the theme in use has changes not yet written to its file.
+    theme_unsaved: bool,
+    /// Testing aid: select a box once the Theme Editor has opened.
+    capture_selects_box: bool,
     running: Option<Running>,
     failed: bool,
     /// Set when a test capture has been saved and the program should end.
@@ -349,6 +357,8 @@ impl App {
             home_state: HomeState {
                 fonts: Arc::new(pc_render::Fonts::new().family_names()),
                 output_placement: placement,
+                theme_names: self.themes.iter().map(|theme| theme.name.clone()).collect(),
+                theme_in_use: self.theme_in_use,
                 bible: home::BiblePage {
                     slots: Some(self.bible_slots),
                     shelf: bible::Shelf::with_installed(),
@@ -486,11 +496,106 @@ impl App {
                 Err(e) => problem = Some(format!("The change was not saved. {e}")),
             }
         }
+        if std::mem::take(&mut self.theme_unsaved)
+            && let Err(e) = theme_store::save(&self.theme)
+        {
+            problem = Some(e);
+        }
         self.unsaved_since = None;
         if let Some(running) = self.running.as_mut() {
             running.home_state.notice = problem;
             running.home_window.request_redraw();
         }
+    }
+
+    /// Makes a theme the one in use: every thumbnail is drawn again with it. The output is
+    /// left as it is; `refresh_output` brings it up to date.
+    fn use_theme(&mut self, index: usize) {
+        let Some(theme) = self.themes.get(index) else {
+            return;
+        };
+        self.theme_in_use = index;
+        self.theme = Arc::new(theme.clone());
+        if let Some(running) = self.running.as_mut() {
+            running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
+            running.canvas_for = None;
+            running.home_state.theme_names = self.themes.iter().map(|theme| theme.name.clone()).collect();
+            running.home_state.theme_in_use = index;
+            running.home_window.request_redraw();
+        }
+    }
+
+    /// Carries out what the Theme menu and the Theme Editor asked for this frame.
+    fn handle_themes(&mut self) {
+        use home::ThemeRequest;
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let request = running.home_state.theme_request.take();
+        let editing = running.home_state.theme_edit.is_some();
+        match request {
+            Some(ThemeRequest::Use(index)) if index != self.theme_in_use && index < self.themes.len() => {
+                // Changes to the theme being left are written before moving on.
+                self.save_unsaved();
+                self.use_theme(index);
+                theme_store::remember_in_use(&self.theme);
+                if editing {
+                    self.open_theme_editor();
+                } else {
+                    self.refresh_output();
+                }
+            }
+            Some(ThemeRequest::New) => {
+                self.save_unsaved();
+                let mut theme = (*self.theme).clone();
+                theme.id = Uuid::new_v4();
+                theme.name = "New Theme".to_owned();
+                self.themes.push(theme);
+                self.use_theme(self.themes.len() - 1);
+                self.theme_unsaved = true;
+                theme_store::remember_in_use(&self.theme);
+                self.open_theme_editor();
+            }
+            Some(ThemeRequest::Edit) => self.open_theme_editor(),
+            _ => {}
+        }
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let Some(edit) = running.home_state.theme_edit.as_mut() else {
+            return;
+        };
+        let (changed, leave) = (std::mem::take(&mut edit.changed), edit.leave);
+        if changed {
+            let theme = edit.theme.clone();
+            if let Some(slot) = self.themes.get_mut(self.theme_in_use) {
+                *slot = theme;
+            }
+            self.theme_unsaved = true;
+            self.unsaved_since = Some(Instant::now());
+            self.use_theme(self.theme_in_use);
+        }
+        if leave {
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.theme_edit = None;
+                running.home_state.editing = None;
+            }
+            // The theme is finished with: write it, and let the audience see it.
+            self.save_unsaved();
+            self.refresh_output();
+        }
+    }
+
+    /// Opens the Theme Editor on the theme in use.
+    fn open_theme_editor(&mut self) {
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let edit = home::ThemeEdit::of((*self.theme).clone());
+        running.home_state.editing = Some(EditDraft::of_slide(edit.theme.template_slide(edit.template), 0));
+        running.home_state.theme_edit = Some(edit);
+        running.home_state.bible_open = false;
+        running.home_window.request_redraw();
     }
 
     /// Switches the NDI output on or off as asked in Settings.
@@ -578,6 +683,13 @@ impl App {
             // first time, so add to the list rather than replace it.
             let mut thumb = |which: ThumbOf| match which {
                 ThumbOf::Slide(slide) => thumbs.get(gpu, egui_renderer, slide, theme),
+                ThumbOf::Layout(index, slide) => {
+                    // A layout is made anew each frame; a fixed id lets its thumbnail be kept
+                    // until the theme changes, when every thumbnail is dropped.
+                    let mut kept = slide.clone();
+                    kept.id = Uuid::from_u128(0x7068_656d_655f_6c61_796f_7574_0000_0000 + index as u128);
+                    thumbs.get(gpu, egui_renderer, &kept, theme)
+                }
                 ThumbOf::Media(index) => {
                     let (item, picture) = (show.media().get(index)?, pictures.get(index)?);
                     thumbs.get_media(gpu, egui_renderer, item.id, picture, theme).map(|texture| (texture, false))
@@ -675,6 +787,20 @@ impl App {
                     running.home_state.bible.options.open = true;
                     running.home_state.bible.options.pane = usize::from(pane == "bibles");
                 }
+            }
+            // Testing aid: open the Theme Editor, optionally with its first box selected.
+            if running.frames == GO_LIVE_AT + 2
+                && let Ok(what) = std::env::var("PRESENTERCRAFT_CAPTURE_THEMES")
+            {
+                running.home_state.theme_request = Some(home::ThemeRequest::Edit);
+                running.home_state.inspector.tab = inspector::InspectorTab::Text;
+                self.capture_selects_box = what == "box";
+            }
+            if running.frames == GO_LIVE_AT + 4
+                && self.capture_selects_box
+                && let Some(draft) = running.home_state.editing.as_mut()
+            {
+                draft.selected = draft.slide.objects.first().map(|object| object.id);
             }
             // Testing aid: also open the slide editor, to check how it looks.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_EDITOR").is_some() {
@@ -824,6 +950,7 @@ impl ApplicationHandler for App {
                         running.home_window.request_redraw();
                     }
                 }
+                self.handle_themes();
                 self.update_canvas();
                 self.move_output();
                 self.switch_ndi();
@@ -912,6 +1039,7 @@ fn main() -> ExitCode {
         }
     };
     event_loop.set_control_flow(ControlFlow::Wait);
+    let (themes, theme_in_use) = theme_store::load_all();
     let mut app = App {
         options,
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
@@ -920,7 +1048,11 @@ fn main() -> ExitCode {
         pictures: Vec::new(),
         unsaved: Vec::new(),
         unsaved_since: None,
-        theme: Arc::new(Theme::builtin()),
+        theme: Arc::new(themes[theme_in_use].clone()),
+        themes,
+        theme_in_use,
+        theme_unsaved: false,
+        capture_selects_box: false,
         running: None,
         failed: false,
         capture_done: false,

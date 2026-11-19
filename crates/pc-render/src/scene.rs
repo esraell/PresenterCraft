@@ -48,6 +48,12 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
     let (x, y, w, _) = fit_rect(target_w, target_h);
     let to_target = Affine::translate((x, y)) * Affine::scale(w / f64::from(SLIDE_WIDTH));
 
+    // The theme's background colour fills the slide, under the media. A cleared screen stays black.
+    if let (Some(background), Some(_)) = (theme.background, layers.slide) {
+        let slide_area = Rect::new(0.0, 0.0, f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
+        scene.fill(Fill::NonZero, to_target, color(background), None, &slide_area);
+    }
+
     if let Some(picture) = layers.media {
         let (slide_w, slide_h) = (f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
         let (pic_w, pic_h) = (f64::from(picture.width()), f64::from(picture.height()));
