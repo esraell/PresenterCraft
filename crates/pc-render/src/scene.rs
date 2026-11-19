@@ -117,6 +117,10 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
 
     let mut overflow = false;
     if let Some(slide) = layers.slide {
+        // The layout's own shapes, pictures and videos, behind the slide's words.
+        if let Some(behind) = layout_objects(slide, theme) {
+            draw_objects(&mut scene, fonts, to_target, &behind, theme, layers.time);
+        }
         overflow |= draw_objects(&mut scene, fonts, to_target, slide, theme, layers.time);
     }
     if let Some((announcement, own_theme)) = layers.announcement {
@@ -124,6 +128,9 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
         if let Some(background) = own_theme.background {
             let slide_area = Rect::new(0.0, 0.0, f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
             scene.fill(Fill::NonZero, to_target, color(background), None, &slide_area);
+        }
+        if let Some(behind) = layout_objects(announcement, own_theme) {
+            draw_objects(&mut scene, fonts, to_target, &behind, own_theme, layers.time);
         }
         draw_objects(&mut scene, fonts, to_target, announcement, own_theme, layers.time);
     }
@@ -144,6 +151,25 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
         }
     }
     Built { scene, overflow }
+}
+
+/// The shapes, pictures and videos a slide's layout puts behind its words, as a slide to draw;
+/// any the slide has itself (as the slide the theme editor works on does) are left out, so
+/// they are drawn once. `None` when there are none.
+pub fn layout_objects(slide: &Slide, theme: &Theme) -> Option<Slide> {
+    let template = theme.template_for(slide)?;
+    let objects: Vec<Object> = template
+        .objects
+        .iter()
+        .filter(|object| !object.hidden && !slide.objects.iter().any(|own| own.id == object.id))
+        .cloned()
+        .collect();
+    if objects.is_empty() {
+        return None;
+    }
+    let mut behind = Slide::new(objects);
+    behind.template = Some(template.id);
+    Some(behind)
 }
 
 /// Draws only a slide's objects, with nothing behind them, to lay over another picture of the

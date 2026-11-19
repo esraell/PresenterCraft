@@ -1242,8 +1242,9 @@ fn edit_view(
             }
         }
     }
-    // In a song's editor, a letter adds an object: T a text box, and each shape its own key.
-    if !typing && !theme_mode && !ui.ctx().text_edit_focused() && state.editing.is_some() {
+    // In the editor (a song's or a theme's), a letter adds an object: T a text box, and each
+    // shape its own key.
+    if !typing && !ui.ctx().text_edit_focused() && state.editing.is_some() && state.renaming_template.is_none() {
         let pressed = ui.input(|input| {
             input.events.iter().find_map(|event| match event {
                 egui::Event::Text(text) if !input.modifiers.command && !input.modifiers.ctrl => {
@@ -1260,9 +1261,10 @@ fn edit_view(
             }
         }
     }
-    // A picture chosen for the slide, put on it now so the change is saved like any other.
+    // A picture or video chosen for the slide (or the theme's layout), put on it now so the
+    // change is saved like any other.
     let pictures = std::mem::take(&mut state.picture_to_add);
-    if !theme_mode && let Some(draft) = state.editing.as_mut() {
+    if let Some(draft) = state.editing.as_mut() {
         for picture in &pictures {
             draft.add_image(picture);
         }
@@ -1271,12 +1273,7 @@ fn edit_view(
     if let (Some(request), Some(draft)) = (state.edit_request.take(), state.editing.as_mut()) {
         match request {
             EditRequest::AddText => draft.add_text(),
-            // A theme's layout holds only its text boxes.
-            EditRequest::AddShape(shape) => {
-                if !theme_mode {
-                    draft.add_shape(shape);
-                }
-            }
+            EditRequest::AddShape(shape) => draft.add_shape(shape),
             EditRequest::Bold => {
                 let bold = draft
                     .selected_object()
@@ -2109,7 +2106,7 @@ fn edit_view(
             let painter = ui.painter();
             painter.rect_filled(slide, 0.0, crate::studio::ACCENT.gamma_multiply(0.15));
             painter.rect_stroke(slide.shrink(4.0), 6.0, Stroke::new(2.0, crate::studio::ACCENT), StrokeKind::Inside);
-            let words = if for_theme { "Drop a picture for the theme's background" } else { "Drop to put it on the slide" };
+            let words = if for_theme { "Drop to put it on the layout" } else { "Drop to put it on the slide" };
             painter.text(slide.center(), Align2::CENTER_CENTER, words, crate::studio::semibold(16.0), crate::studio::TEXT);
         }
         if let Some(draft) = state.editing.as_mut() {
@@ -2239,57 +2236,55 @@ fn edit_view(
             }
         }
 
-        // The object tools: a text box, and (on a song's slide) the shapes.
-        let shapes_too = !theme_mode;
-        let offset = if shapes_too { -104.0 } else { 0.0 };
-        if shapes_too {
-            // A picture from a file.
-            let picture_bar =
-                Rect::from_center_size(pos2(inner.center().x + 104.0, inner.min.y + 22.0), vec2(96.0, 28.0));
-            let picture = ui.interact(picture_bar, ui.scope_id().with("add picture"), Sense::click());
-            ui.painter().rect_filled(
-                picture_bar,
-                8.0,
-                if picture.hovered() { crate::studio::HOVER } else { crate::studio::CARD },
-            );
-            ui.painter().text(
-                picture_bar.center(),
-                Align2::CENTER_CENTER,
-                "Media…",
-                crate::studio::semibold(12.5),
-                crate::studio::TEXT,
-            );
-            if picture
-                .on_hover_text("Put a picture or video from a file on the slide (a video plays in its box when the slide is on screen)")
-                .clicked()
-            {
-                state.picture_request = true;
-            }
-            let shapes_bar = Rect::from_center_size(pos2(inner.center().x, inner.min.y + 22.0), vec2(96.0, 28.0));
-            let shapes = ui.interact(shapes_bar, ui.scope_id().with("add shape"), Sense::click());
-            ui.painter().rect_filled(
-                shapes_bar,
-                8.0,
-                if shapes.hovered() { crate::studio::HOVER } else { crate::studio::CARD },
-            );
-            ui.painter().text(
-                shapes_bar.center(),
-                Align2::CENTER_CENTER,
-                "Shapes ▾",
-                crate::studio::semibold(12.5),
-                crate::studio::TEXT,
-            );
-            let shapes = shapes.on_hover_text("Add a shape. Each has a key: O R E G L H P S D A");
-            egui::Popup::menu(&shapes).show(|ui| {
-                for (shape, key) in pc_model::Shape::ALL.into_iter().zip(SHAPE_KEYS) {
-                    if ui.add(egui::Button::new(shape.name()).shortcut_text(key.to_string())).clicked()
-                        && let Some(draft) = state.editing.as_mut()
-                    {
-                        draft.add_shape(shape);
-                    }
-                }
-            });
+        // The object tools, the same for a song's slide and a theme's layout: a text box, the
+        // shapes, and pictures and videos.
+        let offset = -104.0;
+        // A picture from a file.
+        let picture_bar =
+            Rect::from_center_size(pos2(inner.center().x + 104.0, inner.min.y + 22.0), vec2(96.0, 28.0));
+        let picture = ui.interact(picture_bar, ui.scope_id().with("add picture"), Sense::click());
+        ui.painter().rect_filled(
+            picture_bar,
+            8.0,
+            if picture.hovered() { crate::studio::HOVER } else { crate::studio::CARD },
+        );
+        ui.painter().text(
+            picture_bar.center(),
+            Align2::CENTER_CENTER,
+            "Media…",
+            crate::studio::semibold(12.5),
+            crate::studio::TEXT,
+        );
+        if picture
+            .on_hover_text("Put a picture or video from a file on the slide (a video plays in its box when the slide is on screen)")
+            .clicked()
+        {
+            state.picture_request = true;
         }
+        let shapes_bar = Rect::from_center_size(pos2(inner.center().x, inner.min.y + 22.0), vec2(96.0, 28.0));
+        let shapes = ui.interact(shapes_bar, ui.scope_id().with("add shape"), Sense::click());
+        ui.painter().rect_filled(
+            shapes_bar,
+            8.0,
+            if shapes.hovered() { crate::studio::HOVER } else { crate::studio::CARD },
+        );
+        ui.painter().text(
+            shapes_bar.center(),
+            Align2::CENTER_CENTER,
+            "Shapes ▾",
+            crate::studio::semibold(12.5),
+            crate::studio::TEXT,
+        );
+        let shapes = shapes.on_hover_text("Add a shape. Each has a key: O R E G L H P S D A");
+        egui::Popup::menu(&shapes).show(|ui| {
+            for (shape, key) in pc_model::Shape::ALL.into_iter().zip(SHAPE_KEYS) {
+                if ui.add(egui::Button::new(shape.name()).shortcut_text(key.to_string())).clicked()
+                    && let Some(draft) = state.editing.as_mut()
+                {
+                    draft.add_shape(shape);
+                }
+            }
+        });
         let bar = Rect::from_center_size(pos2(inner.center().x + offset, inner.min.y + 22.0), vec2(96.0, 28.0));
         let add = ui.interact(bar, ui.scope_id().with("add text"), Sense::click());
         ui.painter().rect_filled(bar, 8.0, if add.hovered() { crate::studio::HOVER } else { crate::studio::CARD });
@@ -2323,11 +2318,15 @@ fn edit_view(
                 let mut taken: Vec<pc_model::Role> =
                     draft.slide.objects.iter().filter_map(|o| o.role.clone()).collect();
                 if let Some(template) = edit.theme.templates.get_mut(edit.template) {
-                    for object in draft.slide.objects.iter_mut().filter(|o| o.role.is_none()) {
+                    let is_text = |o: &pc_model::Object| matches!(o.kind, pc_model::ObjectKind::Text { .. });
+                    for object in draft.slide.objects.iter_mut().filter(|o| o.role.is_none() && is_text(o)) {
                         let role = template.unused_role(&object.name, &taken);
                         taken.push(role.clone());
                         object.role = Some(role);
                     }
+                    // A layout's shapes, pictures and videos are drawn behind the words on its
+                    // slides, so the editor keeps them behind its text boxes too.
+                    draft.slide.objects.sort_by_key(is_text);
                     *template = template.with_slide(&draft.slide);
                     edit.changed = true;
                 }

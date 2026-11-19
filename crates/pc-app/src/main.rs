@@ -1210,12 +1210,19 @@ impl App {
     /// Plays the video in a box on the slide on screen, if it has one, and stops the one that was.
     /// The video loops, with its sound; it is the first visible picture box naming a video.
     fn sync_slide_video(&mut self) {
-        let wanted = self.show.live_slide().and_then(|(_, slide)| {
-            slide.objects.iter().filter(|object| !object.hidden).find_map(|object| match &object.kind {
+        // A video in a box on the slide on screen, or else in its theme's layout behind it.
+        let video_in = |objects: &[pc_model::Object]| {
+            objects.iter().filter(|object| !object.hidden).find_map(|object| match &object.kind {
                 pc_model::ObjectKind::Image { file, .. } if media::is_video(std::path::Path::new(file)) => {
                     Some(file.clone())
                 }
                 _ => None,
+            })
+        };
+        let wanted = self.show.live().zip(self.show.live_slide()).and_then(|(at, (_, slide))| {
+            video_in(&slide.objects).or_else(|| {
+                let behind = pc_render::layout_objects(slide, self.theme_of(at.presentation))?;
+                video_in(&behind.objects)
             })
         });
         if self.slide_video.as_ref().map(|(file, _)| file) == wanted.as_ref() {
@@ -1681,25 +1688,15 @@ impl App {
             running.home_window.request_redraw();
             return;
         }
-        // In the editor, a picture or video dropped on the window goes on the slide, as Media…
-        // puts it there; in the theme editor, a picture becomes the theme's background.
+        // In the editor (a song's or a theme's), a picture or video dropped on the window goes
+        // on the slide or the layout, as Media… puts it there.
         if let Some(running) = self.running.as_mut()
             && running.home_state.editing.is_some()
             && media::is_media(path)
         {
             let state = &mut running.home_state;
             state.drop_hover = false;
-            let for_theme = state.theme_edit.is_some();
             match images::import(path) {
-                Ok(imported) if for_theme => {
-                    if media::is_video(path) {
-                        state.notice = Some("A theme's background can be a picture; this is a video.".to_owned());
-                    } else if let Some(edit) = state.theme_edit.as_mut() {
-                        edit.theme.background_picture = Some(imported.file);
-                        edit.changed = true;
-                        state.notice = Some("The picture is now the theme's background.".to_owned());
-                    }
-                }
                 Ok(imported) => {
                     applog::event("editor", &format!("dropped {} on the slide", path.display()));
                     state.picture_to_add.push(imported);

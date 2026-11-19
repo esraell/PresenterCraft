@@ -53,6 +53,7 @@ pub fn ui(ui: &mut egui::Ui, state: &mut HomeState) {
                             id: pc_model::Uuid::new_v4(),
                             name: format!("{} copy", original.name),
                             boxes: original.boxes.clone(),
+                            objects: original.objects.clone(),
                         };
                         state.stage_layouts.insert(layout_at + 1, copy);
                         state.stage_edit = (layout_at + 1, None);

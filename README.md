@@ -187,6 +187,10 @@ ProPresenter.
   templates, each a set of named boxes. A song's slide uses the template that suits it (two
   languages or one) unless you pick one from the slide's right-click menu; Bible slides use
   the template you choose.
+- The theme editor works as the song editor does: Add Text, Shapes, Media… and pictures or
+  videos dragged from the Finder. A template's shapes, pictures and videos (a logo, a bar, a
+  moving background) are drawn behind the words on every slide that uses it, and a video in
+  one plays while such a slide is on screen.
 - Templates can be added, duplicated, renamed and deleted. Changes save as you make them.
 - A theme can have a background colour and a picture behind all its slides (shown while no
   media is on), set when no box is selected in the theme editor.

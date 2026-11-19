@@ -417,14 +417,18 @@ fn usual_line_height() -> f32 {
     LINE_HEIGHT
 }
 
-/// One layout of a theme: a set of named boxes, each with its place and its look. A slide is
-/// drawn with one template.
+/// One layout of a theme: a set of named boxes, each with its place and its look, and any other
+/// objects (shapes, pictures, videos) drawn behind the words on every slide that uses it. A
+/// slide is drawn with one template.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThemeTemplate {
     /// Stays the same when the template is renamed. Slides that ask for a template name it by this.
     pub id: Uuid,
     pub name: String,
     pub boxes: Vec<BoxStyle>,
+    /// Shapes, pictures and videos, in order from the back, behind the slide's own objects.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<Object>,
 }
 
 /// A theme: any number of templates, and a colour behind them all.
@@ -488,8 +492,14 @@ impl From<ThemeOnDisk> for Theme {
                     id: made(1),
                     name: first.unwrap_or_else(|| "Two languages".to_owned()),
                     boxes: file.boxes,
+                    objects: Vec::new(),
                 },
-                ThemeTemplate { id: made(2), name: second.unwrap_or_else(|| "One language".to_owned()), boxes: alone },
+                ThemeTemplate {
+                    id: made(2),
+                    name: second.unwrap_or_else(|| "One language".to_owned()),
+                    boxes: alone,
+                    objects: Vec::new(),
+                },
             ];
         }
         Theme {
@@ -568,13 +578,16 @@ impl ThemeTemplate {
         (2..).map(|n| Role(format!("{}-{n}", base.0))).find(|role| !taken(role)).unwrap_or(base)
     }
 
-    /// The template as a slide the editor can work on: a text box for each of its boxes,
-    /// saying "Text", carrying the box's whole look, place and name.
+    /// The template as a slide the editor can work on: its shapes, pictures and videos, then a
+    /// text box for each of its boxes, saying "Text", carrying the box's whole look, place and
+    /// name.
     pub fn as_slide(&self) -> Slide {
+        // Its other objects first, at the back, as they are drawn; then its boxes.
         let objects = self
-            .boxes
+            .objects
             .iter()
-            .map(|style| {
+            .cloned()
+            .chain(self.boxes.iter().map(|style| {
                 let mut object = Object::text(style.role.clone(), "Text");
                 object.name = style.label();
                 object.frame = Some(style.rect);
@@ -582,22 +595,25 @@ impl ThemeTemplate {
                     *own = TextStyle::all(style);
                 }
                 object
-            })
+            }))
             .collect();
         let mut slide = Slide::new(objects);
         slide.template = Some(self.id);
         slide
     }
 
-    /// The template with its boxes replaced by what the editor made of that slide. Each text
-    /// box becomes a box of the template, keeping its role (or taking one from its name if it
-    /// is new), its place, its look and its name. Two boxes cannot share a role: the first on
-    /// the slide keeps it.
+    /// The template with its boxes and objects replaced by what the editor made of that slide.
+    /// Each text box becomes a box of the template, keeping its role (or taking one from its
+    /// name if it is new), its place, its look and its name; two boxes cannot share a role (the
+    /// first on the slide keeps it). Shapes, pictures and videos are kept as they are, in order.
     pub fn with_slide(&self, slide: &Slide) -> ThemeTemplate {
         let mut boxes: Vec<BoxStyle> = Vec::new();
+        let mut objects: Vec<Object> = Vec::new();
         for object in &slide.objects {
-            // A theme is made of text boxes only.
-            let ObjectKind::Text { style, .. } = &object.kind else { continue };
+            let ObjectKind::Text { style, .. } = &object.kind else {
+                objects.push(object.clone());
+                continue;
+            };
             let role = object.role.clone().unwrap_or_else(|| role_from_name(&object.name));
             if boxes.iter().any(|have| have.role == role) {
                 continue;
@@ -619,7 +635,7 @@ impl ThemeTemplate {
             look.role = role;
             boxes.push(look);
         }
-        ThemeTemplate { id: self.id, name: self.name.clone(), boxes }
+        ThemeTemplate { id: self.id, name: self.name.clone(), boxes, objects }
     }
 }
 
@@ -690,11 +706,13 @@ impl Theme {
                     id: Uuid::from_u128(1),
                     name: "Two languages".to_owned(),
                     boxes: vec![main, translation, reference.clone()],
+                    objects: Vec::new(),
                 },
                 ThemeTemplate {
                     id: Uuid::from_u128(2),
                     name: "One language".to_owned(),
                     boxes: vec![main_alone, reference],
+                    objects: Vec::new(),
                 },
             ],
             background: None,
@@ -745,8 +763,9 @@ impl Theme {
         let taken = |name: &str| self.templates.iter().any(|t| t.name == name);
         let name = (self.templates.len() + 1..).map(|n| format!("Template {n}")).find(|name| !taken(name));
         let boxes = self.templates.get(index).map(|t| t.boxes.clone()).unwrap_or_default();
+        let objects = self.templates.get(index).map(|t| t.objects.clone()).unwrap_or_default();
         let at = (index + 1).min(self.templates.len());
-        self.templates.insert(at, ThemeTemplate { id: Uuid::new_v4(), name: name.unwrap_or_default(), boxes });
+        self.templates.insert(at, ThemeTemplate { id: Uuid::new_v4(), name: name.unwrap_or_default(), boxes, objects });
         at
     }
 

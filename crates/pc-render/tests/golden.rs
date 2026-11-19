@@ -713,3 +713,37 @@ fn a_picture_still_shows_after_a_blank_drawing() {
     assert!(is_about(draw(None), [0, 0, 0]), "the blank drawing is black");
     assert!(is_about(draw(Some(&photo)), [230, 30, 30]), "the picture is still there");
 }
+
+/// A theme's layout can hold shapes (and pictures and videos): they are drawn behind the words
+/// of every slide that uses the layout, and the slide the theme editor works on, which holds
+/// them itself, draws each once.
+#[test]
+fn a_layouts_shapes_are_drawn_behind_the_words_of_its_slides() {
+    let (w, h) = (320, 180);
+    let mut theme = Theme::builtin();
+    // A green bar across the bottom of every layout.
+    let mut bar = Object::shape(pc_model::Shape::Rectangle);
+    bar.frame = Some(pc_model::SlideRect { x: 0.0, y: 900.0, w: 1920.0, h: 180.0 });
+    bar.fill = Some(pc_model::Rgba::rgb(0, 200, 0));
+    for template in &mut theme.templates {
+        template.objects = vec![bar.clone()];
+    }
+    let at = |pixels: &[u8], x: u32, y: u32| {
+        let i = ((y * w + x) * 4) as usize;
+        (pixels[i], pixels[i + 1], pixels[i + 2])
+    };
+    let song = slide("Words", None);
+    let drawn = render_with(Some(&song), &theme, w, h);
+    let (r, g, b) = at(&drawn, 10, h - 8);
+    assert!(g > 150 && r < 60 && b < 60, "the layout's bar shows under a song's slide: {:?}", (r, g, b));
+    let (r, g, b) = at(&drawn, 10, 8);
+    assert!(r < 30 && g < 30 && b < 30, "and nowhere else");
+    // The theme editor's slide is the layout itself, its bar among its objects.
+    let editing = theme.templates[0].as_slide();
+    assert_eq!(editing.objects.iter().filter(|o| o.id == bar.id).count(), 1);
+    assert!(pc_render::layout_objects(&editing, &theme).is_none(), "drawn once, as the slide's own");
+    // Saving what the editor made keeps the bar.
+    let saved = theme.templates[0].with_slide(&editing);
+    assert_eq!(saved.objects, vec![bar]);
+    assert_eq!(saved.boxes, theme.templates[0].boxes);
+}
