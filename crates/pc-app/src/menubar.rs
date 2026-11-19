@@ -249,7 +249,7 @@ pub const MENUS: &[(&str, &[Entry])] = &[
         "Insert",
         &[
             Do(Action::InsertText, "Text Box", None),
-            Do(Action::InsertPicture, "Picture…", shift_cmd('I')),
+            Do(Action::InsertPicture, "Media…", shift_cmd('I')),
             Line,
             Do(Action::InsertShape(0), "Rounded Rect", None),
             Do(Action::InsertShape(1), "Rectangle", None),

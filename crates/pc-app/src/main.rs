@@ -647,6 +647,10 @@ struct App {
     started: Instant,
     /// The video on screen, by its media item, playing.
     video: Option<(Uuid, pc_video::Player)>,
+    /// A video in a box on the slide on screen, by the file the box names, playing.
+    slide_video: Option<(String, pc_video::Player)>,
+    /// When the Program preview was last drawn for a playing video.
+    video_preview_at: Instant,
     /// The song on the Announcements layer: which, the slide shown, since when, and what was
     /// sent to the screens.
     announcing: Option<Announcing>,
@@ -1168,6 +1172,83 @@ impl App {
         }
     }
 
+    /// Plays the video in a box on the slide on screen, if it has one, and stops the one that was.
+    /// The video loops, with its sound; it is the first visible picture box naming a video.
+    fn sync_slide_video(&mut self) {
+        let wanted = self.show.live_slide().and_then(|(_, slide)| {
+            slide.objects.iter().filter(|object| !object.hidden).find_map(|object| match &object.kind {
+                pc_model::ObjectKind::Image { file, .. } if media::is_video(std::path::Path::new(file)) => {
+                    Some(file.clone())
+                }
+                _ => None,
+            })
+        });
+        if self.slide_video.as_ref().map(|(file, _)| file) == wanted.as_ref() {
+            return;
+        }
+        if self.slide_video.take().is_some() {
+            applog::event("video", "stopped the video on the slide");
+        }
+        let Some(file) = wanted else { return };
+        let Some(path) = images::resolve(&file) else { return };
+        let quiet = self.quiet();
+        match pc_video::Player::open(&path) {
+            Ok(mut player) => {
+                applog::event("video", &format!("playing {} in a box on the slide", path.display()));
+                player.set_looping(true);
+                if quiet {
+                    player.set_volume(0.0);
+                }
+                player.play();
+                self.slide_video = Some((file, player));
+            }
+            Err(problem) => {
+                if let Some(running) = self.running.as_mut() {
+                    running.home_state.notice = Some(problem);
+                }
+            }
+        }
+    }
+
+    /// While a video plays (as the media or in a box), the Program preview is drawn again a few
+    /// times a second, so it moves as the screens do.
+    fn tick_video_preview(&mut self) -> Option<Instant> {
+        if self.video.is_none() && self.slide_video.is_none() {
+            return None;
+        }
+        let every = Duration::from_millis(200);
+        if self.video_preview_at.elapsed() >= every {
+            self.video_preview_at = Instant::now();
+            self.refresh_preview(false);
+            if let Some(running) = self.running.as_ref() {
+                running.home_window.request_redraw();
+            }
+        }
+        Some(self.video_preview_at + every)
+    }
+
+    /// Keeps the video in a box on the slide going; if the system's player can't play it,
+    /// FFmpeg takes over. Says when to look again.
+    fn tick_slide_video(&mut self) -> Option<Instant> {
+        let (file, player) = self.slide_video.as_mut()?;
+        let wait = player.tick();
+        if player.problem().is_some() && !player.uses_ffmpeg() {
+            let file = file.clone();
+            let path = images::resolve(&file)?;
+            if let Ok(mut fallback) = pc_video::Player::open_with_ffmpeg(&path) {
+                applog::event("video", &format!("playing {} in a box with FFmpeg instead", path.display()));
+                fallback.set_looping(true);
+                if self.quiet() {
+                    fallback.set_volume(0.0);
+                }
+                fallback.play();
+                self.slide_video = Some((file, fallback));
+                self.refresh_output();
+            }
+        }
+        Some(Instant::now() + wait)
+    }
+
     /// Keeps the video on screen going (a looping one starts again at its end) and the
     /// operator's view of it up to date. Says when to look again.
     fn tick_video(&mut self) -> Option<Instant> {
@@ -1409,7 +1490,9 @@ impl App {
     /// Tells the output what is on each layer now, then redraws the operator's preview.
     fn refresh_output(&mut self) {
         self.sync_video();
+        self.sync_slide_video();
         let video = self.video.as_ref().map(|(_, player)| player.frames());
+        let slide_video = self.slide_video.as_ref().map(|(file, player)| (file.clone(), player.frames()));
         let media_fit = self.live_media_fit();
         let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
         let about = self.stage_about();
@@ -1429,6 +1512,7 @@ impl App {
                 media: media.clone(),
                 video,
                 media_fit,
+                slide_video,
                 slide: slide.clone(),
                 theme: theme.clone(),
                 enabled: self.show.output_enabled(),
@@ -1472,8 +1556,10 @@ impl App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        // The preview is small: it takes the small copy.
-        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).map(|p| p.small.clone());
+        // The preview is small: it takes the small copy, or the playing video's newest picture.
+        let playing = self.video.as_ref().and(running.output.as_ref()).and_then(OutputHandle::video_preview);
+        let media = playing
+            .or_else(|| self.show.live_media().and_then(|index| self.pictures.get(index)).map(|p| p.small.clone()));
         let state = &running.home_state;
         // The slide as far as its builds have got, with nothing moving, and its linked text filled in.
         let step = self.show.build_step();
@@ -1908,8 +1994,10 @@ impl App {
         if !std::mem::take(&mut running.home_state.picture_request) {
             return;
         }
-        let chosen =
-            rfd::FileDialog::new().set_title("Choose a Picture").add_filter("Pictures", &media::PICTURES).pick_file();
+        let chosen = rfd::FileDialog::new()
+            .set_title("Choose a Picture or Video")
+            .add_filter("Pictures and Videos", &media::PICTURE_ENDINGS)
+            .pick_file();
         let state = &mut running.home_state;
         match chosen.map(|path| images::import(&path)) {
             Some(Ok(picture)) => state.picture_to_add = Some(picture),
@@ -3948,6 +4036,8 @@ impl ApplicationHandler<String> for App {
         self.tick_advance();
         self.sync_overlay();
         let video_at = self.tick_video();
+        let box_video_at = self.tick_slide_video();
+        let preview_at = self.tick_video_preview();
         let audio_at = self.tick_audio();
         let announce_at = self.tick_announcements();
         let cycle_at = self.tick_media_cycle();
@@ -3981,7 +4071,18 @@ impl ApplicationHandler<String> for App {
             }
             panel_at = [panel_at, panel.next_repaint].into_iter().flatten().min();
         }
-        let wake = [running.next_repaint, panel_at, save_at, video_at, audio_at, announce_at, cycle_at, folders_at];
+        let wake = [
+            running.next_repaint,
+            panel_at,
+            save_at,
+            video_at,
+            box_video_at,
+            preview_at,
+            audio_at,
+            announce_at,
+            cycle_at,
+            folders_at,
+        ];
         match wake.into_iter().flatten().min() {
             Some(at) => el.set_control_flow(ControlFlow::WaitUntil(at)),
             None => el.set_control_flow(ControlFlow::Wait),
@@ -4112,6 +4213,8 @@ fn main() -> ExitCode {
         advanced: false,
         started: Instant::now(),
         video: None,
+        slide_video: None,
+        video_preview_at: Instant::now(),
         media_playlists: Vec::new(),
         announcing: None,
         media_cycle: None,

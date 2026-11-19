@@ -264,8 +264,8 @@ fn draw(image: &CGImage) -> Option<Frame> {
     Some(Frame { width: width as u32, height: height as u32, rgba })
 }
 
-/// A still from a video, about half a second in, no larger than `max_side` on its longer side.
-pub fn still(path: &Path, max_side: u32) -> Result<Frame, String> {
+/// A still from a video, `at` seconds in, no larger than `max_side` on its longer side.
+pub fn still(path: &Path, max_side: u32, at: f64) -> Result<Frame, String> {
     let url = file_url(path)?;
     // SAFETY: a valid file URL and no options.
     let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
@@ -281,10 +281,11 @@ pub fn still(path: &Path, max_side: u32) -> Result<Frame, String> {
     // this one waits for it, which a still for the media bin can do.
     #[allow(deprecated)]
     // SAFETY: plain values; a null pointer says the actual time isn't wanted.
-    let image = unsafe { generator.copyCGImageAtTime_actualTime_error(at_seconds(0.5), std::ptr::null_mut()) }
-        .map_err(|error| {
+    let image = unsafe { generator.copyCGImageAtTime_actualTime_error(at_seconds(at), std::ptr::null_mut()) }.map_err(
+        |error| {
             format!("{}: not a video PresenterCraft can open ({}).", shown_name(path), error.localizedDescription())
-        })?;
+        },
+    )?;
     draw(&image).ok_or_else(|| format!("{}: the video's picture is empty.", shown_name(path)))
 }
 

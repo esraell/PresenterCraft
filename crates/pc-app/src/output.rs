@@ -24,6 +24,9 @@ pub struct Frame {
     pub video: Option<pc_video::Frames>,
     /// How the media fills the screen.
     pub media_fit: pc_model::ImageFit,
+    /// A video in a box on the slide, by the file the box names, and where its pictures come
+    /// from: each new one is shown in the box in place of its still.
+    pub slide_video: Option<(String, pc_video::Frames)>,
     pub slide: Option<Arc<Slide>>,
     pub theme: Arc<Theme>,
     /// When false the output is black whatever the slide is.
@@ -38,6 +41,13 @@ pub struct Frame {
     pub about: crate::stage::About,
     /// How many of the slide's click builds have been set going.
     pub build_step: usize,
+}
+
+impl Frame {
+    /// True while a video plays, as the media or in a box on the slide.
+    fn plays_video(&self) -> bool {
+        self.video.is_some() || self.slide_video.is_some()
+    }
 }
 
 /// What is shown over the slides: a message on the audience screens; the stage message and the
@@ -112,10 +122,18 @@ const NDI_SIZE: (u32, u32) = (1920, 1080);
 
 type NdiStatuses = Arc<Mutex<Vec<(Uuid, NdiStatus)>>>;
 
+/// A small copy of the playing video's newest picture, for the operator's Program preview.
+type PreviewTap = Arc<Mutex<Option<Picture>>>;
+
+/// How wide the copy for the preview is, and how often it is made.
+const PREVIEW_TAP_WIDTH: u32 = 640;
+const PREVIEW_TAP_EVERY: Duration = Duration::from_millis(150);
+
 pub struct OutputHandle {
     tx: Sender<OutputMsg>,
     thread: Option<JoinHandle<()>>,
     ndi_status: NdiStatuses,
+    preview_tap: PreviewTap,
 }
 
 impl OutputHandle {
@@ -124,11 +142,18 @@ impl OutputHandle {
         let (tx, rx) = channel();
         let ndi_status: NdiStatuses = Arc::default();
         let status = ndi_status.clone();
+        let preview_tap: PreviewTap = Arc::default();
+        let tap = preview_tap.clone();
         let thread = std::thread::Builder::new()
             .name("output".to_owned())
-            .spawn(move || run(device, queue, theme, rx, status))
+            .spawn(move || run(device, queue, theme, rx, status, tap))
             .map_err(|e| format!("could not start the output thread: {e}"))?;
-        Ok(OutputHandle { tx, thread: Some(thread), ndi_status })
+        Ok(OutputHandle { tx, thread: Some(thread), ndi_status, preview_tap })
+    }
+
+    /// A small copy of the playing video's newest picture, for the Program preview.
+    pub fn video_preview(&self) -> Option<Picture> {
+        self.preview_tap.lock().ok().and_then(|tap| tap.clone())
     }
 
     /// Never blocks. Returns false when the thread has ended and the message went nowhere.
@@ -212,9 +237,19 @@ struct Output {
     /// How often and how long the screens are drawn, and how many video pictures came, for the log.
     timing: crate::applog::Timing,
     video_pictures: u64,
+    /// Where the preview's small copy of the video goes, and when the last was made.
+    preview_tap: PreviewTap,
+    tapped_at: Instant,
 }
 
-fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver<OutputMsg>, ndi_status: NdiStatuses) {
+fn run(
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    theme: Arc<Theme>,
+    rx: Receiver<OutputMsg>,
+    ndi_status: NdiStatuses,
+    preview_tap: PreviewTap,
+) {
     let painter = match Painter::new(&device) {
         Ok(painter) => painter,
         Err(e) => return eprintln!("The output cannot draw on this computer: {e}"),
@@ -226,6 +261,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             media: None,
             video: None,
             media_fit: pc_model::ImageFit::Fill,
+            slide_video: None,
             slide: None,
             theme,
             enabled: true,
@@ -253,6 +289,8 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         look: pc_model::Transition::of(pc_model::TransitionKind::Cut),
         timing: crate::applog::Timing::new("screen drawings"),
         video_pictures: 0,
+        preview_tap,
+        tapped_at: Instant::now(),
         device,
         queue,
     };
@@ -272,7 +310,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(Duration::ZERO, |since| Duration::from_nanos(u64::from(since.subsec_nanos())));
             // A playing video is looked at for a new picture far more often.
-            let wait = if output.frame.video.is_some() {
+            let wait = if output.frame.plays_video() {
                 VIDEO_POLL
             } else {
                 Duration::from_secs(1).saturating_sub(into_second) + Duration::from_millis(5)
@@ -301,7 +339,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
-        } else if output.frame.video.is_some() {
+        } else if output.frame.plays_video() {
             match rx.recv_timeout(VIDEO_POLL) {
                 Ok(msg) => Some(msg),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -365,6 +403,17 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                     };
                     if !same_video {
                         output.video_picture = None;
+                        if let Ok(mut tap) = output.preview_tap.lock() {
+                            *tap = None;
+                        }
+                    }
+                    // A video box that stops playing goes back to its still.
+                    let old_box = output.frame.slide_video.as_ref().map(|(file, _)| file.clone());
+                    let new_box = frame.slide_video.as_ref().map(|(file, _)| file.clone());
+                    if old_box != new_box
+                        && let Some(file) = old_box
+                    {
+                        pc_render::forget_picture(&file);
                     }
                     let same_media = match (&output.frame.media, &frame.media) {
                         (Some(was), Some(now)) => was.same(now),
@@ -723,12 +772,30 @@ impl Output {
 
     /// Takes the playing video's newest picture, if a new one has come. True when it has.
     fn take_video_picture(&mut self) -> bool {
-        let Some(frame) = self.frame.video.as_ref().and_then(pc_video::Frames::next) else {
-            return false;
-        };
-        self.video_picture = Picture::from_rgba(frame.width, frame.height, frame.rgba);
-        self.video_pictures += 1;
-        self.video_picture.is_some()
+        let mut new = false;
+        if let Some(frame) = self.frame.video.as_ref().and_then(pc_video::Frames::next) {
+            self.video_picture = Picture::from_rgba(frame.width, frame.height, frame.rgba);
+            self.video_pictures += 1;
+            new |= self.video_picture.is_some();
+            // A few times a second, a small copy for the operator's preview.
+            if self.tapped_at.elapsed() >= PREVIEW_TAP_EVERY
+                && let Some(picture) = &self.video_picture
+                && let Ok(mut tap) = self.preview_tap.lock()
+            {
+                *tap = Some(picture.shrunk(PREVIEW_TAP_WIDTH));
+                self.tapped_at = Instant::now();
+            }
+        }
+        // A video in a box on the slide: its newest picture stands in for the box's still.
+        if let Some((file, frames)) = self.frame.slide_video.as_ref()
+            && let Some(frame) = frames.next()
+            && let Some(picture) = Picture::from_rgba(frame.width, frame.height, frame.rgba)
+        {
+            pc_render::show_picture(file, picture);
+            self.video_pictures += 1;
+            new = true;
+        }
+        new
     }
 
     /// True when something on the screens changes by itself each second: the time on a stage

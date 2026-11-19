@@ -31,6 +31,14 @@ pub struct Imported {
 /// the operator.
 pub fn import(path: &Path) -> Result<Imported, String> {
     let shown = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    // A video stays where it is (they can be large) and is named by its whole path; its still
+    // gives its shape.
+    if crate::media::is_video(path) {
+        let still = crate::media::load_picture(path)?;
+        let name = path.file_stem().map_or_else(|| "Video".to_owned(), |stem| stem.to_string_lossy().into_owned());
+        let file = path.to_string_lossy().into_owned();
+        return Ok(Imported { file, name, width: still.width(), height: still.height() });
+    }
     // A picture in a format the system reads (HEIC, TIFF...) is measured by decoding it.
     let (width, height) = image::image_dimensions(path).or_else(|e| {
         crate::media::load_picture(path)

@@ -37,6 +37,15 @@ pub(crate) fn picture(file: &str) -> Option<Picture> {
     read
 }
 
+/// Puts a picture in place of a file's, until it is forgotten: how a video on a slide shows its
+/// newest frame where its still would be.
+pub fn show_picture(file: &str, picture: Picture) {
+    let kept = KEPT.get_or_init(|| Mutex::new(Kept::new(KEEP_BYTES)));
+    if let Ok(mut kept) = kept.lock() {
+        kept.insert(file, Some(picture));
+    }
+}
+
 /// Forgets a file's picture, so it is read again the next time it is drawn.
 pub fn forget_picture(file: &str) {
     if let Some(Ok(mut kept)) = KEPT.get().map(Mutex::lock) {

@@ -2108,11 +2108,14 @@ fn edit_view(
             ui.painter().text(
                 picture_bar.center(),
                 Align2::CENTER_CENTER,
-                "Picture…",
+                "Media…",
                 crate::studio::semibold(12.5),
                 crate::studio::TEXT,
             );
-            if picture.on_hover_text("Put a picture from a file on the slide").clicked() {
+            if picture
+                .on_hover_text("Put a picture or video from a file on the slide (a video plays in its box when the slide is on screen)")
+                .clicked()
+            {
                 state.picture_request = true;
             }
             let shapes_bar = Rect::from_center_size(pos2(inner.center().x, inner.min.y + 22.0), vec2(96.0, 28.0));

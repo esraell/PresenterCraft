@@ -41,20 +41,43 @@ pub fn ffmpeg_found() -> bool {
     ffmpeg::tool("ffmpeg").is_some()
 }
 
-/// A still from a video, about half a second in, no larger than `max_side` on its longer side:
-/// from the system's player if it can read the video, otherwise from FFmpeg.
+/// A still from a video, no larger than `max_side` on its longer side: from the system's player
+/// if it can read the video, otherwise from FFmpeg. Many videos open on black or fade in, so a
+/// dark picture half a second in is passed over for one a little later.
 pub fn still(path: &Path, max_side: u32) -> Result<Frame, String> {
+    let mut last = None;
+    for at in [0.5, 2.0, 5.0] {
+        match still_at(path, max_side, at) {
+            Ok(frame) if !dark(&frame) => return Ok(frame),
+            Ok(frame) => last = Some(frame),
+            Err(problem) => return last.ok_or(problem),
+        }
+    }
+    last.ok_or_else(|| "The video has no picture.".to_owned())
+}
+
+fn still_at(path: &Path, max_side: u32, at: f64) -> Result<Frame, String> {
     #[cfg(target_os = "macos")]
-    let system = mac::still(path, max_side);
+    let system = mac::still(path, max_side, at);
     #[cfg(not(target_os = "macos"))]
     let system: Result<Frame, String> = Err(String::new());
     match system {
         Ok(frame) => Ok(frame),
-        Err(system_error) => ffmpeg::still(path, max_side).map_err(|ffmpeg_error| {
+        Err(system_error) => ffmpeg::still(path, max_side, at).map_err(|ffmpeg_error| {
             // A video the system read fine but FFmpeg can't is still the system's problem to report.
             if system_first(path) && !system_error.is_empty() { system_error } else { ffmpeg_error }
         }),
     }
+}
+
+/// True for a picture that is nearly all black: a video's opening before its first scene.
+fn dark(frame: &Frame) -> bool {
+    let pixels = frame.rgba.as_chunks::<4>().0;
+    let step = (pixels.len() / 2000).max(1);
+    let (sum, count) = pixels.iter().step_by(step).fold((0u64, 0u64), |(sum, count), [r, g, b, _]| {
+        (sum + u64::from(*r) * 3 + u64::from(*g) * 6 + u64::from(*b), count + 10)
+    });
+    count == 0 || sum / count < 20
 }
 
 /// A video playing, with its sound: through the system's player, or through FFmpeg.
@@ -234,6 +257,13 @@ fn bgra_rows_to_rgba(bytes: &[u8], width: usize, height: usize, bytes_per_row: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_black_opening_counts_as_dark_and_a_scene_does_not() {
+        let black = Frame { width: 4, height: 4, rgba: [0, 0, 0, 255].repeat(16) };
+        let scene = Frame { width: 4, height: 4, rgba: [90, 120, 60, 255].repeat(16) };
+        assert!(dark(&black) && !dark(&scene));
+    }
 
     #[test]
     fn premultiplied_colours_come_back_straight() {

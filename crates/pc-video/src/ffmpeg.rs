@@ -109,12 +109,13 @@ fn fitted(info: &Info, max_w: u32, max_h: u32) -> (u32, u32) {
     (even(w * scale), even(h * scale))
 }
 
-/// A still from a video, no larger than `max_side` on its longer side.
-pub fn still(path: &Path, max_side: u32) -> Result<Frame, String> {
+/// A still from a video, about `at` seconds in (sooner in a short video), no larger than
+/// `max_side` on its longer side.
+pub fn still(path: &Path, max_side: u32, at: f64) -> Result<Frame, String> {
     let info = probe(path)?;
     let ffmpeg = tool("ffmpeg").ok_or_else(|| missing(path))?;
     let (w, h) = fitted(&info, max_side, max_side);
-    let at = info.duration.map_or(0.0, |length| (length * 0.1).min(0.5));
+    let at = info.duration.map_or(0.0, |length| at.min(length * 0.5));
     let out = Command::new(ffmpeg)
         .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", &format!("{at:.3}"), "-i"])
         .arg(path)
