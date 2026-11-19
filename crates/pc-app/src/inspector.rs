@@ -58,30 +58,7 @@ pub struct InspectorState {
 pub struct Later {
     scrolling: bool,
     scroll_direction: usize,
-    linked_text: bool,
-    linked_type: usize,
 }
-
-const LINKED_TYPES: [&str; 18] = [
-    "Slide Object",
-    "Current Slide",
-    "Next Slide",
-    "Timers",
-    "System Clock",
-    "Stage Message",
-    "Video Countdown",
-    "Audio Countdown",
-    "Playback Marker",
-    "Timecode",
-    "Group",
-    "Slide Label",
-    "Slide Count",
-    "Presentation Name",
-    "Playlist",
-    "Capture",
-    "Auto Advance Time",
-    "Operator Notes",
-];
 
 const WEIGHTS: [(u16, &str); 9] = [
     (100, "Thin"),
@@ -290,21 +267,6 @@ fn choice<T: PartialEq + Copy>(ui: &mut egui::Ui, salt: &str, width: f32, value:
             ui.selectable_value(value, *option, *name);
         }
     });
-}
-
-/// A pop-up list for something not built yet: it shows its choices and remembers the pick.
-fn choice_later(ui: &mut egui::Ui, salt: &str, width: f32, picked: &mut usize, options: &[&str], what: &str) {
-    egui::ComboBox::from_id_salt(salt)
-        .selected_text(options.get(*picked).copied().unwrap_or_default())
-        .width(width)
-        .height(420.0)
-        .show_ui(ui, |ui| {
-            for (index, name) in options.iter().enumerate() {
-                ui.selectable_value(picked, index, *name);
-            }
-        })
-        .response
-        .on_hover_text(not_built(what));
 }
 
 fn colour(ui: &mut egui::Ui, value: &mut Rgba, hint: &str) {
@@ -725,6 +687,8 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
 fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
     let for_theme = state.theme_edit.is_some();
     let fonts = state.fonts.clone();
+    let timers: Vec<(pc_model::Uuid, String)> =
+        state.timers.iter().map(|timer| (timer.id, timer.name.clone())).collect();
     let inspector = &mut state.inspector;
     let Some(draft) = state.editing.as_mut() else { return };
     let Some(object) = draft.selected_object_mut() else {
@@ -778,6 +742,58 @@ fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
 
     if for_theme {
         return;
+    }
+    // Linked text: the box shows something that changes, such as the time, in place of its words.
+    rule(ui);
+    let timer_name = |id: pc_model::Uuid| timers.iter().find(|(have, _)| *have == id).map(|(_, name)| name.as_str());
+    let mut link = object.link;
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(vec2(TICK, ROW), Layout::left_to_right(Align::Center), |ui| {
+            ui.set_min_width(TICK);
+            let mut linked = link.is_some();
+            if tick(ui, &mut linked, "Linked Text")
+                .on_hover_text("Show something that changes, such as the time or a timer, instead of these words")
+                .changed()
+            {
+                link = linked.then_some(pc_model::TextLink::Clock);
+            }
+        });
+        if let Some(chosen) = link {
+            let shown = match chosen {
+                pc_model::TextLink::Timer { id } => format!("Timer: {}", timer_name(id).unwrap_or("(gone)")),
+                other => other.name().to_owned(),
+            };
+            egui::ComboBox::from_id_salt("linked text").selected_text(shown).width(ui.available_width()).show_ui(
+                ui,
+                |ui| {
+                    for option in pc_model::TextLink::SIMPLE {
+                        if ui.add(egui::Button::selectable(chosen == option, option.name())).clicked() {
+                            link = Some(option);
+                        }
+                    }
+                    for (id, name) in &timers {
+                        let option = pc_model::TextLink::Timer { id: *id };
+                        if ui.add(egui::Button::selectable(chosen == option, format!("Timer: {name}"))).clicked() {
+                            link = Some(option);
+                        }
+                    }
+                },
+            );
+        }
+    });
+    if link != object.link {
+        // The box's own words say what it is linked to, so its picture in the editor does too.
+        let placeholder = text.is_empty() || text == "Text" || (text.starts_with('[') && text.ends_with(']'));
+        if let Some(chosen) = link
+            && placeholder
+        {
+            let name = match chosen {
+                pc_model::TextLink::Timer { id } => timer_name(id),
+                _ => None,
+            };
+            *text = crate::links::placeholder(chosen, name);
+        }
+        object.link = link;
     }
     rule(ui);
     ui.horizontal(|ui| {
@@ -1066,23 +1082,6 @@ fn text_look(
         let options: Vec<(pc_model::ListStyle, &str)> =
             pc_model::ListStyle::ALL.iter().map(|list| (*list, list.name())).collect();
         choice(ui, "list", ui.available_width(), &mut wanted.list, &options);
-    });
-    rule(ui);
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(vec2(TICK, ROW), Layout::left_to_right(Align::Center), |ui| {
-            ui.set_min_width(TICK);
-            tick_later(ui, &mut inspector.later.linked_text, "Linked Text");
-        });
-        if inspector.later.linked_text {
-            choice_later(
-                ui,
-                "linked text",
-                ui.available_width(),
-                &mut inspector.later.linked_type,
-                &LINKED_TYPES,
-                "Linked Text",
-            );
-        }
     });
 }
 

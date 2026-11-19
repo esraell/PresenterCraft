@@ -9,6 +9,7 @@ mod home;
 mod icons;
 mod images;
 mod inspector;
+mod links;
 mod live_tabs;
 mod load;
 mod macros;
@@ -994,14 +995,28 @@ impl App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        // The slide as far as its builds have got, with nothing moving.
-        let step = self.show.build_step();
-        let slide = self
-            .show
-            .live_slide()
-            .map(|(_, slide)| Arc::new(slide.built(&theme, pc_model::BuildClock::settled(step)).0));
         let media = self.show.live_media().and_then(|index| self.pictures.get(index)).cloned();
         let state = &running.home_state;
+        // The slide as far as its builds have got, with nothing moving, and its linked text filled in.
+        let step = self.show.build_step();
+        let next_slide = self.show.live().and(self.show.upcoming()).and_then(|at| {
+            let song = self.show.presentations().get(at.presentation)?;
+            song.slide(at.slide).map(|(_, slide)| slide.clone())
+        });
+        let copyright = running.overlay_sent.as_ref().and_then(|sent| sent.copyright.clone());
+        let values = links::Values {
+            timers: &state.timers,
+            title: about.title.as_deref(),
+            group: about.group.as_deref(),
+            next: next_slide.as_ref(),
+            stage_message: state.stage_message_live.then_some(state.stage_message.as_str()),
+            copyright: copyright.as_deref(),
+        };
+        let slide = self.show.live_slide().map(|(_, slide)| {
+            let built = slide.built(&theme, pc_model::BuildClock::settled(step)).0;
+            Arc::new(links::fill(&built, &values).into_owned())
+        });
+        running.stage_preview_at = Instant::now();
         running.preview_shows_stage = state.preview_stage;
         if state.preview_stage {
             // The stage screens' picture: the time, this slide, the next, a timer, the stage message.
@@ -2348,6 +2363,8 @@ impl App {
     /// Saves the timers and messages when they change, takes a message off when its time is up,
     /// and tells the output what to show over the slides when that changes.
     fn sync_overlay(&mut self) {
+        // Linked text showing the time or a timer keeps the preview ticking.
+        let links_tick = self.show.live_slide().is_some_and(|(_, slide)| links::ticks(slide));
         // The copyright line of the song on screen, on the slides Settings says.
         let copyright_line = self.running.as_ref().and_then(|running| {
             let state = &running.home_state;
@@ -2429,8 +2446,9 @@ impl App {
         // The stage picture in the Program preview shows the time, so it is redrawn each second;
         // switching between the audience and the stage redraws it straight away.
         let switched = running.preview_shows_stage != state.preview_stage;
-        let stage_tick = state.preview_stage && running.stage_preview_at.elapsed() >= Duration::from_secs(1);
-        if state.preview_stage {
+        let ticking = state.preview_stage || links_tick;
+        let stage_tick = ticking && running.stage_preview_at.elapsed() >= Duration::from_secs(1);
+        if ticking {
             let soon = Instant::now() + Duration::from_millis(500);
             running.next_repaint = Some(running.next_repaint.map_or(soon, |at| at.min(soon)));
         }

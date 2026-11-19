@@ -235,7 +235,9 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             match rx.recv_timeout(Duration::from_secs(1).saturating_sub(into_second) + Duration::from_millis(5)) {
                 Ok(msg) => Some(msg),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if output.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text)) {
+                    if output.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text))
+                        || output.links_tick()
+                    {
                         output.draw(false);
                     } else {
                         output.draw_stage();
@@ -411,13 +413,22 @@ impl Output {
         });
         // Props and the message share the layer over the slide.
         let copyright = self.overlay.copyright.as_deref().map(crate::props::copyright_slide);
-        let mut under: Vec<Slide> = self.overlay.props.clone();
+        let values = crate::links::Values {
+            timers: &self.overlay.timers,
+            title: frame.about.title.as_deref(),
+            group: frame.about.group.as_deref(),
+            next: frame.next.as_deref(),
+            stage_message: self.overlay.stage_message.as_deref(),
+            copyright: self.overlay.copyright.as_deref(),
+        };
+        let mut under: Vec<Slide> =
+            self.overlay.props.iter().map(|prop| crate::links::fill(prop, &values).into_owned()).collect();
         under.extend(copyright);
         let over = crate::props::overlay(&under, message.as_ref()).map(Arc::new);
-        // The slide as far as its builds have got.
+        // The slide as far as its builds have got, with its linked text filled in.
         let slide = frame.slide.as_ref().map(|slide| {
             let (built, _) = slide.built(&frame.theme, self.build_clock());
-            Arc::new(built)
+            Arc::new(crate::links::fill(&built, &values).into_owned())
         });
         (frame.media.clone(), slide, over, frame.theme.clone())
     }
@@ -534,7 +545,16 @@ impl Output {
     /// True when something on the screens changes by itself each second: the time on a stage
     /// screen, or a message with the time or a timer in it.
     fn ticks(&self) -> bool {
-        self.has_stage() || self.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text))
+        self.has_stage()
+            || self.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text))
+            || self.links_tick()
+    }
+
+    /// True when linked text on the audience screens shows the time or a timer.
+    fn links_tick(&self) -> bool {
+        self.frame.enabled
+            && (self.frame.slide.as_deref().is_some_and(crate::links::ticks)
+                || self.overlay.props.iter().any(crate::links::ticks))
     }
 
     /// True for a stage screen.

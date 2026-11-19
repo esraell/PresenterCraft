@@ -263,6 +263,9 @@ pub struct Object {
     /// How the object leaves its slide on a click, if it does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_out: Option<crate::Build>,
+    /// For a text object: what it shows instead of its words, if it is linked to something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<crate::TextLink>,
     #[serde(flatten)]
     pub kind: ObjectKind,
 }
@@ -287,6 +290,7 @@ impl Object {
             flip_v: false,
             build_in: None,
             build_out: None,
+            link: None,
             kind: ObjectKind::Text { text: text.into(), style: TextStyle::default() },
         }
     }
@@ -309,6 +313,7 @@ impl Object {
             flip_v: false,
             build_in: None,
             build_out: None,
+            link: None,
             kind: ObjectKind::Shape { shape },
         }
     }
