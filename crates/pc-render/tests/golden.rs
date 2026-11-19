@@ -599,6 +599,7 @@ fn a_screens_colour_fills_the_empty_room_and_its_covered_edges() {
         time: 0.0,
         backdrop: Some(teal),
         mask: [480.0, 0.0, 0.0, 0.0],
+        announcement: None,
     };
     let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), 160, 120);
     let texture = target_texture(device, 160, 120);
