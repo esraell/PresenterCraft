@@ -296,6 +296,34 @@ impl Object {
     }
 }
 
+impl Slide {
+    /// Replaces the words of the main and translation text. The objects keep their ids, places
+    /// and looks. An empty text removes that object; a missing one is added.
+    pub fn set_words(&mut self, primary: &str, translation: &str) {
+        // Main goes below the translation when it has to be added.
+        for (position, role, text) in [(0, Role::primary(), primary), (usize::MAX, Role::translation(), translation)] {
+            let text = crate::clean_box_text(text);
+            let existing = self.objects.iter().position(|o| o.role.as_ref() == Some(&role));
+            match (existing, text.is_empty()) {
+                (Some(at), true) => {
+                    self.objects.remove(at);
+                }
+                (Some(at), false) => {
+                    // Only the words change; the object keeps the look it was given.
+                    if let ObjectKind::Text { text: words, .. } = &mut self.objects[at].kind {
+                        *words = text;
+                    }
+                }
+                (None, false) => {
+                    let at = position.min(self.objects.len());
+                    self.objects.insert(at, Object::text(role, text));
+                }
+                (None, true) => {}
+            }
+        }
+    }
+}
+
 fn enabled_by_default() -> bool {
     true
 }
@@ -376,34 +404,45 @@ impl Presentation {
         let mut remaining = index;
         for group in &mut copy.groups {
             if let Some(slide) = group.slides.get_mut(remaining) {
-                // Main goes below the translation when it has to be added.
-                for (position, role, text) in
-                    [(0, Role::primary(), primary), (usize::MAX, Role::translation(), translation)]
-                {
-                    let text = crate::clean_box_text(text);
-                    let existing = slide.objects.iter().position(|o| o.role.as_ref() == Some(&role));
-                    match (existing, text.is_empty()) {
-                        (Some(at), true) => {
-                            slide.objects.remove(at);
-                        }
-                        (Some(at), false) => {
-                            // Only the words change; the object keeps the look it was given.
-                            if let ObjectKind::Text { text: words, .. } = &mut slide.objects[at].kind {
-                                *words = text;
-                            }
-                        }
-                        (None, false) => {
-                            let at = position.min(slide.objects.len());
-                            slide.objects.insert(at, Object::text(role, text));
-                        }
-                        (None, true) => {}
-                    }
-                }
+                slide.set_words(primary, translation);
                 return (!slide.objects.is_empty()).then_some(copy);
             }
             remaining -= group.slides.len();
         }
         None
+    }
+
+    /// The song rebuilt from its words as text (the song text format: `[Group]` lines, a blank
+    /// line between slides, `--` before a translation), as the Reflow editor makes it. A slide
+    /// at a place the song already had keeps everything but its words: its looks, label,
+    /// notes, template and shapes. A group named as before keeps its colour.
+    pub fn reflowed(&self, text: &str) -> Presentation {
+        let parsed = crate::parse_song_text(&self.title, text);
+        let before: Vec<&Slide> = self.slides().map(|(_, slide)| slide).collect();
+        let mut index = 0;
+        let mut groups = parsed.groups;
+        for (at, group) in groups.iter_mut().enumerate() {
+            if let Some(same) = self.groups.iter().find(|old| old.name == group.name) {
+                group.color = same.color;
+            }
+            // A group in the same place with the same name is the same group.
+            if let Some(same) = self.groups.get(at).filter(|old| old.name == group.name) {
+                group.id = same.id;
+            }
+            for slide in &mut group.slides {
+                if let Some(old) = before.get(index) {
+                    let words = |role: Role| slide.text_for(&role).unwrap_or("").to_owned();
+                    let (primary, translation) = (words(Role::primary()), words(Role::translation()));
+                    let mut kept = (*old).clone();
+                    kept.set_words(&primary, &translation);
+                    if !kept.objects.is_empty() {
+                        *slide = kept;
+                    }
+                }
+                index += 1;
+            }
+        }
+        Presentation { id: self.id, title: self.title.clone(), groups }
     }
 
     /// A copy with one slide replaced by an edited version of it. Returns `None` if there is no
@@ -538,6 +577,27 @@ pub struct MediaItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reflowed_song_keeps_each_slides_look_and_takes_the_new_words() {
+        let mut song = crate::parse_song_text("Song", "[Verse 1]\nA\n--\nА\n\nB\n\n[Chorus]\nC\n");
+        song.groups[0].slides[0].label = Some("Repeat".to_owned());
+        let crate::ObjectKind::Text { style, .. } = &mut song.groups[0].slides[0].objects[0].kind else { panic!() };
+        style.size = Some(40.0);
+        let text =
+            crate::to_song_text(&song).replace("A\n", "A changed\n").replace("[Chorus]\nC\n", "[Chorus]\nC\n\nD\n");
+        let again = song.reflowed(&text);
+        assert_eq!(again.slide_count(), 4);
+        let (_, first) = again.slide(0).unwrap();
+        assert_eq!(first.text_for(&Role::primary()), Some("A changed"));
+        assert_eq!(first.label.as_deref(), Some("Repeat"));
+        assert_eq!(first.id, song.slide(0).unwrap().1.id, "the slide keeps its id");
+        let crate::ObjectKind::Text { style, .. } = &first.objects[0].kind else { panic!() };
+        assert_eq!(style.size, Some(40.0), "and its look");
+        assert_eq!(again.slide(3).unwrap().1.text_for(&Role::primary()), Some("D"));
+        // Unchanged text gives the same song.
+        assert_eq!(song.reflowed(&crate::to_song_text(&song)), song);
+    }
 
     #[test]
     fn slides_are_removed_copied_in_and_start_groups() {

@@ -105,6 +105,10 @@ pub struct HomeState {
     /// A change to a song asked for from its menu, and a song waiting to be confirmed deleted.
     pub song_request: Option<(usize, SongRequest)>,
     pub confirm_delete_song: Option<usize>,
+    /// The Reflow editor, while it is open: the song being reflowed and its words as text.
+    pub reflow: Option<(usize, String)>,
+    /// Words finished in the Reflow editor, for the app to rebuild the song from.
+    pub reflow_done: Option<(usize, String)>,
     /// A change to the media bin asked for.
     pub media_request: Option<MediaRequest>,
     /// Songs taken out of the library this run, by their place in the show.
@@ -629,6 +633,8 @@ impl Default for HomeState {
             confirm_delete_song: None,
             removed_songs: Vec::new(),
             media_request: None,
+            reflow: None,
+            reflow_done: None,
             screens: crate::screens::starting(None),
             screens_changed: false,
             screen_status: Vec::new(),
@@ -2047,6 +2053,79 @@ fn listed_name(object: &pc_model::Object) -> String {
     }
 }
 
+/// The Reflow editor: a song's words as text, to type into. `[Group]` starts a group, a blank
+/// line starts a slide, and `--` comes before a translation. Done rebuilds the slides.
+fn reflow_editor(ui: &mut egui::Ui, title: &str, state: &mut HomeState) {
+    let Some((index, text)) = state.reflow.as_mut() else { return };
+    let index = *index;
+    let mut done = None;
+    let field_id = ui.scope_id().with("reflow text");
+    let heading = Frame::new().inner_margin(egui::Margin { left: 20, right: 16, top: 12, bottom: 8 });
+    egui::Panel::top("reflow header").resizable(false).frame(heading).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("Reflow  ·  {title}"))
+                    .font(crate::studio::semibold(18.0))
+                    .color(crate::studio::TEXT),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Done").on_hover_text("Rebuild the slides from these words").clicked() {
+                    done = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    done = Some(false);
+                }
+                ui.add_space(12.0);
+                // Insert at the cursor: a slide break, or a group's heading.
+                let cursor = egui::text_edit::TextEditState::load(ui.ctx(), field_id)
+                    .and_then(|edit| edit.cursor.char_range())
+                    .map_or(text.chars().count(), |range| range.primary.index.into());
+                let mut insert = |what: &str| {
+                    let at = text.char_indices().nth(cursor).map_or(text.len(), |(byte, _)| byte);
+                    text.insert_str(at, what);
+                };
+                ui.menu_button("Insert Group", |ui| {
+                    for name in GROUP_NAMES {
+                        if ui.button(name).clicked() {
+                            insert(&format!("\n[{name}]\n"));
+                            ui.close();
+                        }
+                    }
+                });
+                if ui.button("Insert Slide Break").on_hover_text("Start a new slide here").clicked() {
+                    insert("\n\n");
+                }
+            });
+        });
+        ui.label(
+            egui::RichText::new(
+                "[Group] starts a group  ·  a blank line starts a new slide  ·  -- comes before the translation",
+            )
+            .size(11.5)
+            .color(crate::studio::TEXT_FAINT),
+        );
+    });
+    egui::ScrollArea::vertical().id_salt("reflow").auto_shrink([false, false]).show(ui, |ui| {
+        Frame::new().inner_margin(egui::Margin::symmetric(20, 8)).show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(text)
+                    .id(field_id)
+                    .font(FontId::proportional(16.0))
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(24)
+                    .lock_focus(true),
+            );
+        });
+    });
+    match done {
+        Some(true) => {
+            state.reflow_done = state.reflow.take().map(|(_, text)| (index, text));
+        }
+        Some(false) => state.reflow = None,
+        None => {}
+    }
+}
+
 /// The key that adds each shape in the editor, in the order of `Shape::ALL`.
 const SHAPE_KEYS: [char; 10] = ['O', 'R', 'E', 'G', 'L', 'H', 'P', 'S', 'D', 'A'];
 
@@ -3011,6 +3090,11 @@ fn slide_area(
             ui.centered_and_justified(|ui| ui.label(egui::RichText::new("Open a song to see its slides.").color(DIM)));
             return;
         };
+        // The Reflow editor takes the slides' place while it is open.
+        if state.reflow.as_ref().is_some_and(|(index, _)| *index == show.selected()) {
+            reflow_editor(ui, &presentation.title, state);
+            return;
+        }
         let heading = Frame::new().inner_margin(egui::Margin { left: 20, right: 16, top: 12, bottom: 6 });
         egui::Panel::top("song header").resizable(false).frame(heading).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -3067,6 +3151,11 @@ fn slide_area(
                 let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&show.selected()));
                 if !from_bible && ui.small_button("+").on_hover_text("Add Slide").clicked() {
                     state.add_slide = Some(show.selected());
+                }
+                if !from_bible
+                    && ui.small_button("Reflow").on_hover_text("Edit the song's words as text (Control-R)").clicked()
+                {
+                    state.reflow = Some((show.selected(), pc_model::to_song_text(presentation)));
                 }
                 if ui
                     .add(egui::Button::selectable(state.show_notes, "Notes"))

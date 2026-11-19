@@ -640,6 +640,15 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                         state.song_request = Some((index, crate::home::SongRequest::Duplicate));
                         ui.close();
                     }
+                    if ui.button("Reflow").clicked()
+                        && let Some(song) = show.presentations().get(index)
+                    {
+                        commands.push(Command::Select(index));
+                        state.bible_open = false;
+                        state.editing = None;
+                        state.reflow = Some((index, pc_model::to_song_text(song)));
+                        ui.close();
+                    }
                     if ui.button("Delete…").clicked() {
                         state.confirm_delete_song = Some(index);
                         ui.close();

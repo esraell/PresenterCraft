@@ -76,6 +76,8 @@ ProPresenter.
   the Shapes menu or a single key; fill, stroke, shadow and flip for any object; spreading
   objects out evenly.
 - A plus tile after the last slide adds a slide laid out like the one before it.
+- **Reflow** (Control-R, or Reflow beside a song's title): the song's words as text, to type
+  into; the slides are rebuilt from them and keep their looks, labels and notes.
 - **Cmd+N** makes a new song.
 
 ![The editor](docs/images/editor.png)

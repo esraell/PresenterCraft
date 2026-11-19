@@ -711,6 +711,28 @@ impl App {
         }
     }
 
+    /// Rebuilds a song from the words finished in the Reflow editor.
+    fn handle_reflow(&mut self) {
+        let Some((index, text)) = self.running.as_mut().and_then(|r| r.home_state.reflow_done.take()) else { return };
+        let Some(song) = self.show.presentations().get(index).cloned() else { return };
+        let rebuilt = song.reflowed(&text);
+        if rebuilt == *song {
+            return;
+        }
+        let changes = self.show.replace_presentation(index, Arc::new(rebuilt));
+        if !self.unsaved.contains(&index) {
+            self.unsaved.push(index);
+        }
+        self.save_unsaved();
+        if changes.slides {
+            self.refresh_output();
+        }
+        if let Some(running) = self.running.as_mut() {
+            running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
+            running.home_window.request_redraw();
+        }
+    }
+
     /// Carries out a change to the media bin: choosing pictures to add, or removing one.
     fn handle_media_request(&mut self) {
         use home::MediaRequest;
@@ -1422,6 +1444,13 @@ impl App {
                     first.start(Instant::now() - Duration::from_secs(83));
                 }
             }
+            // Testing aid: open the Reflow editor on the first song.
+            if running.frames == GO_LIVE_AT + 2
+                && std::env::var_os("PRESENTERCRAFT_REFLOW").is_some()
+                && let Some(song) = self.show.presentations().first()
+            {
+                running.home_state.reflow = Some((0, pc_model::to_song_text(song)));
+            }
             // Testing aid: show the Bible page.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_BIBLE").is_some() {
                 running.home_state.bible_open = true;
@@ -1848,6 +1877,16 @@ impl App {
             A::EditView => state.view_request = Some(1),
             A::BibleView => state.view_request = Some(2),
             A::ThemesView => state.view_request = Some(3),
+            A::ReflowView => {
+                let song = self.show.selected();
+                if !self.bible_slots.contains(&song)
+                    && let Some(presentation) = self.show.presentations().get(song)
+                {
+                    state.editing = None;
+                    state.bible_open = false;
+                    state.reflow = Some((song, pc_model::to_song_text(presentation)));
+                }
+            }
             A::TimersTab => state.live_tab = 0,
             A::MessagesTab => state.live_tab = 1,
             A::StageTab => state.live_tab = 2,
@@ -2141,6 +2180,7 @@ impl ApplicationHandler<String> for App {
                     self.apply_edit(at, slide);
                 }
                 self.handle_slide_request();
+                self.handle_reflow();
                 self.handle_media_request();
                 self.handle_song_request();
                 // A template chosen from a slide's menu: the slide is changed and, if it is on
