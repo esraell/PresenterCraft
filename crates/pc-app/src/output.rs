@@ -33,6 +33,8 @@ pub struct Overlay {
     pub message: Option<String>,
     pub stage_message: Option<String>,
     pub timers: Vec<crate::timers::Timer>,
+    /// The props on screen, in the order they were put on.
+    pub props: Vec<Slide>,
 }
 
 pub enum OutputMsg {
@@ -365,9 +367,11 @@ impl Output {
         let message = self.overlay.message.as_deref().map(|text| {
             let words =
                 crate::messages::fill_in(text, &self.overlay.timers, Instant::now(), crate::timers::seconds_into_day());
-            Arc::new(crate::messages::slide(&words))
+            crate::messages::slide(&words)
         });
-        (frame.media.clone(), frame.slide.clone(), message, frame.theme.clone())
+        // Props and the message share the layer over the slide.
+        let over = crate::props::overlay(&self.overlay.props, message.as_ref()).map(Arc::new);
+        (frame.media.clone(), frame.slide.clone(), over, frame.theme.clone())
     }
 
     /// Builds what a screen shows now for a target of a size.

@@ -13,6 +13,7 @@ mod media;
 mod menubar;
 mod messages;
 mod output;
+mod props;
 mod screens;
 mod service;
 mod stage;
@@ -174,6 +175,8 @@ fn show_key_command(key: &Key, show: &Show) -> Option<Command> {
         Key::Named(NamedKey::Escape | NamedKey::F1) => Some(Command::ClearAll),
         Key::Named(NamedKey::F2) => Some(Command::Clear(pc_engine::Layer::Slides)),
         Key::Named(NamedKey::F3) => Some(Command::Clear(pc_engine::Layer::Media)),
+        Key::Named(NamedKey::F4) => Some(Command::Clear(pc_engine::Layer::Props)),
+        Key::Named(NamedKey::F6) => Some(Command::Clear(pc_engine::Layer::Messages)),
         Key::Character(typed) => {
             let mut letters = typed.chars();
             let (Some(letter), None) = (letters.next(), letters.next()) else { return None };
@@ -598,6 +601,14 @@ impl App {
                 output_changed = true;
                 any = true;
             }
+            // Clear All, and Clear Props, take the props off.
+            if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Props))
+                && !running.home_state.props_live.is_empty()
+            {
+                running.home_state.props_live.clear();
+                output_changed = true;
+                any = true;
+            }
             let changes = self.show.apply(command);
             output_changed |= changes.slides || changes.media || changes.output_enabled;
             if changes.selection {
@@ -641,21 +652,24 @@ impl App {
                 running.home_state.output_stopped = true;
             }
         }
-        // The operator's preview shows a message over the slide, as the audience sees it.
-        let message = running.home_state.message_live.and_then(|(id, _)| {
-            let message = running.home_state.messages.iter().find(|message| message.id == id)?;
-            let words = messages::fill_in(
-                &message.text,
-                &running.home_state.timers,
-                Instant::now(),
-                timers::seconds_into_day(),
-            );
+        // The operator's preview shows the props and a message over the slide, as the audience
+        // sees them.
+        let state = &running.home_state;
+        let message = state.message_live.and_then(|(id, _)| {
+            let message = state.messages.iter().find(|message| message.id == id)?;
+            let words = messages::fill_in(&message.text, &state.timers, Instant::now(), timers::seconds_into_day());
             Some(messages::slide(&words))
         });
+        let live_props: Vec<Slide> = state
+            .props_live
+            .iter()
+            .filter_map(|(id, _)| state.props.iter().find(|prop| prop.id == *id).map(|prop| prop.slide.clone()))
+            .collect();
+        let over = props::overlay(&live_props, message.as_ref());
         let layers = Layers {
             media: media.as_ref(),
             slide: slide.as_deref(),
-            overlay: message.as_ref().filter(|_| self.show.output_enabled()),
+            overlay: over.as_ref().filter(|_| self.show.output_enabled()),
         };
         let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &theme);
         running.preview = now;
@@ -1432,12 +1446,16 @@ impl App {
                 let state = &mut running.home_state;
                 state.live_tab = match tab.as_str() {
                     "messages" => 1,
-                    "stage" => 2,
+                    "props" => 2,
+                    "stage" => 3,
                     _ => 0,
                 };
                 if let Some(first) = state.messages.first() {
                     state.message_selected = Some(first.id);
                     state.message_live = Some((first.id, Instant::now()));
+                }
+                if let Some(first) = state.props.first() {
+                    state.props_live.push((first.id, Instant::now()));
                 }
                 if let Some(first) = state.timers.first_mut() {
                     state.timer_open = Some(first.id);
@@ -1735,6 +1753,18 @@ impl App {
         {
             state.notice = Some(problem);
         }
+        if std::mem::take(&mut state.props_changed)
+            && let Err(problem) = props::save(&state.props)
+        {
+            state.notice = Some(problem);
+        }
+        // Props that clear themselves, once their time is up.
+        let props = state.props.clone();
+        state.props_live.retain(|(id, since)| {
+            let after = props.iter().find(|prop| prop.id == *id).and_then(|prop| prop.auto_clear);
+            props.iter().any(|prop| prop.id == *id)
+                && after.is_none_or(|after| since.elapsed().as_secs() < u64::from(after))
+        });
         // A message that leaves by itself, once its time is up.
         if let Some((id, since)) = state.message_live
             && let Some(after) = state.messages.iter().find(|message| message.id == id).and_then(|m| m.dismiss_after)
@@ -1750,9 +1780,16 @@ impl App {
             message,
             stage_message: state.stage_message_live.then(|| state.stage_message.clone()),
             timers: state.timers.clone(),
+            props: state
+                .props_live
+                .iter()
+                .filter_map(|(id, _)| state.props.iter().find(|prop| prop.id == *id).map(|prop| prop.slide.clone()))
+                .collect(),
         };
         // While a timer runs, or a message counts down to leaving, the window shows it each second.
-        let ticking = state.timers.iter().any(Timer::running) || state.message_live.is_some();
+        let ticking = state.timers.iter().any(Timer::running)
+            || state.message_live.is_some()
+            || state.props_live.iter().any(|(id, _)| state.props.iter().any(|p| p.id == *id && p.auto_clear.is_some()));
         if ticking {
             let soon = Instant::now() + Duration::from_millis(500);
             running.next_repaint = Some(running.next_repaint.map_or(soon, |at| at.min(soon)));
@@ -1760,7 +1797,10 @@ impl App {
         if running.overlay_sent.as_ref() == Some(&overlay) {
             return;
         }
-        let message_changed = running.overlay_sent.as_ref().is_none_or(|sent| sent.message != overlay.message);
+        let message_changed = running
+            .overlay_sent
+            .as_ref()
+            .is_none_or(|sent| sent.message != overlay.message || sent.props != overlay.props);
         if let Some(output) = &running.output {
             output.send(OutputMsg::Overlay(overlay.clone()));
         }
@@ -1896,7 +1936,10 @@ impl App {
             }
             A::TimersTab => state.live_tab = 0,
             A::MessagesTab => state.live_tab = 1,
-            A::StageTab => state.live_tab = 2,
+            A::PropsTab => state.live_tab = 2,
+            A::StageTab => state.live_tab = 3,
+            A::ClearProps => commands.push(Command::Clear(pc_engine::Layer::Props)),
+            A::ClearMessages => commands.push(Command::Clear(pc_engine::Layer::Messages)),
             A::GridView => state.slide_view = home::SlideView::Grid,
             A::EasyView => state.slide_view = home::SlideView::Easy,
             A::TableView => state.slide_view = home::SlideView::Table,
@@ -1953,7 +1996,8 @@ impl App {
                 A::Stage => state.stage_on,
                 A::TimersTab => state.live_tab == 0,
                 A::MessagesTab => state.live_tab == 1,
-                A::StageTab => state.live_tab == 2,
+                A::PropsTab => state.live_tab == 2,
+                A::StageTab => state.live_tab == 3,
                 A::IdentifyScreens => state.identify,
                 _ => action == view || action == slide_view,
             });
@@ -1998,6 +2042,7 @@ impl ApplicationHandler<String> for App {
                 self.prefs_saved = Some(prefs);
                 running.home_state.timers = timers::load();
                 running.home_state.messages = messages::load();
+                running.home_state.props = props::load();
                 // A display asked for on the command line takes the first screen, this run only.
                 if let Some(index) = self.options.output_display
                     && let Some(display) = display_list(el.available_monitors()).into_iter().find(|d| d.index == index)

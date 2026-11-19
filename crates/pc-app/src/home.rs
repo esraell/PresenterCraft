@@ -135,7 +135,14 @@ pub struct HomeState {
     pub screen_selected: usize,
     /// True while the notes of the slide on screen are shown above the slides.
     pub show_notes: bool,
-    /// The tab open under the Program panel: 0 Timers, 1 Messages, 2 Stage.
+    /// The props, and true when they have changed and are to be saved.
+    pub props: Vec<crate::props::Prop>,
+    pub props_changed: bool,
+    /// The props on screen, in the order they were put on, and since when.
+    pub props_live: Vec<(pc_model::Uuid, std::time::Instant)>,
+    /// A prop being renamed, and its name as typed so far.
+    pub prop_rename: Option<(pc_model::Uuid, String)>,
+    /// The tab open under the Program panel: 0 Timers, 1 Messages, 2 Props, 3 Stage.
     pub live_tab: usize,
     /// The timers, and true when their settings have changed and are to be saved.
     pub timers: Vec<crate::timers::Timer>,
@@ -643,6 +650,10 @@ impl Default for HomeState {
             screen_status: Vec::new(),
             screen_selected: 0,
             show_notes: false,
+            props: Vec::new(),
+            props_changed: false,
+            props_live: Vec::new(),
+            prop_rename: None,
             live_tab: 0,
             timers: Vec::new(),
             timers_changed: false,
@@ -865,7 +876,8 @@ fn edit_view(
     // The draft is a song's slide, or one of a theme's layouts when the Theme Editor is open.
     let theme_mode = state.theme_edit.is_some();
     let presentation = show.presentations().get(at.presentation);
-    if presentation.is_none() && !theme_mode {
+    let prop_mode = at.presentation == crate::props::PROP_SLOT;
+    if presentation.is_none() && !theme_mode && !prop_mode {
         state.editing = None;
         return;
     }
@@ -1908,6 +1920,13 @@ fn edit_view(
                     }
                     *template = template.with_slide(&draft.slide);
                     edit.changed = true;
+                }
+            }
+            // A prop: the prop takes the slide as it now is.
+            None if draft.at.presentation == crate::props::PROP_SLOT => {
+                if let Some(prop) = state.props.get_mut(draft.at.slide) {
+                    prop.slide = draft.slide.clone();
+                    state.props_changed = true;
                 }
             }
             None => state.pending_edit = Some((draft.at, draft.slide.clone())),

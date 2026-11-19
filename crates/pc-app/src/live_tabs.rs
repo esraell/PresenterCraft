@@ -17,8 +17,8 @@ pub fn live_tabs(ui: &mut egui::Ui, state: &mut HomeState) {
     let picked = segmented(
         ui,
         "live tabs",
-        vec2((width - 8.0) / 3.0, 26.0),
-        &["Timers", "Messages", "Stage"],
+        vec2((width - 8.0) / 4.0, 26.0),
+        &["Timers", "Messages", "Props", "Stage"],
         Some(state.live_tab),
     );
     if let Some(tab) = picked {
@@ -30,6 +30,7 @@ pub fn live_tabs(ui: &mut egui::Ui, state: &mut HomeState) {
         match state.live_tab {
             0 => timers_tab(ui, state),
             1 => messages_tab(ui, state),
+            2 => props_tab(ui, state),
             _ => stage_tab(ui, state),
         }
     });
@@ -342,6 +343,176 @@ fn messages_tab(ui: &mut egui::Ui, state: &mut HomeState) {
         .min_size(vec2(ui.available_width(), 30.0));
     if ui.add(button).on_hover_text("Show this message over the slides on the audience screens").clicked() {
         state.message_live = if showing { None } else { Some((id, Instant::now())) };
+    }
+}
+
+fn props_tab(ui: &mut egui::Ui, state: &mut HomeState) {
+    use crate::props::Prop;
+    if heading_with_add(ui, "PROPS", "Add a prop") {
+        let taken = |name: &str| state.props.iter().any(|prop| prop.name == name);
+        let name = (1..).map(|n| format!("Prop {n}")).find(|name| !taken(name)).unwrap_or_default();
+        let prop = Prop::new(name.clone());
+        state.prop_rename = Some((prop.id, name));
+        state.rename_started = true;
+        state.props.push(prop);
+        state.props_changed = true;
+    }
+    if state.props.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "No props. A prop stays over the slides until it is taken off, such as a name in a corner.",
+            )
+            .size(12.0)
+            .color(TEXT_FAINT),
+        );
+        return;
+    }
+    enum Ask {
+        Toggle,
+        Edit,
+        Rename,
+        Duplicate,
+        AutoClear(Option<u32>),
+        Delete,
+    }
+    let mut asked: Option<(usize, Ask)> = None;
+    let mut renamed: Option<Option<(pc_model::Uuid, String)>> = None;
+    let mut rename_started = std::mem::take(&mut state.rename_started);
+    let tile = vec2(96.0, 54.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+        for (index, prop) in state.props.iter().enumerate() {
+            let live = state.props_live.iter().any(|(id, _)| *id == prop.id);
+            let (rect, response) = ui.allocate_exact_size(tile, Sense::click());
+            ui.painter().rect_filled(rect, 6.0, CARD);
+            if live {
+                ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(2.0, TALLY), egui::StrokeKind::Outside);
+            } else if response.hovered() {
+                ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.0, TEXT_FAINT), egui::StrokeKind::Outside);
+            }
+            match state.prop_rename.as_mut().filter(|(id, _)| *id == prop.id) {
+                Some((_, typed)) => {
+                    let field = crate::studio::rename_field_at(
+                        ui,
+                        typed,
+                        FontId::proportional(12.0),
+                        TEXT,
+                        ACCENT,
+                        rect.left_center() + vec2(8.0, 0.0),
+                        rect.max.x - 4.0,
+                    );
+                    if std::mem::take(&mut rename_started) {
+                        field.request_focus();
+                    }
+                    let (enter, escape) =
+                        ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+                    if escape {
+                        renamed = Some(None);
+                    } else if enter || field.lost_focus() {
+                        renamed = Some(Some((prop.id, typed.clone())));
+                    }
+                }
+                None => {
+                    ui.painter().with_clip_rect(rect.shrink(4.0)).text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        prop.name.as_str(),
+                        FontId::proportional(12.0),
+                        if live { TEXT } else { TEXT_DIM },
+                    );
+                }
+            }
+            if response.double_clicked() {
+                asked = Some((index, Ask::Edit));
+            } else if response.clicked() {
+                asked = Some((index, Ask::Toggle));
+            }
+            response.on_hover_text("Click to show or take off; double-click to edit").context_menu(|ui| {
+                if ui.button("Edit…").clicked() {
+                    asked = Some((index, Ask::Edit));
+                    ui.close();
+                }
+                if ui.button("Rename").clicked() {
+                    asked = Some((index, Ask::Rename));
+                    ui.close();
+                }
+                if ui.button("Duplicate").clicked() {
+                    asked = Some((index, Ask::Duplicate));
+                    ui.close();
+                }
+                ui.menu_button("Auto-Clear", |ui| {
+                    for choice in [None, Some(5), Some(10), Some(15), Some(20), Some(30), Some(45), Some(60)] {
+                        let label = choice.map_or("Never".to_owned(), |seconds| format!("After {seconds} seconds"));
+                        if ui.add(egui::Button::selectable(prop.auto_clear == choice, label)).clicked() {
+                            asked = Some((index, Ask::AutoClear(choice)));
+                            ui.close();
+                        }
+                    }
+                });
+                ui.separator();
+                if ui.button("Delete").clicked() {
+                    asked = Some((index, Ask::Delete));
+                    ui.close();
+                }
+            });
+        }
+    });
+    state.rename_started = rename_started;
+    match renamed {
+        Some(Some((id, name))) => {
+            if let Some(prop) = state.props.iter_mut().find(|prop| prop.id == id)
+                && !name.trim().is_empty()
+            {
+                prop.name = name.trim().to_owned();
+                state.props_changed = true;
+            }
+            state.prop_rename = None;
+        }
+        Some(None) => state.prop_rename = None,
+        None => {}
+    }
+    if let Some((index, ask)) = asked {
+        let id = state.props[index].id;
+        match ask {
+            Ask::Toggle => {
+                if state.props_live.iter().any(|(live, _)| *live == id) {
+                    state.props_live.retain(|(live, _)| *live != id);
+                } else {
+                    state.props_live.push((id, Instant::now()));
+                }
+            }
+            Ask::Edit => {
+                // The prop opens in the editor, as a slide of its own.
+                let mut draft = crate::editor::EditDraft::of_slide(state.props[index].slide.clone(), index);
+                draft.at.presentation = crate::props::PROP_SLOT;
+                state.editing = Some(draft);
+                state.bible_open = false;
+                state.reflow = None;
+            }
+            Ask::Rename => {
+                state.prop_rename = Some((id, state.props[index].name.clone()));
+                state.rename_started = true;
+            }
+            Ask::Duplicate => {
+                let copy = state.props[index].duplicate();
+                state.props.insert(index + 1, copy);
+                state.props_changed = true;
+            }
+            Ask::AutoClear(choice) => {
+                state.props[index].auto_clear = choice;
+                state.props_changed = true;
+            }
+            Ask::Delete => {
+                state.props.remove(index);
+                state.props_live.retain(|(live, _)| *live != id);
+                state.props_changed = true;
+            }
+        }
+    }
+    ui.add_space(8.0);
+    let clear = ui.add_enabled(!state.props_live.is_empty(), egui::Button::new("Clear Props"));
+    if clear.on_hover_text("Take every prop off (F4)").clicked() {
+        state.props_live.clear();
     }
 }
 
