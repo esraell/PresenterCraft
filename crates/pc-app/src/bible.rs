@@ -6,7 +6,7 @@ use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, p
 use std::sync::Arc;
 
 use pc_bible::{Bible, VerseRef, convert, parse_reference};
-use pc_model::{Group, Object, Presentation, Rgba, Role, Slide, Template, Uuid};
+use pc_model::{Group, Object, Presentation, Rgba, Role, Slide, Uuid};
 
 use crate::home::BibleTarget;
 
@@ -140,13 +140,13 @@ fn raised(digit: char) -> char {
 /// Turns what was typed in Scripture Lookup into slides. The reference is read in the
 /// numbering of the first translation; the others are lined up with it. Each translation's
 /// words, and its reference, go into the theme box chosen for them; a box given both holds
-/// the words with the reference under them. `pin_main` keeps the main box where the layout
-/// for two languages has it even when a slide has only one. The error is a plain sentence.
+/// the words with the reference under them. Every slide is drawn with `template`, the Bible
+/// theme's template chosen for Bible slides. The error is a plain sentence.
 pub fn build_passage(
     typed: &str,
     rows: &[RowChoice],
     options: &BibleOptions,
-    pin_main: Option<pc_model::SlideRect>,
+    template: Option<Uuid>,
 ) -> Result<Presentation, String> {
     let lead = rows.first().ok_or_else(|| "Choose a Bible first.".to_owned())?;
     let range = parse_reference(typed)?;
@@ -219,7 +219,7 @@ pub fn build_passage(
                 }
             }
         }
-        let mut objects: Vec<Object> = boxes
+        let objects: Vec<Object> = boxes
             .into_iter()
             .map(|(role, words, references)| {
                 // Translations sharing a box each take a line; references sharing one sit side by side.
@@ -230,21 +230,13 @@ pub fn build_passage(
                 Object::text(role, lines.join("\n"))
             })
             .collect();
-        // A slide with no second language would give its main box the larger place; the
-        // two-language layout keeps it where it is.
-        if let Some(place) = pin_main
-            && !objects.iter().any(|object| object.role == Some(Role::translation()))
-            && let Some(main) = objects.iter_mut().find(|object| object.role == Some(Role::primary()))
-        {
-            main.frame = Some(place);
-        }
         // Each slide is a group of its own, named by the verses on it, so the bar under
         // every slide says where it is from.
         groups.push(Group {
             id: Uuid::new_v4(),
             name: label(lead, from, to),
             color: Rgba::rgb(40, 110, 200),
-            slides: vec![Slide::new(objects)],
+            slides: vec![Slide { template, ..Slide::new(objects) }],
         });
     }
     Ok(Presentation { id: Uuid::new_v4(), title: lead.bible.label(first, last), groups })
@@ -449,18 +441,17 @@ impl Default for BibleOptions {
 pub struct ThemeChoice<'a> {
     pub names: &'a [String],
     /// What each theme calls its two templates.
-    pub template_names: &'a [[String; 2]],
+    pub template_names: &'a [Vec<String>],
     /// Each theme's two layouts, as boxes, for the pictures.
-    pub layouts: &'a [[Vec<(Role, pc_model::SlideRect)>; 2]],
+    pub layouts: &'a [Vec<Vec<(Role, pc_model::SlideRect)>>],
     pub theme: usize,
-    pub layout: Template,
+    pub layout: usize,
 }
 
 impl ThemeChoice<'_> {
     /// What a theme calls one of its templates.
-    fn template_name(&self, theme: usize, template: Template) -> &str {
-        let usual = if template == Template::Alone { "One language" } else { "Two languages" };
-        self.template_names.get(theme).map_or(usual, |names| names[usize::from(template == Template::Alone)].as_str())
+    fn template_name(&self, theme: usize, template: usize) -> &str {
+        self.template_names.get(theme).and_then(|names| names.get(template)).map_or("", String::as_str)
     }
 }
 
@@ -473,7 +464,7 @@ pub fn options_popup(
     button: Rect,
     library: &str,
     themes: &ThemeChoice,
-) -> Option<(usize, Template)> {
+) -> Option<(usize, usize)> {
     let mut picked_theme = None;
     let size = vec2(508.0, 262.0);
     let corner = pos2(button.max.x - size.x + 8.0, button.max.y + 8.0);
@@ -578,7 +569,7 @@ fn slide_options(
     options: &mut BibleOptions,
     library: &str,
     themes: &ThemeChoice,
-) -> Option<(usize, Template)> {
+) -> Option<(usize, usize)> {
     let mut picked_theme = None;
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
@@ -621,7 +612,7 @@ fn slide_options(
             .show_ui(ui, |ui| {
                 for (index, name) in themes.names.iter().enumerate() {
                     ui.label(egui::RichText::new(name.as_str()).font(crate::studio::semibold(12.0)).color(DIM));
-                    for (which, layout) in [Template::Full, Template::Alone].into_iter().enumerate() {
+                    for layout in 0..themes.layouts.get(index).map_or(0, Vec::len) {
                         let (row, response) = ui.allocate_exact_size(vec2(210.0, 40.0), Sense::click());
                         let on = index == themes.theme && layout == themes.layout;
                         if on {
@@ -630,7 +621,7 @@ fn slide_options(
                             ui.painter().rect_filled(row, 6.0, crate::studio::HOVER);
                         }
                         let picture = Rect::from_min_size(row.min + vec2(6.0, 4.0), vec2(57.0, 32.0));
-                        let boxes = themes.layouts.get(index).map_or(&[][..], |layouts| layouts[which].as_slice());
+                        let boxes = themes.layouts.get(index).map_or(&[][..], |layouts| layouts[layout].as_slice());
                         crate::home::box_diagram(ui.painter(), picture, boxes, None);
                         ui.painter().text(
                             pos2(picture.max.x + 10.0, row.center().y),
@@ -860,16 +851,18 @@ mod tests {
     }
 
     #[test]
-    fn the_two_language_layout_keeps_the_main_box_in_place_with_one_language() {
+    fn bible_slides_name_the_template_chosen_for_them() {
         let mut shelf = Shelf::shipped();
-        let place = pc_model::SlideRect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 };
+        let theme = pc_model::Theme::builtin();
+        let chosen = theme.templates[0].id;
+        // One language, on the template for two: the slide still uses the one it names.
         let one = rows(&mut shelf, &[("kjv", main(), reference())]);
-        let passage = build_passage("John 3:16", &one, &BibleOptions::default(), Some(place)).unwrap();
-        assert_eq!(passage.slide(0).unwrap().1.objects[0].frame, Some(place));
-        // With a second language on the slide the theme places both, as usual.
-        let two = rows(&mut shelf, &[("kjv", main(), reference()), ("syn", translation(), None)]);
-        let passage = build_passage("John 3:16", &two, &BibleOptions::default(), Some(place)).unwrap();
-        assert_eq!(passage.slide(0).unwrap().1.objects[0].frame, None);
+        let passage = build_passage("John 3:16-17", &one, &BibleOptions::default(), Some(chosen)).unwrap();
+        for (_, slide) in passage.slides() {
+            assert_eq!(slide.template, Some(chosen));
+            assert_eq!(theme.template_for(slide).map(|template| template.id), Some(chosen));
+            assert_eq!(slide.objects[0].frame, None);
+        }
     }
 
     #[test]

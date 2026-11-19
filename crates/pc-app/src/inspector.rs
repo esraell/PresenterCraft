@@ -409,14 +409,7 @@ fn theme_slide_panel(ui: &mut egui::Ui, state: &mut HomeState) {
         });
     });
     rule(ui);
-    let about = match edit.template {
-        pc_model::Template::Full => {
-            "This layout is used by slides with two languages. Click a box on the slide to change it."
-        }
-        pc_model::Template::Alone => {
-            "This layout is used by slides with only the main language. The box's place is its own; its look is the main language's in both layouts."
-        }
-    };
+    let about = "A slide uses the template that suits what is on it: with the main language and a translation, the first template that has a box for both; with one language, the first that has no translation box. Bible slides use the template marked Bible.";
     ui.label(egui::RichText::new(about).size(11.5).color(DIM));
     if before != (edit.theme.name.clone(), edit.theme.background) {
         // A theme always has a name.

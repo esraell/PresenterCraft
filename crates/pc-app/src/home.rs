@@ -7,7 +7,7 @@
 
 use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, StrokeKind, TextureId, pos2, vec2};
 use pc_engine::{Command, Show, SlideRef};
-use pc_model::{Rgba, Slide, SlideRect, Template, Theme};
+use pc_model::{Rgba, Slide, SlideRect, Theme};
 use pc_render::object_frame;
 
 use crate::displays::{DisplayInfo, Placement};
@@ -120,13 +120,15 @@ pub struct HomeState {
     /// Every theme's name, and the places of the ones songs and Bible slides use.
     pub theme_names: Vec<String>,
     /// What each theme calls its two templates, the one for two languages first.
-    pub template_names: Vec<[String; 2]>,
+    pub template_names: Vec<Vec<String>>,
     /// The template being renamed in the Theme Editor, and its name as typed so far.
-    pub renaming_template: Option<(Template, String)>,
+    pub renaming_template: Option<(usize, String)>,
+    /// The template of the theme being edited that is about to be deleted, once confirmed.
+    pub confirm_delete_template: Option<usize>,
     /// Each theme's two layouts as boxes, for the pictures in the theme picker.
-    pub theme_layouts: Vec<[Vec<(pc_model::Role, SlideRect)>; 2]>,
+    pub theme_layouts: Vec<Vec<Vec<(pc_model::Role, SlideRect)>>>,
     /// Which layout of its theme Bible slides use.
-    pub bible_layout: Template,
+    pub bible_layout: usize,
     pub theme_for_songs: usize,
     pub theme_for_bible: usize,
     /// What the Theme menu or the Theme Editor has just asked for. The app takes this.
@@ -141,28 +143,16 @@ pub struct HomeState {
 /// theme's boxes, or nowhere.
 pub type BibleTarget = Option<pc_model::Role>;
 
-/// The boxes one of a theme's layouts has, and where each sits: every box for two languages;
-/// for one language, every box but the translation's, with the main one in its larger place.
-pub fn layout_boxes(theme: &Theme, layout: Template) -> Vec<(pc_model::Role, SlideRect)> {
-    theme
-        .boxes
-        .iter()
-        .filter(|style| layout == Template::Full || style.role != pc_model::Role::translation())
-        .map(|style| {
-            let alone = layout == Template::Alone && style.role == pc_model::Role::primary();
-            (style.role.clone(), if alone { theme.solo_primary } else { style.rect })
-        })
-        .collect()
+/// The boxes one of a theme's templates has, and where each sits.
+pub fn layout_boxes(theme: &Theme, template: usize) -> Vec<(pc_model::Role, SlideRect)> {
+    let boxes = theme.templates.get(template).map_or(&[][..], |template| template.boxes.as_slice());
+    boxes.iter().map(|style| (style.role.clone(), style.rect)).collect()
 }
 
-/// What each box of a layout is called, in the order `layout_boxes` gives them.
-pub fn layout_labels(theme: &Theme, layout: Template) -> Vec<String> {
-    theme
-        .boxes
-        .iter()
-        .filter(|style| layout == Template::Full || style.role != pc_model::Role::translation())
-        .map(pc_model::BoxStyle::label)
-        .collect()
+/// What each box of a template is called, in the order `layout_boxes` gives them.
+pub fn layout_labels(theme: &Theme, template: usize) -> Vec<String> {
+    let boxes = theme.templates.get(template).map_or(&[][..], |template| template.boxes.as_slice());
+    boxes.iter().map(pc_model::BoxStyle::label).collect()
 }
 
 /// A small picture of a slide with its boxes outlined and one of them filled, to show which
@@ -208,9 +198,8 @@ pub struct BiblePage {
     pub boxes: Vec<(pc_model::Role, SlideRect)>,
     /// What each of those boxes is called, in the same order.
     pub box_labels: Vec<String>,
-    /// Where the main box is pinned when the layout for two languages is used with only one,
-    /// so the words stay where that layout puts them.
-    pub pin_main: Option<SlideRect>,
+    /// The template of the Bible theme that Bible slides are drawn with.
+    pub template: Option<pc_model::Uuid>,
     /// Bibles being downloaded.
     pub downloads: crate::bible_store::Downloads,
     /// The two places among the show's presentations kept for Bible passages. A new passage
@@ -248,9 +237,9 @@ impl Default for BiblePage {
                 BibleRow { bible: place("syn"), verse: Some(pc_model::Role::translation()), reference: None },
             ],
             shelf,
-            boxes: layout_boxes(&Theme::builtin(), Template::Full),
-            box_labels: layout_labels(&Theme::builtin(), Template::Full),
-            pin_main: None,
+            boxes: layout_boxes(&Theme::builtin(), 0),
+            box_labels: layout_labels(&Theme::builtin(), 0),
+            template: None,
             downloads: crate::bible_store::Downloads::default(),
             slots: None,
             showing: 0,
@@ -403,7 +392,7 @@ impl BiblePage {
                 }
             }
         }
-        match crate::bible::build_passage(&self.lookup, &rows, &self.options, self.pin_main) {
+        match crate::bible::build_passage(&self.lookup, &rows, &self.options, self.template) {
             Ok(passage) => {
                 let passage_name = passage.title.clone();
                 // Leave a passage that is on screen alone: use the other slot.
@@ -477,7 +466,7 @@ pub struct ThemeEdit {
     pub index: usize,
     pub theme: Theme,
     /// Which of the theme's two layouts is on the canvas.
-    pub template: Template,
+    pub template: usize,
     /// Set when the theme has changed this frame. The app takes the theme and clears this.
     pub changed: bool,
     /// Set when the operator asks to go back to the Show view.
@@ -486,7 +475,7 @@ pub struct ThemeEdit {
 
 impl ThemeEdit {
     pub fn of(index: usize, theme: Theme) -> ThemeEdit {
-        ThemeEdit { index, theme, template: Template::Full, changed: false, leave: false }
+        ThemeEdit { index, theme, template: 0, changed: false, leave: false }
     }
 }
 
@@ -496,7 +485,7 @@ pub enum ThemeRequest {
     /// Songs use the theme at this place in the list.
     UseForSongs(usize),
     /// Bible slides use this layout of the theme at this place in the list.
-    UseForBible(usize, Template),
+    UseForBible(usize, usize),
     /// Make a new theme, a copy of the one songs use, and open it in the Theme Editor.
     New,
     /// Open the Theme Editor on the theme at this place in the list.
@@ -571,8 +560,9 @@ impl Default for HomeState {
             theme_names: Vec::new(),
             template_names: Vec::new(),
             renaming_template: None,
+            confirm_delete_template: None,
             theme_layouts: Vec::new(),
-            bible_layout: Template::Full,
+            bible_layout: 0,
             theme_for_songs: 0,
             theme_for_bible: 0,
             theme_request: None,
@@ -845,6 +835,11 @@ fn edit_view(
         }
     }
 
+    // Delete with no box selected, in the Theme Editor, is for the template itself.
+    let delete_template_key = delete
+        && theme_mode
+        && state.editing.as_ref().is_some_and(|draft| draft.selected.is_none())
+        && state.renaming_template.is_none();
     // Left: the slide navigator, with the slide's objects below it.
     let mut chosen = None;
     let mut chosen_template = None;
@@ -1087,21 +1082,25 @@ fn edit_view(
                 });
 
             if let Some(edit) = state.theme_edit.as_ref() {
-                // A theme's two templates, each drawn as it will look. A tag says what is
-                // linked to each: Bible slides use one template; songs use both, the first
-                // for slides with two languages and the second for slides with one.
+                // The theme's templates, each drawn as it will look. A tag says what is
+                // linked to each: Bible slides use one template; a song's slide uses the
+                // one that suits what is on it.
                 let theme_index = edit.index;
                 let (songs_here, bible_here) =
                     (state.theme_for_songs == theme_index, state.theme_for_bible == theme_index);
                 let bible_template = state.bible_layout;
                 let mut link_bible = None;
-                let layouts =
-                    [Template::Full, Template::Alone].map(|template| (template, edit.theme.template_name(template)));
-                let mut renamed_template: Option<Option<(Template, String)>> = None;
+                let layouts: Vec<(usize, String)> =
+                    edit.theme.templates.iter().map(|template| template.name.clone()).enumerate().collect();
+                let only_one = layouts.len() <= 1;
+                let mut renamed_template: Option<Option<(usize, String)>> = None;
+                // Asked for from a template's menu, or the tile after the last: a copy of
+                // a template, or a template to delete.
+                let mut add_after = None;
+                let mut ask_delete = None;
                 let mut rename_started = std::mem::take(&mut state.rename_started);
                 let mut start_rename = None;
-                let slides: Vec<Slide> =
-                    layouts.iter().map(|(template, _)| edit.theme.template_slide(*template)).collect();
+                let slides: Vec<Slide> = edit.theme.templates.iter().map(pc_model::ThemeTemplate::as_slide).collect();
                 let current = edit.template;
                 egui::ScrollArea::vertical().id_salt("theme layout list").auto_shrink([false, false]).show(ui, |ui| {
                     let width = ui.available_width();
@@ -1206,9 +1205,53 @@ fn edit_view(
                                 link_bible = Some(template);
                                 ui.close();
                             }
+                            ui.separator();
+                            if ui.button("Rename").clicked() {
+                                start_rename = Some((template, name.clone()));
+                                ui.close();
+                            }
+                            if ui.button("Duplicate").clicked() {
+                                add_after = Some(template);
+                                ui.close();
+                            }
+                            if ui.add_enabled(!only_one, egui::Button::new("Delete…")).clicked() {
+                                ask_delete = Some(template);
+                                ui.close();
+                            }
                         });
                     }
+                    // After the last template: a blank tile with a plus. It adds a template
+                    // that starts as a copy of the one being edited.
+                    let (cell, response) = ui.allocate_exact_size(vec2(width, image_size.y + 16.0), Sense::click());
+                    let tile = Rect::from_min_size(cell.min + vec2(8.0, 8.0), image_size);
+                    let line = if response.hovered() { crate::studio::ACCENT } else { Color32::from_gray(90) };
+                    ui.painter().rect_filled(tile, 4.0, Color32::from_gray(if response.hovered() { 34 } else { 24 }));
+                    ui.painter().rect_stroke(tile, 4.0, Stroke::new(1.0, line), StrokeKind::Inside);
+                    icons::paint(
+                        ui.painter(),
+                        Icon::Plus,
+                        Rect::from_center_size(tile.center(), vec2(18.0, 18.0)),
+                        line,
+                    );
+                    if response.on_hover_text("Add a template. It starts as a copy of the one being edited.").clicked()
+                    {
+                        add_after = Some(current);
+                    }
                 });
+                // Delete, with no box selected, deletes the template being edited (once confirmed).
+                if delete_template_key && !only_one {
+                    ask_delete = Some(current);
+                }
+                if let Some(template) = ask_delete {
+                    state.confirm_delete_template = Some(template);
+                }
+                if let (Some(after), Some(edit)) = (add_after, state.theme_edit.as_mut()) {
+                    let at = edit.theme.add_template(after);
+                    edit.changed = true;
+                    chosen_template = Some(at);
+                    // Its name is ready to be typed over.
+                    start_rename = Some((at, edit.theme.templates[at].name.clone()));
+                }
                 if let Some(template) = link_bible {
                     state.theme_request = Some(ThemeRequest::UseForBible(theme_index, template));
                 }
@@ -1220,9 +1263,14 @@ fn edit_view(
                 if let Some(outcome) = renamed_template {
                     state.renaming_template = None;
                     if let (Some((template, name)), Some(edit)) = (outcome, state.theme_edit.as_mut()) {
-                        let before = edit.theme.template_names.clone();
-                        edit.theme.name_template(template, &name);
-                        edit.changed |= edit.theme.template_names != before;
+                        let name = name.trim();
+                        if let Some(renamed) = edit.theme.templates.get_mut(template)
+                            && !name.is_empty()
+                            && renamed.name != name
+                        {
+                            renamed.name = name.to_owned();
+                            edit.changed = true;
+                        }
                     }
                 }
             } else {
@@ -1573,13 +1621,15 @@ fn edit_view(
                 // later does not turn it into a different box.
                 let mut taken: Vec<pc_model::Role> =
                     draft.slide.objects.iter().filter_map(|o| o.role.clone()).collect();
-                for object in draft.slide.objects.iter_mut().filter(|o| o.role.is_none()) {
-                    let role = edit.theme.unused_role(&object.name, &taken);
-                    taken.push(role.clone());
-                    object.role = Some(role);
+                if let Some(template) = edit.theme.templates.get_mut(edit.template) {
+                    for object in draft.slide.objects.iter_mut().filter(|o| o.role.is_none()) {
+                        let role = template.unused_role(&object.name, &taken);
+                        taken.push(role.clone());
+                        object.role = Some(role);
+                    }
+                    *template = template.with_slide(&draft.slide);
+                    edit.changed = true;
                 }
-                edit.theme = edit.theme.with_template(edit.template, &draft.slide);
-                edit.changed = true;
             }
             None => state.pending_edit = Some((draft.at, draft.slide.clone())),
         }
@@ -1590,10 +1640,11 @@ fn edit_view(
     if let Some(edit) = state.theme_edit.as_mut() {
         if leave {
             edit.leave = true;
-        } else if let Some(template) = chosen_template {
+        } else if let Some(template) = chosen_template
+            && let Some(opened) = edit.theme.templates.get(template)
+        {
             edit.template = template;
-            let which = usize::from(template == Template::Alone);
-            state.editing = Some(EditDraft::of_slide(edit.theme.template_slide(template), which));
+            state.editing = Some(EditDraft::of_slide(opened.as_slide(), template));
         }
     } else if leave {
         state.editing = None;
@@ -1747,6 +1798,7 @@ fn missing_font_notice(ui: &mut egui::Ui, missing: &[String]) {
 
 /// Asks before a theme is deleted, since it cannot be brought back.
 fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
+    confirm_delete_template(ui, state);
     let Some(index) = state.confirm_delete_theme else { return };
     let Some(name) = state.theme_names.get(index).cloned() else {
         state.confirm_delete_theme = None;
@@ -1758,8 +1810,44 @@ fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
         (false, true) => "Bible slides use it; they will use the built-in theme instead.",
         (false, false) => "",
     };
+    if let Some(delete) = confirm_delete(ui, &format!("Delete the theme \"{name}\"?"), in_use) {
+        state.confirm_delete_theme = None;
+        if delete {
+            state.theme_request = Some(ThemeRequest::Delete(index));
+        }
+    }
+}
+
+/// Asks before deleting one of the templates of the theme being edited, and deletes it.
+fn confirm_delete_template(ui: &mut egui::Ui, state: &mut HomeState) {
+    let Some(template) = state.confirm_delete_template else { return };
+    let bible_uses_it = state.theme_edit.as_ref().is_some_and(|edit| edit.index == state.theme_for_bible)
+        && state.bible_layout == template;
+    let name = state.theme_edit.as_ref().and_then(|edit| edit.theme.templates.get(template)).map(|t| t.name.clone());
+    let Some(name) = name else {
+        state.confirm_delete_template = None;
+        return;
+    };
+    let note =
+        if bible_uses_it { "Bible slides use it; they will use the theme's first template instead." } else { "" };
+    let Some(delete) = confirm_delete(ui, &format!("Delete the template \"{name}\"?"), note) else { return };
+    state.confirm_delete_template = None;
+    if delete
+        && let Some(edit) = state.theme_edit.as_mut()
+        && edit.theme.remove_template(template)
+    {
+        edit.changed = true;
+        // The template before it, or the new first one, is opened in its place.
+        edit.template = template.saturating_sub(1);
+        state.editing = Some(EditDraft::of_slide(edit.theme.templates[edit.template].as_slide(), edit.template));
+    }
+}
+
+/// A small window in the middle of the app asking whether to delete something. Return
+/// deletes, as the Delete button does; Escape cancels. `None` until it is answered.
+fn confirm_delete(ui: &mut egui::Ui, question: &str, note: &str) -> Option<bool> {
     let mut decided = None;
-    egui::Window::new("Delete theme")
+    egui::Window::new(question)
         .title_bar(false)
         .collapsible(false)
         .resizable(false)
@@ -1768,11 +1856,11 @@ fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
         .show(ui.ctx(), |ui| {
             ui.set_width(340.0);
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(format!("Delete the theme \"{name}\"?")).font(crate::studio::semibold(15.0)));
+            ui.label(egui::RichText::new(question).font(crate::studio::semibold(15.0)));
             ui.add_space(4.0);
             ui.label(egui::RichText::new("It cannot be brought back.").color(DIM));
-            if !in_use.is_empty() {
-                ui.label(egui::RichText::new(in_use).color(DIM));
+            if !note.is_empty() {
+                ui.label(egui::RichText::new(note).color(DIM));
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
@@ -1786,7 +1874,6 @@ fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
                     }
                 });
             });
-            // Return deletes, as pressing the Delete button does; Escape cancels.
             let (enter, escape) =
                 ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
             if escape {
@@ -1795,12 +1882,7 @@ fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
                 decided = Some(true);
             }
         });
-    if let Some(delete) = decided {
-        state.confirm_delete_theme = None;
-        if delete {
-            state.theme_request = Some(ThemeRequest::Delete(index));
-        }
-    }
+    decided
 }
 
 /// The top of the Theme Editor's left column: every theme in a plain list. A click opens a

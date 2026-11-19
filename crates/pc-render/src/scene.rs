@@ -1,7 +1,6 @@
 use parley::{Alignment, AlignmentOptions, FontWeight, Layout, LineHeight, PositionedLayoutItem, StyleProperty};
 use pc_model::{
-    Align, BoxStyle, Object, ObjectKind, Rgba, Role, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, Slide, SlideRect, Theme,
-    VAlign,
+    Align, BoxStyle, Object, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, Slide, SlideRect, Theme, VAlign,
 };
 use vello::kurbo::{Affine, Join, Rect, Stroke};
 use vello::peniko::{Color, Fill, Mix};
@@ -68,10 +67,12 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
 
     let mut overflow = false;
     if let Some(slide) = layers.slide {
-        let alone = main_is_alone(slide);
+        // The slide is drawn with one of the theme's templates: the one it names, or the one
+        // that suits what is on it.
+        let template = theme.template_for(slide);
         for object in slide.objects.iter().filter(|object| !object.hidden) {
-            let (_, themed) = placement(theme, object.role.as_ref(), alone);
-            let rect = object.frame.unwrap_or(themed);
+            let Some(template) = template else { continue };
+            let rect = object.frame.unwrap_or_else(|| template.place_for(object.role.as_ref()));
             // Turn the object about its own centre.
             let centre = (f64::from(rect.x + rect.w / 2.0), f64::from(rect.y + rect.h / 2.0));
             let placed = to_target * Affine::rotate_about(f64::from(object.rotation).to_radians(), centre);
@@ -88,7 +89,7 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
             match &object.kind {
                 ObjectKind::Text { text, style } => {
                     // The theme's style for the object's role, with the object's own settings over it.
-                    let Some(style) = theme.text_style(object.role.as_ref(), style) else { continue };
+                    let Some(style) = template.text_style(object.role.as_ref(), style) else { continue };
                     overflow |= draw_text_box(&mut scene, fonts, placed, text, &style, rect);
                 }
             }
@@ -98,11 +99,6 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
         }
     }
     Built { scene, overflow }
-}
-
-/// True when the slide has no second language, so the main language takes its own larger place.
-fn main_is_alone(slide: &Slide) -> bool {
-    !slide.objects.iter().any(|object| object.role.as_ref() == Some(&Role::translation()))
 }
 
 /// One picture fading into another: `from` with `to` over it, `amount` of the way in (0 is
@@ -116,20 +112,10 @@ pub fn cross_fade(from: &Scene, to: &Scene, amount: f32, target_w: u32, target_h
     scene
 }
 
-/// The style and rectangle for a box. A lone main-language box, or a box whose role the theme
-/// does not know, is centred on the slide in the main-language style.
-fn placement<'a>(theme: &'a Theme, role: Option<&Role>, alone: bool) -> (Option<&'a BoxStyle>, SlideRect) {
-    match role.and_then(|role| theme.style_for(role)) {
-        Some(style) if alone && role == Some(&Role::primary()) => (Some(style), theme.solo_primary),
-        Some(style) => (Some(style), style.rect),
-        None => (theme.style_for(&Role::primary()), theme.solo_primary),
-    }
-}
-
 /// Where an object sits on its slide, in slide units: its own place if it has one, otherwise
 /// the theme's place for its role. The editor uses this to find and outline objects.
 pub fn object_frame(slide: &Slide, object: &Object, theme: &Theme) -> SlideRect {
-    object.frame.unwrap_or_else(|| placement(theme, object.role.as_ref(), main_is_alone(slide)).1)
+    object.frame.unwrap_or_else(|| theme.place_on(slide, object.role.as_ref()))
 }
 
 fn lay_out(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: f32) -> Layout<()> {
@@ -310,6 +296,7 @@ mod tests {
     use pc_model::parse_song_text;
 
     use super::*;
+    use pc_model::Role;
 
     fn slide(primary: &str, translation: Option<&str>) -> Slide {
         let mut boxes = vec![Object::text(Role::primary(), primary)];
@@ -415,21 +402,10 @@ mod tests {
     }
 
     #[test]
-    fn unknown_role_is_drawn_like_a_lone_primary() {
+    fn a_role_the_theme_does_not_know_is_placed_like_the_main_language() {
         let s = Slide::new(vec![Object::text(Role("notes".to_owned()), "Hello")]);
         let theme = Theme::builtin();
-        let (style, rect) = placement(&theme, s.objects[0].role.as_ref(), true);
-        assert_eq!(style.map(|s| &s.role), Some(&Role::primary()));
-        assert_eq!(rect, theme.solo_primary);
-    }
-
-    #[test]
-    fn lone_primary_is_centred_but_paired_primary_is_not() {
-        let theme = Theme::builtin();
-        assert_eq!(placement(&theme, Some(&Role::primary()), true).1, theme.solo_primary);
-        assert_eq!(placement(&theme, Some(&Role::primary()), false).1, theme.boxes[0].rect);
-        // A lone translation keeps its own place.
-        assert_eq!(placement(&theme, Some(&Role::translation()), true).1, theme.boxes[1].rect);
+        assert_eq!(object_frame(&s, &s.objects[0], &theme), theme.place_on(&s, Some(&Role::primary())));
     }
 
     /// A missing letter is drawn as an empty box, which the picture tests could mistake for
@@ -439,7 +415,7 @@ mod tests {
         let text =
             "ABCXYZ abcxyz 0123456789 АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ абвгдеёжзийклмнопрстуфхцчшщъыьэюя ҐґЄєІіЇї";
         let theme = Theme::builtin();
-        let layout = lay_out(&mut Fonts::new(), text, &theme.boxes[0], 40.0, 100_000.0);
+        let layout = lay_out(&mut Fonts::new(), text, &theme.templates[0].boxes[0], 40.0, 100_000.0);
         let mut glyphs = 0;
         for line in layout.lines() {
             for item in line.items() {
@@ -458,14 +434,14 @@ mod tests {
     fn an_objects_own_place_wins_over_the_themes() {
         let theme = Theme::builtin();
         let mut s = slide("A", Some("Б"));
-        assert_eq!(object_frame(&s, &s.objects[0], &theme), theme.boxes[0].rect);
+        assert_eq!(object_frame(&s, &s.objects[0], &theme), theme.templates[0].boxes[0].rect);
         let moved = SlideRect { x: 10.0, y: 20.0, w: 300.0, h: 200.0 };
         s.objects[0].frame = Some(moved);
         assert_eq!(object_frame(&s, &s.objects[0], &theme), moved);
-        assert_eq!(object_frame(&s, &s.objects[1], &theme), theme.boxes[1].rect);
+        assert_eq!(object_frame(&s, &s.objects[1], &theme), theme.templates[0].boxes[1].rect);
         // A lone main-language object sits in the theme's centred place.
         let alone = slide("A", None);
-        assert_eq!(object_frame(&alone, &alone.objects[0], &theme), theme.solo_primary);
+        assert_eq!(object_frame(&alone, &alone.objects[0], &theme), theme.templates[1].boxes[0].rect);
     }
 
     #[test]

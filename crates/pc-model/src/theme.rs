@@ -200,41 +200,92 @@ pub struct BoxStyle {
     pub line_transform: LineTransform,
 }
 
+/// One layout of a theme: a set of named boxes, each with its place and its look. A slide is
+/// drawn with one template.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Theme {
-    /// Stays the same when the theme is renamed; its file is named by it.
-    #[serde(default)]
+pub struct ThemeTemplate {
+    /// Stays the same when the template is renamed. Slides that ask for a template name it by this.
     pub id: Uuid,
     pub name: String,
     pub boxes: Vec<BoxStyle>,
-    /// Where a lone `primary` box goes when the slide has no other box.
-    pub solo_primary: SlideRect,
-    /// The colour behind everything on a slide. `None` is black.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<Rgba>,
-    /// The names given to the two templates, the one for two languages first. `None` keeps
-    /// the usual name.
-    #[serde(default)]
-    pub template_names: [Option<String>; 2],
 }
 
-/// The two layouts a theme has, each shown as a slide in the Theme Editor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Template {
-    /// Every box, as slides with two languages use them.
-    Full,
-    /// The main-language box alone, as slides with one language use it.
-    Alone,
+/// A theme: any number of templates, and a colour behind them all.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ThemeOnDisk")]
+pub struct Theme {
+    /// Stays the same when the theme is renamed; its file is named by it.
+    pub id: Uuid,
+    pub name: String,
+    /// At least one. The first is the one used when nothing else decides.
+    pub templates: Vec<ThemeTemplate>,
+    /// The colour behind everything on a slide. `None` is black.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<Rgba>,
+}
+
+/// A theme as its file has it. Files written before themes had free templates hold one set
+/// of boxes and a second place for the main box; those become two templates.
+#[derive(Deserialize)]
+struct ThemeOnDisk {
+    #[serde(default)]
+    id: Uuid,
+    name: String,
+    #[serde(default)]
+    templates: Vec<ThemeTemplate>,
+    #[serde(default)]
+    background: Option<Rgba>,
+    #[serde(default)]
+    boxes: Vec<BoxStyle>,
+    #[serde(default)]
+    solo_primary: Option<SlideRect>,
+    #[serde(default)]
+    template_names: [Option<String>; 2],
+}
+
+impl From<ThemeOnDisk> for Theme {
+    fn from(file: ThemeOnDisk) -> Theme {
+        let mut templates = file.templates;
+        if templates.is_empty() && !file.boxes.is_empty() {
+            let [first, second] = file.template_names;
+            let alone: Vec<BoxStyle> = file
+                .boxes
+                .iter()
+                .filter(|style| style.role != Role::translation())
+                .map(|style| match file.solo_primary {
+                    Some(place) if style.role == Role::primary() => BoxStyle { rect: place, ..style.clone() },
+                    _ => style.clone(),
+                })
+                .collect();
+            // The two get ids made from the theme's, so they are the same at every start
+            // until the theme is next saved, and what points at them still finds them.
+            let made = |n: u128| Uuid::from_u128(file.id.as_u128() ^ n);
+            templates = vec![
+                ThemeTemplate {
+                    id: made(1),
+                    name: first.unwrap_or_else(|| "Two languages".to_owned()),
+                    boxes: file.boxes,
+                },
+                ThemeTemplate { id: made(2), name: second.unwrap_or_else(|| "One language".to_owned()), boxes: alone },
+            ];
+        }
+        Theme { id: file.id, name: file.name, templates, background: file.background }
+    }
 }
 
 const THEME_FORMAT: &str = "presentercraft-theme";
 /// The newest theme file version this code reads and the one it writes.
-pub const THEME_VERSION: u32 = 1;
+pub const THEME_VERSION: u32 = 2;
 
-#[derive(Serialize, Deserialize)]
-struct ThemeFile {
-    format: String,
+#[derive(Serialize)]
+struct ThemeFileOut<'a> {
+    format: &'a str,
     version: u32,
+    theme: &'a Theme,
+}
+
+#[derive(Deserialize)]
+struct ThemeFileIn {
     theme: Theme,
 }
 
@@ -252,9 +303,99 @@ fn role_from_name(name: &str) -> Role {
     Role(if slug.is_empty() { "box".to_owned() } else { slug.to_owned() })
 }
 
+/// Where a box with no place of its own goes: the middle of the slide.
+const MIDDLE: SlideRect = SlideRect { x: 120.0, y: 240.0, w: 1680.0, h: 600.0 };
+
+impl ThemeTemplate {
+    pub fn style_for(&self, role: &Role) -> Option<&BoxStyle> {
+        self.boxes.iter().find(|b| &b.role == role)
+    }
+
+    /// The box an object with this role is drawn as: the box with that role, or the main
+    /// language's box if it has no role or one the template does not know, or the first box.
+    pub fn box_for(&self, role: Option<&Role>) -> Option<&BoxStyle> {
+        role.and_then(|role| self.style_for(role)).or_else(|| self.style_for(&Role::primary())).or(self.boxes.first())
+    }
+
+    /// The look a text object is drawn with: its box's look with the object's own settings
+    /// put over it.
+    pub fn text_style(&self, role: Option<&Role>, own: &TextStyle) -> Option<BoxStyle> {
+        Some(own.over(self.box_for(role)?))
+    }
+
+    /// Where an object with this role sits when it has no place of its own.
+    pub fn place_for(&self, role: Option<&Role>) -> SlideRect {
+        self.box_for(role).map_or(MIDDLE, |style| style.rect)
+    }
+
+    /// A role no box of this template has yet, made from a name: "Verse Text" gives
+    /// `verse-text`, or `verse-text-2` if that is taken.
+    pub fn unused_role(&self, name: &str, also_taken: &[Role]) -> Role {
+        let base = role_from_name(name);
+        let taken = |role: &Role| self.style_for(role).is_some() || also_taken.contains(role);
+        if !taken(&base) {
+            return base;
+        }
+        (2..).map(|n| Role(format!("{}-{n}", base.0))).find(|role| !taken(role)).unwrap_or(base)
+    }
+
+    /// The template as a slide the editor can work on: a text box for each of its boxes,
+    /// saying "Text", carrying the box's whole look, place and name.
+    pub fn as_slide(&self) -> Slide {
+        let objects = self
+            .boxes
+            .iter()
+            .map(|style| {
+                let mut object = Object::text(style.role.clone(), "Text");
+                object.name = style.label();
+                object.frame = Some(style.rect);
+                let ObjectKind::Text { style: own, .. } = &mut object.kind;
+                *own = TextStyle::all(style);
+                object
+            })
+            .collect();
+        let mut slide = Slide::new(objects);
+        slide.template = Some(self.id);
+        slide
+    }
+
+    /// The template with its boxes replaced by what the editor made of that slide. Each text
+    /// box becomes a box of the template, keeping its role (or taking one from its name if it
+    /// is new), its place, its look and its name. Two boxes cannot share a role: the first on
+    /// the slide keeps it.
+    pub fn with_slide(&self, slide: &Slide) -> ThemeTemplate {
+        let mut boxes: Vec<BoxStyle> = Vec::new();
+        for object in &slide.objects {
+            let ObjectKind::Text { style, .. } = &object.kind;
+            let role = object.role.clone().unwrap_or_else(|| role_from_name(&object.name));
+            if boxes.iter().any(|have| have.role == role) {
+                continue;
+            }
+            // A new box starts from the look of the box its role would otherwise fall back to.
+            let Some(base) = self
+                .box_for(Some(&role))
+                .or(boxes.first())
+                .cloned()
+                .or_else(|| Theme::builtin().templates.first().and_then(|t| t.boxes.first()).cloned())
+            else {
+                continue;
+            };
+            let mut look = style.over(&base);
+            look.rect = object.frame.unwrap_or(base.rect);
+            // A name is kept only when it says more than the role does.
+            let name = object.name.trim();
+            look.name = (!name.is_empty() && name != role.label()).then(|| name.to_owned());
+            look.role = role;
+            boxes.push(look);
+        }
+        ThemeTemplate { id: self.id, name: self.name.clone(), boxes }
+    }
+}
+
 impl Theme {
-    /// The theme used until themes can be edited: a large white main language above a smaller
-    /// orange translation, both outlined and shadowed.
+    /// The theme the app starts with: a large white main language above a smaller orange
+    /// translation, both outlined and shadowed, with a small line for a Bible reference; and
+    /// a second template for slides with one language, where the main language is centred.
     pub fn builtin() -> Theme {
         let base = |role: Role, rect: SlideRect, size: f32, min_size: f32, fill: Rgba, outline: f32| BoxStyle {
             role,
@@ -278,170 +419,108 @@ impl Theme {
             scaling: Scaling::TextDown,
             line_transform: LineTransform::None,
         };
+        let main =
+            base(Role::primary(), SlideRect { x: 120.0, y: 170.0, w: 1680.0, h: 400.0 }, 96.0, 40.0, Rgba::WHITE, 6.0);
+        let translation = base(
+            Role::translation(),
+            SlideRect { x: 120.0, y: 610.0, w: 1680.0, h: 320.0 },
+            64.0,
+            30.0,
+            Rgba::rgb(255, 150, 40),
+            4.0,
+        );
+        // Where a Bible verse is from, small along the bottom. Songs do not use it.
+        let reference = BoxStyle {
+            weight: 500,
+            ..base(
+                Role::reference(),
+                SlideRect { x: 120.0, y: 950.0, w: 1680.0, h: 80.0 },
+                44.0,
+                24.0,
+                Rgba::WHITE,
+                2.0,
+            )
+        };
+        let main_alone = BoxStyle { rect: MIDDLE, ..main.clone() };
         Theme {
             id: Uuid::nil(),
             name: "Built-in".to_owned(),
-            boxes: vec![
-                base(
-                    Role::primary(),
-                    SlideRect { x: 120.0, y: 170.0, w: 1680.0, h: 400.0 },
-                    96.0,
-                    40.0,
-                    Rgba::WHITE,
-                    6.0,
-                ),
-                base(
-                    Role::translation(),
-                    SlideRect { x: 120.0, y: 610.0, w: 1680.0, h: 320.0 },
-                    64.0,
-                    30.0,
-                    Rgba::rgb(255, 150, 40),
-                    4.0,
-                ),
-                // Where a Bible verse is from, small along the bottom. Songs do not use it.
-                BoxStyle {
-                    weight: 500,
-                    ..base(
-                        Role::reference(),
-                        SlideRect { x: 120.0, y: 950.0, w: 1680.0, h: 80.0 },
-                        44.0,
-                        24.0,
-                        Rgba::WHITE,
-                        2.0,
-                    )
+            templates: vec![
+                ThemeTemplate {
+                    id: Uuid::from_u128(1),
+                    name: "Two languages".to_owned(),
+                    boxes: vec![main, translation, reference.clone()],
+                },
+                ThemeTemplate {
+                    id: Uuid::from_u128(2),
+                    name: "One language".to_owned(),
+                    boxes: vec![main_alone, reference],
                 },
             ],
-            solo_primary: SlideRect { x: 120.0, y: 240.0, w: 1680.0, h: 600.0 },
             background: None,
-            template_names: [None, None],
         }
     }
 
-    /// What one of the theme's templates is called: the name it was given, or the usual one.
-    pub fn template_name(&self, template: Template) -> String {
-        let (at, usual) = match template {
-            Template::Full => (0, "Two languages"),
-            Template::Alone => (1, "One language"),
-        };
-        self.template_names[at].clone().unwrap_or_else(|| usual.to_owned())
+    /// The template a slide is drawn with. A slide that names a template gets it. Otherwise
+    /// the template that suits it best: the first that has a box for every role on the slide
+    /// and no language box the slide leaves empty. So with the built-in theme a slide with a
+    /// translation uses "Two languages" and one without uses "One language".
+    pub fn template_for(&self, slide: &Slide) -> Option<&ThemeTemplate> {
+        if let Some(named) = slide.template.and_then(|id| self.templates.iter().find(|t| t.id == id)) {
+            return Some(named);
+        }
+        let on_slide: Vec<&Role> = slide.objects.iter().filter_map(|o| o.role.as_ref()).collect();
+        let languages = [Role::primary(), Role::translation()];
+        self.templates.iter().min_by_key(|template| {
+            let missing = on_slide.iter().filter(|role| template.style_for(role).is_none()).count();
+            let unused =
+                languages.iter().filter(|role| template.style_for(role).is_some() && !on_slide.contains(role)).count();
+            (missing, unused)
+        })
     }
 
-    /// Gives one of the theme's templates a name. An empty name, or the usual one, goes back
-    /// to the usual name.
-    pub fn name_template(&mut self, template: Template, name: &str) {
-        let name = name.trim();
-        let at = usize::from(template == Template::Alone);
-        self.template_names[at] = None;
-        if !name.is_empty() && name != self.template_name(template) {
-            self.template_names[at] = Some(name.to_owned());
-        }
+    /// The look a text object on a slide is drawn with.
+    pub fn text_style_on(&self, slide: &Slide, role: Option<&Role>, own: &TextStyle) -> Option<BoxStyle> {
+        self.template_for(slide)?.text_style(role, own)
     }
 
-    /// One of the theme's layouts as a slide the editor can work on: a text box for each of
-    /// the layout's boxes, saying "Text", carrying the box's whole look, place and name. The
-    /// layout for one language has every box but the translation's, with the main box in its
-    /// larger place.
-    pub fn template_slide(&self, template: Template) -> Slide {
-        let objects = self
-            .boxes
-            .iter()
-            .filter(|style| template == Template::Full || style.role != Role::translation())
-            .map(|style| {
-                let mut object = Object::text(style.role.clone(), "Text");
-                object.name = style.label();
-                let alone = template == Template::Alone && style.role == Role::primary();
-                object.frame = Some(if alone { self.solo_primary } else { style.rect });
-                let ObjectKind::Text { style: own, .. } = &mut object.kind;
-                *own = TextStyle::all(style);
-                object
-            })
-            .collect();
-        Slide::new(objects)
+    /// Where an object on a slide sits when it has no place of its own.
+    pub fn place_on(&self, slide: &Slide, role: Option<&Role>) -> SlideRect {
+        self.template_for(slide).map_or(MIDDLE, |template| template.place_for(role))
     }
 
-    /// A role no box of this theme has yet, made from a name: "Verse Text" gives
-    /// `verse-text`, or `verse-text-2` if that is taken.
-    pub fn unused_role(&self, name: &str, also_taken: &[Role]) -> Role {
-        let base = role_from_name(name);
-        let taken = |role: &Role| self.style_for(role).is_some() || also_taken.contains(role);
-        if !taken(&base) {
-            return base;
-        }
-        (2..).map(|n| Role(format!("{}-{n}", base.0))).find(|role| !taken(role)).unwrap_or(base)
+    /// The box with a role in the theme's first template.
+    pub fn style_for(&self, role: &Role) -> Option<&BoxStyle> {
+        self.templates.first()?.style_for(role)
     }
 
-    /// The theme with one of its layouts replaced by what the editor made of it. Each text box
-    /// on the slide becomes a box of the theme, keeping its role (or taking one from its name
-    /// if it is new), its place, its look and its name.
-    ///
-    /// The two layouts share their boxes. In the layout for one language the main box's place
-    /// is that layout's own; everything else about every box is the same in both, so a box
-    /// added, changed or removed there is added, changed or removed in the theme. The
-    /// translation box is not part of that layout and is left alone by it. A theme always
-    /// keeps a main-language box.
-    pub fn with_template(&self, template: Template, slide: &Slide) -> Theme {
-        let mut theme = self.clone();
-        let starting = |role: &Role| self.style_for(role).or_else(|| self.style_for(&Role::primary())).cloned();
-        let mut made: Vec<BoxStyle> = Vec::new();
-        for object in &slide.objects {
-            let ObjectKind::Text { style, .. } = &object.kind;
-            let role = object.role.clone().unwrap_or_else(|| role_from_name(&object.name));
-            // Two boxes cannot share a role; the first on the slide keeps it.
-            if made.iter().any(|have| have.role == role) {
-                continue;
-            }
-            let Some(base) = starting(&role) else { continue };
-            let mut look = style.over(&base);
-            look.rect = object.frame.unwrap_or(base.rect);
-            // A name is kept only when it says more than the role does.
-            let name = object.name.trim();
-            look.name = (!name.is_empty() && name != role.label()).then(|| name.to_owned());
-            look.role = role;
-            made.push(look);
+    /// The look of a text object under the theme's first template.
+    pub fn text_style(&self, role: Option<&Role>, own: &TextStyle) -> Option<BoxStyle> {
+        self.templates.first()?.text_style(role, own)
+    }
+
+    /// Adds a template: a copy of the one at `index`, placed after it. Returns its place.
+    pub fn add_template(&mut self, index: usize) -> usize {
+        let taken = |name: &str| self.templates.iter().any(|t| t.name == name);
+        let name = (self.templates.len() + 1..).map(|n| format!("Template {n}")).find(|name| !taken(name));
+        let boxes = self.templates.get(index).map(|t| t.boxes.clone()).unwrap_or_default();
+        let at = (index + 1).min(self.templates.len());
+        self.templates.insert(at, ThemeTemplate { id: Uuid::new_v4(), name: name.unwrap_or_default(), boxes });
+        at
+    }
+
+    /// Removes a template. The last one cannot be removed. Returns true if it was removed.
+    pub fn remove_template(&mut self, index: usize) -> bool {
+        if self.templates.len() <= 1 || index >= self.templates.len() {
+            return false;
         }
-        let kept_main = self.style_for(&Role::primary()).cloned();
-        match template {
-            Template::Full => {
-                if !made.iter().any(|b| b.role == Role::primary())
-                    && let Some(main) = kept_main
-                {
-                    made.insert(0, main);
-                }
-                theme.boxes = made;
-            }
-            Template::Alone => {
-                let mut boxes: Vec<BoxStyle> = Vec::new();
-                // The translation box keeps its place in the order, untouched.
-                for old in &self.boxes {
-                    if old.role == Role::translation() {
-                        boxes.push(old.clone());
-                    } else if let Some(now) = made.iter().find(|b| b.role == old.role) {
-                        if now.role == Role::primary() {
-                            // The main box's place here is this layout's own.
-                            theme.solo_primary = now.rect;
-                            boxes.push(BoxStyle { rect: old.rect, ..now.clone() });
-                        } else {
-                            boxes.push(now.clone());
-                        }
-                    } else if old.role == Role::primary() {
-                        boxes.push(old.clone());
-                    }
-                }
-                // Boxes added in this layout join the theme.
-                for new in made {
-                    if !boxes.iter().any(|b| b.role == new.role) {
-                        boxes.push(new);
-                    }
-                }
-                theme.boxes = boxes;
-            }
-        }
-        theme
+        self.templates.remove(index);
+        true
     }
 
     /// The theme as a file's text.
     pub fn to_json(&self) -> String {
-        let file = ThemeFile { format: THEME_FORMAT.to_owned(), version: THEME_VERSION, theme: self.clone() };
+        let file = ThemeFileOut { format: THEME_FORMAT, version: THEME_VERSION, theme: self };
         // A theme has no value that JSON cannot hold, so this cannot fail.
         let mut text = serde_json::to_string_pretty(&file).unwrap_or_default();
         text.push('\n');
@@ -461,23 +540,12 @@ impl Theme {
                 "the theme file was made by a newer PresenterCraft (format {version}; this one reads up to {THEME_VERSION})"
             ));
         }
-        let file: ThemeFile = serde_json::from_value(value).map_err(|e| format!("the theme file is damaged ({e})"))?;
-        if file.theme.style_for(&Role::primary()).is_none() {
-            return Err("the theme file has no main-language box".to_owned());
+        let file: ThemeFileIn =
+            serde_json::from_value(value).map_err(|e| format!("the theme file is damaged ({e})"))?;
+        if file.theme.templates.is_empty() {
+            return Err("the theme file has no templates".to_owned());
         }
         Ok(file.theme)
-    }
-
-    /// The style a text object is drawn with: the theme's style for its role (the main
-    /// language's when it has no role, or one the theme does not know) with the object's own
-    /// settings put over it.
-    pub fn text_style(&self, role: Option<&Role>, own: &TextStyle) -> Option<BoxStyle> {
-        let base = role.and_then(|role| self.style_for(role)).or_else(|| self.style_for(&Role::primary()))?;
-        Some(own.over(base))
-    }
-
-    pub fn style_for(&self, role: &Role) -> Option<&BoxStyle> {
-        self.boxes.iter().find(|b| &b.role == role)
     }
 }
 
@@ -605,7 +673,7 @@ pub fn fonts_used(presentation: &crate::Presentation, theme: &Theme) -> Vec<Stri
     for (_, slide) in presentation.slides() {
         for object in &slide.objects {
             let crate::ObjectKind::Text { style, .. } = &object.kind;
-            if let Some(drawn) = theme.text_style(object.role.as_ref(), style)
+            if let Some(drawn) = theme.text_style_on(slide, object.role.as_ref(), style)
                 && !families.contains(&drawn.font_family)
             {
                 families.push(drawn.font_family);
@@ -626,51 +694,118 @@ pub fn missing_fonts(used: &[String], installed: &[String]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn slide_with(roles: &[Role]) -> Slide {
+        Slide::new(roles.iter().map(|role| Object::text(role.clone(), "words")).collect())
+    }
+
     #[test]
     fn a_theme_survives_its_file_and_other_files_are_refused() {
         let mut theme = Theme::builtin();
         theme.name = "Sunday".to_owned();
         theme.background = Some(Rgba::rgb(10, 20, 30));
+        theme.add_template(0);
         assert_eq!(Theme::from_json(&theme.to_json()), Ok(theme));
         assert!(Theme::from_json("{}").unwrap_err().contains("not a PresenterCraft theme file"));
         assert!(Theme::from_json("rubbish").is_err());
-        let newer = Theme::builtin().to_json().replace("\"version\": 1", "\"version\": 99");
+        let newer = Theme::builtin().to_json().replace("\"version\": 2", "\"version\": 99");
         assert!(Theme::from_json(&newer).unwrap_err().contains("newer"));
     }
 
     #[test]
-    fn a_layout_goes_to_the_editor_and_back_unchanged() {
-        let theme = Theme::builtin();
-        for template in [Template::Full, Template::Alone] {
-            let slide = theme.template_slide(template);
-            assert_eq!(theme.with_template(template, &slide), theme);
-        }
-        assert_eq!(theme.template_slide(Template::Full).objects.len(), 3);
-        // One language: the main box and the reference, without the translation.
-        assert_eq!(theme.template_slide(Template::Alone).objects.len(), 2);
+    fn a_file_from_before_free_templates_becomes_two_templates() {
+        let builtin = Theme::builtin();
+        let boxes = serde_json::to_value(&builtin.templates[0].boxes).unwrap();
+        let old = serde_json::json!({
+            "format": "presentercraft-theme",
+            "version": 1,
+            "theme": {
+                "id": "cc15f92e-1009-4005-a005-c60a8a341f8a",
+                "name": "Old",
+                "boxes": boxes,
+                "solo_primary": { "x": 1.0, "y": 2.0, "w": 3.0, "h": 4.0 },
+                "template_names": ["Lyrics", null]
+            }
+        });
+        let theme = Theme::from_json(&old.to_string()).unwrap();
+        assert_eq!(theme.templates.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Lyrics", "One language"]);
+        assert_eq!(theme.templates[0].boxes, builtin.templates[0].boxes);
+        // Read again, the templates have the same ids.
+        let again = Theme::from_json(&old.to_string()).unwrap();
+        assert_eq!(again.templates[1].id, theme.templates[1].id);
+        assert_ne!(theme.templates[0].id, theme.templates[1].id);
+        // The second has no translation, and the main box where it used to go alone.
+        assert!(theme.templates[1].style_for(&Role::translation()).is_none());
+        assert_eq!(theme.templates[1].style_for(&Role::primary()).unwrap().rect.x, 1.0);
     }
 
     #[test]
-    fn editing_a_layout_changes_the_theme() {
+    fn a_slide_gets_the_template_that_suits_it_or_the_one_it_names() {
         let theme = Theme::builtin();
-        let mut slide = theme.template_slide(Template::Full);
+        let name = |slide: &Slide| theme.template_for(slide).unwrap().name.clone();
+        assert_eq!(name(&slide_with(&[Role::primary(), Role::translation()])), "Two languages");
+        assert_eq!(name(&slide_with(&[Role::primary()])), "One language");
+        assert_eq!(name(&slide_with(&[Role::primary(), Role::reference()])), "One language");
+        // A slide that names a template gets that one, whatever is on it.
+        let mut named = slide_with(&[Role::primary()]);
+        named.template = Some(theme.templates[0].id);
+        assert_eq!(name(&named), "Two languages");
+        // A name the theme does not have falls back to what suits the slide.
+        named.template = Some(Uuid::from_u128(999));
+        assert_eq!(name(&named), "One language");
+        // The main box sits in a different place in each.
+        let two = slide_with(&[Role::primary(), Role::translation()]);
+        let one = slide_with(&[Role::primary()]);
+        assert_ne!(theme.place_on(&two, Some(&Role::primary())), theme.place_on(&one, Some(&Role::primary())));
+    }
+
+    #[test]
+    fn a_template_goes_to_the_editor_and_back_unchanged_and_edits_change_only_it() {
+        let theme = Theme::builtin();
+        for template in &theme.templates {
+            assert_eq!(&template.with_slide(&template.as_slide()), template);
+        }
+        let mut slide = theme.templates[0].as_slide();
         slide.objects[1].frame = Some(SlideRect { x: 10.0, y: 20.0, w: 300.0, h: 100.0 });
         let ObjectKind::Text { style, .. } = &mut slide.objects[1].kind;
         style.size = Some(48.0);
-        // A new box, with no role yet, takes one from its name.
-        let mut added = Object::text(Role::primary(), "Text");
-        added.role = None;
-        added.name = "Verse Reference".to_owned();
-        slide.objects.push(added);
-        let edited = theme.with_template(Template::Full, &slide);
+        slide.objects[0].name = "English".to_owned();
+        // Two new boxes with one name, given their roles as the editor gives them.
+        for _ in 0..2 {
+            let mut added = Object::text(Role::primary(), "Text");
+            added.name = "Notes".to_owned();
+            let taken: Vec<Role> = slide.objects.iter().filter_map(|o| o.role.clone()).collect();
+            added.role = Some(theme.templates[0].unused_role(&added.name, &taken));
+            slide.objects.push(added);
+        }
+        let edited = theme.templates[0].with_slide(&slide);
         let translation = edited.style_for(&Role::translation()).unwrap();
         assert_eq!((translation.rect.x, translation.size), (10.0, 48.0));
-        assert!(edited.style_for(&Role("verse-reference".to_owned())).is_some());
-        assert_eq!(edited.boxes.len(), 4);
-
-        // Deleting the main box in the editor does not take it out of the theme.
+        assert_eq!(edited.style_for(&Role::primary()).unwrap().label(), "English");
+        assert_eq!(edited.boxes.len(), 5);
+        assert!(
+            edited.style_for(&Role("notes".to_owned())).is_some()
+                && edited.style_for(&Role("notes-2".to_owned())).is_some()
+        );
+        // Removing a box in the editor removes it from the template.
         slide.objects.remove(0);
-        assert!(theme.with_template(Template::Full, &slide).style_for(&Role::primary()).is_some());
+        assert!(theme.templates[0].with_slide(&slide).style_for(&Role::primary()).is_none());
+        // Names come back when the template is opened again.
+        let names: Vec<String> = edited.as_slide().objects.iter().map(|o| o.name.clone()).collect();
+        assert_eq!(names, ["English", "Translation", "Reference", "Notes", "Notes"]);
+    }
+
+    #[test]
+    fn templates_are_added_as_copies_and_removed_but_never_all() {
+        let mut theme = Theme::builtin();
+        let at = theme.add_template(0);
+        assert_eq!((at, theme.templates.len()), (1, 3));
+        assert_eq!(theme.templates[1].boxes, theme.templates[0].boxes);
+        assert_ne!(theme.templates[1].id, theme.templates[0].id);
+        assert_eq!(theme.templates[1].name, "Template 3");
+        assert!(theme.remove_template(1));
+        assert!(theme.remove_template(1));
+        assert!(!theme.remove_template(0));
+        assert_eq!(theme.templates.len(), 1);
     }
 
     #[test]
@@ -689,84 +824,6 @@ mod tests {
         assert_eq!(translation.fill, orange);
         assert_eq!(translation.role, Role::translation());
         assert_eq!(translation.rect, theme.style_for(&Role::translation()).unwrap().rect);
-    }
-
-    #[test]
-    fn templates_can_be_named_and_the_names_survive_the_file() {
-        let mut theme = Theme::builtin();
-        assert_eq!(theme.template_name(Template::Full), "Two languages");
-        theme.name_template(Template::Full, "  Lyrics ");
-        theme.name_template(Template::Alone, "One language");
-        assert_eq!(theme.template_names, [Some("Lyrics".to_owned()), None]);
-        let again = Theme::from_json(&theme.to_json()).unwrap();
-        assert_eq!(
-            (again.template_name(Template::Full), again.template_name(Template::Alone)),
-            ("Lyrics".to_owned(), "One language".to_owned())
-        );
-        // An emptied name goes back to the usual one; a file without names still reads.
-        theme.name_template(Template::Full, "");
-        assert_eq!(theme.template_name(Template::Full), "Two languages");
-        let old = Theme::builtin().to_json().replace("\"template_names\"", "\"unknown\"");
-        assert_eq!(Theme::from_json(&old).unwrap().template_names, [None, None]);
-    }
-
-    #[test]
-    fn a_boxs_name_is_kept_and_two_boxes_never_share_a_role() {
-        let theme = Theme::builtin();
-        let mut slide = theme.template_slide(Template::Full);
-        slide.objects[0].name = "English".to_owned();
-        // Two new boxes with the same name, given their roles as the editor gives them.
-        for _ in 0..2 {
-            let mut added = Object::text(Role::primary(), "Text");
-            added.name = "Notes".to_owned();
-            let taken: Vec<Role> = slide.objects.iter().filter_map(|o| o.role.clone()).collect();
-            added.role = Some(theme.unused_role(&added.name, &taken));
-            slide.objects.push(added);
-        }
-        let edited = theme.with_template(Template::Full, &slide);
-        assert_eq!(edited.style_for(&Role::primary()).unwrap().label(), "English");
-        assert_eq!(edited.boxes.len(), 5);
-        assert!(edited.style_for(&Role("notes".to_owned())).is_some());
-        assert!(edited.style_for(&Role("notes-2".to_owned())).is_some());
-        // The names come back when the layout is opened again, and survive the file.
-        let again = Theme::from_json(&edited.to_json()).unwrap();
-        let names: Vec<String> = again.template_slide(Template::Full).objects.iter().map(|o| o.name.clone()).collect();
-        assert_eq!(names, ["English", "Translation", "Reference", "Notes", "Notes"]);
-    }
-
-    #[test]
-    fn a_box_added_or_removed_in_the_one_language_layout_changes_the_theme() {
-        let theme = Theme::builtin();
-        let mut slide = theme.template_slide(Template::Alone);
-        let mut added = Object::text(Role::primary(), "Text");
-        added.name = "Footer".to_owned();
-        added.role = Some(theme.unused_role("Footer", &[]));
-        added.frame = Some(SlideRect { x: 5.0, y: 6.0, w: 7.0, h: 8.0 });
-        slide.objects.push(added);
-        let edited = theme.with_template(Template::Alone, &slide);
-        // Added to the theme; the translation box, not in this layout, is untouched.
-        assert_eq!(edited.style_for(&Role("footer".to_owned())).unwrap().rect.x, 5.0);
-        assert_eq!(edited.style_for(&Role::translation()), theme.style_for(&Role::translation()));
-        assert_eq!(edited.boxes.len(), 4);
-        // Removing the reference there removes it from the theme; the main box always stays.
-        slide.objects.retain(|o| o.role != Some(Role::reference()) && o.role != Some(Role::primary()));
-        let edited = theme.with_template(Template::Alone, &slide);
-        assert!(edited.style_for(&Role::reference()).is_none());
-        assert!(edited.style_for(&Role::primary()).is_some());
-    }
-
-    #[test]
-    fn the_alone_layout_moves_only_the_lone_box_and_shares_its_look() {
-        let theme = Theme::builtin();
-        let mut slide = theme.template_slide(Template::Alone);
-        slide.objects[0].frame = Some(SlideRect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 });
-        let ObjectKind::Text { style, .. } = &mut slide.objects[0].kind;
-        style.italic = Some(true);
-        let edited = theme.with_template(Template::Alone, &slide);
-        assert_eq!(edited.solo_primary.w, 1920.0);
-        let primary = edited.style_for(&Role::primary()).unwrap();
-        assert!(primary.italic);
-        assert_eq!(primary.rect, theme.style_for(&Role::primary()).unwrap().rect);
     }
 
     #[test]
@@ -809,10 +866,13 @@ mod tests {
     fn the_fonts_a_song_uses_are_listed_once_each() {
         let theme = Theme::builtin();
         let mut song = crate::parse_song_text("S", "A\n--\nБ\n\nC\n");
-        assert_eq!(fonts_used(&song, &theme), vec![theme.boxes[0].font_family.clone()]);
+        assert_eq!(fonts_used(&song, &theme), vec![theme.templates[0].boxes[0].font_family.clone()]);
         let crate::ObjectKind::Text { style, .. } = &mut song.groups[0].slides[1].objects[0].kind;
         style.font_family = Some("Georgia".to_owned());
-        assert_eq!(fonts_used(&song, &theme), vec!["Georgia".to_owned(), theme.boxes[0].font_family.clone()]);
+        assert_eq!(
+            fonts_used(&song, &theme),
+            vec!["Georgia".to_owned(), theme.templates[0].boxes[0].font_family.clone()]
+        );
         assert!(fonts_used(&crate::parse_song_text("S", ""), &theme).is_empty());
     }
 
@@ -828,7 +888,7 @@ mod tests {
     #[test]
     fn an_unset_style_is_exactly_the_theme() {
         let theme = Theme::builtin();
-        let base = &theme.boxes[1];
+        let base = &theme.templates[0].boxes[1];
         assert_eq!(TextStyle::default().over(base), *base);
         assert!(TextStyle::default().is_default());
     }
@@ -836,7 +896,7 @@ mod tests {
     #[test]
     fn only_what_was_changed_is_kept_and_the_rest_still_follows_the_theme() {
         let mut theme = Theme::builtin();
-        let base = theme.boxes[0].clone();
+        let base = theme.templates[0].boxes[0].clone();
         let mut wanted = base.clone();
         wanted.fill = Rgba::rgb(255, 0, 0);
         wanted.size = 20.0;
@@ -844,7 +904,7 @@ mod tests {
         assert_eq!(own, TextStyle { fill: Some(Rgba::rgb(255, 0, 0)), size: Some(20.0), ..TextStyle::default() });
         assert_eq!(own.over(&base), BoxStyle { min_size: 20.0, ..wanted });
         // The theme changes its font: the object follows, and keeps its own colour and size.
-        theme.boxes[0].font_family = "Another".to_owned();
+        theme.templates[0].boxes[0].font_family = "Another".to_owned();
         let drawn = theme.text_style(Some(&Role::primary()), &own).unwrap();
         assert_eq!((drawn.font_family.as_str(), drawn.fill, drawn.size), ("Another", Rgba::rgb(255, 0, 0), 20.0));
     }
@@ -854,7 +914,7 @@ mod tests {
         let theme = Theme::builtin();
         let none = theme.text_style(None, &TextStyle::default()).unwrap();
         let unknown = theme.text_style(Some(&Role("notes".to_owned())), &TextStyle::default()).unwrap();
-        assert_eq!(none, theme.boxes[0]);
-        assert_eq!(unknown, theme.boxes[0]);
+        assert_eq!(none, theme.templates[0].boxes[0]);
+        assert_eq!(unknown, theme.templates[0].boxes[0]);
     }
 }

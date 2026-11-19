@@ -177,7 +177,7 @@ fn outline_and_shadow_are_drawn() {
     use pc_model::Rgba;
     let s = slide("OUTLINE", None);
     let mut theme = Theme::builtin();
-    for style in &mut theme.boxes {
+    for style in theme.templates.iter_mut().flat_map(|template| &mut template.boxes) {
         style.outline_color = Rgba::rgb(0, 255, 0);
         style.outline_width = 8.0;
         style.fill = Rgba::rgb(255, 0, 0);
@@ -190,7 +190,7 @@ fn outline_and_shadow_are_drawn() {
     assert!(red > 5_000, "expected red letters, found {red} pixels");
 
     // Without an outline the green goes away.
-    for style in &mut theme.boxes {
+    for style in theme.templates.iter_mut().flat_map(|template| &mut template.boxes) {
         style.outline_width = 0.0;
     }
     let px = render_with(Some(&s), &theme, 1920, 1080);
@@ -198,13 +198,13 @@ fn outline_and_shadow_are_drawn() {
 
     // The shadow is drawn underneath the letters. With white letters on black, switching it on
     // must leave exactly the same white pixels.
-    for style in &mut theme.boxes {
+    for style in theme.templates.iter_mut().flat_map(|template| &mut template.boxes) {
         style.outline_color = Rgba::rgb(255, 255, 255);
         style.outline_width = 2.0;
         style.fill = Rgba::rgb(255, 255, 255);
     }
     let without = render_with(Some(&s), &theme, 1920, 1080);
-    for style in &mut theme.boxes {
+    for style in theme.templates.iter_mut().flat_map(|template| &mut template.boxes) {
         style.shadow = true;
     }
     let with = render_with(Some(&s), &theme, 1920, 1080);

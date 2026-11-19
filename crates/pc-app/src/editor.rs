@@ -991,7 +991,7 @@ mod tests {
         assert!(d.drag_to((970.0, 310.0), false, false));
         assert!(d.drag_to((1000.0, 350.0), false, false));
         d.release();
-        let themed = theme.boxes[0].rect;
+        let themed = theme.templates[0].boxes[0].rect;
         assert_eq!(d.slide.objects[0].frame, Some(SlideRect { x: themed.x + 40.0, y: themed.y + 50.0, ..themed }));
         assert!(d.undo());
         assert_eq!(d.slide, original, "one undo puts the whole drag back");
@@ -1006,7 +1006,7 @@ mod tests {
         let mut d = draft();
         d.press(&theme, (960.0, 300.0), 8.0, false);
         d.release();
-        let themed = theme.boxes[0].rect;
+        let themed = theme.templates[0].boxes[0].rect;
         let corner = (themed.x + themed.w, themed.y + themed.h);
         d.press(&theme, corner, 8.0, false);
         assert!(matches!(d.drag, Some(Drag::Resize { handle: Handle::BottomRight, .. })));

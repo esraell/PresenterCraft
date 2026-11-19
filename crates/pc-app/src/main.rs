@@ -95,9 +95,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
     Ok(Some(options))
 }
 
-/// What a theme calls its two templates, the one for two languages first.
-fn template_names(theme: &Theme) -> [String; 2] {
-    [theme.template_name(pc_model::Template::Full), theme.template_name(pc_model::Template::Alone)]
+/// What a theme calls its templates, in order.
+fn template_names(theme: &Theme) -> Vec<String> {
+    theme.templates.iter().map(|template| template.name.clone()).collect()
 }
 
 /// The keys that run the show. They are read straight from the window, before the interface
@@ -243,8 +243,8 @@ struct App {
     themes: Vec<Theme>,
     songs_theme: usize,
     bible_theme: usize,
-    /// Which layout of its theme Bible slides use.
-    bible_layout: pc_model::Template,
+    /// Which template of its theme Bible slides use, by its place among them.
+    bible_layout: usize,
     /// The themes with changes not yet written to their files, by place.
     themes_unsaved: Vec<usize>,
     /// The Bible page's set-up as last written to its file, to notice when it changes.
@@ -410,7 +410,7 @@ impl App {
                     shelf: bible::Shelf::with_installed(),
                     boxes: home::layout_boxes(&self.theme_for_bible, self.bible_layout),
                     box_labels: home::layout_labels(&self.theme_for_bible, self.bible_layout),
-                    pin_main: self.pinned_main(),
+                    template: self.bible_template(),
                     ..home::BiblePage::default()
                 },
                 ..HomeState::default()
@@ -675,18 +675,15 @@ impl App {
         if self.bible_slots.contains(&presentation) { &self.theme_for_bible } else { &self.theme }
     }
 
-    /// Each theme's two layouts as boxes, for the pictures in the theme picker.
-    fn theme_layouts(&self) -> Vec<[Vec<(pc_model::Role, pc_model::SlideRect)>; 2]> {
-        use pc_model::Template::{Alone, Full};
-        self.themes.iter().map(|theme| [home::layout_boxes(theme, Full), home::layout_boxes(theme, Alone)]).collect()
+    /// Each theme's templates as boxes, for the pictures in the theme picker.
+    fn theme_layouts(&self) -> Vec<Vec<Vec<(pc_model::Role, pc_model::SlideRect)>>> {
+        let boxes = |theme: &Theme| (0..theme.templates.len()).map(|at| home::layout_boxes(theme, at)).collect();
+        self.themes.iter().map(boxes).collect()
     }
 
-    /// Where a Bible slide's main box is held when the two-language layout is in use, so a
-    /// slide with one language keeps that layout.
-    fn pinned_main(&self) -> Option<pc_model::SlideRect> {
-        (self.bible_layout == pc_model::Template::Full)
-            .then(|| self.theme_for_bible.style_for(&pc_model::Role::primary()).map(|style| style.rect))
-            .flatten()
+    /// The template Bible slides are drawn with, by its id.
+    fn bible_template(&self) -> Option<Uuid> {
+        self.theme_for_bible.templates.get(self.bible_layout).map(|template| template.id)
     }
 
     /// Brings everything that depends on the themes up to date after one was changed or
@@ -697,7 +694,8 @@ impl App {
         self.bible_theme = self.bible_theme.min(self.themes.len().saturating_sub(1));
         self.theme = Arc::new(self.themes[self.songs_theme].clone());
         self.theme_for_bible = Arc::new(self.themes[self.bible_theme].clone());
-        let (layouts, pinned) = (self.theme_layouts(), self.pinned_main());
+        self.bible_layout = self.bible_layout.min(self.theme_for_bible.templates.len().saturating_sub(1));
+        let (layouts, pinned) = (self.theme_layouts(), self.bible_template());
         if let Some(running) = self.running.as_mut() {
             running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
             running.canvas_for = None;
@@ -710,7 +708,7 @@ impl App {
             state.bible_layout = self.bible_layout;
             state.bible.boxes = home::layout_boxes(&self.theme_for_bible, self.bible_layout);
             state.bible.box_labels = home::layout_labels(&self.theme_for_bible, self.bible_layout);
-            state.bible.pin_main = pinned;
+            state.bible.template = pinned;
             running.home_window.request_redraw();
         }
     }
@@ -797,6 +795,17 @@ impl App {
         let (changed, leave, index) = (std::mem::take(&mut edit.changed), edit.leave, edit.index);
         if changed {
             let theme = edit.theme.clone();
+            // The template Bible slides use keeps its link when templates are added or
+            // removed around it; if it was removed, the first one takes its place.
+            if index == self.bible_theme {
+                let linked = self.bible_template();
+                let now = theme.templates.iter().position(|template| Some(template.id) == linked);
+                let moved = now != Some(self.bible_layout);
+                self.bible_layout = now.unwrap_or(0);
+                if moved {
+                    theme_store::remember_in_use(&self.theme, &theme, self.bible_layout);
+                }
+            }
             if let Some(slot) = self.themes.get_mut(index) {
                 *slot = theme;
             }
@@ -830,7 +839,7 @@ impl App {
             return;
         };
         let edit = home::ThemeEdit::of(index, theme.clone());
-        running.home_state.editing = Some(EditDraft::of_slide(edit.theme.template_slide(edit.template), 0));
+        running.home_state.editing = edit.theme.templates.first().map(|first| EditDraft::of_slide(first.as_slide(), 0));
         running.home_state.theme_edit = Some(edit);
         running.home_state.bible_open = false;
         running.canvas_for = None;

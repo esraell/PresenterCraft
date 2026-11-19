@@ -162,11 +162,15 @@ pub struct Slide {
     pub notes: Option<String>,
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
+    /// The theme template the slide is drawn with, by its id. `None` lets the theme choose
+    /// the template that suits what is on the slide.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<Uuid>,
 }
 
 impl Slide {
     pub fn new(objects: Vec<Object>) -> Slide {
-        Slide { id: Uuid::new_v4(), objects, label: None, notes: None, enabled: true }
+        Slide { id: Uuid::new_v4(), objects, label: None, notes: None, enabled: true, template: None }
     }
 
     /// The text of the first text object with this role.
@@ -287,7 +291,8 @@ impl Presentation {
                         }
                     })
                     .collect();
-                Slide::new(objects)
+                // It uses the template the one before it uses.
+                Slide { template: last.template, ..Slide::new(objects) }
             }
             None => Slide::new(vec![Object::text(Role::primary(), "")]),
         };

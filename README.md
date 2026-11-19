@@ -17,19 +17,22 @@ goes fullscreen on it; with one display it opens as an ordinary window.
 
 ## Themes
 
-A theme says where each kind of text goes on a slide and how it looks. It has named boxes
-(Main, Translation, Reference, and any you add) and two layouts: one for slides with two
-languages and one for slides with only the main language.
+A theme says where each kind of text goes on a slide and how it looks. It has one or more
+templates, and each template has named boxes (Main, Translation, Reference, and any you add),
+each with its place and its look. The built-in theme has two templates: "Two languages" and
+"One language".
 
-One short list says which theme is used where: the Theme button shows "Songs use" and "Bible
-slides use", each with a tick on its theme. Bible, Options, Theme changes the same Bible line.
-Slides follow their theme as it is now, so changing a theme changes every slide that uses it;
-text restyled by hand on a slide keeps what was set there.
+A slide is drawn with one template of its theme. A song's slide uses the template that suits
+what is on it: the first that has a box for everything on the slide and no language box left
+empty. Bible slides use the one template chosen for them, marked "Bible" in the list. Slides
+follow their theme as it is now, so changing a theme changes every slide that uses it; text
+restyled by hand on a slide keeps what was set there.
 
-More, Theme Editor opens a theme: click a box on the slide to move, resize or restyle it, or
-click the empty slide to name the theme and give it a background colour. Themes are saved as
-`.pctheme` files in the app's Themes folder as they are changed, and reach the audience when
-the editor is left.
+The Themes tab lists the themes and, under them, the templates of the one being edited. Click a
+box on the slide to move, resize or restyle it. The tile with a plus after the last template
+adds one, as a copy of the one being edited; right-click a template to rename, duplicate or
+delete it, or to use it for Bible slides. Themes are saved as `.pctheme` files in the app's
+Themes folder as they are changed.
 
 ## Bible
 

@@ -16,7 +16,7 @@ fn in_use_file() -> Option<PathBuf> {
 /// Every theme, the places in the list of the ones songs and Bible slides use, and which
 /// layout of its theme Bible slides use. The built-in theme is always
 /// there, as it was last saved if it has been changed; the others follow in name order.
-pub fn load_all() -> (Vec<Theme>, usize, usize, pc_model::Template) {
+pub fn load_all() -> (Vec<Theme>, usize, usize, usize) {
     let mut themes = folder().map_or_else(|| vec![Theme::builtin()], |folder| load_from(&folder));
     themes[1..].sort_by_key(|theme| theme.name.to_lowercase());
     // The note has a line for each kind of slide: `songs=<id>` and `bible=<id>`.
@@ -29,8 +29,16 @@ pub fn load_all() -> (Vec<Theme>, usize, usize, pc_model::Template) {
             .unwrap_or(0)
     };
     let (songs, bible) = (place("songs"), place("bible"));
+    // The Bible theme's template is noted by its id. A note from before templates had ids
+    // says `bible_layout=alone` for the second of the two there were then.
+    let templates = &themes[bible].templates;
+    let by_id = note
+        .lines()
+        .find_map(|line| line.strip_prefix("bible_template="))
+        .and_then(|id| Uuid::parse_str(id.trim()).ok())
+        .and_then(|id| templates.iter().position(|template| template.id == id));
     let alone = note.lines().any(|line| line.trim() == "bible_layout=alone");
-    let layout = if alone { pc_model::Template::Alone } else { pc_model::Template::Full };
+    let layout = by_id.unwrap_or(usize::from(alone)).min(templates.len().saturating_sub(1));
     (themes, songs, bible, layout)
 }
 
@@ -80,13 +88,13 @@ pub fn delete(theme: &Theme) -> Result<(), String> {
 }
 
 /// Remembers which themes songs and Bible slides use, for the next start.
-pub fn remember_in_use(songs: &Theme, bible: &Theme, bible_layout: pc_model::Template) {
+pub fn remember_in_use(songs: &Theme, bible: &Theme, bible_template: usize) {
     if let Some(file) = in_use_file() {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let layout = if bible_layout == pc_model::Template::Alone { "alone" } else { "full" };
-        let _ = std::fs::write(file, format!("songs={}\nbible={}\nbible_layout={layout}\n", songs.id, bible.id));
+        let template = bible.templates.get(bible_template).map(|template| template.id).unwrap_or_default();
+        let _ = std::fs::write(file, format!("songs={}\nbible={}\nbible_template={template}\n", songs.id, bible.id));
     }
 }
 
@@ -104,7 +112,7 @@ mod tests {
         sunday.id = Uuid::new_v4();
         sunday.name = "Sunday".to_owned();
         let mut built_in = Theme::builtin();
-        built_in.solo_primary.y = 10.0;
+        built_in.templates[1].boxes[0].rect.y = 10.0;
         save_in(&folder, &sunday).unwrap();
         save_in(&folder, &built_in).unwrap();
         std::fs::write(folder.join("broken.pctheme"), "not a theme").unwrap();
