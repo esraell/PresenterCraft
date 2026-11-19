@@ -459,9 +459,9 @@ fn list_row(ui: &mut egui::Ui, icon: Icon, title: &str, chosen: bool, live: bool
     response
 }
 
-/// A song being dragged from the library, by its place among the songs.
-#[derive(Clone, Copy)]
-struct SongDrag(usize);
+/// Songs being dragged from the library, by their places among the songs.
+#[derive(Clone)]
+struct SongDrag(Vec<usize>);
 
 /// A row in the list of libraries and playlists: an icon and a name, renamed in place.
 /// Shows when a dragged song would be dropped on it.
@@ -610,13 +610,16 @@ fn source_rows(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
                 state.renaming_library = Some((id, name.clone()));
                 state.rename_started = true;
             }
-            if let Some(dropped) = response.dnd_release_payload::<SongDrag>()
-                && let Some(key) = state.song_keys.get(dropped.0).cloned()
-                && let Some(library) = state.libraries.iter_mut().find(|library| library.id == id)
-                && !library.has(&key)
-            {
-                library.toggle(&key);
-                state.libraries_changed = true;
+            if let Some(dropped) = response.dnd_release_payload::<SongDrag>() {
+                let keys: Vec<String> = dropped.0.iter().filter_map(|at| state.song_keys.get(*at).cloned()).collect();
+                if let Some(library) = state.libraries.iter_mut().find(|library| library.id == id) {
+                    for key in keys {
+                        if !library.has(&key) {
+                            library.toggle(&key);
+                            state.libraries_changed = true;
+                        }
+                    }
+                }
             }
             response.on_hover_text("Drag songs here to add them").context_menu(|ui| {
                 if ui.button("Rename").clicked() {
@@ -687,10 +690,12 @@ fn source_rows(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
             state.renaming_service = Some(name.clone());
             state.rename_started = true;
         }
-        if let Some(dropped) = response.dnd_release_payload::<SongDrag>()
-            && let Some(item) = song_item(state, dropped.0)
-        {
-            state.services.add_to(index, item);
+        if let Some(dropped) = response.dnd_release_payload::<SongDrag>() {
+            for at in dropped.0.iter() {
+                if let Some(item) = song_item(state, *at) {
+                    state.services.add_to(index, item);
+                }
+            }
         }
         response.on_hover_text("Drag songs here to add them").context_menu(|ui| {
             if ui.button("Rename").clicked() {
@@ -756,13 +761,44 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
     });
     ui.add_space(4.0);
     let front = state.services.front().name.clone();
+    let list = ui.available_rect_before_wrap();
+    let (pointer, mods, down) =
+        ui.input(|input| (input.pointer.interact_pos(), input.modifiers, input.pointer.primary_down()));
+    // Songs picked out lose the ones no longer listed.
+    state.picked_songs.retain(|at| shown.contains(at));
     egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
+        let several = state.picked_songs.len() > 1;
+        let mut rows: Vec<(usize, Rect)> = Vec::new();
         for index in shown.iter().copied() {
             let Some(song) = show.presentations().get(index) else { continue };
-            let chosen = index == show.selected() && !state.bible_open;
+            // Several picked out are lit together; otherwise the song shown is.
+            let chosen = if several {
+                state.picked_songs.contains(&index)
+            } else {
+                index == show.selected() && !state.bible_open
+            };
             let response = list_row(ui, Icon::Document, song.title.as_str(), chosen, live_in == Some(index), false);
-            response.dnd_set_drag_payload(SongDrag(index));
+            rows.push((index, response.rect));
+            // A drag starting on a song picks out the songs it passes over, and carries them
+            // once it leaves the list; on one of several already picked, it carries them all.
+            if response.drag_started()
+                && let Some(start) = pointer
+            {
+                let keeps = several && state.picked_songs.contains(&index);
+                if !keeps && !mods.command && !mods.shift {
+                    state.picked_songs = vec![index];
+                    state.song_anchor = Some(index);
+                }
+                state.picking = crate::home::Picking::Songs;
+                state.sweep = Some(crate::home::Sweep {
+                    list: crate::home::Picking::Songs,
+                    from: Some(index),
+                    start,
+                    keeps,
+                    carried: false,
+                });
+            }
             // A "+" at the right of the row under the pointer puts the song in the playlist in front.
             let plus = Rect::from_center_size(response.rect.right_center() - vec2(13.0, 0.0), vec2(20.0, 20.0));
             if response.hovered() || ui.rect_contains_pointer(plus) {
@@ -776,12 +812,27 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
                 }
             }
             if response.clicked() {
-                commands.push(Command::Select(index));
-                state.bible_open = false;
-                state.services.chosen = None;
+                state.picking = crate::home::Picking::Songs;
+                crate::home::pick(&mut state.picked_songs, &mut state.song_anchor, &shown, index, mods);
+                // A plain click opens the song; with Command or Shift only the picking changes,
+                // unless one song is left picked.
+                let open = if mods.command || mods.shift {
+                    (state.picked_songs.len() == 1).then(|| state.picked_songs[0])
+                } else {
+                    Some(index)
+                };
+                if let Some(open) = open {
+                    commands.push(Command::Select(open));
+                    state.bible_open = false;
+                    state.services.chosen = None;
+                }
             }
             response.context_menu(|ui| song_menu(ui, show, state, commands, index, &mut add));
         }
+        let ctx = ui.ctx().clone();
+        sweep_rows(ui, state, crate::home::Picking::Songs, &rows, list, pointer, down, |picked| {
+            egui::DragAndDrop::set_payload(&ctx, SongDrag(picked));
+        });
         if total == 0 {
             let empty = if library.is_some() {
                 "No songs in this library yet. Drag songs onto it, or use a song's right-click menu."
@@ -798,6 +849,22 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
     {
         state.services.add(Item::Song { key: key.clone(), title: song.title.clone() });
     }
+    // Songs being carried say how many beside the pointer, until they are dropped.
+    if let Some(carried) = egui::DragAndDrop::payload::<SongDrag>(ui.ctx())
+        && let Some(at) = ui.ctx().pointer_latest_pos()
+    {
+        let words = match carried.0.as_slice() {
+            [one] => show.presentations().get(*one).map_or_else(String::new, |song| song.title.clone()),
+            many => format!("{} songs", many.len()),
+        };
+        let painter =
+            ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("carried songs")));
+        let text = painter.layout_no_wrap(words, semibold(12.5), Color32::WHITE);
+        let chip = Rect::from_min_size(at + vec2(14.0, 10.0), text.size() + vec2(18.0, 10.0));
+        painter.rect_filled(chip, 8.0, SELECTED);
+        painter.rect_stroke(chip, 8.0, Stroke::new(1.0, Color32::from_white_alpha(30)), StrokeKind::Inside);
+        painter.galley(chip.min + vec2(9.0, 5.0), text, Color32::WHITE);
+    }
 }
 
 /// The song a playlist names, among the open songs: found by the name its file gave it, or by
@@ -812,6 +879,168 @@ pub fn playlist_song(show: &Show, state: &HomeState, key: &str) -> Option<usize>
         .position(|have| have == key)
         .or_else(|| by_title.and_then(|title| show.presentations().iter().position(|song| song.title == title)))
         .filter(|index| listed(*index))
+}
+
+/// A question asked before something is deleted, drawn as a macOS alert: a small rounded panel
+/// in the middle of the window over a dimmed app, an icon at the top, the question in bold and
+/// what it means under it, centred, and two buttons side by side. Return answers with
+/// `confirm` (drawn in red, as macOS draws a destructive button); Escape cancels. `None` until
+/// it is answered.
+pub fn alert(ctx: &egui::Context, id: &str, icon: Icon, title: &str, message: &str, confirm: &str) -> Option<bool> {
+    const WIDTH: f32 = 268.0;
+    let red = Color32::from_rgb(255, 99, 88);
+    // It fades and settles in quickly, as a macOS alert does.
+    let shown = ctx.animate_bool_with_time(egui::Id::unique(("alert shown", id)), true, 0.14);
+    let frame = Frame::new()
+        .fill(Color32::from_rgb(44, 44, 46))
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(22)))
+        .corner_radius(14.0)
+        .inner_margin(egui::Margin { left: 18, right: 18, top: 20, bottom: 16 })
+        .shadow(egui::Shadow { offset: [0, 14], blur: 44, spread: 0, color: Color32::from_black_alpha(150) });
+    let area = egui::Modal::default_area(egui::Id::unique(("alert", id)))
+        .anchor(Align2::CENTER_CENTER, vec2(0.0, -30.0 + 8.0 * (1.0 - shown)));
+    let response = egui::Modal::new(egui::Id::unique(("alert", id)))
+        .area(area)
+        .backdrop_color(Color32::from_black_alpha((80.0 * shown) as u8))
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.multiply_opacity(shown);
+            ui.set_width(WIDTH - 36.0);
+            let mut answer = None;
+            ui.vertical_centered(|ui| {
+                // The icon, in a rounded tile as an app's icon is.
+                let (tile, _) = ui.allocate_exact_size(vec2(56.0, 56.0), Sense::hover());
+                ui.painter().rect_filled(tile, 13.0, Color32::from_rgb(68, 68, 72));
+                ui.painter().rect_stroke(
+                    tile,
+                    13.0,
+                    Stroke::new(1.0, Color32::from_white_alpha(18)),
+                    StrokeKind::Inside,
+                );
+                icons::paint(ui.painter(), icon, Rect::from_center_size(tile.center(), vec2(30.0, 30.0)), TEXT);
+                ui.add_space(12.0);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(title).font(semibold(13.5)).color(Color32::WHITE))
+                        .halign(Align::Center)
+                        .wrap(),
+                );
+                if !message.is_empty() {
+                    ui.add_space(5.0);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(message).size(11.5).color(TEXT_DIM))
+                            .halign(Align::Center)
+                            .wrap(),
+                    );
+                }
+                ui.add_space(16.0);
+            });
+            // Two buttons side by side, each half the width: Cancel, then the answer.
+            let gap = 8.0;
+            let size = vec2((ui.available_width() - gap) / 2.0, 28.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for (label, yes) in [("Cancel", false), (confirm, true)] {
+                    let (place, button) = ui.allocate_exact_size(size, Sense::click());
+                    let fill = match (yes, button.is_pointer_button_down_on(), button.hovered()) {
+                        (_, true, _) => Color32::from_white_alpha(52),
+                        (true, _, _) | (_, _, true) => Color32::from_white_alpha(34),
+                        _ => Color32::from_white_alpha(22),
+                    };
+                    ui.painter().rect_filled(place, 8.0, fill);
+                    // The answer Return gives has a faint ring, as the default button does.
+                    if yes {
+                        ui.painter().rect_stroke(
+                            place,
+                            8.0,
+                            Stroke::new(1.0, Color32::from_white_alpha(30)),
+                            StrokeKind::Inside,
+                        );
+                    }
+                    let ink = if yes { red } else { Color32::WHITE };
+                    let font = if yes { semibold(13.0) } else { FontId::proportional(13.0) };
+                    ui.painter().text(place.center(), Align2::CENTER_CENTER, label, font, ink);
+                    if button.clicked() {
+                        answer = Some(yes);
+                    }
+                }
+            });
+            answer
+        });
+    let (enter, escape) =
+        ctx.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+    if shown < 1.0 {
+        ctx.request_repaint();
+    }
+    let answer = response.inner.or(if escape {
+        Some(false)
+    } else if enter {
+        Some(true)
+    } else {
+        None
+    });
+    if answer.is_some() {
+        // The next alert fades in again.
+        ctx.animate_bool_with_time(egui::Id::unique(("alert shown", id)), false, 0.0);
+    }
+    answer
+}
+
+/// Carries on a drag across a list's rows (see `Sweep`): while the pointer is in the list,
+/// everything from the row it started on to the row under the pointer is picked out, and the
+/// list scrolls when the pointer nears its top or bottom; once the pointer leaves the list,
+/// what is picked is handed to `carry`. The drag ends when the button is let go.
+#[allow(clippy::too_many_arguments)]
+fn sweep_rows(
+    ui: &mut egui::Ui,
+    state: &mut HomeState,
+    which: crate::home::Picking,
+    rows: &[(usize, Rect)],
+    list: Rect,
+    pointer: Option<egui::Pos2>,
+    down: bool,
+    carry: impl FnOnce(Vec<usize>),
+) {
+    let Some(mut sweep) = state.sweep.filter(|sweep| sweep.list == which) else { return };
+    if !down {
+        state.sweep = None;
+        return;
+    }
+    let Some(at) = pointer else { return };
+    if sweep.carried {
+        return;
+    }
+    if !list.contains(at) {
+        let picked = if state.picked_songs.is_empty() || which != crate::home::Picking::Songs {
+            sweep.from.into_iter().collect()
+        } else {
+            state.picked_songs.clone()
+        };
+        carry(picked);
+        sweep.carried = true;
+        state.sweep = Some(sweep);
+        return;
+    }
+    if sweep.keeps || at.distance(sweep.start) < 3.0 {
+        return;
+    }
+    // The row under the pointer, or the first or last when it is above or below them all.
+    let under = rows.iter().find(|(_, row)| at.y < row.max.y + 1.0).or(rows.last()).map(|(index, _)| *index);
+    let order: Vec<usize> = rows.iter().map(|(index, _)| *index).collect();
+    if let (Some(from), Some(to)) = (sweep.from.and_then(|f| order.iter().position(|i| *i == f)), under)
+        && let Some(to) = order.iter().position(|i| *i == to)
+    {
+        let (a, b) = (from.min(to), from.max(to));
+        state.picked_songs = order[a..=b].to_vec();
+    }
+    // Near the top or bottom, the list scrolls on.
+    let edge = 24.0;
+    if at.y < list.min.y + edge {
+        ui.scroll_with_delta(vec2(0.0, 8.0));
+        ui.ctx().request_repaint();
+    } else if at.y > list.max.y - edge {
+        ui.scroll_with_delta(vec2(0.0, -8.0));
+        ui.ctx().request_repaint();
+    }
 }
 
 /// A song's right-click menu in the library.
@@ -924,8 +1153,10 @@ fn song_menu(
         state.reflow = Some((index, pc_model::to_song_text(song)));
         ui.close();
     }
+    // Delete deletes every song picked out, when this is one of them.
     if ui.button("Delete…").clicked() {
-        state.confirm_delete_song = Some(index);
+        state.confirm_delete_songs =
+            if state.picked_songs.contains(&index) { state.picked_songs.clone() } else { vec![index] };
         ui.close();
     }
 }
@@ -1133,6 +1364,7 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
         }
         Some(Ask::Open(index)) => {
             state.services.chosen = Some(index);
+            state.picking = crate::home::Picking::Nothing;
             match items.get(index) {
                 Some(Item::Song { key, .. }) => {
                     if let Some(at) = song_at(&state.song_keys, key) {
@@ -1391,69 +1623,149 @@ pub fn media_strip(
         if !empty {
             ui.add_space(4.0);
             let image_size = vec2(144.0, 81.0);
-            egui::ScrollArea::horizontal().id_salt("media row").auto_shrink([false, false]).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    // A media playlist shows only its own files.
-                    let shown = state
-                        .media_playlist_shown
-                        .and_then(|id| state.media_playlists.iter().find(|playlist| playlist.id == id))
-                        .cloned();
-                    for (index, item) in show.media().iter().enumerate() {
-                        if shown.as_ref().is_some_and(|playlist| !playlist.has(&item.path)) {
-                            continue;
-                        }
-                        let (rect, response) =
-                            ui.allocate_exact_size(image_size + vec2(0.0, 18.0), Sense::click_and_drag());
-                        // Dragged onto a slide, it becomes what the slide shows; onto the space
-                        // under the slides, a slide of its own.
-                        response.dnd_set_drag_payload(crate::home::MediaDrag(index));
-                        if response.clicked() {
-                            commands.push(Command::ShowMedia(index));
-                        }
-                        if !ui.is_rect_visible(rect) {
-                            continue;
-                        }
-                        let image = Rect::from_min_size(rect.min, image_size);
-                        ui.painter().rect_filled(image, 6.0, Color32::BLACK);
-                        match thumb(ThumbOf::Media(index)) {
-                            Some((texture, _)) => {
-                                egui::Image::from_texture((texture, image_size)).corner_radius(6.0).paint_at(ui, image);
-                            }
-                            None => ui.ctx().request_repaint(),
-                        }
-                        // A video says so in its corner.
-                        if crate::media::is_video(&item.path) {
-                            let badge = Rect::from_min_size(image.left_bottom() + vec2(5.0, -19.0), vec2(22.0, 14.0));
-                            ui.painter().rect_filled(badge, 3.0, Color32::from_black_alpha(170));
-                            ui.painter().text(
-                                badge.center(),
-                                Align2::CENTER_CENTER,
-                                "▶",
-                                FontId::proportional(9.0),
-                                Color32::WHITE,
-                            );
-                        }
-                        let live = show.live_media() == Some(index);
-                        if live {
-                            ui.painter().rect_stroke(image, 6.0, Stroke::new(2.0, TALLY), StrokeKind::Outside);
-                        } else if response.hovered() {
-                            ui.painter().rect_stroke(image, 6.0, Stroke::new(1.0, TEXT_FAINT), StrokeKind::Outside);
-                        }
-                        let label = Rect::from_min_max(pos2(rect.min.x, image.max.y + 3.0), rect.max);
-                        ui.painter().with_clip_rect(label).text(
-                            label.left_center(),
-                            Align2::LEFT_CENTER,
-                            item.name.as_str(),
-                            FontId::proportional(11.5),
-                            TEXT_DIM,
-                        );
-                        response.on_hover_text(item.name.as_str()).context_menu(|ui| {
-                            media_item_menu(ui, state, index, item);
-                        });
-                    }
+            // The strip the items sit in: a drag that starts between them draws a box, and
+            // picks out every item it touches, as in the Finder; a click there picks nothing.
+            let bin = ui.available_rect_before_wrap();
+            let (pointer, mods, down) =
+                ui.input(|input| (input.pointer.interact_pos(), input.modifiers, input.pointer.primary_down()));
+            let background = ui.interact(bin, ui.scope_id().with("media background"), Sense::click_and_drag());
+            if background.clicked() {
+                state.picked_media.clear();
+                state.picking = crate::home::Picking::Media;
+            }
+            if background.drag_started()
+                && let Some(start) = pointer
+            {
+                if !mods.command && !mods.shift {
+                    state.picked_media.clear();
+                }
+                state.picking = crate::home::Picking::Media;
+                state.sweep = Some(crate::home::Sweep {
+                    list: crate::home::Picking::Media,
+                    from: None,
+                    start,
+                    keeps: false,
+                    carried: false,
                 });
-            });
+            }
+            // A media playlist shows only its own files.
+            let shown = state
+                .media_playlist_shown
+                .and_then(|id| state.media_playlists.iter().find(|playlist| playlist.id == id))
+                .cloned();
+            let order: Vec<usize> = show
+                .media()
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| shown.as_ref().is_none_or(|playlist| playlist.has(&item.path)))
+                .map(|(index, _)| index)
+                .collect();
+            state.picked_media.retain(|at| order.contains(at));
+            let scroll = egui::scroll_area::ScrollSource::MOUSE_WHEEL | egui::scroll_area::ScrollSource::SCROLL_BAR;
+            egui::ScrollArea::horizontal().id_salt("media row").scroll_source(scroll).auto_shrink([false, false]).show(
+                ui,
+                |ui| {
+                    let mut placed: Vec<(usize, Rect)> = Vec::new();
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        let several = state.picked_media.len() > 1;
+                        for (index, item) in show.media().iter().enumerate() {
+                            if !order.contains(&index) {
+                                continue;
+                            }
+                            let (rect, response) =
+                                ui.allocate_exact_size(image_size + vec2(0.0, 18.0), Sense::click_and_drag());
+                            placed.push((index, rect));
+                            // A drag starting on an item picks out the items it passes over while it
+                            // stays in the bin; dragged out onto a slide it becomes what the slide
+                            // shows, onto the space under the slides a slide of its own.
+                            if response.drag_started()
+                                && let Some(start) = pointer
+                            {
+                                let keeps = several && state.picked_media.contains(&index);
+                                if !keeps && !mods.command && !mods.shift {
+                                    state.picked_media = vec![index];
+                                    state.media_anchor = Some(index);
+                                }
+                                state.picking = crate::home::Picking::Media;
+                                state.sweep = Some(crate::home::Sweep {
+                                    list: crate::home::Picking::Media,
+                                    from: Some(index),
+                                    start,
+                                    keeps,
+                                    carried: false,
+                                });
+                            }
+                            // A click shows it behind the words; with Command or Shift it is only
+                            // picked out (to delete several at once).
+                            if response.clicked() {
+                                state.picking = crate::home::Picking::Media;
+                                crate::home::pick(
+                                    &mut state.picked_media,
+                                    &mut state.media_anchor,
+                                    &order,
+                                    index,
+                                    mods,
+                                );
+                                if !mods.command && !mods.shift {
+                                    commands.push(Command::ShowMedia(index));
+                                }
+                            }
+                            if !ui.is_rect_visible(rect) {
+                                continue;
+                            }
+                            let image = Rect::from_min_size(rect.min, image_size);
+                            ui.painter().rect_filled(image, 6.0, Color32::BLACK);
+                            match thumb(ThumbOf::Media(index)) {
+                                Some((texture, _)) => {
+                                    egui::Image::from_texture((texture, image_size))
+                                        .corner_radius(6.0)
+                                        .paint_at(ui, image);
+                                }
+                                None => ui.ctx().request_repaint(),
+                            }
+                            // A video says so in its corner.
+                            if crate::media::is_video(&item.path) {
+                                let badge =
+                                    Rect::from_min_size(image.left_bottom() + vec2(5.0, -19.0), vec2(22.0, 14.0));
+                                ui.painter().rect_filled(badge, 3.0, Color32::from_black_alpha(170));
+                                ui.painter().text(
+                                    badge.center(),
+                                    Align2::CENTER_CENTER,
+                                    "▶",
+                                    FontId::proportional(9.0),
+                                    Color32::WHITE,
+                                );
+                            }
+                            let live = show.live_media() == Some(index);
+                            let picked = state.picked_media.contains(&index);
+                            if live {
+                                ui.painter().rect_stroke(image, 6.0, Stroke::new(2.0, TALLY), StrokeKind::Outside);
+                            } else if picked {
+                                ui.painter().rect_stroke(image, 6.0, Stroke::new(2.0, ACCENT), StrokeKind::Outside);
+                            } else if response.hovered() {
+                                ui.painter().rect_stroke(image, 6.0, Stroke::new(1.0, TEXT_FAINT), StrokeKind::Outside);
+                            }
+                            // Picked out and on screen: a light ring inside the red one.
+                            if live && picked {
+                                ui.painter().rect_stroke(image, 6.0, Stroke::new(1.5, ACCENT), StrokeKind::Inside);
+                            }
+                            let label = Rect::from_min_max(pos2(rect.min.x, image.max.y + 3.0), rect.max);
+                            ui.painter().with_clip_rect(label).text(
+                                label.left_center(),
+                                Align2::LEFT_CENTER,
+                                item.name.as_str(),
+                                FontId::proportional(11.5),
+                                TEXT_DIM,
+                            );
+                            response.on_hover_text(item.name.as_str()).context_menu(|ui| {
+                                media_item_menu(ui, state, index, item);
+                            });
+                        }
+                    });
+                    sweep_media(ui, state, &placed, bin, pointer, down);
+                },
+            );
         }
         if state.drop_hover {
             let painter = ui.painter();
@@ -1468,6 +1780,53 @@ pub fn media_strip(
             );
         }
     });
+}
+
+/// Carries on a drag across the media bin (see `Sweep`): while the pointer is in the bin, a box
+/// from where it started to the pointer picks out every item it touches, and the row scrolls
+/// at its ends; once a drag that started on an item leaves the bin, that item is carried to be
+/// dropped on a slide.
+fn sweep_media(
+    ui: &mut egui::Ui,
+    state: &mut HomeState,
+    placed: &[(usize, Rect)],
+    bin: Rect,
+    pointer: Option<egui::Pos2>,
+    down: bool,
+) {
+    let Some(mut sweep) = state.sweep.filter(|sweep| sweep.list == crate::home::Picking::Media) else { return };
+    if !down {
+        state.sweep = None;
+        return;
+    }
+    let Some(at) = pointer else { return };
+    if sweep.carried {
+        return;
+    }
+    if !bin.contains(at) {
+        if let Some(from) = sweep.from {
+            egui::DragAndDrop::set_payload(ui.ctx(), crate::home::MediaDrag(from));
+            sweep.carried = true;
+            state.sweep = Some(sweep);
+        }
+        return;
+    }
+    if sweep.keeps || at.distance(sweep.start) < 3.0 {
+        return;
+    }
+    let band = Rect::from_two_pos(sweep.start, at);
+    state.picked_media = placed.iter().filter(|(_, rect)| rect.intersects(band)).map(|(index, _)| *index).collect();
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.scope_id().with("media band")));
+    painter.rect_filled(band, 2.0, ACCENT.gamma_multiply(0.12));
+    painter.rect_stroke(band, 2.0, Stroke::new(1.0, ACCENT.gamma_multiply(0.8)), StrokeKind::Inside);
+    let edge = 30.0;
+    if at.x < bin.min.x + edge {
+        ui.scroll_with_delta(vec2(10.0, 0.0));
+        ui.ctx().request_repaint();
+    } else if at.x > bin.max.x - edge {
+        ui.scroll_with_delta(vec2(-10.0, 0.0));
+        ui.ctx().request_repaint();
+    }
 }
 
 /// The right end of a slide area's heading: the three ways to lay slides out, and their size.
@@ -1810,8 +2169,10 @@ fn media_item_menu(ui: &mut egui::Ui, state: &mut HomeState, index: usize, item:
         }
     });
     ui.separator();
-    if ui.button("Remove").clicked() {
-        state.media_request = Some(MediaRequest::Remove(index));
+    // As ProPresenter names it. Every item picked out, when this is one of them.
+    if ui.button("Delete…").clicked() {
+        state.confirm_delete_media =
+            if state.picked_media.contains(&index) { state.picked_media.clone() } else { vec![index] };
         ui.close();
     }
 }

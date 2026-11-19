@@ -52,11 +52,12 @@ pub enum Icon {
     Rows,
     Options,
     Sidebar,
+    Trash,
 }
 
 /// Every icon, so a test can draw them all.
 #[cfg(test)]
-pub const ALL: [Icon; 45] = [
+pub const ALL: [Icon; 46] = [
     Icon::Search,
     Icon::Theme,
     Icon::Play,
@@ -102,6 +103,7 @@ pub const ALL: [Icon; 45] = [
     Icon::Rows,
     Icon::Options,
     Icon::Sidebar,
+    Icon::Trash,
 ];
 
 /// Draws inside a square using coordinates from 0 to 1.
@@ -369,6 +371,13 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
         Icon::Sidebar => {
             p.rect(0.1, 0.18, 0.9, 0.82, 0.07);
             p.line(&[(0.38, 0.18), (0.38, 0.82)]);
+        }
+        Icon::Trash => {
+            p.line(&[(0.14, 0.24), (0.86, 0.24)]);
+            p.line(&[(0.38, 0.24), (0.4, 0.12), (0.6, 0.12), (0.62, 0.24)]);
+            p.closed(&[(0.22, 0.24), (0.28, 0.88), (0.72, 0.88), (0.78, 0.24)]);
+            p.line(&[(0.42, 0.38), (0.43, 0.74)]);
+            p.line(&[(0.58, 0.38), (0.57, 0.74)]);
         }
     }
 }

@@ -27,6 +27,55 @@ const CANVAS: Color32 = crate::studio::BG;
 const ON: Color32 = Color32::from_rgb(50, 208, 116);
 const DIM: Color32 = crate::studio::TEXT_DIM;
 
+/// Which list the Delete key deletes from: the one last clicked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Picking {
+    #[default]
+    Nothing,
+    Songs,
+    Media,
+}
+
+/// A drag across a list that picks out what it passes over. It starts on an item (or, in the
+/// media bin, between items); while the pointer stays in the list it picks out everything
+/// from where it started to where it is; once the pointer leaves the list, what was picked
+/// is carried (to a playlist, or onto a slide).
+#[derive(Clone, Copy, Debug)]
+pub struct Sweep {
+    pub list: Picking,
+    /// The item it started on (`None` between items), and where the pointer was pressed.
+    pub from: Option<usize>,
+    pub start: egui::Pos2,
+    /// It started on an item already among several picked out: they are carried, not re-picked.
+    pub keeps: bool,
+    /// What was picked has been handed to the drag-and-drop, to be dropped somewhere else.
+    pub carried: bool,
+}
+
+/// Picks out `index` in a list, as a click does in the Finder: alone; with Command, added or
+/// taken away; with Shift, everything from the last one clicked to it, in the order `shown`.
+pub fn pick(picked: &mut Vec<usize>, anchor: &mut Option<usize>, shown: &[usize], index: usize, mods: egui::Modifiers) {
+    if mods.shift
+        && let Some(from) = anchor.and_then(|from| shown.iter().position(|at| *at == from))
+        && let Some(to) = shown.iter().position(|at| *at == index)
+    {
+        let (a, b) = (from.min(to), from.max(to));
+        *picked = shown[a..=b].to_vec();
+        return;
+    }
+    if mods.command {
+        match picked.iter().position(|at| *at == index) {
+            Some(at) => {
+                picked.remove(at);
+            }
+            None => picked.push(index),
+        }
+    } else {
+        *picked = vec![index];
+    }
+    *anchor = Some(index);
+}
+
 /// How a presentation's slides are laid out in the Show view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SlideView {
@@ -134,7 +183,21 @@ pub struct HomeState {
     pub theme_ids: Vec<pc_model::Uuid>,
     /// A change to a song asked for from its menu, and a song waiting to be confirmed deleted.
     pub song_request: Option<(usize, SongRequest)>,
-    pub confirm_delete_song: Option<usize>,
+    /// Songs waiting for a yes before they are deleted, and songs to delete now.
+    pub confirm_delete_songs: Vec<usize>,
+    pub songs_to_delete: Vec<usize>,
+    /// Media bin items waiting for a yes before they are taken out of the bin.
+    pub confirm_delete_media: Vec<usize>,
+    /// The songs and media items picked out (several with Command or Shift, or by dragging
+    /// across them), the one a Shift-click counts from in each, and which list Delete deletes
+    /// from: the one last clicked.
+    pub picked_songs: Vec<usize>,
+    pub song_anchor: Option<usize>,
+    pub picked_media: Vec<usize>,
+    pub media_anchor: Option<usize>,
+    pub picking: Picking,
+    /// A drag across a list picking things out, while it lasts.
+    pub sweep: Option<Sweep>,
     /// The playlist item whose slides the slide area last scrolled to, and whether the song
     /// was just picked in the slide area itself (so it isn't scrolled away from).
     pub slides_scrolled_to: Option<usize>,
@@ -780,7 +843,15 @@ impl Default for HomeState {
             libraries_changed: false,
             arrangement_request: None,
             theme_ids: Vec::new(),
-            confirm_delete_song: None,
+            confirm_delete_songs: Vec::new(),
+            songs_to_delete: Vec::new(),
+            confirm_delete_media: Vec::new(),
+            picked_songs: Vec::new(),
+            song_anchor: None,
+            picked_media: Vec::new(),
+            media_anchor: None,
+            picking: Picking::Nothing,
+            sweep: None,
             slides_scrolled_to: None,
             slides_picked_here: false,
             removed_songs: Vec::new(),
@@ -864,6 +935,15 @@ impl Default for HomeState {
 }
 
 impl HomeState {
+    /// True while a question asking whether to delete something is open: then no key reaches
+    /// the show (Space, the arrows and Escape answer it or wait).
+    pub fn alert_open(&self) -> bool {
+        !self.confirm_delete_songs.is_empty()
+            || !self.confirm_delete_media.is_empty()
+            || self.confirm_delete_theme.is_some()
+            || self.confirm_delete_template.is_some()
+    }
+
     /// The small choices kept between runs, as they are now.
     pub fn prefs(&self) -> crate::service::Prefs {
         crate::service::Prefs {
@@ -992,6 +1072,34 @@ pub fn home_ui(
     new_song_sheet(ui, state);
     confirm_delete_theme(ui, state);
     confirm_delete_song(ui, show, state);
+    confirm_delete_media(ui, show, state);
+    // Delete (or Backspace) deletes what is picked out in the list last clicked, after asking.
+    let delete_key = ui.input(|input| input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace));
+    if delete_key
+        && state.editing.is_none()
+        && !ui.ctx().text_edit_focused()
+        && !state.alert_open()
+        && !egui::Popup::is_any_open(ui.ctx())
+    {
+        match state.picking {
+            Picking::Songs => {
+                let picked: Vec<usize> =
+                    if state.picked_songs.is_empty() { vec![show.selected()] } else { state.picked_songs.clone() };
+                let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+                state.confirm_delete_songs = picked
+                    .into_iter()
+                    .filter(|at| {
+                        *at < show.presentations().len() && !hidden.contains(at) && !state.removed_songs.contains(at)
+                    })
+                    .collect();
+            }
+            Picking::Media => {
+                state.confirm_delete_media =
+                    state.picked_media.iter().copied().filter(|at| *at < show.media().len()).collect();
+            }
+            Picking::Nothing => {}
+        }
+    }
     library_search(ui, show, state, &mut commands);
     if state.editing.is_some() {
         edit_view(ui, show, state, theme, thumb, canvas);
@@ -2362,10 +2470,11 @@ pub enum AudioRequest {
 }
 
 /// A change to the media bin asked for: pictures to choose and add, or one to remove.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MediaRequest {
     Choose,
-    Remove(usize),
+    /// Take these items out of the bin (the files stay where they are).
+    Delete(Vec<usize>),
     /// A slide showing this media item, added to the song shown after its chosen slide.
     AddAsSlide(usize),
     /// How an item fills the screen, and whether a video loops.
@@ -3239,17 +3348,60 @@ fn new_song_sheet(ui: &mut egui::Ui, state: &mut HomeState) {
 }
 
 fn confirm_delete_song(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
-    let Some(index) = state.confirm_delete_song else { return };
-    let Some(song) = show.presentations().get(index) else {
-        state.confirm_delete_song = None;
+    if state.confirm_delete_songs.is_empty() {
         return;
+    }
+    let songs = state.confirm_delete_songs.clone();
+    let question = match songs.as_slice() {
+        [one] => match show.presentations().get(*one) {
+            Some(song) => format!("Delete \u{201c}{}\u{201d}?", song.title),
+            None => {
+                state.confirm_delete_songs.clear();
+                return;
+            }
+        },
+        many => format!("Delete {} songs?", many.len()),
     };
-    let question = format!("Remove \u{201c}{}\u{201d} from the library?", song.title);
-    let note = "A song made in PresenterCraft is moved to the Trash; a song opened from elsewhere stays where it is.";
+    let note = if songs.len() == 1 {
+        "A song made in PresenterCraft goes to the Trash. One opened from elsewhere stays where it is on your Mac."
+    } else {
+        "Songs made in PresenterCraft go to the Trash. Ones opened from elsewhere stay where they are on your Mac."
+    };
     if let Some(delete) = confirm_delete(ui, &question, note) {
-        state.confirm_delete_song = None;
+        state.confirm_delete_songs.clear();
         if delete {
-            state.song_request = Some((index, SongRequest::Delete));
+            state.picked_songs.clear();
+            state.songs_to_delete = songs;
+        }
+    }
+}
+
+/// Asks before taking items out of the media bin, and takes them out.
+fn confirm_delete_media(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
+    if state.confirm_delete_media.is_empty() {
+        return;
+    }
+    let items = state.confirm_delete_media.clone();
+    let question = match items.as_slice() {
+        [one] => match show.media().get(*one) {
+            Some(item) => format!("Delete \u{201c}{}\u{201d} from the media bin?", item.name),
+            None => {
+                state.confirm_delete_media.clear();
+                return;
+            }
+        },
+        many => format!("Delete {} items from the media bin?", many.len()),
+    };
+    let note = if items.len() == 1 {
+        "The file stays where it is on your Mac."
+    } else {
+        "The files stay where they are on your Mac."
+    };
+    if let Some(delete) = confirm_delete(ui, &question, note) {
+        state.confirm_delete_media.clear();
+        if delete {
+            state.picked_media.clear();
+            state.media_request = Some(MediaRequest::Delete(items));
         }
     }
 }
@@ -3306,46 +3458,11 @@ fn confirm_delete_template(ui: &mut egui::Ui, state: &mut HomeState) {
     }
 }
 
-/// A small window in the middle of the app asking whether to delete something. Return
-/// deletes, as the Delete button does; Escape cancels. `None` until it is answered.
+/// Asks whether to delete something, as a macOS alert does. Return deletes, as the Delete
+/// button does; Escape cancels. `None` until it is answered.
 fn confirm_delete(ui: &mut egui::Ui, question: &str, note: &str) -> Option<bool> {
-    let mut decided = None;
-    egui::Window::new(question)
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .fade_in(false)
-        .anchor(Align2::CENTER_CENTER, [0.0, -40.0])
-        .show(ui.ctx(), |ui| {
-            ui.set_width(340.0);
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(question).font(crate::studio::semibold(15.0)));
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new("It cannot be brought back.").color(DIM));
-            if !note.is_empty() {
-                ui.label(egui::RichText::new(note).color(DIM));
-            }
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let size = vec2(96.0, 30.0);
-                    if crate::studio::block_button(ui, size, "Delete", "", crate::studio::Emphasis::Live).clicked() {
-                        decided = Some(true);
-                    }
-                    if crate::studio::block_button(ui, size, "Cancel", "", crate::studio::Emphasis::Plain).clicked() {
-                        decided = Some(false);
-                    }
-                });
-            });
-            let (enter, escape) =
-                ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
-            if escape {
-                decided = Some(false);
-            } else if enter {
-                decided = Some(true);
-            }
-        });
-    decided
+    let message = if note.is_empty() { "You can\u{2019}t undo this.".to_owned() } else { note.to_owned() };
+    crate::studio::alert(ui.ctx(), question, crate::icons::Icon::Trash, question, &message, "Delete")
 }
 
 /// The top of the Theme Editor's left column: every theme in a plain list. A click opens a
@@ -4585,6 +4702,8 @@ fn song_slides(
             let here = SlideRef { presentation: which, slide: index };
             if response.clicked() {
                 state.selected_slide = None;
+                // Delete no longer means the songs or media last picked out.
+                state.picking = Picking::Nothing;
                 commands.push(Command::GoTo(here));
                 // In the playlist, the song's row lights up; the view stays where it is.
                 if item.is_some() {
@@ -5163,6 +5282,67 @@ mod tests {
         assert_eq!(slides, 3, "the slide list down the left shows the song's slides");
         assert_eq!(state.editing.as_ref().map(|d| d.at.slide), Some(1), "drawing must not leave the Edit view");
         assert!(state.pending_edit.is_none(), "nothing was typed, so nothing changed");
+    }
+
+    /// Runs one frame of the home view with `state`, pressing `key` if given.
+    fn frame_with(ctx: &egui::Context, show: &Show, state: &mut HomeState, key: Option<Key>) {
+        let output = ctx.run_ui(input(key), |ui| {
+            home_ui(ui, show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+        });
+        output.drop_without_applying_deltas();
+    }
+
+    fn three_songs() -> Show {
+        Show::new(["One", "Two", "Three"].iter().map(|title| Arc::new(parse_song_text(title, "Words\n"))).collect())
+    }
+
+    #[test]
+    fn delete_asks_about_every_song_picked_out_and_return_deletes_them() {
+        let (ctx, show) = (egui::Context::default(), three_songs());
+        let mut state = HomeState { picked_songs: vec![0, 2], picking: Picking::Songs, ..HomeState::default() };
+        frame_with(&ctx, &show, &mut state, Some(Key::Delete));
+        assert_eq!(state.confirm_delete_songs, vec![0, 2], "Delete asks first");
+        assert!(state.songs_to_delete.is_empty(), "nothing is deleted before the answer");
+        assert!(state.alert_open(), "the show's keys wait while it asks");
+        frame_with(&ctx, &show, &mut state, Some(Key::Enter));
+        assert_eq!(state.songs_to_delete, vec![0, 2], "Return deletes both");
+        assert!(state.confirm_delete_songs.is_empty() && state.picked_songs.is_empty());
+    }
+
+    #[test]
+    fn escape_keeps_the_media_picked_out() {
+        let (ctx, show) = (egui::Context::default(), show_with_media());
+        let mut state = HomeState { picked_media: vec![0, 1], picking: Picking::Media, ..HomeState::default() };
+        frame_with(&ctx, &show, &mut state, Some(Key::Backspace));
+        assert_eq!(state.confirm_delete_media, vec![0, 1]);
+        frame_with(&ctx, &show, &mut state, Some(Key::Escape));
+        assert!(state.confirm_delete_media.is_empty());
+        assert!(state.media_request.is_none(), "Escape deletes nothing");
+        assert_eq!(state.picked_media, vec![0, 1]);
+    }
+
+    #[test]
+    fn delete_after_a_slide_was_clicked_deletes_nothing() {
+        let (ctx, show) = (egui::Context::default(), three_songs());
+        let mut state = HomeState { picking: Picking::Nothing, ..HomeState::default() };
+        frame_with(&ctx, &show, &mut state, Some(Key::Delete));
+        assert!(!state.alert_open());
+    }
+
+    #[test]
+    fn picking_follows_the_finder_with_command_and_shift() {
+        let shown = [4, 7, 1, 9];
+        let (mut picked, mut anchor) = (Vec::new(), None);
+        pick(&mut picked, &mut anchor, &shown, 7, Modifiers::NONE);
+        assert_eq!(picked, vec![7]);
+        pick(&mut picked, &mut anchor, &shown, 9, Modifiers::SHIFT);
+        assert_eq!(picked, vec![7, 1, 9], "Shift picks the run in the order shown");
+        pick(&mut picked, &mut anchor, &shown, 1, Modifiers::COMMAND);
+        assert_eq!(picked, vec![7, 9], "Command takes one away");
+        pick(&mut picked, &mut anchor, &shown, 4, Modifiers::COMMAND);
+        assert_eq!(picked, vec![7, 9, 4], "and adds one");
+        pick(&mut picked, &mut anchor, &shown, 1, Modifiers::NONE);
+        assert_eq!(picked, vec![1], "a plain click picks one alone");
     }
 
     #[test]

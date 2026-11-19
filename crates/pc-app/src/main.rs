@@ -2128,12 +2128,21 @@ impl App {
                     running.home_window.request_redraw();
                 }
             }
-            MediaRequest::Remove(index) => {
-                let changes = self.show.remove_media(index);
-                if index < self.pictures.len() {
-                    self.pictures.remove(index);
+            MediaRequest::Delete(mut items) => {
+                // From the last to the first, so each place still names the same item.
+                items.sort_unstable();
+                items.dedup();
+                let mut media_changed = false;
+                for index in items.into_iter().rev() {
+                    if let Some(item) = self.show.media().get(index) {
+                        applog::event("media", &format!("deleted {} from the bin", item.path.display()));
+                    }
+                    media_changed |= self.show.remove_media(index).media;
+                    if index < self.pictures.len() {
+                        self.pictures.remove(index);
+                    }
                 }
-                if changes.media {
+                if media_changed {
                     self.refresh_output();
                 }
                 self.save_media_list();
@@ -2974,6 +2983,22 @@ impl App {
             {
                 running.home_state.announcement_request = Some(Some(song));
             }
+            // Testing aid: pick out songs or media items by their places ("songs:0,2" or
+            // "media:0,1"), as Command-clicks on them do; then the Delete menu item (or key) asks.
+            if running.frames == 2
+                && let Ok(pick) = std::env::var("PRESENTERCRAFT_PICK")
+                && let Some((list, places)) = pick.split_once(':')
+            {
+                let places: Vec<usize> = places.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+                let state = &mut running.home_state;
+                if list == "media" {
+                    state.picked_media = places;
+                    state.picking = home::Picking::Media;
+                } else {
+                    state.picked_songs = places;
+                    state.picking = home::Picking::Songs;
+                }
+            }
             // Testing aid: open an item of the playlist in front, by its place, as a click on it
             // in the left column does.
             if running.frames == GO_LIVE_AT + 3
@@ -3263,8 +3288,20 @@ impl App {
         }
     }
 
-    /// Carries out a change asked for from a song's right-click menu in the library.
+    /// Carries out a change asked for from a song's right-click menu in the library, and
+    /// deletes songs Delete was pressed on, one by one, as a song's own Delete does.
     fn handle_song_request(&mut self) {
+        let many = self.running.as_mut().map(|r| std::mem::take(&mut r.home_state.songs_to_delete)).unwrap_or_default();
+        for index in many {
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.song_request = Some((index, home::SongRequest::Delete));
+            }
+            self.handle_one_song_request();
+        }
+        self.handle_one_song_request();
+    }
+
+    fn handle_one_song_request(&mut self) {
         use home::SongRequest;
         let Some((index, request)) = self.running.as_mut().and_then(|r| r.home_state.song_request.take()) else {
             return;
@@ -3576,9 +3613,11 @@ impl App {
                 if state.settings_open {
                     state.settings_open = false;
                     state.identify = false;
-                } else if state.confirm_delete_template.is_some() || state.confirm_delete_theme.is_some() {
+                } else if state.alert_open() {
                     state.confirm_delete_template = None;
                     state.confirm_delete_theme = None;
+                    state.confirm_delete_songs.clear();
+                    state.confirm_delete_media.clear();
                 } else if let Some(screen) =
                     running.screen_windows.iter().find(|have| Some(have.window.id()) == self.focused).map(|w| w.screen)
                     && let Some(closed) = state.screens.iter_mut().find(|have| have.id == screen)
@@ -3932,6 +3971,7 @@ impl ApplicationHandler<String> for App {
             && !running.egui_ctx.text_edit_focused()
             && running.home_state.editing.is_none()
             && running.home_state.new_song_sheet.is_none()
+            && !running.home_state.alert_open()
             && !self.held.super_key()
             && !self.held.control_key()
             && let Some(command) = show_key_command(&key.logical_key, &self.show)
@@ -3942,9 +3982,6 @@ impl ApplicationHandler<String> for App {
             let something_open = state.settings_open
                 || state.bible.options.open
                 || state.library_search.is_some()
-                || state.confirm_delete_song.is_some()
-                || state.confirm_delete_theme.is_some()
-                || state.confirm_delete_template.is_some()
                 || egui::Popup::is_any_open(&running.egui_ctx);
             let escape = matches!(key.logical_key, Key::Named(NamedKey::Escape));
             if !(escape && something_open) {
