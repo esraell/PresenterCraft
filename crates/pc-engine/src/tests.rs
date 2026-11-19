@@ -392,3 +392,22 @@ fn a_deleted_group_or_an_undo_keeps_the_place_in_the_arrangement() {
     s.replace_presentation_following(0, before);
     assert_eq!((s.live(), s.position()), (at(0, 1), Some((3, 4))));
 }
+
+#[test]
+fn next_sets_a_slides_click_builds_going_before_moving_on() {
+    let mut song = parse_song_text("Song", "A\n\nB\n");
+    let click = pc_model::Build { on_click: true, ..pc_model::Build::of(pc_model::BuildEffect::Dissolve) };
+    song.groups[0].slides[0].objects[0].build_in = Some(click);
+    let mut s = Show::new(vec![Arc::new(song)]);
+    s.apply(Command::Next);
+    assert_eq!((s.live(), s.build_step(), s.builds_left()), (at(0, 0), 0, true));
+    let changes = s.apply(Command::Next);
+    assert!(changes.builds && !changes.slides);
+    assert_eq!((s.live(), s.build_step(), s.builds_left()), (at(0, 0), 1, false));
+    // Previous takes the build back before going to the slide before.
+    assert!(s.apply(Command::Previous).builds);
+    assert_eq!(s.build_step(), 0);
+    s.apply(Command::Next);
+    s.apply(Command::Next);
+    assert_eq!((s.live(), s.build_step()), (at(0, 1), 0), "a new slide starts with no builds done");
+}

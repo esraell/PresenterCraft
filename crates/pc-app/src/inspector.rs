@@ -2,7 +2,7 @@
 //! selected object. Controls that do nothing yet are still shown where they belong, and say so
 //! when the pointer rests on them.
 
-use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, pos2, vec2};
 use pc_model::{
     Align as TextAlign, BoxStyle, Caps, LineTransform, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, TextStyle,
     Theme, VAlign,
@@ -416,7 +416,7 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
                     match state.inspector.tab {
                         InspectorTab::Shape => shape_tab(ui, state, theme),
                         InspectorTab::Text => text_tab(ui, state, theme),
-                        InspectorTab::Build => build_tab(ui),
+                        InspectorTab::Build => build_tab(ui, state),
                     }
                     if let (Some(before), Some(draft)) = (before, state.editing.as_mut()) {
                         draft.share_change(theme, &before);
@@ -1069,32 +1069,92 @@ fn text_look(
     });
 }
 
-fn build_tab(ui: &mut egui::Ui) {
-    for name in ["Build In", "Build Out"] {
+fn build_tab(ui: &mut egui::Ui, state: &mut HomeState) {
+    use pc_model::{Build, BuildEffect, Direction};
+    let Some(draft) = state.editing.as_mut() else { return };
+    let order: Vec<String> = draft
+        .slide
+        .click_steps()
+        .into_iter()
+        .filter_map(|(at, coming_in)| {
+            let object = draft.slide.objects.get(at)?;
+            let build = if coming_in { object.build_in } else { object.build_out }?;
+            let name = object
+                .as_text()
+                .map_or_else(|| object.name.clone(), |text| text.lines().next().unwrap_or("").to_owned());
+            Some(format!("{name}: {}", build.effect.name(coming_in)))
+        })
+        .collect();
+    let Some(object) = draft.selected_object_mut() else {
+        return nothing_selected(ui);
+    };
+    let label = |ui: &mut egui::Ui, text: &str| {
+        ui.allocate_ui_with_layout(vec2(72.0, ROW), Layout::left_to_right(Align::Center), |ui| {
+            ui.set_min_width(72.0);
+            ui.label(egui::RichText::new(text).size(12.5).strong().color(INK));
+        });
+    };
+    for coming_in in [true, false] {
+        let build = if coming_in { &mut object.build_in } else { &mut object.build_out };
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(name).size(13.0).color(INK));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_enabled(false, egui::Button::new("Add Build...").min_size(vec2(150.0, ROW)))
-                    .on_disabled_hover_text(not_built(name));
+            label(ui, if coming_in { "Build In" } else { "Build Out" });
+            let mut effect = build.map(|build| build.effect);
+            let mut options: Vec<(Option<BuildEffect>, &str)> = vec![(None, "None")];
+            options.extend(BuildEffect::ALL.iter().map(|effect| (Some(*effect), effect.name(coming_in))));
+            choice(ui, if coming_in { "build in" } else { "build out" }, 150.0, &mut effect, &options);
+            if effect != build.map(|build| build.effect) {
+                *build =
+                    effect.map(|effect| Build { effect, on_click: !coming_in, ..build.unwrap_or(Build::of(effect)) });
+            }
+        });
+        if let Some(build) = build.as_mut() {
+            if build.effect == BuildEffect::Fly {
+                ui.horizontal(|ui| {
+                    label(ui, if coming_in { "From" } else { "To" });
+                    let sides = [
+                        (Direction::FromLeft, "Left"),
+                        (Direction::FromRight, "Right"),
+                        (Direction::FromTop, "Top"),
+                        (Direction::FromBottom, "Bottom"),
+                    ];
+                    choice(
+                        ui,
+                        if coming_in { "build in side" } else { "build out side" },
+                        150.0,
+                        &mut build.direction,
+                        &sides,
+                    );
+                });
+            }
+            ui.horizontal_top(|ui| {
+                label(ui, "Timing");
+                number(ui, &mut build.seconds, 72.0, "Seconds", |d| d.speed(0.05).range(0.0..=10.0).max_decimals(2));
+                ui.add_space(8.0);
+                number(ui, &mut build.delay, 72.0, "Delay", |d| d.speed(0.05).range(0.0..=30.0).max_decimals(2));
             });
-        });
+            if coming_in {
+                ui.horizontal(|ui| {
+                    label(ui, "Starts");
+                    let starts = [(false, "With the Slide"), (true, "On a Click")];
+                    choice(ui, "build in start", 150.0, &mut build.on_click, &starts);
+                });
+            } else {
+                ui.label(egui::RichText::new("Leaves when Next is clicked.").size(11.5).color(DIM));
+            }
+        }
+        rule(ui);
     }
-    ui.add_space(ui.available_height().max(260.0) - 190.0);
-    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    ui.painter().rect_filled(bar.expand2(vec2(SIDE, 0.0)), 0.0, Color32::from_rgb(36, 36, 36));
-    ui.painter().rect_stroke(bar.expand2(vec2(SIDE, 0.0)), 0.0, Stroke::new(1.0, RULE), StrokeKind::Inside);
-    ui.painter().text(bar.left_center(), Align2::LEFT_CENTER, "Build Order", FontId::proportional(12.5), INK);
-    ui.add_space(96.0);
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new("Start").size(12.5).strong().color(INK));
-            let mut picked = 0;
-            choice_later(ui, "build start", 190.0, &mut picked, &[""], "Build order");
-        });
-        ui.vertical(|ui| {
-            ui.label(egui::RichText::new("Delay").size(12.5).strong().color(INK));
-            let mut delay = 0.0;
-            ui.add_enabled(false, egui::DragValue::new(&mut delay)).on_disabled_hover_text(not_built("Build delay"));
-        });
-    });
+    // The order clicks set the slide's builds going in: builds in first, then builds out.
+    ui.label(egui::RichText::new("Click Order").size(12.5).strong().color(INK));
+    ui.add_space(4.0);
+    if order.is_empty() {
+        ui.label(
+            egui::RichText::new("No builds wait for a click. Next goes straight to the next slide.")
+                .size(11.5)
+                .color(DIM),
+        );
+    }
+    for (index, step) in order.iter().enumerate() {
+        ui.label(egui::RichText::new(format!("{}.  {step}", index + 1)).size(12.0).color(INK));
+    }
 }

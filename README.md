@@ -102,6 +102,10 @@ ProPresenter.
 - **Pictures** on slides (Picture… above the slide, or Insert > Picture…, Shift-Command-I),
   copied into the app's Images folder; each can fit, fill or stretch to its box. The Insert
   menu also adds a text box or any shape.
+- **Builds** (the inspector's Build tab): an object can come on with a Dissolve, Fly In from
+  any side, or Zoom, with the slide (after its transition and a delay) or on a click of Next,
+  and leave with a Dissolve, Fly Out or Zoom on a click. Next sets a slide's click builds going
+  in order before it moves on; Previous takes them back.
 - A plus tile after the last slide adds a slide laid out like the one before it.
 - **Reflow** (Control-R, or Reflow beside a song's title): the song's words as text, to type
   into; the slides are rebuilt from them and keep their looks, labels and notes.

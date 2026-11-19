@@ -257,6 +257,12 @@ pub struct Object {
     pub flip_h: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub flip_v: bool,
+    /// How the object comes onto its slide, if it has a build of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_in: Option<crate::Build>,
+    /// How the object leaves its slide on a click, if it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_out: Option<crate::Build>,
     #[serde(flatten)]
     pub kind: ObjectKind,
 }
@@ -279,6 +285,8 @@ impl Object {
             shadow: None,
             flip_h: false,
             flip_v: false,
+            build_in: None,
+            build_out: None,
             kind: ObjectKind::Text { text: text.into(), style: TextStyle::default() },
         }
     }
@@ -299,6 +307,8 @@ impl Object {
             shadow: None,
             flip_h: false,
             flip_v: false,
+            build_in: None,
+            build_out: None,
             kind: ObjectKind::Shape { shape },
         }
     }

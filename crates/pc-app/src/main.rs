@@ -797,12 +797,12 @@ impl App {
                 any = true;
             }
             let changes = self.show.apply(command);
-            output_changed |= changes.slides || changes.media || changes.output_enabled;
+            output_changed |= changes.slides || changes.media || changes.output_enabled || changes.builds;
             if changes.selection {
                 let media: Vec<Uuid> = self.show.media().iter().map(|m| m.id).collect();
                 running.thumbs.clear_except(&mut running.egui_renderer, |id| media.contains(id));
             }
-            any |= changes.slides || changes.media || changes.output_enabled || changes.selection;
+            any |= changes.slides || changes.media || changes.output_enabled || changes.selection || changes.builds;
         }
         if output_changed {
             self.refresh_output();
@@ -912,9 +912,9 @@ impl App {
         if command != Command::Next || !state.continuous {
             return command;
         }
-        // Only at the end of the song's play order.
+        // Only at the end of the song's play order, with the last slide's builds all done.
         let Some(live) = self.show.live() else { return command };
-        if self.show.upcoming().is_some() {
+        if self.show.upcoming().is_some() || self.show.builds_left() {
             return command;
         }
         let Some(key) = state.song_keys.get(live.presentation) else { return command };
@@ -966,6 +966,7 @@ impl App {
                     .unwrap_or(running.home_state.transition),
                 next,
                 about,
+                build_step: self.show.build_step(),
             };
             if !output.send(OutputMsg::Show(frame)) {
                 running.home_state.output_stopped = true;
@@ -993,7 +994,12 @@ impl App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        let slide = self.show.live_slide().map(|(_, slide)| Arc::new(slide.clone()));
+        // The slide as far as its builds have got, with nothing moving.
+        let step = self.show.build_step();
+        let slide = self
+            .show
+            .live_slide()
+            .map(|(_, slide)| Arc::new(slide.built(&theme, pc_model::BuildClock::settled(step)).0));
         let media = self.show.live_media().and_then(|index| self.pictures.get(index)).cloned();
         let state = &running.home_state;
         running.preview_shows_stage = state.preview_stage;
@@ -2113,6 +2119,14 @@ impl App {
                         Ok(picture) => running.home_state.picture_to_add = Some(picture),
                         Err(problem) => eprintln!("{problem}"),
                     }
+                }
+                // Testing aid: give the selected object builds, to see the Build tab filled in.
+                if std::env::var_os("PRESENTERCRAFT_CAPTURE_BUILD").is_some()
+                    && let Some(object) = running.home_state.editing.as_mut().and_then(|d| d.selected_object_mut())
+                {
+                    let fly = pc_model::Build { on_click: true, ..pc_model::Build::of(pc_model::BuildEffect::Fly) };
+                    object.build_in = Some(fly);
+                    object.build_out = Some(pc_model::Build::of(pc_model::BuildEffect::Dissolve));
                 }
                 // Testing aid: which tab of the inspector to show.
                 running.home_state.inspector.tab = match std::env::var("PRESENTERCRAFT_INSPECTOR_TAB").as_deref() {

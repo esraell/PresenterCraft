@@ -63,6 +63,8 @@ pub struct Changes {
     pub media: bool,
     pub selection: bool,
     pub output_enabled: bool,
+    /// The live slide went on to another of its builds (or back).
+    pub builds: bool,
 }
 
 pub struct Show {
@@ -73,6 +75,8 @@ pub struct Show {
     /// Where the cursor is in its presentation's play order. A slide whose group an
     /// arrangement plays twice is at two places; this says which.
     step: Option<usize>,
+    /// How many of the live slide's click builds have been set going.
+    build_step: usize,
     media: Vec<MediaItem>,
     live_media: Option<usize>,
     output_enabled: bool,
@@ -87,6 +91,7 @@ impl Show {
             live: None,
             cursor: None,
             step: None,
+            build_step: 0,
             media: Vec::new(),
             live_media: None,
             output_enabled: true,
@@ -108,6 +113,21 @@ impl Show {
     /// The last slide that was live. Kept after a clear so `Next` can continue from it.
     pub fn cursor(&self) -> Option<SlideRef> {
         self.cursor
+    }
+
+    /// How many of the live slide's click builds have been set going.
+    pub fn build_step(&self) -> usize {
+        self.build_step
+    }
+
+    /// The number of click builds the live slide has.
+    fn build_steps(&self) -> usize {
+        self.live_slide().map_or(0, |(_, slide)| slide.click_steps().len())
+    }
+
+    /// True when Next would set another of the live slide's builds going, not change slides.
+    pub fn builds_left(&self) -> bool {
+        self.live.is_some() && self.build_step < self.build_steps()
     }
 
     /// Where the cursor is in its presentation's play order, and how long that order is.
@@ -344,7 +364,16 @@ impl Show {
                 let slide = self.order(presentation).get(step).copied();
                 self.go_to(slide.map(|slide| (SlideRef { presentation, slide }, Some(step))))
             }
+            // A slide with builds waiting for a click sets the next one going first.
+            Command::Next if self.builds_left() => {
+                self.build_step += 1;
+                Changes { builds: true, ..Changes::default() }
+            }
             Command::Next => self.go_to(self.next_target()),
+            Command::Previous if self.live.is_some() && self.build_step > 0 => {
+                self.build_step -= 1;
+                Changes { builds: true, ..Changes::default() }
+            }
             Command::Previous => self.go_to(self.previous_target()),
             Command::First => self.go_to(self.edge_of_selected(false)),
             Command::Last => self.go_to(self.edge_of_selected(true)),
@@ -393,6 +422,7 @@ impl Show {
         }
         self.live = Some(target);
         self.cursor = Some(target);
+        self.build_step = 0;
         Changes { slides: true, ..Changes::default() }
     }
 

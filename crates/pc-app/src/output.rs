@@ -25,6 +25,8 @@ pub struct Frame {
     pub next: Option<Arc<Slide>>,
     /// The song on screen's title and the slide's group, for stage screens.
     pub about: crate::stage::About,
+    /// How many of the slide's click builds have been set going.
+    pub build_step: usize,
 }
 
 /// What is shown over the slides: a message on the audience screens; the stage message and the
@@ -175,6 +177,10 @@ struct Output {
     /// The stage screens with the layout each is drawn with, and whether they are on.
     stage: Vec<(Uuid, Arc<Theme>)>,
     stage_on: bool,
+    /// When the slide on screen was fully on (after its transition), for builds that start with
+    /// it; and when its last click build was set going.
+    slide_on: Instant,
+    step_at: Instant,
     overlay: Overlay,
 }
 
@@ -194,6 +200,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             transition: pc_model::Transition::of(pc_model::TransitionKind::Cut),
             next: None,
             about: crate::stage::About::default(),
+            build_step: 0,
         },
         targets: Vec::new(),
         fading: None,
@@ -204,6 +211,8 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         identify_theme: Arc::new(Theme::builtin()),
         stage: Vec::new(),
         stage_on: true,
+        slide_on: Instant::now(),
+        step_at: Instant::now(),
         overlay: Overlay::default(),
         device,
         queue,
@@ -212,7 +221,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
     loop {
         // While a fade is under way, look for messages without waiting, so it keeps moving;
         // otherwise sleep until there is one.
-        let first = if output.fading.is_some() {
+        let first = if output.fading.is_some() || output.building() {
             match rx.try_recv() {
                 Ok(msg) => Some(msg),
                 Err(TryRecvError::Empty) => None,
@@ -242,8 +251,16 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
             }
         };
         let Some(first) = first else {
-            // Drawing waits for the screen's next refresh, which paces the fade.
-            output.step_fade();
+            // Drawing waits for the screen's next refresh, which paces the fade and the builds.
+            if output.fading.is_some() {
+                output.step_fade();
+            } else {
+                output.draw(false);
+                // With no window to wait for (only NDI), keep to about the screens' pace.
+                if output.targets.is_empty() {
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+            }
             continue;
         };
         // Take everything that has queued up, so a burst of changes costs one draw.
@@ -252,8 +269,21 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         while let Some(msg) = next {
             match msg {
                 OutputMsg::Show(frame) => {
+                    let now = Instant::now();
+                    let same_slide = output.frame.slide.as_deref() == frame.slide.as_deref()
+                        && output.frame.enabled == frame.enabled;
+                    if !same_slide {
+                        // Builds that start with the slide wait for its transition to end.
+                        output.slide_on = now + Duration::from_secs_f32(frame.transition.duration());
+                        output.step_at = now;
+                        new_picture = true;
+                    } else if output.frame.build_step != frame.build_step {
+                        // A click build is drawn moving on the slide already there, not faded to.
+                        output.step_at = now;
+                    } else {
+                        new_picture = true;
+                    }
                     output.frame = frame;
-                    new_picture = true;
                 }
                 OutputMsg::AddSurface { id, surface, format, w, h } => output.add_surface(id, surface, format, w, h),
                 OutputMsg::Resized(id, w, h) => output.resize(id, w, h),
@@ -384,7 +414,34 @@ impl Output {
         let mut under: Vec<Slide> = self.overlay.props.clone();
         under.extend(copyright);
         let over = crate::props::overlay(&under, message.as_ref()).map(Arc::new);
-        (frame.media.clone(), frame.slide.clone(), over, frame.theme.clone())
+        // The slide as far as its builds have got.
+        let slide = frame.slide.as_ref().map(|slide| {
+            let (built, _) = slide.built(&frame.theme, self.build_clock());
+            Arc::new(built)
+        });
+        (frame.media.clone(), slide, over, frame.theme.clone())
+    }
+
+    /// Where the slide on screen is in its builds now.
+    fn build_clock(&self) -> pc_model::BuildClock {
+        let now = Instant::now();
+        pc_model::BuildClock {
+            step: self.frame.build_step,
+            since_on: now.checked_duration_since(self.slide_on).map(|since| since.as_secs_f32()),
+            since_step: now.duration_since(self.step_at).as_secs_f32(),
+        }
+    }
+
+    /// True while a build on the slide on screen is moving, or waiting to, so it is drawn again
+    /// at each refresh.
+    fn building(&self) -> bool {
+        self.frame.enabled
+            && self.frame.slide.as_ref().is_some_and(|slide| {
+                let clock = self.build_clock();
+                // During the transition, builds wait for it to end: keep drawing until they're done.
+                clock.since_on.is_none() && slide.objects.iter().any(|o| o.build_in.is_some_and(|b| !b.on_click))
+                    || slide.built(&self.frame.theme, clock).1
+            })
     }
 
     /// Builds what a screen shows now for a target of a size.

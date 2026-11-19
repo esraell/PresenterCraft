@@ -425,6 +425,8 @@ impl EditDraft {
             shadow: None,
             flip_h: false,
             flip_v: false,
+            build_in: None,
+            build_out: None,
             kind: ObjectKind::Text { text: "Text".to_owned(), style: TextStyle::default() },
         };
         self.selected = Some(object.id);
