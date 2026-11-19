@@ -1684,6 +1684,34 @@ impl App {
             running.home_window.request_redraw();
             return;
         }
+        // In the editor, a picture or video dropped on the window goes on the slide, as Media…
+        // puts it there; in the theme editor, a picture becomes the theme's background.
+        if let Some(running) = self.running.as_mut()
+            && running.home_state.editing.is_some()
+            && media::is_media(path)
+        {
+            let state = &mut running.home_state;
+            state.drop_hover = false;
+            let for_theme = state.theme_edit.is_some();
+            match images::import(path) {
+                Ok(imported) if for_theme => {
+                    if media::is_video(path) {
+                        state.notice = Some("A theme's background can be a picture; this is a video.".to_owned());
+                    } else if let Some(edit) = state.theme_edit.as_mut() {
+                        edit.theme.background_picture = Some(imported.file);
+                        edit.changed = true;
+                        state.notice = Some("The picture is now the theme's background.".to_owned());
+                    }
+                }
+                Ok(imported) => {
+                    applog::event("editor", &format!("dropped {} on the slide", path.display()));
+                    state.picture_to_add = Some(imported);
+                }
+                Err(problem) => state.notice = Some(problem),
+            }
+            running.home_window.request_redraw();
+            return;
+        }
         // A file already in the bin isn't added twice; it joins the playlist shown, if any.
         let already = self.show.media().iter().any(|item| item.path == path);
         let started = Instant::now();
@@ -3956,6 +3984,12 @@ impl ApplicationHandler<String> for App {
                     self.notice_logged = notice;
                 }
                 self.apply(commands);
+                // Testing aid: drop a file on the window, as dragging it from the Finder does.
+                if let Ok(path) = std::env::var("PRESENTERCRAFT_DROP")
+                    && self.running.as_ref().is_some_and(|r| r.frames == 12)
+                {
+                    self.add_dropped_file(std::path::Path::new(&path));
+                }
                 // Testing aid: choose menu bar items by their ids, one every few frames, the way
                 // a click on them reaches the app.
                 if let Ok(ids) = std::env::var("PRESENTERCRAFT_MENU") {

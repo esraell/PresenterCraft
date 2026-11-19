@@ -1965,6 +1965,14 @@ fn edit_view(
         let to_screen = |f: SlideRect| Rect::from_min_size(slide.min + vec2(f.x, f.y) * scale, vec2(f.w, f.h) * scale);
         let response = ui.interact(area, ui.scope_id().with("canvas"), Sense::click_and_drag());
         let for_theme = state.theme_edit.is_some();
+        // A file dragged over the editor is put on the slide when dropped.
+        if state.drop_hover {
+            let painter = ui.painter();
+            painter.rect_filled(slide, 0.0, crate::studio::ACCENT.gamma_multiply(0.15));
+            painter.rect_stroke(slide.shrink(4.0), 6.0, Stroke::new(2.0, crate::studio::ACCENT), StrokeKind::Inside);
+            let words = if for_theme { "Drop a picture for the theme's background" } else { "Drop to put it on the slide" };
+            painter.text(slide.center(), Align2::CENTER_CENTER, words, crate::studio::semibold(16.0), crate::studio::TEXT);
+        }
         if let Some(draft) = state.editing.as_mut() {
             // A press anywhere on the canvas ends typing; the field itself is in front of the
             // canvas, so presses inside it never reach here.
