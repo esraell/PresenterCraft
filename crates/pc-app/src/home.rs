@@ -98,6 +98,15 @@ pub struct HomeState {
     pub fonts: std::sync::Arc<Vec<String>>,
     /// True while the Bible page is showing in place of the slide grid.
     pub bible_open: bool,
+    /// A slide cut or copied from its menu, for Paste.
+    pub slide_clip: Option<Slide>,
+    /// A change to a slide asked for from its menu.
+    pub slide_request: Option<(SlideRef, SlideRequest)>,
+    /// A change to a song asked for from its menu, and a song waiting to be confirmed deleted.
+    pub song_request: Option<(usize, SongRequest)>,
+    pub confirm_delete_song: Option<usize>,
+    /// Songs taken out of the library this run, by their place in the show.
+    pub removed_songs: Vec<usize>,
     /// A change to the selected objects asked for from the menu bar.
     pub edit_request: Option<EditRequest>,
     /// A view asked for from the menu bar: 0 Show, 1 Edit, 2 Bible, 3 Themes. The toolbar
@@ -585,6 +594,11 @@ impl Default for HomeState {
             displays: Vec::new(),
             view_request: None,
             edit_request: None,
+            slide_clip: None,
+            slide_request: None,
+            song_request: None,
+            confirm_delete_song: None,
+            removed_songs: Vec::new(),
             screens: crate::screens::starting(None),
             screens_changed: false,
             screen_status: Vec::new(),
@@ -760,6 +774,7 @@ pub fn home_ui(
         state.new_song = true;
     }
     confirm_delete_theme(ui, state);
+    confirm_delete_song(ui, show, state);
     if state.editing.is_some() {
         edit_view(ui, show, state, theme, thumb, canvas);
         return commands;
@@ -1938,6 +1953,48 @@ fn capitalize(text: &str) -> String {
     out
 }
 
+/// A change to one slide asked for from its right-click menu. The app makes it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SlideRequest {
+    Delete,
+    PasteAfter(Slide),
+    Group(String),
+    Label(Option<String>),
+}
+
+/// A change to a song asked for from its right-click menu in the library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SongRequest {
+    Duplicate,
+    Delete,
+}
+
+/// The group names a slide's Group menu offers, as ProPresenter's does.
+const GROUP_NAMES: [&str; 19] = [
+    "Verse 1",
+    "Verse 2",
+    "Verse 3",
+    "Verse 4",
+    "Verse 5",
+    "Verse 6",
+    "Chorus",
+    "Chorus 2",
+    "Chorus 3",
+    "Chorus 4",
+    "Bridge",
+    "Bridge 2",
+    "Bridge 3",
+    "Pre-chorus",
+    "Tag",
+    "Intro",
+    "Ending",
+    "Outro",
+    "Interlude",
+];
+
+/// The labels a slide's Label menu offers.
+const SLIDE_LABELS: [&str; 4] = ["Blank Slide", "Instrumental", "Repeat", "Spoken Word"];
+
 /// The key that adds each shape in the editor, in the order of `Shape::ALL`.
 const SHAPE_KEYS: [char; 10] = ['O', 'R', 'E', 'G', 'L', 'H', 'P', 'S', 'D', 'A'];
 
@@ -2227,6 +2284,23 @@ fn missing_font_notice(ui: &mut egui::Ui, missing: &[String]) {
 }
 
 /// Asks before a theme is deleted, since it cannot be brought back.
+/// Asks before taking a song out of the library.
+fn confirm_delete_song(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
+    let Some(index) = state.confirm_delete_song else { return };
+    let Some(song) = show.presentations().get(index) else {
+        state.confirm_delete_song = None;
+        return;
+    };
+    let question = format!("Remove \u{201c}{}\u{201d} from the library?", song.title);
+    let note = "A song made in PresenterCraft is moved to the Trash; a song opened from elsewhere stays where it is.";
+    if let Some(delete) = confirm_delete(ui, &question, note) {
+        state.confirm_delete_song = None;
+        if delete {
+            state.song_request = Some((index, SongRequest::Delete));
+        }
+    }
+}
+
 fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
     confirm_delete_template(ui, state);
     let Some(index) = state.confirm_delete_theme else { return };
@@ -2972,6 +3046,53 @@ fn slide_grid(
                             state.editing = EditDraft::of(show, here);
                             ui.close();
                         }
+                        if !from_bible {
+                            ui.separator();
+                            if ui.button("Cut").clicked() {
+                                state.slide_clip = Some(slide.clone());
+                                state.slide_request = Some((here, SlideRequest::Delete));
+                                ui.close();
+                            }
+                            if ui.button("Copy").clicked() {
+                                state.slide_clip = Some(slide.clone());
+                                ui.close();
+                            }
+                            let clip = state.slide_clip.clone();
+                            if ui.add_enabled(clip.is_some(), egui::Button::new("Paste")).clicked()
+                                && let Some(clip) = clip
+                            {
+                                state.slide_request = Some((here, SlideRequest::PasteAfter(clip)));
+                                ui.close();
+                            }
+                            if ui.button("Delete").clicked() {
+                                state.slide_request = Some((here, SlideRequest::Delete));
+                                ui.close();
+                            }
+                            ui.separator();
+                            // Where a group starts: this slide and the rest of its group take the name.
+                            ui.menu_button("Group", |ui| {
+                                for name in GROUP_NAMES {
+                                    if ui.button(name).clicked() {
+                                        state.slide_request = Some((here, SlideRequest::Group(name.to_owned())));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            ui.menu_button("Label", |ui| {
+                                if ui.add(egui::Button::selectable(slide.label.is_none(), "None")).clicked() {
+                                    state.slide_request = Some((here, SlideRequest::Label(None)));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                for name in SLIDE_LABELS {
+                                    let on = slide.label.as_deref() == Some(name);
+                                    if ui.add(egui::Button::selectable(on, name)).clicked() {
+                                        state.slide_request = Some((here, SlideRequest::Label(Some(name.to_owned()))));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        }
                         // A disabled slide stays in the song but is stepped over and never shown.
                         if !from_bible {
                             let label = if slide.enabled { "Disable Slide" } else { "Enable Slide" };
@@ -3119,6 +3240,19 @@ fn slide_grid(
                                 }
                             }
                         }
+                    }
+                    // A slide's label, in a small dark tab at the picture's bottom right.
+                    if let Some(label) = slide.label.as_deref().filter(|label| !label.is_empty()) {
+                        let ink = Color32::from_gray(225);
+                        let text = painter.layout_no_wrap(label.to_owned(), FontId::proportional(10.5), ink);
+                        let bottom =
+                            if view == SlideView::Table { rect.max.y - 6.0 } else { rect.max.y - bar_height - 6.0 };
+                        let tab = Rect::from_min_max(
+                            pos2(rect.max.x - text.size().x - 18.0, bottom - text.size().y - 4.0),
+                            pos2(rect.max.x - 6.0, bottom),
+                        );
+                        painter.rect_filled(tab, 4.0, Color32::from_black_alpha(190));
+                        painter.galley(pos2(tab.min.x + 6.0, tab.min.y + 2.0), text, ink);
                     }
                     // A disabled slide is dimmed and says so: it is never shown.
                     if !slide.enabled {

@@ -178,6 +178,27 @@ impl Show {
         }
     }
 
+    /// Keeps what is live and the cursor on the same slides after a slide was removed from, or
+    /// added to, a song: `at` is where, `added` says which. A removed slide that was live is
+    /// taken off the screen.
+    pub fn slides_shifted(&mut self, presentation: usize, at: usize, added: bool) -> Changes {
+        let shift = |place: &mut Option<SlideRef>| {
+            if let Some(here) = place.as_mut().filter(|here| here.presentation == presentation) {
+                if added && here.slide >= at {
+                    here.slide += 1;
+                } else if !added && here.slide > at {
+                    here.slide -= 1;
+                } else if !added && here.slide == at {
+                    *place = None;
+                }
+            }
+        };
+        let was = self.live;
+        shift(&mut self.live);
+        shift(&mut self.cursor);
+        Changes { slides: was.is_some() && self.live.is_none(), ..Changes::default() }
+    }
+
     pub fn apply(&mut self, command: Command) -> Changes {
         match command {
             Command::Select(index) => {

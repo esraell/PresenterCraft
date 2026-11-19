@@ -172,6 +172,8 @@ fn show_key_command(key: &Key, show: &Show) -> Option<Command> {
         Key::Named(NamedKey::End) => Some(Command::Last),
         // Escape clears everything; F1 does too, for keyboards that have it to hand.
         Key::Named(NamedKey::Escape | NamedKey::F1) => Some(Command::ClearAll),
+        Key::Named(NamedKey::F2) => Some(Command::Clear(pc_engine::Layer::Slides)),
+        Key::Named(NamedKey::F3) => Some(Command::Clear(pc_engine::Layer::Media)),
         Key::Character(typed) => {
             let mut letters = typed.chars();
             let (Some(letter), None) = (letters.next(), letters.next()) else { return None };
@@ -1523,6 +1525,119 @@ impl App {
         commands
     }
 
+    /// Carries out a change asked for from a slide's right-click menu.
+    fn handle_slide_request(&mut self) {
+        use home::SlideRequest;
+        let Some((at, request)) = self.running.as_mut().and_then(|r| r.home_state.slide_request.take()) else {
+            return;
+        };
+        let Some(song) = self.show.presentations().get(at.presentation).cloned() else { return };
+        let (changed, shift) = match &request {
+            SlideRequest::Delete => (song.without_slide(at.slide), Some(false)),
+            SlideRequest::PasteAfter(slide) => (song.with_slide_after(at.slide, slide), Some(true)),
+            SlideRequest::Group(name) => (song.with_group_starting(at.slide, name), None),
+            SlideRequest::Label(label) => {
+                let slide = song.slide(at.slide).map(|(_, slide)| Slide { label: label.clone(), ..slide.clone() });
+                (slide.and_then(|slide| song.with_slide(at.slide, slide)), None)
+            }
+        };
+        let Some(changed) = changed else { return };
+        let mut changes = self.show.replace_presentation(at.presentation, Arc::new(changed));
+        match shift {
+            Some(false) => changes.slides |= self.show.slides_shifted(at.presentation, at.slide, false).slides,
+            Some(true) => changes.slides |= self.show.slides_shifted(at.presentation, at.slide + 1, true).slides,
+            None => {}
+        }
+        if !self.unsaved.contains(&at.presentation) {
+            self.unsaved.push(at.presentation);
+        }
+        self.save_unsaved();
+        if changes.slides {
+            self.refresh_output();
+        }
+        if let Some(running) = self.running.as_mut() {
+            running.home_state.selected_slide = None;
+            running.home_window.request_redraw();
+        }
+    }
+
+    /// Carries out a change asked for from a song's right-click menu in the library.
+    fn handle_song_request(&mut self) {
+        use home::SongRequest;
+        let Some((index, request)) = self.running.as_mut().and_then(|r| r.home_state.song_request.take()) else {
+            return;
+        };
+        let Some(song) = self.show.presentations().get(index).cloned() else { return };
+        match request {
+            SongRequest::Duplicate => {
+                let mut copy = (*song).clone();
+                copy.id = Uuid::new_v4();
+                copy.title = format!("{} copy", song.title);
+                for group in &mut copy.groups {
+                    group.id = Uuid::new_v4();
+                    for slide in &mut group.slides {
+                        slide.id = Uuid::new_v4();
+                        for object in &mut slide.objects {
+                            object.id = Uuid::new_v4();
+                        }
+                    }
+                }
+                let path = bible_store::data_dir().map(|dir| dir.join("Songs").join(format!("{}.pcpres", copy.id)));
+                if let Some(folder) = path.as_ref().and_then(|path| path.parent()) {
+                    let _ = std::fs::create_dir_all(folder);
+                }
+                let title = copy.title.clone();
+                let at = self.show.add_presentation(Arc::new(copy));
+                self.sources.push(path.clone());
+                self.unsaved.push(at);
+                self.save_unsaved();
+                self.apply(vec![Command::Select(at)]);
+                if let Some(running) = self.running.as_mut() {
+                    running.home_state.song_keys.push(match &path {
+                        Some(path) => path.with_extension("").to_string_lossy().into_owned(),
+                        None => format!("title:{title}"),
+                    });
+                }
+            }
+            SongRequest::Delete => {
+                // A song made in the app goes to the Trash; one opened from elsewhere stays put.
+                let own = bible_store::data_dir().map(|dir| dir.join("Songs"));
+                let mut problem = None;
+                if let (Some(Some(path)), Some(own)) = (self.sources.get(index), own)
+                    && path.starts_with(&own)
+                    && path.exists()
+                    && let Err(e) = trash::delete(path)
+                {
+                    problem = Some(format!("Could not move the song to the Trash: {e}"));
+                }
+                if problem.is_none() {
+                    if self.show.live().is_some_and(|live| live.presentation == index) {
+                        self.apply(vec![Command::Clear(pc_engine::Layer::Slides)]);
+                    }
+                    self.unsaved.retain(|at| *at != index);
+                    if let Some(running) = self.running.as_mut() {
+                        running.home_state.removed_songs.push(index);
+                    }
+                    // Another song is shown in its place.
+                    let removed = self.running.as_ref().map(|r| r.home_state.removed_songs.clone()).unwrap_or_default();
+                    let next = (0..self.show.presentations().len())
+                        .find(|at| !removed.contains(at) && !self.bible_slots.contains(at));
+                    if self.show.selected() == index
+                        && let Some(next) = next
+                    {
+                        self.apply(vec![Command::Select(next)]);
+                    }
+                }
+                if let Some(running) = self.running.as_mut() {
+                    running.home_state.notice = problem;
+                }
+            }
+        }
+        if let Some(running) = self.running.as_mut() {
+            running.home_window.request_redraw();
+        }
+    }
+
     /// Saves the timers and messages when they change, takes a message off when its time is up,
     /// and tells the output what to show over the slides when that changes.
     fn sync_overlay(&mut self) {
@@ -1969,6 +2084,8 @@ impl ApplicationHandler<String> for App {
                 if let Some((at, slide)) = self.running.as_mut().and_then(|r| r.home_state.pending_edit.take()) {
                     self.apply_edit(at, slide);
                 }
+                self.handle_slide_request();
+                self.handle_song_request();
                 // A template chosen from a slide's menu: the slide is changed and, if it is on
                 // screen, the screen too.
                 if let Some((at, template)) = self.running.as_mut().and_then(|r| r.home_state.pending_template.take())

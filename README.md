@@ -48,7 +48,10 @@ ProPresenter.
   Several services can be kept and switched between; the line between the two lists can be
   dragged.
 - Pictures dropped on the window go into the media bin and can be shown behind the words.
-- Slides can be disabled from their right-click menu: they stay in the song but are skipped.
+- A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
+  or bridge starts), Label (Blank Slide, Instrumental, Repeat, Spoken Word), Disable, Template.
+- A song's right-click menu: Add to Service, Rename, Duplicate, and Delete (a song made in the
+  app goes to the Trash).
 - **Timers** (count down, count down to a time of day, or count up), **Messages** shown over
   the slides (with the time or a timer in them, and an optional time to leave by themselves),
   and a **Stage Message** for the people on stage, in tabs under the Program panel.
@@ -144,6 +147,7 @@ Other options: `--list-displays`, `--output-display N`.
 | Left arrow | previous slide |
 | Home / End | first / last slide of the song |
 | Escape (or F1) | clear the screen |
+| F2 / F3 | clear the slide / the media |
 | A, S, D, F… | jump to Verse 1, 2, 3, 4… |
 | C, X, Z | jump to Chorus 1, 2, 3 |
 | B, N, M | jump to Bridge 1, 2, 3 |

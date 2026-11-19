@@ -398,7 +398,8 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
     let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 8 });
     egui::Panel::left("library").resizable(false).exact_size(256.0).frame(frame).show(ui, |ui| {
         let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
-        let listed = |index: usize| !hidden.contains(&index);
+        let removed = state.removed_songs.clone();
+        let listed = |index: usize| !hidden.contains(&index) && !removed.contains(&index);
         // A song in a service is found by the name its file gave it; one saved before it had a
         // file is found by its title.
         let song_at = |keys: &[String], key: &str| {
@@ -624,6 +625,23 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 response.context_menu(|ui| {
                     if ui.button("Add to Service").clicked() {
                         add = Some(index);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Rename").clicked() {
+                        commands.push(Command::Select(index));
+                        state.bible_open = false;
+                        state.editing = None;
+                        state.renaming_song = show.presentations().get(index).map(|song| song.title.clone());
+                        state.rename_started = true;
+                        ui.close();
+                    }
+                    if ui.button("Duplicate").clicked() {
+                        state.song_request = Some((index, crate::home::SongRequest::Duplicate));
+                        ui.close();
+                    }
+                    if ui.button("Delete…").clicked() {
+                        state.confirm_delete_song = Some(index);
                         ui.close();
                     }
                 });

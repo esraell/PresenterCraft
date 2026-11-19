@@ -281,3 +281,19 @@ fn disabled_slides_are_stepped_over_and_cannot_be_shown() {
     // The chorus key lands on the chorus's first slide that is not disabled.
     assert_eq!(s.group_start(&["chorus"]), at(0, 4));
 }
+
+#[test]
+fn removing_or_adding_a_slide_before_the_live_one_keeps_it_live() {
+    let mut s = show();
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 2 }));
+    s.slides_shifted(0, 0, false);
+    assert_eq!(s.live(), at(0, 1));
+    s.slides_shifted(0, 0, true);
+    assert_eq!(s.live(), at(0, 2));
+    // Another song's slides do not move it.
+    s.slides_shifted(1, 0, false);
+    assert_eq!(s.live(), at(0, 2));
+    // Removing the live slide takes it off the screen.
+    assert!(s.slides_shifted(0, 2, false).slides);
+    assert_eq!(s.live(), None);
+}

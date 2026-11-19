@@ -421,6 +421,62 @@ impl Presentation {
         None
     }
 
+    /// The group a slide is in, and where in that group, by its place in the whole song.
+    fn locate(&self, index: usize) -> Option<(usize, usize)> {
+        let mut remaining = index;
+        for (at, group) in self.groups.iter().enumerate() {
+            if remaining < group.slides.len() {
+                return Some((at, remaining));
+            }
+            remaining -= group.slides.len();
+        }
+        None
+    }
+
+    /// A copy without one slide. A group left empty goes too. `None` if there is no such slide.
+    pub fn without_slide(&self, index: usize) -> Option<Presentation> {
+        let (group, at) = self.locate(index)?;
+        let mut copy = self.clone();
+        copy.groups[group].slides.remove(at);
+        if copy.groups[group].slides.is_empty() {
+            copy.groups.remove(group);
+        }
+        Some(copy)
+    }
+
+    /// A copy with a slide put just after the one at `index`, in the same group, given new ids
+    /// so it is a slide of its own. `None` if there is no slide there.
+    pub fn with_slide_after(&self, index: usize, slide: &Slide) -> Option<Presentation> {
+        let (group, at) = self.locate(index)?;
+        let mut copy = self.clone();
+        let mut fresh = slide.clone();
+        fresh.id = Uuid::new_v4();
+        for object in &mut fresh.objects {
+            object.id = Uuid::new_v4();
+        }
+        copy.groups[group].slides.insert(at + 1, fresh);
+        Some(copy)
+    }
+
+    /// A copy where a group with this name starts at the slide at `index`: the slide and the
+    /// rest of its group become a group of that name, in its colour. A slide that already
+    /// starts its group renames the group. `None` if there is no slide there.
+    pub fn with_group_starting(&self, index: usize, name: &str) -> Option<Presentation> {
+        let (group, at) = self.locate(index)?;
+        let mut copy = self.clone();
+        let color = crate::group_color(name);
+        if at == 0 {
+            let renamed = &mut copy.groups[group];
+            renamed.name = name.to_owned();
+            renamed.color = color;
+        } else {
+            let tail = copy.groups[group].slides.split_off(at);
+            let started = Group { id: Uuid::new_v4(), name: name.to_owned(), color, slides: tail };
+            copy.groups.insert(group + 1, started);
+        }
+        Some(copy)
+    }
+
     /// A copy with a new, empty slide at the end, and that slide's position. The new slide is
     /// laid out like the one before it (the same boxes, in the same places, with the same
     /// look) with no words in them, and joins the last group. A song with no slides gets a
@@ -482,6 +538,32 @@ pub struct MediaItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slides_are_removed_copied_in_and_start_groups() {
+        let song = crate::parse_song_text("Song", "[Verse 1]\nA\n\nB\n\nC\n\n[Chorus]\nD\n");
+        let words = |song: &Presentation| {
+            song.slides()
+                .map(|(g, s)| format!("{}:{}", g.name, s.objects[0].as_text().unwrap_or("")))
+                .collect::<Vec<_>>()
+        };
+        // Removing the chorus's only slide removes the chorus.
+        let fewer = song.without_slide(3).unwrap();
+        assert_eq!(words(&fewer), ["Verse 1:A", "Verse 1:B", "Verse 1:C"]);
+        assert!(song.without_slide(9).is_none());
+        // A copied slide goes in after another, in its group, with ids of its own.
+        let copied = song.slide(0).unwrap().1.clone();
+        let more = song.with_slide_after(1, &copied).unwrap();
+        assert_eq!(words(&more), ["Verse 1:A", "Verse 1:B", "Verse 1:A", "Verse 1:C", "Chorus:D"]);
+        assert_ne!(more.slide(2).unwrap().1.id, copied.id);
+        // Marking B as the start of a Pre-chorus splits the verse there.
+        let split = song.with_group_starting(1, "Pre-chorus").unwrap();
+        assert_eq!(words(&split), ["Verse 1:A", "Pre-chorus:B", "Pre-chorus:C", "Chorus:D"]);
+        assert_eq!(split.groups[1].color, crate::group_color("Pre-chorus"));
+        // On a group's first slide it renames the group.
+        let renamed = song.with_group_starting(3, "Bridge").unwrap();
+        assert_eq!(words(&renamed), ["Verse 1:A", "Verse 1:B", "Verse 1:C", "Bridge:D"]);
+    }
 
     #[test]
     fn a_slide_added_at_the_end_is_laid_out_like_the_one_before_with_no_words() {
