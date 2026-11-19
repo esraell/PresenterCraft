@@ -34,6 +34,7 @@ pub enum Picking {
     Nothing,
     Songs,
     Media,
+    Slides,
 }
 
 /// A drag across a list that picks out what it passes over. It starts on an item (or, in the
@@ -188,8 +189,13 @@ pub struct HomeState {
     pub songs_to_delete: Vec<usize>,
     /// Media bin items waiting for a yes before they are taken out of the bin.
     pub confirm_delete_media: Vec<usize>,
-    /// A slide waiting for a yes before it is deleted.
-    pub confirm_delete_slide: Option<SlideRef>,
+    /// Slides waiting for a yes before they are deleted, and slides to delete now.
+    pub confirm_delete_slides: Vec<SlideRef>,
+    pub slides_to_delete: Vec<SlideRef>,
+    /// The slides picked out in the slide area (Command- or Shift-click, or a box dragged
+    /// across them), and where each slide was drawn last, for the box to find them.
+    pub picked_slides: Vec<SlideRef>,
+    pub slide_rects: Vec<(SlideRef, Rect)>,
     /// The songs and media items picked out (several with Command or Shift, or by dragging
     /// across them), the one a Shift-click counts from in each, and which list Delete deletes
     /// from: the one last clicked.
@@ -848,7 +854,10 @@ impl Default for HomeState {
             confirm_delete_songs: Vec::new(),
             songs_to_delete: Vec::new(),
             confirm_delete_media: Vec::new(),
-            confirm_delete_slide: None,
+            confirm_delete_slides: Vec::new(),
+            slides_to_delete: Vec::new(),
+            picked_slides: Vec::new(),
+            slide_rects: Vec::new(),
             picked_songs: Vec::new(),
             song_anchor: None,
             picked_media: Vec::new(),
@@ -943,7 +952,7 @@ impl HomeState {
     pub fn alert_open(&self) -> bool {
         !self.confirm_delete_songs.is_empty()
             || !self.confirm_delete_media.is_empty()
-            || self.confirm_delete_slide.is_some()
+            || !self.confirm_delete_slides.is_empty()
             || self.confirm_delete_theme.is_some()
             || self.confirm_delete_template.is_some()
     }
@@ -1077,7 +1086,7 @@ pub fn home_ui(
     confirm_delete_theme(ui, state);
     confirm_delete_song(ui, show, state);
     confirm_delete_media(ui, show, state);
-    confirm_delete_slide(ui, show, state);
+    confirm_delete_slides(ui, show, state);
     // Delete (or Backspace) deletes what is picked out in the list last clicked, after asking;
     // with neither list last clicked, the slide picked out by a right-click.
     let delete_key = ui.input(|input| input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace));
@@ -1103,9 +1112,15 @@ pub fn home_ui(
                 state.confirm_delete_media =
                     state.picked_media.iter().copied().filter(|at| *at < show.media().len()).collect();
             }
+            Picking::Slides => {
+                let from_bible =
+                    |at: &SlideRef| state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation));
+                state.confirm_delete_slides =
+                    state.picked_slides.iter().copied().filter(|at| !from_bible(at)).collect();
+            }
             Picking::Nothing => {
                 let from_bible = |at: SlideRef| state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation));
-                state.confirm_delete_slide = state.selected_slide.filter(|at| !from_bible(*at));
+                state.confirm_delete_slides = state.selected_slide.filter(|at| !from_bible(*at)).into_iter().collect();
             }
         }
     }
@@ -2428,6 +2443,8 @@ fn capitalize(text: &str) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SlideRequest {
     Delete,
+    /// Delete these slides of the song at once (one step for Undo).
+    DeleteMany(Vec<usize>),
     PasteAfter(Slide),
     Group(String),
     Label(Option<String>),
@@ -3391,19 +3408,26 @@ fn confirm_delete_song(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
     }
 }
 
-/// Asks before deleting a slide from its song, and deletes it.
-fn confirm_delete_slide(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
-    let Some(at) = state.confirm_delete_slide else { return };
-    let Some(song) = show.presentations().get(at.presentation).filter(|song| at.slide < song.slide_count()) else {
-        state.confirm_delete_slide = None;
-        return;
+/// Asks before deleting slides from their songs, and deletes them.
+fn confirm_delete_slides(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
+    let present = |at: &SlideRef| show.presentations().get(at.presentation).is_some_and(|s| at.slide < s.slide_count());
+    state.confirm_delete_slides.retain(present);
+    let slides = state.confirm_delete_slides.clone();
+    let question = match slides.as_slice() {
+        [] => return,
+        [one] => {
+            let title = show.presentations().get(one.presentation).map_or("", |song| song.title.as_str());
+            format!("Delete slide {} of \u{201c}{title}\u{201d}?", one.slide + 1)
+        }
+        many => format!("Delete {} slides?", many.len()),
     };
-    let question = format!("Delete slide {} of \u{201c}{}\u{201d}?", at.slide + 1, song.title);
-    if let Some(delete) = confirm_delete(ui, &question, "Edit > Undo brings it back.") {
-        state.confirm_delete_slide = None;
+    let note = if slides.len() == 1 { "Edit > Undo brings it back." } else { "Edit > Undo brings them back." };
+    if let Some(delete) = confirm_delete(ui, &question, note) {
+        state.confirm_delete_slides.clear();
         if delete {
             state.selected_slide = None;
-            state.slide_request = Some((at, SlideRequest::Delete));
+            state.picked_slides.clear();
+            state.slides_to_delete = slides;
         }
     }
 }
@@ -4512,6 +4536,15 @@ fn slide_grid(
     let gap = 16.0;
     let bar_height = 22.0;
     egui::ScrollArea::vertical().id_salt("slide grid").auto_shrink([false, false]).show(ui, |ui| {
+        // Between the slides: a click picks nothing; a drag draws a box that picks out every
+        // slide it touches.
+        let background = ui.interact(ui.clip_rect(), ui.scope_id().with("slide background"), Sense::click_and_drag());
+        if background.clicked() {
+            state.picked_slides.clear();
+            state.selected_slide = None;
+        }
+        start_slide_box(ui, state, &background);
+        state.slide_rects.clear();
         ui.add_space(10.0);
         Frame::new().inner_margin(egui::Margin::symmetric(20, 0)).show(ui, |ui| {
             // The slider sets how many slides fit across; they stretch to fill the width.
@@ -4556,7 +4589,88 @@ fn slide_grid(
             }
         });
         ui.add_space(12.0);
+        sweep_slides(ui, state);
     });
+}
+
+/// Starts a box across the slide area when a drag starts on `response` (a slide, or the space
+/// between them). Where it started is kept from the top of the slides, so the box stays put
+/// on them as the area scrolls.
+fn start_slide_box(ui: &egui::Ui, state: &mut HomeState, response: &egui::Response) {
+    if !response.drag_started() {
+        return;
+    }
+    let Some(at) = ui.input(|input| input.pointer.press_origin()) else { return };
+    let mods = ui.input(|input| input.modifiers);
+    if !mods.command && !mods.shift {
+        state.picked_slides.clear();
+    }
+    state.selected_slide = None;
+    state.picking = Picking::Slides;
+    let top = ui.max_rect().min;
+    state.sweep =
+        Some(Sweep { list: Picking::Slides, from: None, start: (at - top).to_pos2(), keeps: false, carried: false });
+}
+
+/// Carries on a box dragged across the slide area: every slide it touches is picked out, and
+/// the area scrolls when the pointer nears its top or bottom.
+fn sweep_slides(ui: &mut egui::Ui, state: &mut HomeState) {
+    let Some(sweep) = state.sweep.filter(|sweep| sweep.list == Picking::Slides) else { return };
+    let (pointer, down) = ui.input(|input| (input.pointer.interact_pos(), input.pointer.primary_down()));
+    if !down {
+        state.sweep = None;
+        return;
+    }
+    let Some(at) = pointer else { return };
+    let top = ui.max_rect().min;
+    let start = top + sweep.start.to_vec2();
+    if at.distance(start) < 3.0 {
+        return;
+    }
+    let band = Rect::from_two_pos(start, at);
+    let touched: Vec<SlideRef> =
+        state.slide_rects.iter().filter(|(_, rect)| rect.intersects(band)).map(|(here, _)| *here).collect();
+    state.picked_slides = touched;
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.scope_id().with("slide band")));
+    let clip = ui.clip_rect();
+    painter.with_clip_rect(clip).rect_filled(band, 2.0, crate::studio::ACCENT.gamma_multiply(0.12));
+    painter.with_clip_rect(clip).rect_stroke(
+        band,
+        2.0,
+        Stroke::new(1.0, crate::studio::ACCENT.gamma_multiply(0.8)),
+        StrokeKind::Inside,
+    );
+    let edge = 30.0;
+    if at.y < clip.min.y + edge {
+        ui.scroll_with_delta(vec2(0.0, 12.0));
+        ui.ctx().request_repaint();
+    } else if at.y > clip.max.y - edge {
+        ui.scroll_with_delta(vec2(0.0, -12.0));
+        ui.ctx().request_repaint();
+    }
+}
+
+/// Picks out a slide as a Command- or Shift-click does: Command adds or takes away one; Shift
+/// picks the run from the last one picked to it, in the order the slides are shown.
+fn pick_slide(picked: &mut Vec<SlideRef>, order: &[SlideRef], here: SlideRef, mods: egui::Modifiers) {
+    if mods.shift
+        && let Some(from) = picked.last().and_then(|last| order.iter().position(|at| at == last))
+        && let Some(to) = order.iter().position(|at| *at == here)
+    {
+        let (a, b) = (from.min(to), from.max(to));
+        for at in &order[a..=b] {
+            if !picked.contains(at) {
+                picked.push(*at);
+            }
+        }
+        return;
+    }
+    match picked.iter().position(|at| *at == here) {
+        Some(at) => {
+            picked.remove(at);
+        }
+        None => picked.push(here),
+    }
 }
 
 /// The sizes of the slides in the slide area.
@@ -4741,10 +4855,20 @@ fn song_slides(
             // A group's name is shown on its first slide only.
             let starts_group = last_group != Some(group.id);
             last_group = Some(group.id);
-            let (rect, response) = ui.allocate_exact_size(cell, Sense::click());
+            let (rect, response) = ui.allocate_exact_size(cell, Sense::click_and_drag());
             let here = SlideRef { presentation: which, slide: index };
-            if response.clicked() {
+            state.slide_rects.push((here, rect));
+            // A drag starting on a slide draws a box that picks out the slides it touches.
+            start_slide_box(ui, state, &response);
+            let mods = ui.input(|input| input.modifiers);
+            if response.clicked() && (mods.command || mods.shift) {
+                // Picked out without going on screen, to delete several at once.
+                state.picking = Picking::Slides;
+                let order: Vec<SlideRef> = state.slide_rects.iter().map(|(at, _)| *at).collect();
+                pick_slide(&mut state.picked_slides, &order, here, mods);
+            } else if response.clicked() {
                 state.selected_slide = None;
+                state.picked_slides.clear();
                 // Delete no longer means the songs or media last picked out.
                 state.picking = Picking::Nothing;
                 commands.push(Command::GoTo(here));
@@ -4794,7 +4918,8 @@ fn song_slides(
                         ui.close();
                     }
                     if ui.button("Delete…").clicked() {
-                        state.confirm_delete_slide = Some(here);
+                        state.confirm_delete_slides =
+                            if state.picked_slides.contains(&here) { state.picked_slides.clone() } else { vec![here] };
                         ui.close();
                     }
                     ui.separator();
@@ -5145,7 +5270,7 @@ fn song_slides(
             let is_live = show.live() == Some(here);
             let outline = if is_live {
                 Some(Stroke::new(2.5, LIVE_OUTLINE))
-            } else if state.selected_slide == Some(here) {
+            } else if state.selected_slide == Some(here) || state.picked_slides.contains(&here) {
                 Some(Stroke::new(2.0, SELECTED_OUTLINE))
             } else if show.live().is_none() && show.cursor() == Some(here) {
                 Some(Stroke::new(1.5, WAS_LIVE_OUTLINE))
@@ -5370,6 +5495,68 @@ mod tests {
         let mut state = HomeState { picking: Picking::Nothing, ..HomeState::default() };
         frame_with(&ctx, &show, &mut state, Some(Key::Delete));
         assert!(!state.alert_open());
+    }
+
+    /// Runs one frame of the home view with these pointer events.
+    fn frame_events(ctx: &egui::Context, show: &Show, state: &mut HomeState, events: Vec<Event>, time: f64) {
+        let raw = RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0))),
+            time: Some(time),
+            events,
+            ..RawInput::default()
+        };
+        let output = ctx.run_ui(raw, |ui| {
+            home_ui(ui, show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+        });
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn a_box_dragged_across_the_slides_picks_the_ones_it_touches_and_delete_asks_for_them() {
+        let (ctx, show) = (egui::Context::default(), show(6));
+        let mut state = HomeState::default();
+        frame_events(&ctx, &show, &mut state, Vec::new(), 0.0);
+        let rect = |n: usize| state.slide_rects.iter().find(|(at, _)| at.slide == n).map(|(_, r)| *r).unwrap();
+        // From just above and left of the first slide (between slides) to the middle of the second.
+        let (start, end) = (rect(0).min - vec2(6.0, 4.0), rect(1).center());
+        let press = |at, pressed| Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let steps = [
+            vec![Event::PointerMoved(start)],
+            vec![press(start, true)],
+            vec![Event::PointerMoved(start + vec2(20.0, 10.0))],
+            vec![Event::PointerMoved(end)],
+            vec![Event::PointerMoved(end)],
+        ];
+        for (n, events) in steps.into_iter().enumerate() {
+            frame_events(&ctx, &show, &mut state, events, 0.1 * (n + 1) as f64);
+        }
+        let mut picked: Vec<usize> = state.picked_slides.iter().map(|at| at.slide).collect();
+        picked.sort_unstable();
+        assert_eq!(picked, vec![0, 1], "the box touches the first two slides");
+        frame_events(&ctx, &show, &mut state, vec![press(end, false)], 0.7);
+        assert!(state.sweep.is_none());
+        assert!(show.live().is_none(), "picking puts nothing on screen");
+        frame_with(&ctx, &show, &mut state, Some(Key::Delete));
+        assert_eq!(state.confirm_delete_slides.len(), 2, "Delete asks about both");
+        frame_with(&ctx, &show, &mut state, Some(Key::Enter));
+        assert_eq!(state.slides_to_delete.len(), 2);
+    }
+
+    #[test]
+    fn command_and_shift_pick_slides_as_the_finder_does() {
+        let at = |slide| SlideRef { presentation: 0, slide };
+        let order: Vec<SlideRef> = (0..6).map(at).collect();
+        let mut picked = Vec::new();
+        pick_slide(&mut picked, &order, at(1), Modifiers::COMMAND);
+        pick_slide(&mut picked, &order, at(4), Modifiers::SHIFT);
+        assert_eq!(picked, vec![at(1), at(2), at(3), at(4)]);
+        pick_slide(&mut picked, &order, at(2), Modifiers::COMMAND);
+        assert_eq!(picked, vec![at(1), at(3), at(4)]);
     }
 
     #[test]

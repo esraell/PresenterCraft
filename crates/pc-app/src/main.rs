@@ -3252,11 +3252,64 @@ impl App {
     /// Carries out a change asked for from a slide's right-click menu.
     fn handle_slide_request(&mut self) {
         use home::SlideRequest;
+        // Slides Delete was pressed on: each song's at once, so one Undo brings them back.
+        let many =
+            self.running.as_mut().map(|r| std::mem::take(&mut r.home_state.slides_to_delete)).unwrap_or_default();
+        let mut songs: Vec<usize> = many.iter().map(|at| at.presentation).collect();
+        songs.sort_unstable();
+        songs.dedup();
+        for song in songs {
+            let slides: Vec<usize> = many.iter().filter(|at| at.presentation == song).map(|at| at.slide).collect();
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.slide_request =
+                    Some((pc_engine::SlideRef { presentation: song, slide: 0 }, SlideRequest::DeleteMany(slides)));
+            }
+            self.handle_one_slide_request();
+        }
+        self.handle_one_slide_request();
+    }
+
+    fn handle_one_slide_request(&mut self) {
+        use home::SlideRequest;
         let Some((at, request)) = self.running.as_mut().and_then(|r| r.home_state.slide_request.take()) else {
             return;
         };
         let Some(song) = self.show.presentations().get(at.presentation).cloned() else { return };
+        // Several slides: from the last to the first, so each place still names the same slide.
+        if let SlideRequest::DeleteMany(slides) = &request {
+            let mut slides = slides.clone();
+            slides.sort_unstable();
+            slides.dedup();
+            let mut changed = (*song).clone();
+            for slide in slides.iter().rev() {
+                match changed.without_slide(*slide) {
+                    Some(fewer) => changed = fewer,
+                    None => break,
+                }
+            }
+            if changed.slide_count() == song.slide_count() {
+                return;
+            }
+            self.remember_for_undo(at.presentation);
+            let mut changes = self.show.replace_presentation(at.presentation, Arc::new(changed));
+            for slide in slides.iter().rev() {
+                changes.slides |= self.show.slides_shifted(at.presentation, *slide, false).slides;
+            }
+            if !self.unsaved.contains(&at.presentation) {
+                self.unsaved.push(at.presentation);
+            }
+            self.save_unsaved();
+            if changes.slides {
+                self.refresh_output();
+            }
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.selected_slide = None;
+                running.home_window.request_redraw();
+            }
+            return;
+        }
         let (changed, shift) = match &request {
+            SlideRequest::DeleteMany(_) => (None, None),
             SlideRequest::Delete => (song.without_slide(at.slide), Some(false)),
             SlideRequest::PasteAfter(slide) => (song.with_slide_after(at.slide, slide), Some(true)),
             SlideRequest::Group(name) => (song.with_group_starting(at.slide, name), None),
@@ -3615,7 +3668,7 @@ impl App {
                     state.confirm_delete_theme = None;
                     state.confirm_delete_songs.clear();
                     state.confirm_delete_media.clear();
-                    state.confirm_delete_slide = None;
+                    state.confirm_delete_slides.clear();
                 } else if let Some(screen) =
                     running.screen_windows.iter().find(|have| Some(have.window.id()) == self.focused).map(|w| w.screen)
                     && let Some(closed) = state.screens.iter_mut().find(|have| have.id == screen)

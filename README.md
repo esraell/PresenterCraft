@@ -67,11 +67,12 @@ ProPresenter.
   each under a bar with its name, so scrolling down goes on into the next song; clicking a slide
   of another song puts it on screen. With View, Continuous Playlist on, Next at the end of a
   song goes on to the next song in the playlist.
-- Songs and media items are picked out as in the Finder: Command-click adds or takes away one,
-  Shift-click picks a run, and dragging across the song list (or a box between media items)
-  picks everything it passes over. Picked songs dragged out of the list go into a playlist or
-  library together. Delete asks first, then deletes what is picked in the list last clicked
-  (or a slide picked out with a right-click).
+- Songs, slides and media items are picked out as in the Finder: Command-click adds or takes
+  away one, Shift-click picks a run, and dragging across the song list, or a box across the
+  slides or between media items, picks everything it touches (picking a slide never puts it on
+  screen). Picked songs dragged out of the list go into a playlist or library together. Delete
+  asks first, then deletes what is picked in the list last clicked; picked slides go in one
+  step that Undo brings back.
 - Pictures and videos dropped on the window, or added with the media bin's +, go into the media
   bin, are kept between runs, and can be shown behind the words; Delete, or Delete… on an item's
   right-click menu, takes it out of the bin after asking (the file stays where it is).
