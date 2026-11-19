@@ -62,9 +62,10 @@ SoftPresenter is built to be:
   things in one click, walk-in music with crossfades, and a message for the stage.
 - **Editing and themes.** A slide editor with text, shapes, pictures, videos, gradients and
   builds; themes that decide where each kind of text goes, used across songs and Bible slides.
-- **Command line.** `softpresenter ctl` controls the running app: slides, clears, media,
-  messages, timers, macros, the Bible and every menu item. Install it from SoftPresenter >
-  Install Command Line Tool…; [docs/cli.md](docs/cli.md) has the commands.
+- **Command line.** `sp` (full name `softpresenter`) controls the running app: `sp status`,
+  `sp next`, `sp clear all`, and slides, media, messages, timers, macros, the Bible and every
+  menu item. Install it from SoftPresenter › Install Command Line Tool…;
+  [docs/cli.md](docs/cli.md) has the commands.
 
 The full list, area by area, is in [docs/features.md](docs/features.md).
 
@@ -148,8 +149,8 @@ Two things are optional:
 
 Song text files can be opened from the command line, such as the sample:
 `cargo run --release -- samples/sample-song.txt`. Other options: `--list-displays`,
-`--output-display N`. From the source, the command line runs as `cargo run --release -- ctl
-status`.
+`--output-display N`. Running from the source, the command line is `cargo run --release --
+status` instead of `sp status`.
 
 ## Using it
 

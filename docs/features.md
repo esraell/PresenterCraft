@@ -196,7 +196,8 @@ feature changes, this page changes in the same commit.
 - A Settings window (Cmd+,) with General, Screens, Groups and Key Mappings panes.
 
 ## From the command line
-- `softpresenter ctl …` controls the running app from a terminal, a script or an AI agent:
+- `sp …` (full name `softpresenter`), installed from SoftPresenter › Install Command Line Tool…,
+  controls the running app from a terminal, a script or an AI agent (`sp status`, `sp next`):
   what is on screen, the lists, going to slides, clearing, media, messages, props, timers,
   macros, announcements, audio, the Bible and songs, and every menu bar item. It reaches the
   app through a socket only the same user can open, and nothing listens on the network. See

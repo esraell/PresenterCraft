@@ -11,7 +11,7 @@ written for agents as much as for people:
 
 - [docs/app-map.md](docs/app-map.md): every view, panel and window, what each part does, the
   matching command-line command, where the data lives and how the code is laid out.
-- [docs/cli.md](docs/cli.md): `softpresenter ctl`, which controls the running app from a
+- [docs/cli.md](docs/cli.md): `sp` (full name `softpresenter`), which controls the running app from a
   terminal or a script, its replies and its security model.
 
 ## Running the app without getting in anyone's way
@@ -25,8 +25,8 @@ careless test run puts a slide in front of whoever is using the computer.
 - **Use a data folder of your own:** `SOFTPRESENTER_DATA=/some/empty/folder`. Without it, the
   app reads and writes the owner's real library, Bibles and settings in
   `~/Library/Application Support/SoftPresenter/`.
-- **Never run `softpresenter ctl` against the owner's app.** Set `SOFTPRESENTER_DATA` and
-  `SOFTPRESENTER_CONTROL_SOCKET` to a test copy first. Without them, `ctl` drives the owner's
+- **Never run `sp` (or `softpresenter ctl`) against the owner's app.** Set `SOFTPRESENTER_DATA` and
+  `SOFTPRESENTER_CONTROL_SOCKET` to a test copy first. Without them, `sp` drives the owner's
   live app, which may be on the real screens in front of a congregation.
 - **Run one instance at a time,** and close it when you are done. Don't leave builds running
   that you haven't measured.
