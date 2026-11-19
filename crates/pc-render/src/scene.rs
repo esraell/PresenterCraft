@@ -3,7 +3,7 @@ use pc_model::{
     Align, BoxStyle, ImageFit, Object, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, Shape, Slide, SlideRect,
     Theme, VAlign,
 };
-use vello::kurbo::{Affine, BezPath, Ellipse, Join, Rect, RoundedRect, Shape as _, Stroke};
+use vello::kurbo::{Affine, BezPath, CircleSegment, Ellipse, Join, Rect, RoundedRect, Shape as _, Stroke};
 use vello::peniko::{Color, Fill, Mix};
 use vello::{Glyph, Scene};
 
@@ -345,12 +345,8 @@ pub fn transition(
     match kind {
         K::Cut => scene.append(to, None),
         K::Dissolve => return cross_fade(from, to, amount, target_w, target_h),
-        K::FadeBlack | K::FadeWhite | K::FadeGray => {
-            let through = match kind {
-                K::FadeBlack => Color::BLACK,
-                K::FadeWhite => Color::WHITE,
-                _ => Color::from_rgba8(128, 128, 128, 255),
-            };
+        K::FadeBlack | K::FadeWhite => {
+            let through = if kind == K::FadeBlack { Color::BLACK } else { Color::WHITE };
             if a < 0.5 {
                 scene.append(from, None);
                 scene.push_layer(Fill::NonZero, Mix::Normal, (a * 2.0) as f32, Affine::IDENTITY, &whole);
@@ -369,16 +365,6 @@ pub fn transition(
             scene.pop_layer();
             scene.push_layer(Fill::NonZero, Mix::Normal, a as f32, Affine::IDENTITY, &whole);
             scene.append(to, None);
-            scene.pop_layer();
-        }
-        K::FadeBright | K::FadeDark => {
-            // A dissolve with a wash of white or black that peaks half-way.
-            let fresh = cross_fade(from, to, amount, target_w, target_h);
-            scene.append(&fresh, None);
-            let wash = if kind == K::FadeBright { Color::WHITE } else { Color::BLACK };
-            let peak = (0.7 * (a * std::f64::consts::PI).sin()) as f32;
-            scene.push_layer(Fill::NonZero, Mix::Normal, peak, Affine::IDENTITY, &whole);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, wash, None, &whole);
             scene.pop_layer();
         }
         K::Push => {
@@ -436,17 +422,6 @@ pub fn transition(
             scene.append(to, None);
             scene.pop_layer();
         }
-        K::SquareWipe => {
-            // A square growing from the middle of the side the picture comes from, big enough
-            // at the end to cover the screen from there.
-            scene.append(from, None);
-            let (cx, cy) = (w / 2.0 - dx * w / 2.0, h / 2.0 - dy * h / 2.0);
-            let half = (w.max(h) * 1.05) * a;
-            let square = Rect::new(cx - half, cy - half, cx + half, cy + half);
-            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &square);
-            scene.append(to, None);
-            scene.pop_layer();
-        }
         K::Iris => {
             scene.append(from, None);
             let reach = (w * w + h * h).sqrt() / 2.0;
@@ -470,7 +445,7 @@ pub fn transition(
                 scene.pop_layer();
             }
         }
-        K::DoorWipe => {
+        K::Split => {
             scene.append(from, None);
             let open = if dx != 0.0 {
                 Rect::new(w / 2.0 * (1.0 - a), 0.0, w / 2.0 * (1.0 + a), h)
@@ -491,10 +466,23 @@ pub fn transition(
             };
             scene.append(picture, Some(about_middle(w, h, squeeze)));
         }
-        K::RandomSquares | K::RandomPixels => {
+        K::Clock => {
             scene.append(from, None);
-            let (columns, rows) = if kind == K::RandomSquares { (16, 9) } else { (64, 36) };
-            let uncovered = random_cells(columns, rows, a, w, h);
+            let reach = (w * w + h * h).sqrt();
+            let hand = CircleSegment::new(
+                (w / 2.0, h / 2.0),
+                reach,
+                0.0,
+                -std::f64::consts::FRAC_PI_2,
+                a * std::f64::consts::TAU,
+            );
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &hand.to_path(0.1));
+            scene.append(to, None);
+            scene.pop_layer();
+        }
+        K::Blinds | K::Checkerboard => {
+            scene.append(from, None);
+            let uncovered = strips(kind == K::Blinds, direction, a, w, h);
             scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &uncovered);
             scene.append(to, None);
             scene.pop_layer();
@@ -508,37 +496,50 @@ fn about_middle(w: f64, h: f64, change: Affine) -> Affine {
     Affine::translate((w / 2.0, h / 2.0)) * change * Affine::translate((-w / 2.0, -h / 2.0))
 }
 
-/// The cells of a grid uncovered so far, `a` of the way through, each at its own moment in a
-/// fixed shuffled order (the same every time, so a transition looks the same each time).
-fn random_cells(columns: usize, rows: usize, a: f64, w: f64, h: f64) -> BezPath {
-    let count = columns * rows;
-    // Each cell's turn: its place when the cells are sorted by a well-mixed hash of their
-    // number, which shuffles them the same way every time.
-    let mix = |mut x: u64| {
-        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        x ^ (x >> 31)
-    };
-    let mut order: Vec<usize> = (0..count).collect();
-    order.sort_by_key(|cell| mix(*cell as u64));
-    let mut turns = vec![0usize; count];
-    for (turn, cell) in order.into_iter().enumerate() {
-        turns[cell] = turn;
-    }
+/// The part uncovered so far, `a` of the way through: by blinds (strips side by side, each
+/// opening the way the picture travels), or by a checkerboard (every other square opening in
+/// the first half of the time, the rest in the second).
+fn strips(blinds: bool, direction: pc_model::Direction, a: f64, w: f64, h: f64) -> BezPath {
+    let (dx, dy) = direction.travel();
+    let across = dx != 0.0;
+    let forward = if across { dx > 0.0 } else { dy > 0.0 };
     let mut path = BezPath::new();
-    for (cell, turn) in turns.into_iter().enumerate() {
-        if (turn as f64 + 1.0) / count as f64 > a {
-            continue;
+    // A rectangle `t` of the way to covering `cell`, growing the way the picture travels.
+    let mut grow = |cell: Rect, t: f64| {
+        let t = t.clamp(0.0, 1.0);
+        if t <= 0.0 {
+            return;
         }
-        let (column, row) = (cell % columns, cell / columns);
-        let square = Rect::new(
-            w * column as f64 / columns as f64,
-            h * row as f64 / rows as f64,
-            w * (column + 1) as f64 / columns as f64,
-            h * (row + 1) as f64 / rows as f64,
-        );
-        path.extend(square.path_elements(0.1));
+        let part = match (across, forward) {
+            (true, true) => Rect::new(cell.x0, cell.y0, cell.x0 + cell.width() * t, cell.y1),
+            (true, false) => Rect::new(cell.x1 - cell.width() * t, cell.y0, cell.x1, cell.y1),
+            (false, true) => Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + cell.height() * t),
+            (false, false) => Rect::new(cell.x0, cell.y1 - cell.height() * t, cell.x1, cell.y1),
+        };
+        path.extend(part.path_elements(0.1));
+    };
+    if blinds {
+        const COUNT: usize = 8;
+        for at in 0..COUNT {
+            let (f, g) = (at as f64 / COUNT as f64, (at + 1) as f64 / COUNT as f64);
+            let cell = if across { Rect::new(w * f, 0.0, w * g, h) } else { Rect::new(0.0, h * f, w, h * g) };
+            grow(cell, a);
+        }
+    } else {
+        const COLUMNS: usize = 8;
+        const ROWS: usize = 6;
+        for row in 0..ROWS {
+            for column in 0..COLUMNS {
+                let cell = Rect::new(
+                    w * column as f64 / COLUMNS as f64,
+                    h * row as f64 / ROWS as f64,
+                    w * (column + 1) as f64 / COLUMNS as f64,
+                    h * (row + 1) as f64 / ROWS as f64,
+                );
+                let second = (row + column) % 2 == 1;
+                grow(cell, if second { a * 2.0 - 1.0 } else { a * 2.0 });
+            }
+        }
     }
     path
 }

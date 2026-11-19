@@ -12,19 +12,16 @@ pub enum TransitionKind {
     Cut,
     /// The new picture fades in over the old.
     #[default]
+    #[serde(alias = "random_pixels")]
     Dissolve,
     /// The old picture fades out as the new one fades in, darker in the middle.
     Fade,
     /// The old picture fades to black, then the new one fades up.
+    #[serde(alias = "fade_dark", alias = "fade_gray")]
     FadeBlack,
     /// The same through white.
+    #[serde(alias = "fade_bright")]
     FadeWhite,
-    /// The same through grey.
-    FadeGray,
-    /// A dissolve that brightens in the middle.
-    FadeBright,
-    /// A dissolve that darkens in the middle.
-    FadeDark,
     /// The new picture pushes the old one off.
     Push,
     /// The new picture slides in over the old one.
@@ -39,37 +36,34 @@ pub enum TransitionKind {
     /// The old picture parts in the middle like two doors, showing the new one behind it.
     #[serde(alias = "doors")]
     Door,
-    /// The new picture opens out from a line through the middle, like doors opening on it.
-    #[serde(alias = "split")]
-    DoorWipe,
     /// The old picture turns edge-on and the new one turns to face the room.
     Flip,
     /// The old picture steps back and away as the new one comes forward from a side.
     Swap,
     /// The new picture is uncovered by an edge sweeping across.
-    #[serde(alias = "blinds", alias = "bars")]
     Wipe,
-    /// The new picture is uncovered by a square growing from a side.
-    SquareWipe,
+    /// The new picture opens out from a line through the middle.
+    #[serde(alias = "door_wipe")]
+    Split,
+    /// The new picture is uncovered in strips, like blinds opening.
+    #[serde(alias = "bars")]
+    Blinds,
     /// The new picture is uncovered by a circle growing from the middle.
-    #[serde(alias = "clock", alias = "diamond")]
+    #[serde(alias = "diamond", alias = "square_wipe")]
     Iris,
-    /// The new picture is uncovered square by square, in no order.
-    #[serde(alias = "checkerboard")]
-    RandomSquares,
-    /// The same with small squares, like pixels.
-    RandomPixels,
+    /// The new picture is uncovered by a hand sweeping round like a clock's.
+    Clock,
+    /// The new picture is uncovered square by square: every other square first, then the rest.
+    #[serde(alias = "random_squares")]
+    Checkerboard,
 }
 
 impl TransitionKind {
-    pub const ALL: [TransitionKind; 22] = [
+    pub const ALL: [TransitionKind; 19] = [
         TransitionKind::Cut,
         TransitionKind::Dissolve,
         TransitionKind::Fade,
         TransitionKind::FadeBlack,
-        TransitionKind::FadeBright,
-        TransitionKind::FadeDark,
-        TransitionKind::FadeGray,
         TransitionKind::FadeWhite,
         TransitionKind::Push,
         TransitionKind::MoveIn,
@@ -80,11 +74,11 @@ impl TransitionKind {
         TransitionKind::Flip,
         TransitionKind::Swap,
         TransitionKind::Wipe,
-        TransitionKind::DoorWipe,
-        TransitionKind::SquareWipe,
+        TransitionKind::Split,
+        TransitionKind::Blinds,
         TransitionKind::Iris,
-        TransitionKind::RandomSquares,
-        TransitionKind::RandomPixels,
+        TransitionKind::Clock,
+        TransitionKind::Checkerboard,
     ];
 
     pub fn name(self) -> &'static str {
@@ -94,23 +88,20 @@ impl TransitionKind {
             TransitionKind::Fade => "Fade",
             TransitionKind::FadeBlack => "Fade Black",
             TransitionKind::FadeWhite => "Fade White",
-            TransitionKind::FadeGray => "Fade Gray",
-            TransitionKind::FadeBright => "Fade Bright",
-            TransitionKind::FadeDark => "Fade Dark",
             TransitionKind::Push => "Push",
             TransitionKind::MoveIn => "Move In",
             TransitionKind::Reveal => "Reveal",
             TransitionKind::FlyIn => "Fly In",
             TransitionKind::ZoomIn => "Zoom In",
             TransitionKind::Door => "Door",
-            TransitionKind::DoorWipe => "Door Wipe",
             TransitionKind::Flip => "Flip",
             TransitionKind::Swap => "Swap",
             TransitionKind::Wipe => "Wipe",
-            TransitionKind::SquareWipe => "Square Wipe",
+            TransitionKind::Split => "Split",
+            TransitionKind::Blinds => "Blinds",
             TransitionKind::Iris => "Iris",
-            TransitionKind::RandomSquares => "Random Squares",
-            TransitionKind::RandomPixels => "Random Pixels",
+            TransitionKind::Clock => "Clock",
+            TransitionKind::Checkerboard => "Checkerboard",
         }
     }
 
@@ -118,13 +109,9 @@ impl TransitionKind {
     pub fn category(self) -> &'static str {
         match self {
             TransitionKind::Cut => "None",
-            TransitionKind::Dissolve
-            | TransitionKind::Fade
-            | TransitionKind::FadeBlack
-            | TransitionKind::FadeWhite
-            | TransitionKind::FadeGray
-            | TransitionKind::FadeBright
-            | TransitionKind::FadeDark => "Dissolves",
+            TransitionKind::Dissolve | TransitionKind::Fade | TransitionKind::FadeBlack | TransitionKind::FadeWhite => {
+                "Dissolves"
+            }
             TransitionKind::Push
             | TransitionKind::MoveIn
             | TransitionKind::Reveal
@@ -132,15 +119,16 @@ impl TransitionKind {
             | TransitionKind::ZoomIn => "Movements",
             TransitionKind::Door | TransitionKind::Flip | TransitionKind::Swap => "Objects",
             TransitionKind::Wipe
-            | TransitionKind::DoorWipe
-            | TransitionKind::SquareWipe
+            | TransitionKind::Split
+            | TransitionKind::Blinds
             | TransitionKind::Iris
-            | TransitionKind::RandomSquares
-            | TransitionKind::RandomPixels => "Wipes",
+            | TransitionKind::Clock
+            | TransitionKind::Checkerboard => "Wipes",
         }
     }
 
-    /// True for the kinds that move in a direction.
+    /// True for the kinds that move in a direction. (Split opens across the screen from the
+    /// left or right, and up and down from the top or bottom.)
     pub fn has_direction(self) -> bool {
         matches!(
             self,
@@ -150,7 +138,9 @@ impl TransitionKind {
                 | TransitionKind::FlyIn
                 | TransitionKind::ZoomIn
                 | TransitionKind::Wipe
-                | TransitionKind::SquareWipe
+                | TransitionKind::Split
+                | TransitionKind::Blinds
+                | TransitionKind::Checkerboard
                 | TransitionKind::Swap
         )
     }
@@ -229,5 +219,41 @@ impl Transition {
     /// As the label beside the transition buttons says it: "Push: 0.6s".
     pub fn label(self) -> String {
         format!("{}: {:.1}s", self.kind.name(), self.seconds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every kind a song may have been saved with still opens: as itself if it is offered, or
+    /// as the nearest kind that is.
+    #[test]
+    fn every_kind_ever_saved_still_reads() {
+        let read = |name: &str| serde_json::from_str::<TransitionKind>(&format!("\"{name}\"")).unwrap();
+        for (saved, now) in [
+            ("random_pixels", TransitionKind::Dissolve),
+            ("fade_dark", TransitionKind::FadeBlack),
+            ("fade_gray", TransitionKind::FadeBlack),
+            ("fade_bright", TransitionKind::FadeWhite),
+            ("zoom_out", TransitionKind::ZoomIn),
+            ("doors", TransitionKind::Door),
+            ("door_wipe", TransitionKind::Split),
+            ("split", TransitionKind::Split),
+            ("bars", TransitionKind::Blinds),
+            ("blinds", TransitionKind::Blinds),
+            ("diamond", TransitionKind::Iris),
+            ("square_wipe", TransitionKind::Iris),
+            ("clock", TransitionKind::Clock),
+            ("random_squares", TransitionKind::Checkerboard),
+            ("checkerboard", TransitionKind::Checkerboard),
+        ] {
+            assert_eq!(read(saved), now, "{saved}");
+        }
+        // And every kind offered reads back as itself.
+        for kind in TransitionKind::ALL {
+            let text = serde_json::to_string(&kind).unwrap();
+            assert_eq!(serde_json::from_str::<TransitionKind>(&text).unwrap(), kind);
+        }
     }
 }

@@ -48,10 +48,9 @@ ProPresenter.
   once, the stage screens show what comes next in it, and a row of its
   groups shows the one on screen; click one to go to it, right-click to move, repeat or
   remove it, + to add a group.
-- Twenty-two transitions: Cut, Dissolve, Fade, Fade Black,
-  Fade Bright, Fade Dark, Fade Gray, Fade White, Push, Move In, Reveal, Fly In, Zoom In, Door,
-  Flip, Swap, Wipe, Door Wipe, Square Wipe, Iris, Random Squares and Random Pixels, with their
-  direction and time (0 to 5 seconds), from Cut, Dissolve or Advanced. One is chosen for all slides from the bar under the slides; a song
+- Nineteen transitions: Cut, Dissolve, Fade, Fade Black, Fade White, Push, Move In, Reveal,
+  Fly In, Zoom In, Door, Flip, Swap, Wipe, Split, Blinds, Iris, Clock and Checkerboard, with
+  their direction and time (0 to 5 seconds), from Cut, Dissolve or Advanced. One is chosen for all slides from the bar under the slides; a song
   (its right-click menu) and a slide can each have their own, and the media bin has its own for
   changing from one picture or video to the next.
 - New Song (Command-N, or + over the song list) asks for the song's title and theme, and takes
