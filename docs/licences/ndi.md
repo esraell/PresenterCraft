@@ -50,7 +50,8 @@ publishing or selling anything that includes NDI.
 
 ## How PresenterCraft uses it
 
-- NDI is an optional part of the build (`--features ndi`), so the app builds on a computer
-  without the SDK and simply says NDI is not included.
+- NDI is part of the normal build, which therefore needs the SDK installed. A computer
+  without it can build the rest with `--no-default-features`; that build says NDI is not
+  included.
 - At run time it loads the NDI runtime already installed on the computer. Nothing from NDI is
   copied into the app.

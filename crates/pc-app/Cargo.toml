@@ -9,7 +9,10 @@ name = "presentercraft"
 path = "src/main.rs"
 
 [features]
-# Sends screens over NDI. Needs the NDI SDK installed to build; see docs/licences/ndi.md.
+# NDI output is part of the app. Building it needs the NDI SDK installed; see
+# docs/licences/ndi.md. A computer without the SDK can still build the rest with
+# `--no-default-features`.
+default = ["ndi"]
 ndi = ["pc-ndi/sdk"]
 
 [dependencies]

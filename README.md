@@ -17,16 +17,19 @@ goes fullscreen on it; with one display it opens as an ordinary window.
 
 ## NDI output
 
-The audience screen can be sent over the network as an NDI source, at 1920 x 1080. NDI is an
-optional part of the build, because it needs the NDI SDK installed on the computer that builds it:
+The audience screen can be sent over the network as an NDI source, at 1920 x 1080. Switch it
+on in Settings, Screens, NDI output.
+
+NDI is part of the app, so building PresenterCraft needs the NDI SDK installed (free, from
+ndi.video), and running it needs the NDI runtime that the SDK or NDI Tools installs. On a
+computer without the SDK, everything else can still be built:
 
 ```
-cargo run --release --features ndi
+cargo run --release --no-default-features
 ```
 
-Then switch it on in Settings, Screens, NDI output. A build without `--features ndi` works the
-same and says NDI is not included. Nothing from the NDI SDK is in this repository;
-`docs/licences/ndi.md` lists what the SDK's licence asks before a build with NDI is published.
+Nothing from the NDI SDK is in this repository; `docs/licences/ndi.md` lists what the SDK's
+licence asks before a build is published.
 
 NDI® is a registered trademark of Vizrt NDI AB.
 
