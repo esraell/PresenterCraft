@@ -146,6 +146,16 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
     Built { scene, overflow }
 }
 
+/// Draws only a slide's objects, with nothing behind them, to lay over another picture of the
+/// same size (a screen's name while screens are identified, say).
+pub fn build_overlay(fonts: &mut Fonts, slide: &Slide, theme: &Theme, target_w: u32, target_h: u32) -> Scene {
+    let mut scene = Scene::new();
+    let (x, y, w, _) = fit_rect(target_w, target_h);
+    let to_target = Affine::translate((x, y)) * Affine::scale(w / f64::from(SLIDE_WIDTH));
+    draw_objects(&mut scene, fonts, to_target, slide, theme, 0.0);
+    scene
+}
+
 /// Draws a slide's objects. Returns whether any text overflowed its box.
 fn draw_objects(
     scene: &mut Scene,

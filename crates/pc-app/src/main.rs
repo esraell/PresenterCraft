@@ -581,7 +581,7 @@ struct Running {
     /// The NDI names the output thread was last told to send under, by screen.
     ndi_sent: Vec<(Uuid, String)>,
     /// The names the screens were last told to show while being identified.
-    identify_sent: Option<Vec<(Uuid, String)>>,
+    identify_sent: Option<Vec<(Uuid, String, pc_model::Rgba)>>,
     /// The screen looks last sent to the output.
     looks_sent: Vec<(Uuid, screens::Look)>,
     /// The stage screens the output was last told of, and whether they were on.
@@ -2750,8 +2750,13 @@ impl App {
             running.stage_sent = Some(stage);
         }
 
-        // Identify Screens: every screen shows its own name while it is ticked.
-        let names = home_state.identify.then(|| list.iter().map(|screen| (screen.id, screen.name.clone())).collect());
+        // Identify Screens: every screen shows its own name, in its own colour, while it is on.
+        let names: Option<Vec<(Uuid, String, pc_model::Rgba)>> = home_state.identify.then(|| {
+            list.iter()
+                .enumerate()
+                .map(|(place, screen)| (screen.id, screen.name.clone(), screens::identify_color(place)))
+                .collect()
+        });
         if names != *identify_sent {
             output.send(OutputMsg::Identify(names.clone().unwrap_or_default()));
             *identify_sent = names;

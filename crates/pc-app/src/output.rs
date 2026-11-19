@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use pc_model::{Object, Role, Slide, Theme, Uuid};
+use pc_model::{Slide, Theme, Uuid};
 use pc_ndi::NdiOutput;
 use pc_render::{Fonts, Layers, Painter, Picture, build_layers, read_pixels, target_texture, vello, wgpu};
 
@@ -104,7 +104,7 @@ pub enum OutputMsg {
     },
     /// Show each screen's own name on it, so the operator can tell them apart; an empty list
     /// goes back to the show.
-    Identify(Vec<(Uuid, String)>),
+    Identify(Vec<(Uuid, String, pc_model::Rgba)>),
     Shutdown,
 }
 
@@ -267,7 +267,10 @@ struct Output {
     ndi_target: Option<wgpu::Texture>,
     ndi_status: NdiStatuses,
     /// While screens are being identified: the name each one shows instead of the show.
-    identify: Vec<(Uuid, Arc<Slide>)>,
+    /// While screens are identified: each screen's name (as a slide), its colour, and when it
+    /// started, for the wash of colour that breathes over it.
+    identify: Vec<(Uuid, Arc<Slide>, pc_model::Rgba)>,
+    identify_since: Instant,
     identify_theme: Arc<Theme>,
     /// The audience screens with a look of their own.
     looks: Vec<(Uuid, crate::screens::Look)>,
@@ -334,6 +337,7 @@ fn run(
         ndi_target: None,
         ndi_status,
         identify: Vec::new(),
+        identify_since: Instant::now(),
         identify_theme: Arc::new(Theme::builtin()),
         stage: Vec::new(),
         stage_on: true,
@@ -358,7 +362,8 @@ fn run(
     loop {
         // While a fade is under way, look for messages without waiting, so it keeps moving;
         // otherwise sleep until there is one.
-        let first = if output.fading.is_some() || output.building() || output.scrolling() {
+        let first = if output.fading.is_some() || output.building() || output.scrolling() || output.identify_breathing()
+        {
             match rx.try_recv() {
                 Ok(msg) => Some(msg),
                 Err(TryRecvError::Empty) => None,
@@ -502,8 +507,11 @@ fn run(
                 OutputMsg::Identify(names) => {
                     output.identify = names
                         .into_iter()
-                        .map(|(id, name)| (id, Arc::new(Slide::new(vec![Object::text(Role::primary(), name)]))))
+                        .map(|(id, name, color)| {
+                            (id, Arc::new(crate::messages::slide(&name, crate::messages::Look::Centre)), color)
+                        })
                         .collect();
+                    output.identify_since = Instant::now();
                     // Names appear and go at once, whatever was fading.
                     output.fading = None;
                     for target in &mut output.targets {
@@ -589,12 +597,8 @@ impl Output {
         }
     }
 
-    /// What a screen shows now: its own name while screens are being identified, the show
-    /// otherwise. Cheap copies: the picture, the slide and the theme are shared.
+    /// What a screen shows now. Cheap copies: the picture, the slide and the theme are shared.
     fn content_for(&self, id: Uuid, frame: &Frame) -> Content {
-        if let Some((_, name)) = self.identify.iter().find(|(have, _)| *have == id) {
-            return (None, Some(name.clone()), None, self.identify_theme.clone(), None);
-        }
         if let Some((_, layout)) = self.stage.iter().find(|(have, _)| *have == id) {
             let words = self.stage_on.then(|| layout.templates.first()).flatten().map(|template| {
                 let (now, next) = (frame.slide.as_deref(), frame.next.as_deref());
@@ -674,14 +678,13 @@ impl Output {
     /// Builds what a screen shows now for a target of a size.
     fn scene_for(&mut self, id: Uuid, frame: &Frame, w: u32, h: u32) -> vello::Scene {
         let (media, slide, overlay, theme, announcement) = self.content_for(id, frame);
+        // While screens are identified, each is marked over what it shows.
+        let identified =
+            self.identify.iter().find(|(have, ..)| *have == id).map(|(_, name, color)| (name.clone(), *color));
         // Scrolling text moves on from when the slide was fully on screen.
         let time = Instant::now().checked_duration_since(self.slide_on).map_or(0.0, |since| since.as_secs_f32());
-        // A stage screen, or one being identified, keeps the plain look.
-        let look = if self.is_stage(id) || self.identify.iter().any(|(have, _)| *have == id) {
-            crate::screens::Look::default()
-        } else {
-            self.look_of(id)
-        };
+        // A stage screen keeps the plain look.
+        let look = if self.is_stage(id) { crate::screens::Look::default() } else { self.look_of(id) };
         let backdrop = (look.color != pc_model::Rgba::BLACK).then_some(look.color);
         let layers = Layers {
             media_fit: frame.media_fit,
@@ -693,7 +696,20 @@ impl Output {
             mask: look.mask,
             announcement: announcement.as_ref().map(|(slide, theme)| (&**slide, &**theme)),
         };
-        build_layers(&mut self.fonts, &layers, &theme, w, h).scene
+        let mut scene = build_layers(&mut self.fonts, &layers, &theme, w, h).scene;
+        // Its colour and border, then its name on top, clear of the colour.
+        if let Some((name, color)) = identified {
+            identify_marks(&mut scene, color, identify_strength(self.identify_since.elapsed().as_secs_f32()), w, h);
+            let label = pc_render::build_overlay(&mut self.fonts, &name, &self.identify_theme, w, h);
+            scene.append(&label, None);
+        }
+        scene
+    }
+
+    /// True while the wash over identified screens is still breathing, so they are drawn at
+    /// each refresh until it settles.
+    fn identify_breathing(&self) -> bool {
+        !self.identify.is_empty() && self.identify_since.elapsed().as_secs_f32() < IDENTIFY_BREATHS * IDENTIFY_BREATH
     }
 
     /// Draws the picture at NDI's size and hands it to every NDI source. This does not depend
@@ -704,7 +720,7 @@ impl Output {
         // The show is drawn once and sent to all; a screen being identified gets its own picture.
         let mut shared: Option<Vec<u8>> = None;
         for id in ids {
-            let own = self.identify.iter().any(|(have, _)| *have == id)
+            let own = self.identify.iter().any(|(have, ..)| *have == id)
                 || self.is_stage(id)
                 || self.looks.iter().any(|(have, _)| *have == id);
             let pixels = match shared.as_ref().filter(|_| !own) {
@@ -872,7 +888,9 @@ impl Output {
             return;
         }
         let (w, h) = NDI_SIZE;
-        let scene = self.scene_for(Uuid::nil(), frame, w, h);
+        // The first screen's picture, as its window shows it (its look, its identify marks).
+        let id = self.targets.first().map_or(Uuid::nil(), |target| target.id);
+        let scene = self.scene_for(id, frame, w, h);
         let target = target_texture(&self.device, w, h);
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let saved = self
@@ -1066,4 +1084,30 @@ impl Output {
             }
         }
     }
+}
+
+/// How a screen being identified is marked: three quick breaths of its colour, from a tenth to a
+/// fifth of the way over the picture and back, about 0.7 s each; then a steady tenth.
+const IDENTIFY_BREATHS: f32 = 3.0;
+const IDENTIFY_BREATH: f32 = 0.7;
+
+/// How strongly an identified screen's colour lies over it, `seconds` after identifying began.
+fn identify_strength(seconds: f32) -> f32 {
+    if seconds >= IDENTIFY_BREATHS * IDENTIFY_BREATH {
+        return 0.10;
+    }
+    0.15 - 0.05 * (seconds / IDENTIFY_BREATH * std::f32::consts::TAU).cos()
+}
+
+/// Lays an identified screen's marks over its picture: its colour over the whole picture at
+/// `strength`, and a solid border of it round the edge.
+fn identify_marks(scene: &mut vello::Scene, color: pc_model::Rgba, strength: f32, w: u32, h: u32) {
+    use vello::kurbo::{Affine, Rect, Stroke};
+    use vello::peniko::{Color, Fill};
+    let (w, h) = (f64::from(w), f64::from(h));
+    let solid = Color::from_rgba8(color.r, color.g, color.b, 255);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, solid.with_alpha(strength), None, &Rect::new(0.0, 0.0, w, h));
+    let border = (h / 1080.0 * 16.0).max(6.0);
+    let half = border / 2.0;
+    scene.stroke(&Stroke::new(border), Affine::IDENTITY, solid, None, &Rect::new(half, half, w - half, h - half));
 }

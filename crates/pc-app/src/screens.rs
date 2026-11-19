@@ -115,6 +115,24 @@ pub fn starting(ndi: Option<&str>) -> Vec<Screen> {
     screens
 }
 
+/// The colour each screen is marked with while screens are identified, by its place in the
+/// list: bright, easy to tell apart, and never red, which means live.
+pub const IDENTIFY_COLORS: [pc_model::Rgba; 8] = [
+    pc_model::Rgba { r: 10, g: 132, b: 255, a: 255 },
+    pc_model::Rgba { r: 48, g: 209, b: 88, a: 255 },
+    pc_model::Rgba { r: 255, g: 159, b: 10, a: 255 },
+    pc_model::Rgba { r: 191, g: 90, b: 242, a: 255 },
+    pc_model::Rgba { r: 100, g: 210, b: 255, a: 255 },
+    pc_model::Rgba { r: 255, g: 214, b: 10, a: 255 },
+    pc_model::Rgba { r: 94, g: 92, b: 230, a: 255 },
+    pc_model::Rgba { r: 172, g: 142, b: 104, a: 255 },
+];
+
+/// The colour the screen at `place` in the list is marked with while screens are identified.
+pub fn identify_color(place: usize) -> pc_model::Rgba {
+    IDENTIFY_COLORS[place % IDENTIFY_COLORS.len()]
+}
+
 /// A name no screen in the list has for a new screen of a kind: "Screen 3" when there are two
 /// audience screens, "Stage Screen 1" for the first stage screen, and so on.
 pub fn next_name(screens: &[Screen], kind: Kind) -> String {

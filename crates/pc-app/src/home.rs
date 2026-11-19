@@ -2980,9 +2980,10 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
                         changed = true;
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let identify = ui
-                            .add(egui::Button::selectable(state.identify, "Identify"))
-                            .on_hover_text("Show each screen's name on it, in place of the show, to tell them apart");
+                        let identify = ui.add(egui::Button::selectable(state.identify, "Identify")).on_hover_text(
+                            "Mark each screen with its name and its own colour, to tell them apart; the colours \
+                                 are shown here beside the screens",
+                        );
                         if identify.clicked() {
                             state.identify = !state.identify;
                         }
@@ -3042,6 +3043,11 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
                         // A green light when the screen is being shown somewhere.
                         let light = if shown { ON } else { TEXT_FAINT };
                         ui.painter().circle_filled(row.left_center() + vec2(12.0, 0.0), 4.0, light);
+                        // While identifying, the colour the screen is marked with, at the right.
+                        if state.identify {
+                            let swatch = Rect::from_center_size(row.right_center() - vec2(16.0, 0.0), vec2(16.0, 12.0));
+                            ui.painter().rect_filled(swatch, 3.0, color32(crate::screens::identify_color(index)));
+                        }
                         ui.painter().with_clip_rect(row.shrink(2.0)).text(
                             row.left_center() + vec2(24.0, 0.0),
                             Align2::LEFT_CENTER,
