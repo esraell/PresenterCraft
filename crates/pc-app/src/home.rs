@@ -496,7 +496,7 @@ impl BiblePage {
     pub const MAX_ROWS: usize = 4;
 
     /// Adds a translation row, up to the limit. Returns true if one was added. When every
-    /// installed Bible is already in a row, it says so, as ProPresenter does.
+    /// installed Bible is already in a row, it says so.
     pub fn add_row(&mut self) -> bool {
         // The next Bible no row is using yet.
         let unused = (0..self.shelf.bibles.len()).find(|at| self.rows.iter().all(|row| row.bible != *at));
@@ -2522,7 +2522,7 @@ pub enum SongRequest {
     Delete,
 }
 
-/// The group names a slide's Group menu offers, as ProPresenter's does.
+/// The group names a slide's Group menu offers.
 const GROUP_NAMES: [&str; 19] = [
     "Verse 1",
     "Verse 2",
@@ -2549,7 +2549,7 @@ const GROUP_NAMES: [&str; 19] = [
 const SLIDE_LABELS: [&str; 4] = ["Blank Slide", "Instrumental", "Repeat", "Spoken Word"];
 
 /// What an object is called in the Objects list: the name it was given, or, until it is given
-/// one, the first line of its words, as ProPresenter shows them.
+/// one, the first line of its words.
 fn listed_name(object: &pc_model::Object) -> String {
     let named = !(object.name.is_empty()
         || object.role.as_ref().is_some_and(|role| object.name == role.label())
@@ -3850,7 +3850,7 @@ fn bible_area(
                             state.bible.remove_bible(index);
                         }
                     }
-                    // Save As…, as ProPresenter has it: the passage as a presentation of its own in
+                    // Save As…: the passage as a presentation of its own in
                     // the library, or kept in a playlist, ready to open again with its settings.
                     let saved = state.bible.saved();
                     let menu = ui
@@ -4351,7 +4351,7 @@ fn slide_area(
                     ui,
                     &pc_model::missing_fonts(&pc_model::fonts_used(presentation, theme), &state.fonts),
                 );
-                // The song's tools, as small icons at the right as ProPresenter has them, lit
+                // The song's tools, as small icons at the right, lit
                 // while what they show is on. Laid out right to left: Notes is rightmost.
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
@@ -4433,7 +4433,7 @@ fn slide_area(
                 .frame(strip)
                 .show(ui, |ui| arrangement_strip(ui, show, presentation, state, commands));
         }
-        // The bar under the slides, as ProPresenter has it: Add Slide on the left; the
+        // The bar under the slides: Add Slide on the left; the
         // transition, the slide view and the slide size on the right.
         egui::Panel::bottom("slide bar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
             ui.horizontal(|ui| {

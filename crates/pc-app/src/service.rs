@@ -298,8 +298,7 @@ pub struct Prefs {
     pub copyright_show: CopyrightShow,
     /// The church's CCLI licence number, for the copyright line.
     pub ccli_licence: String,
-    /// True to start with the audience screens off, as ProPresenter does unless its screens are
-    /// set to come on at launch.
+    /// True to start with the audience screens off; false to turn them on at launch.
     pub start_audience_off: bool,
     /// Next at the end of a song goes on to the next song in the service.
     pub continuous: bool,

@@ -267,7 +267,7 @@ fn choice<T: PartialEq + Copy>(ui: &mut egui::Ui, salt: &str, width: f32, value:
     });
 }
 
-/// The colours in the grid at the top of every colour pop-up, as ProPresenter's has: greys,
+/// The colours in the grid at the top of every colour pop-up: greys,
 /// then rows of hues from deep to light.
 const SWATCHES: [[u8; 3]; 40] = [
     [255, 255, 255],

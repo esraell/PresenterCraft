@@ -258,7 +258,7 @@ pub fn build_passage(
         groups.push(Group {
             id: Uuid::new_v4(),
             name: label(lead, from, to),
-            // White on black, as ProPresenter shows a Bible slide's bar.
+            // A Bible slide's bar is white on black.
             color: Rgba::rgb(0, 0, 0),
             slides: vec![Slide { template, ..Slide::new(objects) }],
         });
@@ -894,7 +894,7 @@ mod tests {
     fn a_reference_that_names_nothing_says_so() {
         let mut shelf = Shelf::shipped();
         let rows = rows(&mut shelf, &[("kjv", main(), reference())]);
-        // A chapter past the end of the book is its last chapter, as ProPresenter has it.
+        // A chapter past the end of the book is read as its last chapter.
         let last = build_passage("John 99", &rows, &BibleOptions::default(), None).unwrap();
         assert!(last.title.starts_with("John 21"), "{}", last.title);
         assert!(

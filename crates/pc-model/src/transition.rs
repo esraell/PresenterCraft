@@ -2,10 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The kinds of transition, by ProPresenter's names. These are the ones of its 37 that can be
-/// drawn without a shader of their own; the rest (Cube, Ripple, Mosaic and the like) are not
-/// built. Kinds saved by an earlier PresenterCraft that ProPresenter doesn't have are read as
-/// the nearest one it does.
+/// The kinds of transition: the ones that can be drawn without a shader of their own (3D and
+/// distortion effects are not built). Kinds saved by an earlier PresenterCraft that are no
+/// longer offered are read as the nearest one that is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionKind {
@@ -141,7 +140,7 @@ impl TransitionKind {
         }
     }
 
-    /// True for the kinds that move in a direction, as ProPresenter offers them.
+    /// True for the kinds that move in a direction.
     pub fn has_direction(self) -> bool {
         matches!(
             self,
@@ -156,7 +155,7 @@ impl TransitionKind {
         )
     }
 
-    /// How long it takes unless it is given another time, in seconds: ProPresenter's defaults.
+    /// How long it takes unless it is given another time, in seconds.
     pub fn usual_seconds(self) -> f32 {
         match self {
             TransitionKind::Cut => 0.0,

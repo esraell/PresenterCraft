@@ -497,7 +497,7 @@ fn source_heading(ui: &mut egui::Ui, text: &str, collapsed: &mut bool, add_hint:
     add
 }
 
-/// The left column, as in ProPresenter: the libraries and the playlists as rows on top, the
+/// The left column: the libraries and the playlists as rows on top, the
 /// songs or items of the one chosen below, and a filter at the bottom.
 pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 8 });
@@ -1296,7 +1296,7 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
             let live = found.is_some() && found == live_in;
             let chosen = state.services.chosen == Some(index);
             let mut response = list_row(ui, icon, item.title(), chosen, live, missing);
-            // The library the song is in, at the right, as ProPresenter shows it.
+            // The library the song is in, at the right.
             if let Some(library) = library.filter(|_| !live) {
                 ui.painter().text(
                     response.rect.right_center() - vec2(8.0, 0.0),
@@ -1607,7 +1607,7 @@ pub fn media_strip(
                 if ui.small_button("+").on_hover_text("Add pictures and videos").clicked() {
                     state.media_request = Some(crate::home::MediaRequest::Choose);
                 }
-                // How one picture or video gives way to the next, as ProPresenter's media bin has.
+                // The media bin's own transition: how one picture or video gives way to the next.
                 let label = ui
                     .add(
                         egui::Button::new(
@@ -1881,7 +1881,7 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
             .show(|ui| transition_settings(ui, &mut state.transition, "slides"));
     }
     // Laid out right to left: the last cell here is the leftmost.
-    // ProPresenter's third button is Advanced; once one is chosen, it names it.
+    // The third button is Advanced; once one of its transitions is chosen, it shows that name.
     let others =
         if matches!(kind, K::Cut | K::Dissolve) { "Advanced ▾".to_owned() } else { format!("{} ▾", kind.name()) };
     let (bar, _) = ui.allocate_exact_size(vec2(44.0 + 64.0 + 84.0 + 6.0, 30.0), Sense::hover());
@@ -1919,7 +1919,7 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
     }
 }
 
-/// The transition picker: every transition, grouped as ProPresenter groups them, with the
+/// The transition picker: every transition, in its group, with the
 /// chosen one's settings under them.
 pub fn transition_picker(ui: &mut egui::Ui, look: &mut pc_model::Transition, id: &str) {
     use pc_model::TransitionKind as K;
@@ -2172,7 +2172,7 @@ fn media_item_menu(ui: &mut egui::Ui, state: &mut HomeState, index: usize, item:
         }
     });
     ui.separator();
-    // As ProPresenter names it. Every item picked out, when this is one of them.
+    // Delete…: every item picked out, when this is one of them.
     if ui.button("Delete…").clicked() {
         state.confirm_delete_media =
             if state.picked_media.contains(&index) { state.picked_media.clone() } else { vec![index] };

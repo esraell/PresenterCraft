@@ -380,7 +380,7 @@ pub fn parse_reference(typed: &str) -> Result<Range, String> {
         }
     };
     let numbers = numbers.trim();
-    // "3:16,18" lists verses; it is read as 16 to 18, as ProPresenter reads it.
+    // "3:16,18" lists verses; it is read as 16 to 18.
     let listed;
     let numbers = match numbers.split_once(':') {
         Some((chapter, verses)) if verses.contains(',') && !verses.contains(['-', '\u{2013}', '\u{2014}']) => {
