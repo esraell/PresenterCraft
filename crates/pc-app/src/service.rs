@@ -240,6 +240,8 @@ pub struct Prefs {
     /// True to start with the audience screens off, as ProPresenter does unless its screens are
     /// set to come on at launch.
     pub start_audience_off: bool,
+    /// Next at the end of a song goes on to the next song in the service.
+    pub continuous: bool,
 }
 
 /// When a song's copyright line is shown.
@@ -292,6 +294,7 @@ impl Default for Prefs {
             copyright_show: CopyrightShow::Never,
             ccli_licence: String::new(),
             start_audience_off: false,
+            continuous: false,
         }
     }
 }

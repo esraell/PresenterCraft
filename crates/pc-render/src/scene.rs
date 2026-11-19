@@ -88,6 +88,14 @@ fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: 
     for object in slide.objects.iter().filter(|object| !object.hidden) {
         let Some(template) = template else { continue };
         let rect = object.frame.unwrap_or_else(|| template.place_for(object.role.as_ref()));
+        // A text box set to fit its text grows or shrinks about its middle to the text's height.
+        let rect = match &object.kind {
+            ObjectKind::Text { text, style } => match template.text_style(object.role.as_ref(), style) {
+                Some(look) if look.scaling == Scaling::ContainerUpOrDown => fitted_container(fonts, text, &look, rect),
+                _ => rect,
+            },
+            ObjectKind::Shape { .. } => rect,
+        };
         // Turn the object about its own centre.
         let centre = (f64::from(rect.x + rect.w / 2.0), f64::from(rect.y + rect.h / 2.0));
         let mirror = Affine::translate(centre)
@@ -140,6 +148,16 @@ fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: 
         }
     }
     overflow
+}
+
+/// A box made as tall as its text at the text's own size (inside its margins), about its middle.
+fn fitted_container(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> SlideRect {
+    let text = &*style.line_transform.apply(text);
+    let text = &*style.caps.apply(text);
+    let [left, top, right, bottom] = style.margins.map(|margin| margin.max(0.0));
+    let width = (rect.w - left - right).max(1.0);
+    let height = lay_out(fonts, text, style, style.size, width).height() + top + bottom;
+    SlideRect { y: rect.y + (rect.h - height) / 2.0, h: height.max(1.0), ..rect }
 }
 
 /// A shape filling a place on the slide, as a path in slide units.
@@ -302,6 +320,8 @@ fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Lay
         Scaling::TextDown => (true, false),
         Scaling::TextUp => (false, true),
         Scaling::TextUpOrDown => (true, true),
+        // The box is fitted to the text before it gets here.
+        Scaling::ContainerUpOrDown => (false, false),
     };
     let floor = style.min_size.min(style.size).max(1.0);
     let mut size = style.size.max(floor);
@@ -625,6 +645,17 @@ mod tests {
         };
         assert!(!fixed([0.0; 4]));
         assert!(fixed([600.0, 120.0, 600.0, 120.0]));
+    }
+
+    #[test]
+    fn a_box_set_to_fit_its_text_grows_about_its_middle() {
+        let mut fonts = Fonts::new();
+        let look = BoxStyle { scaling: Scaling::ContainerUpOrDown, ..Theme::builtin().templates[0].boxes[0].clone() };
+        let place = SlideRect { x: 100.0, y: 400.0, w: 1600.0, h: 100.0 };
+        let grown = fitted_container(&mut fonts, "One\nTwo\nThree", &look, place);
+        assert!(grown.h > 300.0, "{grown:?}");
+        assert!((grown.y + grown.h / 2.0 - 450.0).abs() < 0.5, "about its middle");
+        assert_eq!((grown.x, grown.w), (place.x, place.w));
     }
 
     #[test]

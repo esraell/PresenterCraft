@@ -914,6 +914,7 @@ fn text_look(
             (Scaling::TextUp, "Text up"),
             (Scaling::TextDown, "Text down"),
             (Scaling::TextUpOrDown, "Text up or down"),
+            (Scaling::ContainerUpOrDown, "Container up or down"),
         ];
         choice(ui, "scaling", width, &mut wanted.scaling, &options);
     });

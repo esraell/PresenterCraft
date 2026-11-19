@@ -37,6 +37,8 @@ pub struct Overlay {
     pub props: Vec<Slide>,
     /// The copyright line of the song on screen, when it is to be shown.
     pub copyright: Option<String>,
+    /// A test pattern shown on the audience screens in place of everything else.
+    pub test_pattern: Option<crate::props::TestPattern>,
 }
 
 pub enum OutputMsg {
@@ -361,6 +363,9 @@ impl Output {
                 .stage_on
                 .then(|| Arc::new(crate::stage::slide(frame.slide.as_deref(), frame.next.as_deref(), &self.overlay)));
             return (None, words, None, self.stage_theme.clone());
+        }
+        if let Some(pattern) = self.overlay.test_pattern {
+            return (None, Some(Arc::new(pattern.slide())), None, self.identify_theme.clone());
         }
         if !frame.enabled {
             return (None, None, None, frame.theme.clone());

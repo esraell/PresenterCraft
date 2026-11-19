@@ -46,7 +46,8 @@ ProPresenter.
   Wipe (each from any side), Iris and Zoom In, with their time, from the bar under the slides.
 - A Library of songs above a Service list (songs and saved Bible passages, in running order).
   Several services can be kept and switched between; the line between the two lists can be
-  dragged.
+  dragged, and the library folded away. With View, Continuous Playlist on, Next at the end of a
+  song goes on to the next song in the service.
 - Pictures dropped on the window, or added with the media bin's +, go into the media bin, are
   kept between runs, and can be shown behind the words; right-click one to remove it.
 - A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
@@ -99,7 +100,8 @@ ProPresenter.
 - Stage screens for the people on stage: the words on screen now, the next slide's words, the
   time, a running timer and the stage message.
 - A screen whose display is unplugged waits for it instead of jumping to another display.
-  Identify Screens shows each screen's name on it.
+  Identify Screens shows each screen's name on it, and the Screens menu puts a test pattern
+  (colour bars, a grid, or white) on the audience screens.
 
 <img src="docs/images/screens.png" alt="The Screens window" width="620">
 

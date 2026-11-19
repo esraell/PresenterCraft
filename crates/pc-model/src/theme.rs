@@ -110,6 +110,8 @@ pub enum Scaling {
     TextUp,
     /// Both: the text always fills its box.
     TextUpOrDown,
+    /// The text stays its size and the box grows or shrinks to fit it, about its middle.
+    ContainerUpOrDown,
 }
 
 /// A change made to the text's lines when it is drawn. The stored text is untouched.

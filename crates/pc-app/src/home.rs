@@ -143,6 +143,12 @@ pub struct HomeState {
     pub screen_status: Vec<(String, bool)>,
     /// The screen chosen in the Screens window.
     pub screen_selected: usize,
+    /// True while the library is folded away.
+    pub library_collapsed: bool,
+    /// Next at the end of a song goes on to the next song in the service.
+    pub continuous: bool,
+    /// A test pattern shown on the audience screens in place of everything else.
+    pub test_pattern: Option<crate::props::TestPattern>,
     /// True while the notes of the slide on screen are shown above the slides.
     pub show_notes: bool,
     /// The props, and true when they have changed and are to be saved.
@@ -666,6 +672,9 @@ impl Default for HomeState {
             screen_status: Vec::new(),
             screen_selected: 0,
             show_notes: false,
+            library_collapsed: false,
+            continuous: false,
+            test_pattern: None,
             props: Vec::new(),
             props_changed: false,
             props_live: Vec::new(),
@@ -718,6 +727,7 @@ impl HomeState {
             }
             .to_owned(),
             service_height: self.service_height.map(f32::round),
+            continuous: self.continuous,
             copyright_show: self.copyright_show,
             ccli_licence: self.ccli_licence.clone(),
             start_audience_off: self.start_audience_off,
@@ -742,6 +752,7 @@ impl HomeState {
             _ => SlideView::Grid,
         };
         self.service_height = prefs.service_height;
+        self.continuous = prefs.continuous;
         self.copyright_show = prefs.copyright_show;
         self.ccli_licence = prefs.ccli_licence.clone();
         self.start_audience_off = prefs.start_audience_off;

@@ -580,6 +580,12 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
         ui.horizontal(|ui| {
             caption(ui, "LIBRARY");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // The arrow folds the library away, leaving the service more room.
+                let arrow = if state.library_collapsed { "⌄" } else { "⌃" };
+                let hint = if state.library_collapsed { "Show the library" } else { "Fold the library away" };
+                if ui.add(egui::Button::new(egui::RichText::new(arrow).color(TEXT_FAINT)).frame(false)).on_hover_text(hint).clicked() {
+                    state.library_collapsed = !state.library_collapsed;
+                }
                 let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
                 let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
                 icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
@@ -590,6 +596,9 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 ui.label(egui::RichText::new(count).size(11.0).color(TEXT_FAINT));
             });
         });
+        if state.library_collapsed {
+            return;
+        }
         ui.add_space(4.0);
         ui.add(
             egui::TextEdit::singleline(&mut state.filter)

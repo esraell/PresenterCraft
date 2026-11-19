@@ -78,6 +78,75 @@ pub fn copyright_slide(line: &str) -> Slide {
     Slide::new(vec![words])
 }
 
+/// The test patterns that can be put on the audience screens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestPattern {
+    ColorBars,
+    Grid,
+    White,
+}
+
+impl TestPattern {
+    /// The pattern as a slide of shapes, filling the screen.
+    pub fn slide(self) -> Slide {
+        use pc_model::{Rgba, Shape};
+        let rect = |x: f32, y: f32, w: f32, h: f32, color: Rgba| {
+            let mut shape = Object::shape(Shape::Rectangle);
+            shape.frame = Some(SlideRect { x, y, w, h });
+            shape.fill = Some(color);
+            shape
+        };
+        let (w, h) = (pc_model::SLIDE_WIDTH, pc_model::SLIDE_HEIGHT);
+        let objects = match self {
+            TestPattern::White => vec![rect(0.0, 0.0, w, h, Rgba::WHITE)],
+            TestPattern::ColorBars => {
+                let colors = [
+                    Rgba::rgb(192, 192, 192),
+                    Rgba::rgb(192, 192, 0),
+                    Rgba::rgb(0, 192, 192),
+                    Rgba::rgb(0, 192, 0),
+                    Rgba::rgb(192, 0, 192),
+                    Rgba::rgb(192, 0, 0),
+                    Rgba::rgb(0, 0, 192),
+                ];
+                let bar = w / colors.len() as f32;
+                colors
+                    .iter()
+                    .enumerate()
+                    .map(|(index, color)| rect(bar * index as f32, 0.0, bar + 1.0, h, *color))
+                    .collect()
+            }
+            TestPattern::Grid => {
+                let mut lines = Vec::new();
+                let white = Rgba::WHITE;
+                let mut x = 0.0;
+                while x <= w {
+                    lines.push(rect(x - 1.0, 0.0, 2.0, h, white));
+                    x += 120.0;
+                }
+                let mut y = 0.0;
+                while y <= h {
+                    lines.push(rect(0.0, y - 1.0, w, 2.0, white));
+                    y += 120.0;
+                }
+                // A circle in the middle and the screen's edge, to check shape and fit.
+                let mut circle = Object::shape(Shape::Ellipse);
+                circle.frame = Some(SlideRect { x: (w - h) / 2.0, y: 0.0, w: h, h });
+                circle.fill = None;
+                circle.stroke = Some(pc_model::StrokeLook { width: 4.0, color: Rgba::rgb(255, 200, 0) });
+                lines.push(circle);
+                let mut edge = Object::shape(Shape::Rectangle);
+                edge.frame = Some(SlideRect { x: 2.0, y: 2.0, w: w - 4.0, h: h - 4.0 });
+                edge.fill = None;
+                edge.stroke = Some(pc_model::StrokeLook { width: 4.0, color: Rgba::rgb(255, 60, 60) });
+                lines.push(edge);
+                lines
+            }
+        };
+        Slide::new(objects)
+    }
+}
+
 fn file() -> Option<std::path::PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("props.json"))
 }
@@ -103,6 +172,24 @@ pub fn save(props: &[Prop]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_test_pattern_fills_the_screen_with_shapes_and_builds() {
+        for pattern in [TestPattern::ColorBars, TestPattern::Grid, TestPattern::White] {
+            let slide = pattern.slide();
+            assert!(!slide.objects.is_empty());
+            assert!(slide.objects.iter().all(|object| object.as_text().is_none()));
+            let built = pc_render::build_scene(
+                &mut pc_render::Fonts::new(),
+                Some(&slide),
+                &pc_model::Theme::builtin(),
+                640,
+                360,
+            );
+            assert!(!built.overflow);
+        }
+        assert_eq!(TestPattern::ColorBars.slide().objects.len(), 7);
+    }
 
     #[test]
     fn props_and_a_message_make_one_layer_and_survive_their_file() {

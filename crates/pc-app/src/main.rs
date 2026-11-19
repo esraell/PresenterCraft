@@ -631,6 +631,7 @@ impl App {
 
     /// Applies operator commands and tells the output and the home window what changed.
     fn apply(&mut self, commands: Vec<Command>) {
+        let commands: Vec<Command> = commands.into_iter().map(|command| self.continue_playlist(command)).collect();
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -665,6 +666,40 @@ impl App {
         }
         if any && let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
+        }
+    }
+
+    /// With Continuous Playlist on, Next on a song's last slide goes to the first slide of the
+    /// next song in the service instead of staying put.
+    fn continue_playlist(&self, command: Command) -> Command {
+        let Some(running) = self.running.as_ref() else { return command };
+        let state = &running.home_state;
+        if command != Command::Next || !state.continuous {
+            return command;
+        }
+        let Some(live) = self.show.live() else { return command };
+        let Some(song) = self.show.presentations().get(live.presentation) else { return command };
+        let last_enabled = (0..song.slide_count()).rev().find(|at| song.slide(*at).is_some_and(|(_, s)| s.enabled));
+        if last_enabled != Some(live.slide) {
+            return command;
+        }
+        let Some(key) = state.song_keys.get(live.presentation) else { return command };
+        let items = &state.services.front().items;
+        let Some(here) = items.iter().position(|item| matches!(item, service::Item::Song { key: k, .. } if k == key))
+        else {
+            return command;
+        };
+        let next = items[here + 1..].iter().find_map(|item| match item {
+            service::Item::Song { key, .. } => state.song_keys.iter().position(|have| have == key),
+            _ => None,
+        });
+        match next.and_then(|at| {
+            let song = self.show.presentations().get(at)?;
+            let first = (0..song.slide_count()).find(|slide| song.slide(*slide).is_some_and(|(_, s)| s.enabled))?;
+            Some(pc_engine::SlideRef { presentation: at, slide: first })
+        }) {
+            Some(target) => Command::GoTo(target),
+            None => command,
         }
     }
 
@@ -1872,6 +1907,7 @@ impl App {
                 .filter_map(|(id, _)| state.props.iter().find(|prop| prop.id == *id).map(|prop| prop.slide.clone()))
                 .collect(),
             copyright: copyright_line,
+            test_pattern: state.test_pattern,
         };
         // While a timer runs, or a message counts down to leaving, the window shows it each second.
         let ticking = state.timers.iter().any(Timer::running)
@@ -2037,6 +2073,15 @@ impl App {
             A::ClearMedia => commands.push(Command::Clear(pc_engine::Layer::Media)),
             A::Audience => commands.push(Command::SetOutputEnabled(!self.show.output_enabled())),
             A::Stage => state.stage_on = !state.stage_on,
+            A::Continuous => state.continuous = !state.continuous,
+            A::TestBars | A::TestGrid | A::TestWhite => {
+                let pattern = match action {
+                    A::TestBars => props::TestPattern::ColorBars,
+                    A::TestGrid => props::TestPattern::Grid,
+                    _ => props::TestPattern::White,
+                };
+                state.test_pattern = if state.test_pattern == Some(pattern) { None } else { Some(pattern) };
+            }
             A::IdentifyScreens => state.identify = !state.identify,
             A::Website | A::WhatsNew | A::ReportIssue => {
                 let page = match action {
@@ -2081,6 +2126,10 @@ impl App {
             menu.set_checked(|action| match action {
                 A::Audience => output_on,
                 A::Stage => state.stage_on,
+                A::Continuous => state.continuous,
+                A::TestBars => state.test_pattern == Some(props::TestPattern::ColorBars),
+                A::TestGrid => state.test_pattern == Some(props::TestPattern::Grid),
+                A::TestWhite => state.test_pattern == Some(props::TestPattern::White),
                 A::TimersTab => state.live_tab == 0,
                 A::MessagesTab => state.live_tab == 1,
                 A::PropsTab => state.live_tab == 2,
