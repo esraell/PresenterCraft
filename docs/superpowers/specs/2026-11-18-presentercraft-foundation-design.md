@@ -62,8 +62,8 @@ built.
 
 - Any code, schema, asset, name, logo or wording taken from ProPresenter, or anything derived
   from decompiling it or from schemas extracted from its binary.
-- A copy of ProPresenter's look. The owner wants the home window to work much like it, and it
-  will: the same job laid out the way operators of this kind of software expect (libraries and
+- A copy of ProPresenter's look. The home window works the way operators of presentation
+  software expect, with the job laid out as such software commonly does (libraries and
   playlists on the left, slide grid in the middle, preview and layer controls on the right,
   media along the bottom). Those arrangements are common across presentation software. What we
   do not take is its artwork, icons, exact wording, colours or pixel-level styling.
