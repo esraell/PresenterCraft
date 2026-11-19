@@ -1111,10 +1111,11 @@ fn edit_view(
                                         rename_done = Some(Some((object.id, name.clone())));
                                     }
                                 } else {
+                                    let shown = if theme_mode { object.name.clone() } else { listed_name(object) };
                                     ui.painter().with_clip_rect(name_area).text(
                                         row.left_center() + vec2(32.0, 0.0),
                                         Align2::LEFT_CENTER,
-                                        object.name.as_str(),
+                                        shown,
                                         FontId::proportional(13.0),
                                         ink,
                                     );
@@ -1994,6 +1995,19 @@ const GROUP_NAMES: [&str; 19] = [
 
 /// The labels a slide's Label menu offers.
 const SLIDE_LABELS: [&str; 4] = ["Blank Slide", "Instrumental", "Repeat", "Spoken Word"];
+
+/// What an object is called in the Objects list: the name it was given, or, until it is given
+/// one, the first line of its words, as ProPresenter shows them.
+fn listed_name(object: &pc_model::Object) -> String {
+    let named = !(object.name.is_empty()
+        || object.role.as_ref().is_some_and(|role| object.name == role.label())
+        || object.name.strip_prefix("Text ").is_some_and(|number| number.parse::<u32>().is_ok()));
+    let first_line = object.as_text().and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty()));
+    match first_line {
+        Some(line) if !named => line.to_owned(),
+        _ => object.name.clone(),
+    }
+}
 
 /// The key that adds each shape in the editor, in the order of `Shape::ALL`.
 const SHAPE_KEYS: [char; 10] = ['O', 'R', 'E', 'G', 'L', 'H', 'P', 'S', 'D', 'A'];
@@ -3493,6 +3507,16 @@ mod tests {
         assert!(page.remove_row(0) && page.remove_row(0));
         assert_eq!(page.rows.len(), 1);
         assert!(!page.remove_row(0), "one row always stays");
+    }
+
+    #[test]
+    fn an_object_is_listed_by_its_words_until_it_is_named() {
+        let mut object = pc_model::Object::text(pc_model::Role::primary(), "\nLight rises\nover the hills");
+        assert_eq!(listed_name(&object), "Light rises");
+        object.name = "Lyrics Box".to_owned();
+        assert_eq!(listed_name(&object), "Lyrics Box");
+        let shape = pc_model::Object::shape(pc_model::Shape::Star);
+        assert_eq!(listed_name(&shape), "Star");
     }
 
     #[test]

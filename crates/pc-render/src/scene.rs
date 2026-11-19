@@ -202,6 +202,7 @@ fn lay_out(fonts: &mut Fonts, text: &str, style: &BoxStyle, size: f32, width: f3
         Align::Left => Alignment::Left,
         Align::Center => Alignment::Center,
         Align::Right => Alignment::Right,
+        Align::Justify => Alignment::Justify,
     };
     // Lines wider than the box (one very long word) stay centred instead of jumping left.
     layout.set_alignment(alignment, AlignmentOptions { align_when_overflowing: true, ..AlignmentOptions::default() });

@@ -29,6 +29,7 @@ pub enum Action {
     AlignLeft,
     AlignCenter,
     AlignRight,
+    Justify,
     UpperCase,
     LowerCase,
     Capitalize,
@@ -173,6 +174,7 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Do(Action::AlignLeft, "Align Left", shift_cmd('[')),
             Do(Action::AlignCenter, "Center", shift_cmd('\\')),
             Do(Action::AlignRight, "Align Right", shift_cmd(']')),
+            Do(Action::Justify, "Justify", option_shift_cmd('\\')),
             Line,
             Do(Action::UpperCase, "Make Upper Case", None),
             Do(Action::LowerCase, "Make Lower Case", None),
@@ -324,6 +326,7 @@ pub fn needs_editor(action: Action) -> bool {
             | A::AlignLeft
             | A::AlignCenter
             | A::AlignRight
+            | A::Justify
             | A::UpperCase
             | A::LowerCase
             | A::Capitalize

@@ -19,6 +19,8 @@ pub enum Align {
     Left,
     Center,
     Right,
+    /// Each line but the last stretched to fill the box's width.
+    Justify,
 }
 
 /// Where the text sits between the top and bottom of its box.
@@ -39,8 +41,15 @@ pub enum Caps {
     None,
     AllCaps,
     Lowercase,
+    /// Each word capitalized, except short words such as "the" and "of" inside a line.
     TitleCase,
+    /// Every word capitalized.
+    StartCase,
 }
+
+/// Words left in lower case inside a line in title case.
+const SMALL_WORDS: [&str; 16] =
+    ["a", "an", "and", "as", "at", "but", "by", "for", "in", "nor", "of", "on", "or", "the", "to", "with"];
 
 impl Caps {
     /// The text as it is drawn under this setting.
@@ -49,22 +58,43 @@ impl Caps {
             Caps::None => text.into(),
             Caps::AllCaps => text.to_uppercase().into(),
             Caps::Lowercase => text.to_lowercase().into(),
-            Caps::TitleCase => {
-                let mut out = String::with_capacity(text.len());
-                let mut start = true;
-                for c in text.chars() {
-                    if start && c.is_alphabetic() {
-                        out.extend(c.to_uppercase());
-                    } else {
-                        out.extend(c.to_lowercase());
-                    }
-                    // An apostrophe is inside a word: "don't" becomes "Don't", not "Don'T".
-                    start = !(c.is_alphanumeric() || c == '\'' || c == '\u{2019}');
-                }
-                out.into()
-            }
+            Caps::StartCase => start_case(text).into(),
+            Caps::TitleCase => text
+                .split('\n')
+                .map(|line| {
+                    let started = start_case(line);
+                    let mut first = true;
+                    started
+                        .split(' ')
+                        .map(|word| {
+                            let small = !first && SMALL_WORDS.contains(&word.to_lowercase().as_str());
+                            first = first && word.is_empty();
+                            if small { word.to_lowercase() } else { word.to_owned() }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into(),
         }
     }
+}
+
+/// Every word with a capital first letter and the rest in lower case.
+fn start_case(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut start = true;
+    for c in text.chars() {
+        if start && c.is_alphabetic() {
+            out.extend(c.to_uppercase());
+        } else {
+            out.extend(c.to_lowercase());
+        }
+        // An apostrophe is inside a word: "don't" becomes "Don't", not "Don'T".
+        start = !(c.is_alphanumeric() || c == '\'' || c == '\u{2019}');
+    }
+    out
 }
 
 /// What happens when the text is too big or too small for its box.
@@ -90,6 +120,8 @@ pub enum LineTransform {
     None,
     /// All the lines are run together into one, which wraps where it must.
     RemoveLineReturns,
+    /// Each line break becomes " / ", so a verse reads on one line.
+    ReplaceLineReturns,
     OneWordPerLine,
     OneCharacterPerLine,
 }
@@ -100,6 +132,9 @@ impl LineTransform {
         match self {
             LineTransform::None => text.into(),
             LineTransform::RemoveLineReturns => text.split_whitespace().collect::<Vec<_>>().join(" ").into(),
+            LineTransform::ReplaceLineReturns => {
+                text.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" / ").into()
+            }
             LineTransform::OneWordPerLine => text.split_whitespace().collect::<Vec<_>>().join("\n").into(),
             LineTransform::OneCharacterPerLine => {
                 let letters: Vec<String> = text.chars().filter(|c| !c.is_whitespace()).map(String::from).collect();
@@ -875,6 +910,14 @@ mod tests {
         assert_eq!(LineTransform::RemoveLineReturns.apply(text), "Light rises over the hills");
         assert_eq!(LineTransform::OneWordPerLine.apply(text), "Light\nrises\nover\nthe\nhills");
         assert_eq!(LineTransform::OneCharacterPerLine.apply("a b\nв"), "a\nb\nв");
+    }
+
+    #[test]
+    fn title_case_keeps_small_words_low_and_start_case_does_not() {
+        assert_eq!(Caps::TitleCase.apply("the joy of the lord"), "The Joy of the Lord");
+        assert_eq!(Caps::StartCase.apply("the joy of the lord"), "The Joy Of The Lord");
+        assert_eq!(Caps::TitleCase.apply("light of the world\nand of the sea"), "Light of the World\nAnd of the Sea");
+        assert_eq!(LineTransform::ReplaceLineReturns.apply("One line\n\nTwo line\n"), "One line / Two line");
     }
 
     #[test]

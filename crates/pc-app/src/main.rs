@@ -1721,6 +1721,7 @@ impl App {
             | A::AlignLeft
             | A::AlignCenter
             | A::AlignRight
+            | A::Justify
             | A::UpperCase
             | A::LowerCase
             | A::Capitalize
@@ -1743,6 +1744,7 @@ impl App {
                     A::AlignLeft => E::Align(pc_model::Align::Left),
                     A::AlignCenter => E::Align(pc_model::Align::Center),
                     A::AlignRight => E::Align(pc_model::Align::Right),
+                    A::Justify => E::Align(pc_model::Align::Justify),
                     A::UpperCase => E::UpperCase,
                     A::LowerCase => E::LowerCase,
                     A::Capitalize => E::Capitalize,

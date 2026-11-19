@@ -868,6 +868,7 @@ fn text_look(
             (Caps::AllCaps, "All Caps"),
             (Caps::Lowercase, "Lowercase"),
             (Caps::TitleCase, "Title Case"),
+            (Caps::StartCase, "Start Case"),
         ];
         choice(ui, "caps", width, &mut wanted.caps, &options);
     });
@@ -892,6 +893,7 @@ fn text_look(
         let options = [
             (LineTransform::None, "None"),
             (LineTransform::RemoveLineReturns, "Remove line returns"),
+            (LineTransform::ReplaceLineReturns, "Replace line returns"),
             (LineTransform::OneWordPerLine, "One word per line"),
             (LineTransform::OneCharacterPerLine, "One character per line"),
         ];
@@ -899,7 +901,7 @@ fn text_look(
     });
     rule(ui);
 
-    let across = [TextAlign::Left, TextAlign::Center, TextAlign::Right];
+    let across = [TextAlign::Left, TextAlign::Center, TextAlign::Right, TextAlign::Justify];
     let now = wanted.align;
     if let Some(index) = segments(
         ui,
@@ -908,7 +910,7 @@ fn text_look(
         4,
         |i| across.get(i) == Some(&now),
         |p, i, cell, ink| {
-            text_lines(p, cell, i, if i == 3 { Color32::from_gray(110) } else { ink });
+            text_lines(p, cell, i, ink);
         },
     ) && let Some(align) = across.get(index)
     {
