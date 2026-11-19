@@ -4,7 +4,7 @@ A free, open-source app for putting song lyrics, Bible verses and pictures on th
 church service. It is written in Rust, starts on macOS, and is meant to run on Windows and Linux
 too.
 
-![The Show view: a song's slides, the service, and what is on the audience screen](docs/images/home.png)
+![The Show view: a song's slides, the libraries and playlists, and what is on the audience screen](docs/images/home.png)
 
 > **Early days.** PresenterCraft is a young project. A lot of things don't work yet, some
 > buttons do less than they look like they should, and file formats may still change. It is
@@ -49,16 +49,18 @@ ProPresenter.
   remove it, + to add a group.
 - Transitions between slides: Cut, Dissolve, Fade Black, Fade White, Push, Move In, Reveal,
   Wipe (each from any side), Iris and Zoom In, with their time, from the bar under the slides.
-- New Song (Command-N, or + beside LIBRARY) asks for the song's title and theme, and takes its
-  words pasted in (a line in square brackets starts a group, a blank line a new slide).
-- **Libraries**: beside LIBRARY, choose All Songs or a library of your own (Christmas, Youth…);
-  a song's right-click menu puts it in or takes it out of each, and a new song made while a
-  library is shown goes into it.
-- A Library of songs above a Service list (songs and saved Bible passages, in running order).
-  Several services can be kept and switched between; the line between the two lists can be
-  dragged, and the library folded away. Service items can be dragged into a new order, and
-  headers (+ beside SERVICE) group them. With View, Continuous Playlist on, Next at the end of a
-  song goes on to the next song in the service.
+- New Song (Command-N, or + over the song list) asks for the song's title and theme, and takes
+  its words pasted in (a line in square brackets starts a group, a blank line a new slide).
+- The left column, as in ProPresenter: **LIBRARY** rows (All Songs and libraries of your own,
+  such as Christmas or Youth) and **PLAYLISTS** rows on top, and the songs or items of the one
+  chosen below, with a filter at the bottom. + beside each heading makes a new one; double-click
+  or right-click a row to rename or delete it; the line under the rows can be dragged. A song
+  dragged onto a library or a playlist goes into it, as does one added with the + on its row or
+  from its right-click menu; a new song made while a library is shown goes into it.
+- A playlist lists songs (with the library each is in) and saved Bible passages in running
+  order; items can be dragged into a new order, and headers (+ over the items) group them.
+  With View, Continuous Playlist on, Next at the end of a song goes on to the next song in the
+  playlist.
 - Pictures and videos dropped on the window, or added with the media bin's +, go into the media
   bin, are kept between runs, and can be shown behind the words; right-click one to remove it.
   Pictures can be PNG, JPEG, WebP, GIF, BMP, and on the Mac also HEIC (iPhone photos), TIFF,
@@ -71,7 +73,7 @@ ProPresenter.
   picture), Go to Next (after a number of seconds, shown on its picture), Disable, Template.
   A song's menu has Loop to First Slide, for a loop of announcements. Undo and Redo (Command-Z, Shift-Command-Z) step back through
   these changes in the Show view, and the audience stays on the same slide.
-- A song's right-click menu: Add to Service, Rename, Duplicate, Theme (a theme of its own, or
+- A song's right-click menu: Add to the playlist in front, Libraries, Rename, Duplicate, Theme (a theme of its own, or
   the songs theme), Reflow, and Delete (a song made in the app goes to the Trash).
 - **Timers** (count down, count down to a time of day, or count up), **Messages** shown over
   the slides (with the time or a timer in them, an optional time to leave by themselves, a look
@@ -97,7 +99,7 @@ ProPresenter.
 - Two translations on one slide, lined up by verse using the standard versification tables.
 - Four Bibles ship with the app (King James, World English, Berean Standard, Russian Synodal)
   and fifteen more can be downloaded from Options › Bibles.
-- Passages can be saved to the service and brought back with the same settings.
+- Passages can be saved to the playlist in front and brought back with the same settings.
 
 Save as Song makes the passage a song in the library, named like "John 3:16-18 (KJV, SYN)" and
 drawn with the Bible's theme.

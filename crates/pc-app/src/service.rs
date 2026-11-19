@@ -131,6 +131,20 @@ impl Services {
         self.chosen = Some(self.front().items.len() - 1);
     }
 
+    /// Adds an item to the end of a playlist that need not be the one in front; a song already
+    /// in it is not added again. Returns true if it was added.
+    pub fn add_to(&mut self, playlist: usize, item: Item) -> bool {
+        let Some(list) = self.list.get_mut(playlist) else { return false };
+        if let Item::Song { key, .. } = &item
+            && list.items.iter().any(|have| matches!(have, Item::Song { key: k, .. } if k == key))
+        {
+            return false;
+        }
+        list.items.push(item);
+        self.changed = true;
+        true
+    }
+
     /// Takes an item out of the service in front. Returns true if there was one.
     pub fn remove(&mut self, index: usize) -> bool {
         if index >= self.front().items.len() {
@@ -187,7 +201,7 @@ impl Services {
 
     /// Makes a new, empty service and brings it to the front.
     pub fn add_service(&mut self) {
-        let name = (1..).map(|n| format!("Service {n}")).find(|name| self.list.iter().all(|s| &s.name != name));
+        let name = (1..).map(|n| format!("Playlist {n}")).find(|name| self.list.iter().all(|s| &s.name != name));
         self.list.push(Service { name: name.unwrap_or_default(), items: Vec::new() });
         self.current = self.list.len() - 1;
         self.chosen = None;
@@ -408,6 +422,19 @@ pub fn save(services: &Services) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_song_dropped_on_another_playlist_goes_there_once_and_the_front_stays() {
+        let mut playlists = Services::default();
+        playlists.add_service();
+        playlists.show(0);
+        let song = Item::Song { key: "songs/joy".to_owned(), title: "Joy".to_owned() };
+        assert!(playlists.add_to(1, song.clone()));
+        assert!(!playlists.add_to(1, song), "a song already there is not added again");
+        assert!(!playlists.add_to(9, Item::Header { name: "x".to_owned() }));
+        assert_eq!((playlists.current, playlists.list[1].items.len(), playlists.list[0].items.len()), (0, 1, 0));
+        assert_eq!(playlists.list[1].name, "Playlist 1");
+    }
 
     fn song(key: &str) -> Item {
         Item::Song { key: key.to_owned(), title: key.to_uppercase() }

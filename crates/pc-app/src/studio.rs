@@ -430,499 +430,662 @@ fn list_row(ui: &mut egui::Ui, icon: Icon, title: &str, chosen: bool, live: bool
     response
 }
 
-/// The left column: the library of every song above, the service (today's running order) below.
+/// A song being dragged from the library, by its place among the songs.
+#[derive(Clone, Copy)]
+struct SongDrag(usize);
+
+/// A row in the list of libraries and playlists: an icon and a name, renamed in place.
+/// Shows when a dragged song would be dropped on it.
+fn source_row(ui: &mut egui::Ui, icon: Icon, name: &str, chosen: bool) -> egui::Response {
+    let response = list_row(ui, icon, name, chosen, false, false);
+    if response.dnd_hover_payload::<SongDrag>().is_some() {
+        ui.painter().rect_stroke(response.rect, RADIUS, Stroke::new(2.0, ACCENT), StrokeKind::Inside);
+    }
+    response
+}
+
+/// A heading over a group of rows, with a + and an arrow that folds the rows away.
+/// Returns whether + was clicked.
+fn source_heading(ui: &mut egui::Ui, text: &str, collapsed: &mut bool, add_hint: &str) -> bool {
+    let mut add = false;
+    ui.horizontal(|ui| {
+        caption(ui, text);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let (arrow, hint) = if *collapsed { ("⌄", "Show") } else { ("⌃", "Fold away") };
+            if ui
+                .add(egui::Button::new(egui::RichText::new(arrow).color(TEXT_FAINT)).frame(false))
+                .on_hover_text(hint)
+                .clicked()
+            {
+                *collapsed = !*collapsed;
+            }
+            let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
+            let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
+            icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
+            add = response.on_hover_text(add_hint).clicked();
+        });
+    });
+    add
+}
+
+/// The left column, as in ProPresenter: the libraries and the playlists as rows on top, the
+/// songs or items of the one chosen below, and a filter at the bottom.
 pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
-    use crate::service::Item;
     let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 8 });
     egui::Panel::left("library").resizable(false).exact_size(256.0).frame(frame).show(ui, |ui| {
-        let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
-        let removed = state.removed_songs.clone();
-        let listed = |index: usize| !hidden.contains(&index) && !removed.contains(&index);
-        // A song in a service is found by the name its file gave it; one saved before it had a
-        // file is found by its title.
-        let song_at = |keys: &[String], key: &str| {
-            let by_title = key.strip_prefix("title:");
-            keys.iter()
-                .position(|have| have == key)
-                .or_else(|| by_title.and_then(|title| show.presentations().iter().position(|song| song.title == title)))
-                .filter(|index| listed(*index))
-        };
-
-        // The library is on top, as operators are used to. The service has its own strip fixed
-        // to the bottom of the column, so however many songs there are it is never pushed out
-        // of sight; it takes the room its items need, up to two fifths of the column.
-        let items = state.services.front().items.clone();
         let column_height = ui.available_height();
-        // To begin with the service takes the room its items need; after that it is as tall
-        // as the line between the two was last dragged to make it.
-        let fitted = (items.len().max(1) as f32 * 32.0 + 4.0).min(column_height * 0.4) + 96.0;
-        let mut add = None;
-        let live_in = show.live().map(|at| at.presentation);
-        // The line between the library and the service can be dragged up and down.
-        let strip = egui::Panel::bottom("service strip")
+        let rows = state.libraries.len() + state.services.list.len() + 1;
+        let fitted = (rows as f32 * 32.0 + 70.0).min(column_height * 0.45);
+        // The line between the rows on top and the list under them can be dragged.
+        let sources = egui::Panel::top("sources")
             .resizable(true)
-            .size_range(130.0..=(column_height - 150.0).max(130.0))
-            .default_size(state.service_height.unwrap_or(fitted.max(220.0)))
+            .size_range(90.0..=(column_height * 0.7).max(90.0))
+            .default_size(state.service_height.unwrap_or(fitted))
             .frame(Frame::new());
-        let strip_shown = strip.show(ui, |ui| {
-            // The strip's own top edge is the line between the library and the service.
-            ui.add_space(12.0);
-            // ---- The service.
-            ui.horizontal(|ui| {
-                caption(ui, "SERVICE");
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    // + adds a header, a heading that groups the items under it.
-                    let add = ui.add(egui::Button::new(egui::RichText::new("+").color(TEXT_FAINT)).frame(false));
-                    if add.on_hover_text("New Header").clicked() {
-                        state.services.add(Item::Header { name: "Header".to_owned() });
-                        let at = state.services.front().items.len() - 1;
-                        state.renaming_header = Some((at, "Header".to_owned()));
-                        state.rename_started = true;
-                    }
-                    ui.label(egui::RichText::new(state.services.front().items.len().to_string()).size(11.0).color(TEXT_FAINT));
-                });
-            });
-            ui.add_space(2.0);
-            if let Some(name) = state.renaming_service.as_mut() {
-                // The field sits where the service menu was, in a space of the menu's height.
-                let (place, _) =
-                    ui.allocate_exact_size(vec2(ui.available_width(), ui.spacing().interact_size.y), Sense::hover());
-                let field = rename_field_at(
-                    ui,
-                    name,
-                    FontId::proportional(13.5),
-                    TEXT,
-                    ACCENT,
-                    place.left_center() + vec2(8.0, 0.0),
-                    place.max.x,
-                );
-                field.request_focus();
-                let done = ui.input(|input| input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Escape));
-                if done || field.lost_focus() {
-                    if !ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                        state.services.rename(name);
-                    }
-                    state.renaming_service = None;
-                }
-            } else {
-                let name = state.services.front().name.clone();
-                egui::ComboBox::from_id_salt("service picker").selected_text(name.as_str()).width(ui.available_width()).show_ui(
-                    ui,
-                    |ui| {
-                        let names: Vec<String> = state.services.list.iter().map(|service| service.name.clone()).collect();
-                        for (index, other) in names.iter().enumerate() {
-                            if ui.selectable_label(index == state.services.current, other.as_str()).clicked() {
-                                state.services.show(index);
-                            }
-                        }
-                        ui.separator();
-                        if ui.button("New Service").clicked() {
-                            state.services.add_service();
-                            state.renaming_service = Some(state.services.front().name.clone());
-                        }
-                        if ui.button("Rename…").clicked() {
-                            state.renaming_service = Some(name.clone());
-                        }
-                        if ui.add_enabled(names.len() > 1, egui::Button::new("Delete This Service")).clicked() {
-                            state.services.remove_service();
-                        }
-                    },
-                );
-            }
-            ui.add_space(6.0);
-
-            // What a click on a service row asks for, carried out after the list is drawn.
-            enum Ask {
-                Open(usize),
-                Earlier(usize),
-                Later(usize),
-                Remove(usize),
-                Rename(usize),
-            }
-            let mut ask = None;
-            // Rows can be dragged up and down to change the running order.
-            let mut rows: Vec<Rect> = Vec::new();
-            let mut dragging = None;
-            let mut dropped = None;
-            let mut renamed: Option<Option<(usize, String)>> = None;
-            let mut rename_started = std::mem::take(&mut state.rename_started);
-            egui::ScrollArea::vertical().id_salt("service list").auto_shrink([false, false]).show(
-                ui,
-                |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    if items.is_empty() {
-                        ui.label(
-                            egui::RichText::new("Nothing yet. Add songs with + in the library above, and Bible passages with Save to Service.")
-                                .size(12.0)
-                                .color(TEXT_FAINT),
-                        );
-                    }
-                    for (index, item) in items.iter().enumerate() {
-                        // A header: bold, full width, and renamed in place.
-                        if let Item::Header { name } = item {
-                            let (row, response) =
-                                ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
-                            rows.push(row);
-                            match state.renaming_header.as_mut().filter(|(at, _)| *at == index) {
-                                Some((_, typed)) => {
-                                    let field = rename_field_at(
-                                        ui,
-                                        typed,
-                                        semibold(13.0),
-                                        TEXT,
-                                        ACCENT,
-                                        row.left_center() + vec2(6.0, 0.0),
-                                        row.max.x - 4.0,
-                                    );
-                                    if std::mem::take(&mut rename_started) {
-                                        field.request_focus();
-                                    }
-                                    let (enter, escape) = ui.input(|input| {
-                                        (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape))
-                                    });
-                                    if escape {
-                                        renamed = Some(None);
-                                    } else if enter || field.lost_focus() {
-                                        renamed = Some(Some((index, typed.clone())));
-                                    }
-                                }
-                                None => {
-                                    ui.painter().text(
-                                        row.left_center() + vec2(6.0, 0.0),
-                                        Align2::LEFT_CENTER,
-                                        name.as_str(),
-                                        semibold(13.0),
-                                        TEXT,
-                                    );
-                                    ui.painter().hline(
-                                        row.x_range(),
-                                        row.max.y - 1.0,
-                                        Stroke::new(1.0, LINE),
-                                    );
-                                }
-                            }
-                            if response.dragged() {
-                                dragging = Some(index);
-                            }
-                            if response.drag_stopped() {
-                                dropped = Some(index);
-                            }
-                            if response.double_clicked() {
-                                ask = Some(Ask::Rename(index));
-                            }
-                            response.context_menu(|ui| {
-                                if ui.button("Rename").clicked() {
-                                    ask = Some(Ask::Rename(index));
-                                    ui.close();
-                                }
-                                if ui.button("Remove from Service").clicked() {
-                                    ask = Some(Ask::Remove(index));
-                                    ui.close();
-                                }
-                            });
-                            continue;
-                        }
-                        let (icon, found) = match item {
-                            Item::Song { key, .. } => (Icon::Document, song_at(&state.song_keys, key)),
-                            _ => (Icon::Book, None),
-                        };
-                        let missing = matches!(item, Item::Song { .. }) && found.is_none();
-                        let live = found.is_some() && found == live_in;
-                        let chosen = state.services.chosen == Some(index);
-                        let mut response = list_row(ui, icon, item.title(), chosen, live, missing);
-                        rows.push(response.rect);
-                        if response.dragged() {
-                            dragging = Some(index);
-                        }
-                        if response.drag_stopped() {
-                            dropped = Some(index);
-                        }
-                        if missing {
-                            response = response.on_hover_text("This song is not open in the library");
-                        }
-                        if response.clicked() {
-                            ask = Some(Ask::Open(index));
-                        }
-                        response.context_menu(|ui| {
-                            if ui.add_enabled(index > 0, egui::Button::new("Move Up")).clicked() {
-                                ask = Some(Ask::Earlier(index));
-                                ui.close();
-                            }
-                            if ui.add_enabled(index + 1 < items.len(), egui::Button::new("Move Down")).clicked() {
-                                ask = Some(Ask::Later(index));
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("Remove from Service").clicked() {
-                                ask = Some(Ask::Remove(index));
-                                ui.close();
-                            }
-                        });
-                    }
-                },
-            );
-            // Where a dragged row would land: a line between rows, and on release the move.
-            let pointer_y = ui.input(|input| input.pointer.interact_pos()).map(|at| at.y);
-            let slot = pointer_y.map(|y| rows.iter().filter(|row| row.center().y < y).count());
-            if let (Some(_), Some(slot)) = (dragging, slot) {
-                let y = rows.get(slot).map_or_else(|| rows.last().map_or(0.0, |row| row.max.y), |row| row.min.y);
-                let (left, right) = rows.first().map_or((0.0, 0.0), |row| (row.min.x, row.max.x));
-                ui.painter().line_segment([pos2(left + 4.0, y), pos2(right - 4.0, y)], Stroke::new(2.0, ACCENT));
-            }
-            if let (Some(index), Some(slot)) = (dropped, slot) {
-                state.services.move_item(index, slot);
-            }
-            state.rename_started = rename_started;
-            match renamed {
-                Some(Some((index, name))) => {
-                    state.services.rename_header(index, &name);
-                    state.renaming_header = None;
-                }
-                Some(None) => state.renaming_header = None,
-                None => {}
-            }
-            match ask {
-                Some(Ask::Rename(index)) => {
-                    state.renaming_header = Some((index, items.get(index).map(|item| item.title().to_owned()).unwrap_or_default()));
-                    state.rename_started = true;
-                }
-                Some(Ask::Open(index)) => {
-                    state.services.chosen = Some(index);
-                    match items.get(index) {
-                        Some(Item::Song { key, .. }) => {
-                            if let Some(at) = song_at(&state.song_keys, key) {
-                                commands.push(Command::Select(at));
-                                state.bible_open = false;
-                            }
-                        }
-                        Some(Item::Passage(saved)) => {
-                            state.bible_open = true;
-                            state.bible.open_saved(saved, live_in);
-                        }
-                        Some(Item::Header { .. }) | None => {}
-                    }
-                }
-                Some(Ask::Earlier(index)) => {
-                    state.services.nudge(index, true);
-                }
-                Some(Ask::Later(index)) => {
-                    state.services.nudge(index, false);
-                }
-                Some(Ask::Remove(index)) => {
-                    state.services.remove(index);
-                }
-                None => {}
-            }
-        });
-        state.service_height = Some(strip_shown.response.rect.height());
-
-        // ---- The library: All Songs, or one library's songs.
-        let library = state.library_shown.and_then(|id| state.libraries.iter().find(|library| library.id == id));
-        if library.is_none() {
-            state.library_shown = None;
-        }
-        let in_library = |index: usize| {
-            library.is_none_or(|library| state.song_keys.get(index).is_some_and(|key| library.has(key)))
-        };
-        let total = (0..show.presentations().len()).filter(|index| listed(*index) && in_library(*index)).count();
-        let shown: Vec<usize> = show
-            .presentations()
-            .iter()
-            .enumerate()
-            .filter(|(index, song)| listed(*index) && in_library(*index) && matches_filter(&song.title, &state.filter))
-            .map(|(index, _)| index)
-            .collect();
-        let library_name = library.map(|library| library.name.clone());
-        ui.horizontal(|ui| {
-            caption(ui, "LIBRARY");
-            library_picker(ui, state, library_name.as_deref());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // The arrow folds the library away, leaving the service more room.
-                let arrow = if state.library_collapsed { "⌄" } else { "⌃" };
-                let hint = if state.library_collapsed { "Show the library" } else { "Fold the library away" };
-                if ui.add(egui::Button::new(egui::RichText::new(arrow).color(TEXT_FAINT)).frame(false)).on_hover_text(hint).clicked() {
-                    state.library_collapsed = !state.library_collapsed;
-                }
-                let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
-                let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
-                icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
-                if response.on_hover_text("New song (Command-N)").clicked() {
-                    state.new_song = true;
-                }
-                let count = if shown.len() == total { total.to_string() } else { format!("{} of {total}", shown.len()) };
-                ui.label(egui::RichText::new(count).size(11.0).color(TEXT_FAINT));
+        let shown = sources.show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("sources").auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                source_rows(ui, show, state);
             });
         });
-        if state.library_collapsed {
-            return;
-        }
-        ui.add_space(4.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut state.filter)
-                .hint_text("Search songs")
-                .desired_width(f32::INFINITY)
-                .margin(egui::Margin::symmetric(10, 6))
-                .background_color(CARD),
-        );
-        ui.add_space(8.0);
-        egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            for index in shown.iter().copied() {
-                let Some(song) = show.presentations().get(index) else { continue };
-                let chosen = index == show.selected() && !state.bible_open;
-                let response = list_row(ui, Icon::Document, song.title.as_str(), chosen, live_in == Some(index), false);
-                // A "+" at the right of the row under the pointer puts the song in the service.
-                let plus = Rect::from_center_size(response.rect.right_center() - vec2(13.0, 0.0), vec2(20.0, 20.0));
-                if response.hovered() || ui.rect_contains_pointer(plus) {
-                    let button = ui.interact(plus, ui.scope_id().with(("add to service", index)), Sense::click());
-                    let ink = if button.hovered() { Color32::WHITE } else { TEXT_DIM };
-                    ui.painter().rect_filled(plus, 5.0, if button.hovered() { ACCENT } else { HOVER });
-                    icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
-                    if button.on_hover_text("Add to the service").clicked() {
-                        add = Some(index);
-                        continue;
-                    }
-                }
-                if response.clicked() {
-                    commands.push(Command::Select(index));
-                    state.bible_open = false;
-                    state.services.chosen = None;
-                }
-                response.context_menu(|ui| {
-                    if ui.button("Add to Service").clicked() {
-                        add = Some(index);
-                        ui.close();
-                    }
-                    // The libraries the song is in.
-                    if let Some(key) = state.song_keys.get(index).cloned() {
-                        ui.menu_button("Libraries", |ui| {
-                            if state.libraries.is_empty() {
-                                ui.label(egui::RichText::new("No libraries yet. Make one from the LIBRARY menu.").color(TEXT_DIM));
-                            }
-                            for library in &mut state.libraries {
-                                if ui.add(egui::Button::selectable(library.has(&key), library.name.as_str())).clicked() {
-                                    library.toggle(&key);
-                                    state.libraries_changed = true;
-                                }
-                            }
-                        });
-                    }
-                    ui.separator();
-                    if ui.button("Rename").clicked() {
-                        commands.push(Command::Select(index));
-                        state.bible_open = false;
-                        state.editing = None;
-                        state.renaming_song = show.presentations().get(index).map(|song| song.title.clone());
-                        state.rename_started = true;
-                        ui.close();
-                    }
-                    if ui.button("Duplicate").clicked() {
-                        state.song_request = Some((index, crate::home::SongRequest::Duplicate));
-                        ui.close();
-                    }
-                    // Next on the last slide goes back to the first.
-                    let loops = show.presentations().get(index).is_some_and(|song| song.loops);
-                    if ui
-                        .add(egui::Button::selectable(loops, "Loop to First Slide"))
-                        .on_hover_text("Next on the last slide goes back to the first, for a loop of announcements")
-                        .clicked()
-                    {
-                        state.song_loop_request = Some(index);
-                        ui.close();
-                    }
-                    // The theme this song is drawn with.
-                    let own = show.presentations().get(index).and_then(|song| song.theme);
-                    ui.menu_button("Theme", |ui| {
-                        if ui.add(egui::Button::selectable(own.is_none(), "Songs Theme")).on_hover_text("The theme songs use").clicked() {
-                            state.song_theme_request = Some((index, None));
-                            ui.close();
-                        }
-                        ui.separator();
-                        for (at, name) in state.theme_names.iter().enumerate() {
-                            let on = own.is_some() && state.theme_ids.get(at).copied() == own;
-                            if ui.add(egui::Button::selectable(on, name.as_str())).clicked() {
-                                state.song_theme_request = Some((index, Some(at)));
-                                ui.close();
-                            }
-                        }
-                    });
-                    if ui.button("Reflow").clicked()
-                        && let Some(song) = show.presentations().get(index)
-                    {
-                        commands.push(Command::Select(index));
-                        state.bible_open = false;
-                        state.editing = None;
-                        state.reflow = Some((index, pc_model::to_song_text(song)));
-                        ui.close();
-                    }
-                    if ui.button("Delete…").clicked() {
-                        state.confirm_delete_song = Some(index);
-                        ui.close();
-                    }
-                });
-            }
-            if total == 0 {
-                ui.label(egui::RichText::new("No songs loaded.").color(TEXT_DIM));
-            } else if shown.is_empty() {
-                ui.label(egui::RichText::new("No song matches.").color(TEXT_DIM));
-            }
-        });
-        if let Some(index) = add
-            && let (Some(key), Some(song)) = (state.song_keys.get(index), show.presentations().get(index))
-        {
-            state.services.add(Item::Song { key: key.clone(), title: song.title.clone() });
+        state.service_height = Some(shown.response.rect.height());
+
+        // The filter, fixed to the bottom.
+        egui::Panel::bottom("filter")
+            .frame(Frame::new().inner_margin(egui::Margin { top: 8, ..Default::default() }))
+            .show(ui, |ui| {
+                let hint = if state.playlist_open { "Filter" } else { "Search songs" };
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.filter)
+                        .hint_text(hint)
+                        .desired_width(f32::INFINITY)
+                        .margin(egui::Margin::symmetric(10, 6))
+                        .background_color(CARD),
+                );
+            });
+        ui.add_space(10.0);
+        if state.playlist_open {
+            playlist_items(ui, show, state, commands);
+        } else {
+            library_songs(ui, show, state, commands);
         }
     });
 }
 
-/// The right column: what the audience sees now, the buttons that take it away, stepping
-/// through the slides, and what comes next.
-/// The menu beside LIBRARY: All Songs or one library, a new library, and renaming or deleting
-/// the one shown.
-fn library_picker(ui: &mut egui::Ui, state: &mut HomeState, shown: Option<&str>) {
-    let label = shown.map_or_else(|| "All Songs ▾".to_owned(), |name| format!("{name} ▾"));
-    let picker = ui
-        .add(egui::Label::new(egui::RichText::new(label).font(semibold(11.5)).color(TEXT_DIM)).sense(Sense::click()))
-        .on_hover_text("Choose a library");
-    egui::Popup::from_toggle_button_response(&picker)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.set_min_width(200.0);
-            if ui.add(egui::Button::selectable(state.library_shown.is_none(), "All Songs")).clicked() {
-                state.library_shown = None;
-                ui.close();
-            }
-            for library in &state.libraries {
-                let on = state.library_shown == Some(library.id);
-                let name = if library.name.trim().is_empty() { "Untitled" } else { library.name.as_str() };
-                if ui.add(egui::Button::selectable(on, name)).clicked() {
-                    state.library_shown = Some(library.id);
-                    ui.close();
+/// The LIBRARY rows (All Songs and each library) and the PLAYLISTS rows. A song dragged from
+/// the list below and dropped on one goes into it.
+fn source_rows(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
+    use crate::service::Item;
+    let song_item = |state: &HomeState, index: usize| {
+        let key = state.song_keys.get(index)?;
+        let song = show.presentations().get(index)?;
+        Some(Item::Song { key: key.clone(), title: song.title.clone() })
+    };
+    if source_heading(ui, "LIBRARY", &mut state.library_collapsed, "New Library") {
+        let made = crate::libraries::Library::new(crate::libraries::new_name(&state.libraries));
+        state.renaming_library = Some((made.id, made.name.clone()));
+        state.rename_started = true;
+        state.library_shown = Some(made.id);
+        state.playlist_open = false;
+        state.libraries.push(made);
+        state.libraries_changed = true;
+    }
+    if !state.library_collapsed {
+        let all = source_row(ui, Icon::Library, "All Songs", !state.playlist_open && state.library_shown.is_none());
+        if all.clicked() {
+            state.library_shown = None;
+            state.playlist_open = false;
+        }
+        let mut delete = None;
+        let ids: Vec<(pc_model::Uuid, String)> =
+            state.libraries.iter().map(|library| (library.id, library.name.clone())).collect();
+        for (id, name) in ids {
+            let renaming = state.renaming_library.as_ref().is_some_and(|(have, _)| *have == id);
+            let chosen = !state.playlist_open && state.library_shown == Some(id);
+            let shown = if name.trim().is_empty() { "Untitled" } else { name.as_str() };
+            let response = source_row(ui, Icon::Library, if renaming { "" } else { shown }, chosen);
+            if renaming && let Some((_, typed)) = state.renaming_library.as_mut() {
+                let field = rename_field_at(
+                    ui,
+                    typed,
+                    FontId::proportional(13.5),
+                    TEXT,
+                    ACCENT,
+                    response.rect.left_center() + vec2(26.0, 0.0),
+                    response.rect.max.x - 4.0,
+                );
+                if std::mem::take(&mut state.rename_started) {
+                    field.request_focus();
                 }
+                let (enter, escape) =
+                    ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+                if escape {
+                    state.renaming_library = None;
+                } else if enter || field.lost_focus() {
+                    let typed = typed.trim().to_owned();
+                    if let Some(library) = state.libraries.iter_mut().find(|library| library.id == id)
+                        && !typed.is_empty()
+                    {
+                        library.name = typed;
+                        state.libraries_changed = true;
+                    }
+                    state.renaming_library = None;
+                }
+                continue;
             }
-            ui.separator();
-            if ui.button("New Library").on_hover_text("Add songs to it from a song's right-click menu").clicked() {
-                let made = crate::libraries::Library::new(crate::libraries::new_name(&state.libraries));
-                state.library_shown = Some(made.id);
-                state.libraries.push(made);
+            if response.clicked() {
+                state.library_shown = Some(id);
+                state.playlist_open = false;
+            }
+            if response.double_clicked() {
+                state.renaming_library = Some((id, name.clone()));
+                state.rename_started = true;
+            }
+            if let Some(dropped) = response.dnd_release_payload::<SongDrag>()
+                && let Some(key) = state.song_keys.get(dropped.0).cloned()
+                && let Some(library) = state.libraries.iter_mut().find(|library| library.id == id)
+                && !library.has(&key)
+            {
+                library.toggle(&key);
                 state.libraries_changed = true;
             }
-            if let Some(at) = state.library_shown.and_then(|id| state.libraries.iter().position(|l| l.id == id)) {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Name").color(TEXT_DIM));
-                    let field = ui.add(egui::TextEdit::singleline(&mut state.libraries[at].name).desired_width(140.0));
-                    state.libraries_changed |= field.changed();
-                });
-                if ui.button("Delete Library").on_hover_text("The songs stay in All Songs").clicked() {
-                    state.libraries.remove(at);
-                    state.library_shown = None;
-                    state.libraries_changed = true;
+            response.on_hover_text("Drag songs here to add them").context_menu(|ui| {
+                if ui.button("Rename").clicked() {
+                    state.renaming_library = Some((id, name.clone()));
+                    state.rename_started = true;
                     ui.close();
+                }
+                if ui.button("Delete Library").on_hover_text("The songs stay in All Songs").clicked() {
+                    delete = Some(id);
+                    ui.close();
+                }
+            });
+        }
+        if let Some(id) = delete {
+            state.libraries.retain(|library| library.id != id);
+            if state.library_shown == Some(id) {
+                state.library_shown = None;
+            }
+            state.libraries_changed = true;
+        }
+    }
+    ui.add_space(8.0);
+    if source_heading(ui, "PLAYLISTS", &mut state.playlists_collapsed, "New Playlist") {
+        state.services.add_service();
+        state.playlist_open = true;
+        state.renaming_service = Some(state.services.front().name.clone());
+        state.rename_started = true;
+    }
+    if state.playlists_collapsed {
+        return;
+    }
+    let names: Vec<String> = state.services.list.iter().map(|playlist| playlist.name.clone()).collect();
+    let mut delete = false;
+    for (index, name) in names.iter().enumerate() {
+        let front = index == state.services.current;
+        let renaming = front && state.renaming_service.is_some();
+        let response = source_row(ui, Icon::Rows, if renaming { "" } else { name }, state.playlist_open && front);
+        if renaming && let Some(typed) = state.renaming_service.as_mut() {
+            let field = rename_field_at(
+                ui,
+                typed,
+                FontId::proportional(13.5),
+                TEXT,
+                ACCENT,
+                response.rect.left_center() + vec2(26.0, 0.0),
+                response.rect.max.x - 4.0,
+            );
+            if std::mem::take(&mut state.rename_started) {
+                field.request_focus();
+            }
+            let (enter, escape) =
+                ui.input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+            if escape {
+                state.renaming_service = None;
+            } else if enter || field.lost_focus() {
+                let typed = typed.clone();
+                state.services.rename(&typed);
+                state.renaming_service = None;
+            }
+            continue;
+        }
+        if response.clicked() {
+            state.services.show(index);
+            state.playlist_open = true;
+        }
+        if response.double_clicked() {
+            state.services.show(index);
+            state.renaming_service = Some(name.clone());
+            state.rename_started = true;
+        }
+        if let Some(dropped) = response.dnd_release_payload::<SongDrag>()
+            && let Some(item) = song_item(state, dropped.0)
+        {
+            state.services.add_to(index, item);
+        }
+        response.on_hover_text("Drag songs here to add them").context_menu(|ui| {
+            if ui.button("Rename").clicked() {
+                state.services.show(index);
+                state.renaming_service = Some(name.clone());
+                state.rename_started = true;
+                ui.close();
+            }
+            if ui.add_enabled(names.len() > 1, egui::Button::new("Delete Playlist")).clicked() {
+                state.services.show(index);
+                delete = true;
+                ui.close();
+            }
+        });
+    }
+    if delete {
+        state.services.remove_service();
+    }
+}
+
+/// The name of the first library a song is in, shown at the right of its row in a playlist.
+fn library_of<'a>(state: &'a HomeState, key: &str) -> Option<&'a str> {
+    state.libraries.iter().find(|library| library.has(key)).map(|library| library.name.as_str())
+}
+
+/// The songs of the library chosen (or every song), each with a + to put it in the playlist in
+/// front; a song can also be dragged onto a playlist or a library above.
+fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
+    use crate::service::Item;
+    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+    let removed = state.removed_songs.clone();
+    let listed = |index: usize| !hidden.contains(&index) && !removed.contains(&index);
+    let library = state.library_shown.and_then(|id| state.libraries.iter().find(|library| library.id == id)).cloned();
+    if library.is_none() {
+        state.library_shown = None;
+    }
+    let keys = state.song_keys.clone();
+    let in_library =
+        |index: usize| library.as_ref().is_none_or(|library| keys.get(index).is_some_and(|key| library.has(key)));
+    let total = (0..show.presentations().len()).filter(|index| listed(*index) && in_library(*index)).count();
+    let shown: Vec<usize> = show
+        .presentations()
+        .iter()
+        .enumerate()
+        .filter(|(index, song)| listed(*index) && in_library(*index) && matches_filter(&song.title, &state.filter))
+        .map(|(index, _)| index)
+        .collect();
+    let heading = library.as_ref().map_or_else(|| "ALL SONGS".to_owned(), |library| library.name.to_uppercase());
+    let live_in = show.live().map(|at| at.presentation);
+    let mut add = None;
+    ui.horizontal(|ui| {
+        caption(ui, &heading);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
+            let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
+            icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
+            if response.on_hover_text("New song (Command-N)").clicked() {
+                state.new_song = true;
+            }
+            let count = if shown.len() == total { total.to_string() } else { format!("{} of {total}", shown.len()) };
+            ui.label(egui::RichText::new(count).size(11.0).color(TEXT_FAINT));
+        });
+    });
+    ui.add_space(4.0);
+    let front = state.services.front().name.clone();
+    egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        for index in shown.iter().copied() {
+            let Some(song) = show.presentations().get(index) else { continue };
+            let chosen = index == show.selected() && !state.bible_open;
+            let response = list_row(ui, Icon::Document, song.title.as_str(), chosen, live_in == Some(index), false);
+            response.dnd_set_drag_payload(SongDrag(index));
+            // A "+" at the right of the row under the pointer puts the song in the playlist in front.
+            let plus = Rect::from_center_size(response.rect.right_center() - vec2(13.0, 0.0), vec2(20.0, 20.0));
+            if response.hovered() || ui.rect_contains_pointer(plus) {
+                let button = ui.interact(plus, ui.scope_id().with(("add to playlist", index)), Sense::click());
+                let ink = if button.hovered() { Color32::WHITE } else { TEXT_DIM };
+                ui.painter().rect_filled(plus, 5.0, if button.hovered() { ACCENT } else { HOVER });
+                icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
+                if button.on_hover_text(format!("Add to {front}")).clicked() {
+                    add = Some(index);
+                    continue;
+                }
+            }
+            if response.clicked() {
+                commands.push(Command::Select(index));
+                state.bible_open = false;
+                state.services.chosen = None;
+            }
+            response.context_menu(|ui| song_menu(ui, show, state, commands, index, &mut add));
+        }
+        if total == 0 {
+            let empty = if library.is_some() {
+                "No songs in this library yet. Drag songs onto it, or use a song's right-click menu."
+            } else {
+                "No songs loaded."
+            };
+            ui.label(egui::RichText::new(empty).size(12.0).color(TEXT_DIM));
+        } else if shown.is_empty() {
+            ui.label(egui::RichText::new("No song matches.").color(TEXT_DIM));
+        }
+    });
+    if let Some(index) = add
+        && let (Some(key), Some(song)) = (state.song_keys.get(index), show.presentations().get(index))
+    {
+        state.services.add(Item::Song { key: key.clone(), title: song.title.clone() });
+    }
+}
+
+/// A song's right-click menu in the library.
+fn song_menu(
+    ui: &mut egui::Ui,
+    show: &Show,
+    state: &mut HomeState,
+    commands: &mut Vec<Command>,
+    index: usize,
+    add: &mut Option<usize>,
+) {
+    let front = state.services.front().name.clone();
+    if ui.button(format!("Add to {front}")).clicked() {
+        *add = Some(index);
+        ui.close();
+    }
+    // The libraries the song is in.
+    if let Some(key) = state.song_keys.get(index).cloned() {
+        ui.menu_button("Libraries", |ui| {
+            if state.libraries.is_empty() {
+                ui.label(egui::RichText::new("No libraries yet. Make one with + beside LIBRARY.").color(TEXT_DIM));
+            }
+            for library in &mut state.libraries {
+                if ui.add(egui::Button::selectable(library.has(&key), library.name.as_str())).clicked() {
+                    library.toggle(&key);
+                    state.libraries_changed = true;
                 }
             }
         });
+    }
+    ui.separator();
+    if ui.button("Rename").clicked() {
+        commands.push(Command::Select(index));
+        state.bible_open = false;
+        state.editing = None;
+        state.renaming_song = show.presentations().get(index).map(|song| song.title.clone());
+        state.rename_started = true;
+        ui.close();
+    }
+    if ui.button("Duplicate").clicked() {
+        state.song_request = Some((index, crate::home::SongRequest::Duplicate));
+        ui.close();
+    }
+    // Next on the last slide goes back to the first.
+    let loops = show.presentations().get(index).is_some_and(|song| song.loops);
+    if ui
+        .add(egui::Button::selectable(loops, "Loop to First Slide"))
+        .on_hover_text("Next on the last slide goes back to the first, for a loop of announcements")
+        .clicked()
+    {
+        state.song_loop_request = Some(index);
+        ui.close();
+    }
+    // The theme this song is drawn with.
+    let own = show.presentations().get(index).and_then(|song| song.theme);
+    ui.menu_button("Theme", |ui| {
+        if ui.add(egui::Button::selectable(own.is_none(), "Songs Theme")).on_hover_text("The theme songs use").clicked()
+        {
+            state.song_theme_request = Some((index, None));
+            ui.close();
+        }
+        ui.separator();
+        for (at, name) in state.theme_names.iter().enumerate() {
+            let on = own.is_some() && state.theme_ids.get(at).copied() == own;
+            if ui.add(egui::Button::selectable(on, name.as_str())).clicked() {
+                state.song_theme_request = Some((index, Some(at)));
+                ui.close();
+            }
+        }
+    });
+    if ui.button("Reflow").clicked()
+        && let Some(song) = show.presentations().get(index)
+    {
+        commands.push(Command::Select(index));
+        state.bible_open = false;
+        state.editing = None;
+        state.reflow = Some((index, pc_model::to_song_text(song)));
+        ui.close();
+    }
+    if ui.button("Delete…").clicked() {
+        state.confirm_delete_song = Some(index);
+        ui.close();
+    }
 }
 
+/// The items of the playlist in front: headers, songs (with the library each is in) and Bible
+/// passages, dragged up and down to change the order.
+fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
+    use crate::service::Item;
+    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+    let removed = state.removed_songs.clone();
+    let listed = |index: usize| !hidden.contains(&index) && !removed.contains(&index);
+    // A song in a playlist is found by the name its file gave it; one saved before it had a
+    // file is found by its title.
+    let song_at = |keys: &[String], key: &str| {
+        let by_title = key.strip_prefix("title:");
+        keys.iter()
+            .position(|have| have == key)
+            .or_else(|| by_title.and_then(|title| show.presentations().iter().position(|song| song.title == title)))
+            .filter(|index| listed(*index))
+    };
+    let items = state.services.front().items.clone();
+    let live_in = show.live().map(|at| at.presentation);
+    let filtering = !state.filter.trim().is_empty();
+    ui.horizontal(|ui| {
+        let count = items.iter().filter(|item| !matches!(item, Item::Header { .. })).count();
+        let noun = if count == 1 { "ITEM" } else { "ITEMS" };
+        caption(ui, &format!("{count} {noun}"));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            // + adds a header, a heading that groups the items under it.
+            let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
+            let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
+            icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
+            if response.on_hover_text("New Header").clicked() {
+                state.services.add(Item::Header { name: "Header".to_owned() });
+                let at = state.services.front().items.len() - 1;
+                state.renaming_header = Some((at, "Header".to_owned()));
+                state.rename_started = true;
+            }
+        });
+    });
+    ui.add_space(4.0);
+
+    // What a click on a row asks for, carried out after the list is drawn.
+    enum Ask {
+        Open(usize),
+        Earlier(usize),
+        Later(usize),
+        Remove(usize),
+        Rename(usize),
+    }
+    let mut ask = None;
+    // Rows can be dragged up and down to change the order (not while the list is filtered).
+    let mut rows: Vec<Rect> = Vec::new();
+    let mut dragging = None;
+    let mut dropped = None;
+    let mut renamed: Option<Option<(usize, String)>> = None;
+    let mut rename_started = std::mem::take(&mut state.rename_started);
+    egui::ScrollArea::vertical().id_salt("playlist items").auto_shrink([false, false]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        if items.is_empty() {
+            ui.label(
+                egui::RichText::new(
+                    "Nothing yet. Drag songs onto this playlist, use + on a song in a library, or Save to \
+                     Playlist on the Bible page.",
+                )
+                .size(12.0)
+                .color(TEXT_FAINT),
+            );
+        }
+        for (index, item) in items.iter().enumerate() {
+            if filtering && !matches_filter(item.title(), &state.filter) {
+                continue;
+            }
+            // A header: bold, full width, and renamed in place.
+            if let Item::Header { name } = item {
+                let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
+                rows.push(row);
+                match state.renaming_header.as_mut().filter(|(at, _)| *at == index) {
+                    Some((_, typed)) => {
+                        let field = rename_field_at(
+                            ui,
+                            typed,
+                            semibold(13.0),
+                            TEXT,
+                            ACCENT,
+                            row.left_center() + vec2(6.0, 0.0),
+                            row.max.x - 4.0,
+                        );
+                        if std::mem::take(&mut rename_started) {
+                            field.request_focus();
+                        }
+                        let (enter, escape) = ui
+                            .input(|input| (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape)));
+                        if escape {
+                            renamed = Some(None);
+                        } else if enter || field.lost_focus() {
+                            renamed = Some(Some((index, typed.clone())));
+                        }
+                    }
+                    None => {
+                        ui.painter().text(
+                            row.left_center() + vec2(6.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            name.as_str(),
+                            semibold(13.0),
+                            TEXT,
+                        );
+                        ui.painter().hline(row.x_range(), row.max.y - 1.0, Stroke::new(1.0, LINE));
+                    }
+                }
+                if response.dragged() && !filtering {
+                    dragging = Some(index);
+                }
+                if response.drag_stopped() && !filtering {
+                    dropped = Some(index);
+                }
+                if response.double_clicked() {
+                    ask = Some(Ask::Rename(index));
+                }
+                response.context_menu(|ui| {
+                    if ui.button("Rename").clicked() {
+                        ask = Some(Ask::Rename(index));
+                        ui.close();
+                    }
+                    if ui.button("Remove from Playlist").clicked() {
+                        ask = Some(Ask::Remove(index));
+                        ui.close();
+                    }
+                });
+                continue;
+            }
+            let (icon, found, library) = match item {
+                Item::Song { key, .. } => (Icon::Document, song_at(&state.song_keys, key), library_of(state, key)),
+                _ => (Icon::Book, None, None),
+            };
+            let missing = matches!(item, Item::Song { .. }) && found.is_none();
+            let live = found.is_some() && found == live_in;
+            let chosen = state.services.chosen == Some(index);
+            let mut response = list_row(ui, icon, item.title(), chosen, live, missing);
+            // The library the song is in, at the right, as ProPresenter shows it.
+            if let Some(library) = library.filter(|_| !live) {
+                ui.painter().text(
+                    response.rect.right_center() - vec2(8.0, 0.0),
+                    Align2::RIGHT_CENTER,
+                    library,
+                    FontId::proportional(11.0),
+                    TEXT_FAINT,
+                );
+            }
+            rows.push(response.rect);
+            if response.dragged() && !filtering {
+                dragging = Some(index);
+            }
+            if response.drag_stopped() && !filtering {
+                dropped = Some(index);
+            }
+            if missing {
+                response = response.on_hover_text("This song is not open in the library");
+            }
+            if response.clicked() {
+                ask = Some(Ask::Open(index));
+            }
+            response.context_menu(|ui| {
+                if ui.add_enabled(index > 0, egui::Button::new("Move Up")).clicked() {
+                    ask = Some(Ask::Earlier(index));
+                    ui.close();
+                }
+                if ui.add_enabled(index + 1 < items.len(), egui::Button::new("Move Down")).clicked() {
+                    ask = Some(Ask::Later(index));
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Remove from Playlist").clicked() {
+                    ask = Some(Ask::Remove(index));
+                    ui.close();
+                }
+            });
+        }
+    });
+    // Where a dragged row would land: a line between rows, and on release the move.
+    let pointer_y = ui.input(|input| input.pointer.interact_pos()).map(|at| at.y);
+    let slot = pointer_y.map(|y| rows.iter().filter(|row| row.center().y < y).count());
+    if let (Some(_), Some(slot)) = (dragging, slot) {
+        let y = rows.get(slot).map_or_else(|| rows.last().map_or(0.0, |row| row.max.y), |row| row.min.y);
+        let (left, right) = rows.first().map_or((0.0, 0.0), |row| (row.min.x, row.max.x));
+        ui.painter().line_segment([pos2(left + 4.0, y), pos2(right - 4.0, y)], Stroke::new(2.0, ACCENT));
+    }
+    if let (Some(index), Some(slot)) = (dropped, slot) {
+        state.services.move_item(index, slot);
+    }
+    state.rename_started = rename_started;
+    match renamed {
+        Some(Some((index, name))) => {
+            state.services.rename_header(index, &name);
+            state.renaming_header = None;
+        }
+        Some(None) => state.renaming_header = None,
+        None => {}
+    }
+    match ask {
+        Some(Ask::Rename(index)) => {
+            state.renaming_header =
+                Some((index, items.get(index).map(|item| item.title().to_owned()).unwrap_or_default()));
+            state.rename_started = true;
+        }
+        Some(Ask::Open(index)) => {
+            state.services.chosen = Some(index);
+            match items.get(index) {
+                Some(Item::Song { key, .. }) => {
+                    if let Some(at) = song_at(&state.song_keys, key) {
+                        commands.push(Command::Select(at));
+                        state.bible_open = false;
+                    }
+                }
+                Some(Item::Passage(saved)) => {
+                    state.bible_open = true;
+                    state.bible.open_saved(saved, live_in);
+                }
+                Some(Item::Header { .. }) | None => {}
+            }
+        }
+        Some(Ask::Earlier(index)) => {
+            state.services.nudge(index, true);
+        }
+        Some(Ask::Later(index)) => {
+            state.services.nudge(index, false);
+        }
+        Some(Ask::Remove(index)) => {
+            state.services.remove(index);
+        }
+        None => {}
+    }
+}
+
+/// The right column: what the audience sees now, the buttons that take it away, stepping
+/// through the slides, and what comes next.
 pub fn program_panel(
     ui: &mut egui::Ui,
     show: &Show,

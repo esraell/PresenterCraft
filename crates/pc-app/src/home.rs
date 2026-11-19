@@ -68,7 +68,8 @@ pub struct HomeState {
     pub confirm_delete_theme: Option<usize>,
     /// The open theme's name while it is being retyped in the list of themes.
     pub renaming_theme: Option<String>,
-    /// How tall the service's part of the left column is, as last drawn; kept between runs.
+    /// How tall the libraries and playlists rows at the top of the left column are, as last
+    /// drawn; kept between runs.
     pub service_height: Option<f32>,
     /// The song a new slide has just been asked for, at its end. The app adds it.
     pub add_slide: Option<usize>,
@@ -173,6 +174,12 @@ pub struct HomeState {
     pub renaming_header: Option<(usize, String)>,
     /// True while the library is folded away.
     pub library_collapsed: bool,
+    /// The left column lists a playlist's items, not a library's songs.
+    pub playlist_open: bool,
+    /// The PLAYLISTS rows are folded away.
+    pub playlists_collapsed: bool,
+    /// A library being renamed in its row, and the name typed so far.
+    pub renaming_library: Option<(pc_model::Uuid, String)>,
     /// Next at the end of a song goes on to the next song in the service.
     pub continuous: bool,
     /// A test pattern shown on the audience screens in place of everything else.
@@ -754,6 +761,9 @@ impl Default for HomeState {
             screen_selected: 0,
             show_notes: false,
             library_collapsed: false,
+            playlist_open: false,
+            playlists_collapsed: false,
+            renaming_library: None,
             renaming_header: None,
             continuous: false,
             test_pattern: None,
@@ -2524,7 +2534,7 @@ fn library_search(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
                     }
                 }
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new("↵ Open    ⌘↵ Add to Service    esc Close").size(11.0).color(DIM));
+                ui.label(egui::RichText::new("↵ Open    ⌘↵ Add to Playlist    esc Close").size(11.0).color(DIM));
             });
         });
     if enter && let Some((index, _)) = found.get(*picked) {
@@ -3547,8 +3557,8 @@ fn bible_area(
                     // Keeps the passage in the service, to be brought back with one click.
                     let saved = state.bible.saved();
                     let save = ui
-                        .add_enabled(saved.is_some(), egui::Button::new("Save to Service"))
-                        .on_hover_text("Keep this passage in the service, ready to open again")
+                        .add_enabled(saved.is_some(), egui::Button::new("Save to Playlist"))
+                        .on_hover_text("Keep this passage in the playlist in front, ready to open again")
                         .on_disabled_hover_text("Look a passage up first");
                     if save.clicked()
                         && let Some(saved) = saved.clone()

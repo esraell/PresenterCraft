@@ -2282,6 +2282,10 @@ impl App {
                 let state = &mut running.home_state;
                 state.library_shown = state.libraries.iter().find(|library| library.name == name).map(|l| l.id);
             }
+            // Testing aid: list the playlist in front in the left column.
+            if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_PLAYLIST").is_some() {
+                running.home_state.playlist_open = true;
+            }
             // Testing aid: open the Stage Layouts window.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_STAGE_LAYOUTS").is_some() {
                 running.home_state.stage_editor_open = true;
