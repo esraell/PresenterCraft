@@ -353,7 +353,7 @@ fn list_row(ui: &mut egui::Ui, icon: Icon, title: &str, chosen: bool, live: bool
     response
 }
 
-/// The left column: the service (today's running order) above, the library of every song below.
+/// The left column: the library of every song above, the service (today's running order) below.
 pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     use crate::service::Item;
     let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 8 });
@@ -362,6 +362,87 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
         let listed = |index: usize| !hidden.contains(&index);
         let live_in = show.live().map(|at| at.presentation);
         let song_at = |keys: &[String], key: &str| keys.iter().position(|have| have == key).filter(|index| listed(*index));
+
+        // The library is on top, as operators are used to; the service sits under it and takes
+        // only the room its items need, up to two fifths of the column.
+        let items = state.services.front().items.clone();
+        let service_height = (items.len().max(1) as f32 * 32.0 + 4.0).min(ui.available_height() * 0.4);
+        // Room kept under the library for the divider, the service's heading and picker, and its list.
+        let below = service_height + 96.0;
+
+        // ---- The library.
+        let total = (0..show.presentations().len()).filter(|index| listed(*index)).count();
+        let shown: Vec<usize> = show
+            .presentations()
+            .iter()
+            .enumerate()
+            .filter(|(index, song)| listed(*index) && matches_filter(&song.title, &state.filter))
+            .map(|(index, _)| index)
+            .collect();
+        ui.horizontal(|ui| {
+            caption(ui, "LIBRARY");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
+                let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
+                icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
+                if response.on_hover_text("New song (Command-N)").clicked() {
+                    state.new_song = true;
+                }
+                let count = if shown.len() == total { total.to_string() } else { format!("{} of {total}", shown.len()) };
+                ui.label(egui::RichText::new(count).size(11.0).color(TEXT_FAINT));
+            });
+        });
+        ui.add_space(4.0);
+        ui.add(
+            egui::TextEdit::singleline(&mut state.filter)
+                .hint_text("Search songs")
+                .desired_width(f32::INFINITY)
+                .margin(egui::Margin::symmetric(10, 6))
+                .background_color(CARD),
+        );
+        ui.add_space(8.0);
+        let mut add = None;
+        let library_height = (ui.available_height() - below).max(60.0);
+        egui::ScrollArea::vertical().id_salt("song list").max_height(library_height).auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for index in shown.iter().copied() {
+                let Some(song) = show.presentations().get(index) else { continue };
+                let chosen = index == show.selected() && !state.bible_open;
+                let response = list_row(ui, Icon::Document, song.title.as_str(), chosen, live_in == Some(index), false);
+                // A "+" at the right of the row under the pointer puts the song in the service.
+                let plus = Rect::from_center_size(response.rect.right_center() - vec2(13.0, 0.0), vec2(20.0, 20.0));
+                if response.hovered() || ui.rect_contains_pointer(plus) {
+                    let button = ui.interact(plus, ui.scope_id().with(("add to service", index)), Sense::click());
+                    let ink = if button.hovered() { Color32::WHITE } else { TEXT_DIM };
+                    ui.painter().rect_filled(plus, 5.0, if button.hovered() { ACCENT } else { HOVER });
+                    icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
+                    if button.on_hover_text("Add to the service").clicked() {
+                        add = Some(index);
+                        continue;
+                    }
+                }
+                if response.clicked() {
+                    commands.push(Command::Select(index));
+                    state.bible_open = false;
+                    state.services.chosen = None;
+                }
+                response.context_menu(|ui| {
+                    if ui.button("Add to Service").clicked() {
+                        add = Some(index);
+                        ui.close();
+                    }
+                });
+            }
+            if total == 0 {
+                ui.label(egui::RichText::new("No songs loaded.").color(TEXT_DIM));
+            } else if shown.is_empty() {
+                ui.label(egui::RichText::new("No song matches.").color(TEXT_DIM));
+            }
+        });
+        ui.add_space(10.0);
+        let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+        ui.painter().rect_filled(line, 0.0, LINE);
+        ui.add_space(10.0);
 
         // ---- The service.
         ui.horizontal(|ui| {
@@ -418,15 +499,13 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
             Remove(usize),
         }
         let mut ask = None;
-        let items = state.services.front().items.clone();
-        let service_height = (items.len().max(1) as f32 * 32.0 + 4.0).min(ui.available_height() * 0.45);
         egui::ScrollArea::vertical().id_salt("service list").max_height(service_height).auto_shrink([false, true]).show(
             ui,
             |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 if items.is_empty() {
                     ui.label(
-                        egui::RichText::new("Nothing yet. Add songs with + in the library below, and Bible passages with Save to Service.")
+                        egui::RichText::new("Nothing yet. Add songs with + in the library above, and Bible passages with Save to Service.")
                             .size(12.0)
                             .color(TEXT_FAINT),
                     );
@@ -493,79 +572,6 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
             None => {}
         }
 
-        ui.add_space(10.0);
-        let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-        ui.painter().rect_filled(line, 0.0, LINE);
-        ui.add_space(10.0);
-
-        // ---- The library.
-        let total = (0..show.presentations().len()).filter(|index| listed(*index)).count();
-        let shown: Vec<usize> = show
-            .presentations()
-            .iter()
-            .enumerate()
-            .filter(|(index, song)| listed(*index) && matches_filter(&song.title, &state.filter))
-            .map(|(index, _)| index)
-            .collect();
-        ui.horizontal(|ui| {
-            caption(ui, "LIBRARY");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
-                let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
-                icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
-                if response.on_hover_text("New song (Command-N)").clicked() {
-                    state.new_song = true;
-                }
-                let count = if shown.len() == total { total.to_string() } else { format!("{} of {total}", shown.len()) };
-                ui.label(egui::RichText::new(count).size(11.0).color(TEXT_FAINT));
-            });
-        });
-        ui.add_space(4.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut state.filter)
-                .hint_text("Search songs")
-                .desired_width(f32::INFINITY)
-                .margin(egui::Margin::symmetric(10, 6))
-                .background_color(CARD),
-        );
-        ui.add_space(8.0);
-        let mut add = None;
-        egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            for index in shown.iter().copied() {
-                let Some(song) = show.presentations().get(index) else { continue };
-                let chosen = index == show.selected() && !state.bible_open;
-                let response = list_row(ui, Icon::Document, song.title.as_str(), chosen, live_in == Some(index), false);
-                // A "+" at the right of the row under the pointer puts the song in the service.
-                let plus = Rect::from_center_size(response.rect.right_center() - vec2(13.0, 0.0), vec2(20.0, 20.0));
-                if response.hovered() || ui.rect_contains_pointer(plus) {
-                    let button = ui.interact(plus, ui.scope_id().with(("add to service", index)), Sense::click());
-                    let ink = if button.hovered() { Color32::WHITE } else { TEXT_DIM };
-                    ui.painter().rect_filled(plus, 5.0, if button.hovered() { ACCENT } else { HOVER });
-                    icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
-                    if button.on_hover_text("Add to the service").clicked() {
-                        add = Some(index);
-                        continue;
-                    }
-                }
-                if response.clicked() {
-                    commands.push(Command::Select(index));
-                    state.bible_open = false;
-                    state.services.chosen = None;
-                }
-                response.context_menu(|ui| {
-                    if ui.button("Add to Service").clicked() {
-                        add = Some(index);
-                        ui.close();
-                    }
-                });
-            }
-            if total == 0 {
-                ui.label(egui::RichText::new("No songs loaded.").color(TEXT_DIM));
-            } else if shown.is_empty() {
-                ui.label(egui::RichText::new("No song matches.").color(TEXT_DIM));
-            }
-        });
         if let Some(index) = add
             && let (Some(key), Some(song)) = (state.song_keys.get(index), show.presentations().get(index))
         {
