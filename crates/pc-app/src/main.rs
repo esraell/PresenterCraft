@@ -2304,35 +2304,6 @@ impl App {
         self.add_new_song(song);
     }
 
-    /// Makes the passage on the Bible page a song of its own, drawn with the Bible's theme, and
-    /// shows it.
-    fn handle_bible_song(&mut self) {
-        let Some((showing, title)) = self.running.as_mut().and_then(|r| r.home_state.bible_song_request.take()) else {
-            return;
-        };
-        let Some(passage) = self.bible_slots.get(showing).and_then(|slot| self.show.presentations().get(*slot)) else {
-            return;
-        };
-        if passage.slide_count() == 0 {
-            return;
-        }
-        // New ids throughout, so the song and the Bible page never share a slide.
-        let mut song = (**passage).clone();
-        song.id = Uuid::new_v4();
-        song.title = title;
-        song.theme = self.themes.get(self.bible_theme).map(|theme| theme.id);
-        for group in &mut song.groups {
-            group.id = Uuid::new_v4();
-            for slide in &mut group.slides {
-                slide.id = Uuid::new_v4();
-                for object in &mut slide.objects {
-                    object.id = Uuid::new_v4();
-                }
-            }
-        }
-        self.add_new_song(song);
-    }
-
     /// Puts a song made in the app into the library, gives it a file in the Songs folder, and
     /// shows its slides.
     fn add_new_song(&mut self, song: pc_model::Presentation) {
@@ -3087,12 +3058,6 @@ impl App {
                     running.home_state.bible.options.open = true;
                     running.home_state.bible.options.pane = usize::from(pane == "bibles");
                 }
-            }
-            // Testing aid: save the passage on the Bible page as a presentation, as Save As… ›
-            // Save as Presentation does.
-            if running.frames == GO_LIVE_AT + 6 && std::env::var_os("PRESENTERCRAFT_BIBLE_SAVE_SONG").is_some() {
-                let state = &mut running.home_state;
-                state.bible_song_request = Some((state.bible.showing, "John 3:16-18 (KJV, SYN)".to_owned()));
             }
             // Testing aid: as if Command-N had been pressed.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_NEW_SONG").is_some() {
@@ -4182,7 +4147,6 @@ impl ApplicationHandler<String> for App {
                 }
                 self.handle_themes();
                 self.handle_songs();
-                self.handle_bible_song();
                 // The Bible page's set-up (translations, boxes, options) is remembered the
                 // moment it changes, so it is as it was left at the next start.
                 if let Some(running) = self.running.as_mut() {

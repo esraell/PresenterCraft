@@ -107,8 +107,6 @@ pub struct HomeState {
     /// The New Song sheet while it is open, and a song it asked to be made.
     pub new_song_sheet: Option<NewSong>,
     pub new_song_request: Option<NewSong>,
-    /// The Bible page's passage to be made a song: which of its two pages, and the song's title.
-    pub bible_song_request: Option<(usize, String)>,
     /// The song's title while it is being retyped in the heading, and the title just typed,
     /// with the song's place, for the app to take.
     pub renaming_song: Option<String>,
@@ -814,7 +812,6 @@ impl Default for HomeState {
             new_song: false,
             new_song_sheet: None,
             new_song_request: None,
-            bible_song_request: None,
             renaming_song: None,
             pending_title: None,
             renaming_group: None,
@@ -4101,8 +4098,8 @@ fn bible_area(
 /// The rulers along the top and left of the Edit view's canvas, in the slide's own pixels: a
 /// mark every 100, numbered as often as there is room for, with the selected object's extent
 /// shown on each.
-/// The Bible page's actions, laid out from the right: Options, then keeping the passage (in the
-/// playlist in front, another playlist, or as a presentation).
+/// The Bible page's actions, laid out from the right: Options, then keeping the passage in the
+/// playlist in front (or another playlist), to open again with its settings.
 fn bible_actions(ui: &mut egui::Ui, state: &mut HomeState) {
     let button = ui
         .add(egui::Button::selectable(state.bible.options.open, "Options"))
@@ -4165,20 +4162,6 @@ fn bible_actions(ui: &mut egui::Ui, state: &mut HomeState) {
                     }
                 }
             });
-    }
-    // A presentation of its own in the library, named by the passage and its
-    // Bibles: "John 3:16-18 (KJV, SYN)".
-    let as_presentation = ui
-        .add_enabled(saved.is_some(), egui::Button::new("Save as Presentation"))
-        .on_hover_text("Make this passage a presentation in the library, drawn with the Bible's theme")
-        .on_disabled_hover_text("Look a passage up first");
-    if as_presentation.clicked()
-        && let Some(saved) = saved
-    {
-        let bibles: Vec<String> = saved.rows.iter().map(|row| row.bible.to_uppercase()).collect();
-        let title =
-            if bibles.is_empty() { saved.lookup.clone() } else { format!("{} ({})", saved.lookup, bibles.join(", ")) };
-        state.bible_song_request = Some((state.bible.showing, title));
     }
 }
 
