@@ -345,6 +345,18 @@ pub const MENUS: &[(&str, &[Entry])] = &[
     ),
 ];
 
+/// Every item that does something, with the words on it, in menu order.
+pub fn labelled_items() -> Vec<(Action, String)> {
+    MENUS
+        .iter()
+        .flat_map(|(_, entries)| entries.iter())
+        .filter_map(|entry| match entry {
+            Do(action, label, _) | Check(action, label, _) => Some((*action, (*label).to_owned())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Every item that does something, with its shortcut.
 fn items() -> impl Iterator<Item = (Action, Option<Shortcut>)> {
     MENUS.iter().flat_map(|(_, entries)| entries.iter()).filter_map(|entry| match entry {

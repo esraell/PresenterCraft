@@ -4,6 +4,7 @@ mod applog;
 mod audio;
 mod bible;
 mod bible_store;
+mod control;
 mod displays;
 mod editor;
 mod home;
@@ -330,8 +331,13 @@ impl SongHistory {
     }
 }
 
-/// The user event the output thread sends when it has drawn a new live preview.
-const LIVE_PREVIEW_EVENT: &str = "presentercraft.live-preview";
+/// What wakes the app from outside its windows: a menu bar choice (by its item's id), the
+/// output thread having drawn a new live preview, or a command from `presentercraft ctl`.
+enum AppEvent {
+    Menu(String),
+    LivePreview,
+    Control(control::Incoming),
+}
 
 /// What a theme calls its templates, in order.
 fn template_names(theme: &Theme) -> Vec<String> {
@@ -635,7 +641,9 @@ struct ScreenWindow {
 struct App {
     options: Options,
     /// Wakes the event loop from other threads (the output thread, for a new live preview).
-    waker: Option<winit::event_loop::EventLoopProxy<String>>,
+    waker: Option<winit::event_loop::EventLoopProxy<AppEvent>>,
+    /// The socket `presentercraft ctl` reaches the app through, while it listens.
+    _control: Option<control::Listening>,
     show: Show,
     /// The file each song came from, in the show's order; `None` for the bundled sample.
     sources: Vec<Option<PathBuf>>,
@@ -773,7 +781,7 @@ impl App {
             let proxy = std::sync::Mutex::new(proxy);
             let wake: output::Waker = Arc::new(move || {
                 if let Ok(proxy) = proxy.lock() {
-                    let _ = proxy.send_event(LIVE_PREVIEW_EVENT.to_owned());
+                    let _ = proxy.send_event(AppEvent::LivePreview);
                 }
             });
             wake
@@ -3824,7 +3832,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler<String> for App {
+impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.running.is_some() {
             return;
@@ -3918,9 +3926,24 @@ impl ApplicationHandler<String> for App {
         }
     }
 
-    fn user_event(&mut self, el: &ActiveEventLoop, id: String) {
+    fn user_event(&mut self, el: &ActiveEventLoop, event: AppEvent) {
+        let id = match event {
+            AppEvent::Menu(id) => id,
+            // A command from `presentercraft ctl`: done now, and its outcome sent back.
+            AppEvent::Control(incoming) => {
+                let reply = self.control(el, &incoming.request.args);
+                applog::event(
+                    "control",
+                    &format!("{:?} -> {}", incoming.request.args, if reply.ok { "done" } else { "refused" }),
+                );
+                let _ = incoming.reply.send(reply);
+                self.sync_panels(el);
+                return;
+            }
+            AppEvent::LivePreview => String::new(),
+        };
         // The output thread drew a new live preview: the window shows it.
-        if id == LIVE_PREVIEW_EVENT {
+        if id.is_empty() {
             if let Some(running) = self.running.as_ref()
                 && let Some(output) = running.output.as_ref()
             {
@@ -4129,7 +4152,7 @@ impl ApplicationHandler<String> for App {
                         frame.checked_sub(6).filter(|n| n % 4 == 0).and_then(|n| ids.split(',').nth((n / 4) as usize))
                     {
                         eprintln!("menu {id}");
-                        self.user_event(el, id.to_owned());
+                        self.user_event(el, AppEvent::Menu(id.to_owned()));
                     }
                 }
                 if let Some((at, slide)) = self.running.as_mut().and_then(|r| r.home_state.pending_edit.take()) {
@@ -4282,6 +4305,10 @@ impl ApplicationHandler<String> for App {
 }
 
 fn main() -> ExitCode {
+    // `presentercraft ctl …` controls the running app, and nothing else: no window, no log.
+    if std::env::args().nth(1).as_deref() == Some("ctl") {
+        return control::run_client(std::env::args().skip(2).collect());
+    }
     applog::start();
     // Picture objects on slides are read from the app's Images folder.
     pc_render::set_picture_loader(images::load);
@@ -4361,7 +4388,7 @@ fn main() -> ExitCode {
     }
 
     // Menu bar choices arrive as user events carrying the item's id.
-    let mut builder = EventLoop::<String>::with_user_event();
+    let mut builder = EventLoop::<AppEvent>::with_user_event();
     // A run that only saves a picture must not come to the front of whatever is in use.
     #[cfg(target_os = "macos")]
     {
@@ -4386,7 +4413,7 @@ fn main() -> ExitCode {
         let proxy = std::sync::Mutex::new(event_loop.create_proxy());
         muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
             if let Ok(proxy) = proxy.lock() {
-                let _ = proxy.send_event(event.id().as_ref().to_owned());
+                let _ = proxy.send_event(AppEvent::Menu(event.id().as_ref().to_owned()));
             }
         }));
     }
@@ -4394,6 +4421,22 @@ fn main() -> ExitCode {
     let mut app = App {
         options,
         waker: Some(event_loop.create_proxy()),
+        // Commands from `presentercraft ctl` come in on the control socket. Without it (another
+        // copy has it, say) the app runs as usual.
+        _control: {
+            let proxy = std::sync::Mutex::new(event_loop.create_proxy());
+            match control::listen(move |incoming| {
+                if let Ok(proxy) = proxy.lock() {
+                    let _ = proxy.send_event(AppEvent::Control(incoming));
+                }
+            }) {
+                Ok(listening) => Some(listening),
+                Err(problem) => {
+                    applog::event("control", &problem);
+                    None
+                }
+            }
+        },
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
         sources,
         bible_slots,

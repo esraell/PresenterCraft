@@ -217,6 +217,13 @@ ProPresenter.
   church's CCLI licence number, chosen in Settings.
 - A Settings window (Cmd+,) with General, Screens, Groups and Key Mappings panes.
 
+**From the command line**
+- `presentercraft ctl …` controls the running app from a terminal, a script or an AI agent:
+  what is on screen, the lists, going to slides, clearing, media, messages, props, timers,
+  macros, announcements, audio, the Bible and songs, and every menu bar item. It reaches the
+  app through a socket only the same user can open, and nothing listens on the network. See
+  [docs/cli.md](docs/cli.md); [docs/app-map.md](docs/app-map.md) maps every part of the app.
+
 **On the Mac**
 - A menu bar with the usual menus and shortcuts (New Song, Undo, Cut/Copy/Paste, the views,
   Clear, Audience and Stage Output on/off with Cmd+1 and Cmd+2, Configure Screens), showing
@@ -243,7 +250,8 @@ Among the things PresenterCraft can't do yet:
 - Importing songs from other presentation apps or from CCLI SongSelect; exporting and printing.
 - Undo that names what it undoes, editable key mappings, and a Slide Labels settings pane.
 - Tested builds for Windows and Linux.
-- Remote control, an API, and MCP.
+- An API over the network, a stream of changes as they happen, and MCP (the command line
+  already controls the running app; see [docs/cli.md](docs/cli.md)).
 
 ## Build and run
 
@@ -333,6 +341,10 @@ PresenterCraft's own licence is still being chosen and will be added to this rep
   build. NDI® is a registered trademark of Vizrt NDI AB.
 
 ## For developers
+
+[docs/app-map.md](docs/app-map.md) maps the app: every view, panel and window, what each part
+does, the command-line command that does the same, where the files are, and how to try the app
+safely. [docs/cli.md](docs/cli.md) is the command line's reference.
 
     crates/pc-model    slides, groups, themes, the song text parser
     crates/pc-engine   what is live and the commands that change it (no windows)
