@@ -154,29 +154,37 @@ pub const SAFE_EDGE: (f32, f32) = (SLIDE_WIDTH * 0.05, SLIDE_HEIGHT * 0.05);
 /// How near, in slide units, a dragged object must come to a line to be pulled onto it.
 const SNAP: f32 = 14.0;
 
-/// Pulls a frame being moved onto nearby lines: the slide's edges and middle, and the edges
-/// and middles of the other objects. Returns the frame, moved if it was near one, and the
-/// lines it now sits on.
-pub fn snapped(frame: SlideRect, others: &[SlideRect]) -> (SlideRect, Vec<Guide>) {
-    // The slide's edges and middle, and the safe edge inside them.
+/// The lines a box can be lined up with: the slide's edges and middle, the safe edge inside
+/// them, and the edges and middles of the other objects. Down-lines (x) and across-lines (y).
+fn lines(others: &[SlideRect]) -> (Vec<f32>, Vec<f32>) {
     let mut down = vec![0.0, SAFE_EDGE.0, SLIDE_WIDTH / 2.0, SLIDE_WIDTH - SAFE_EDGE.0, SLIDE_WIDTH];
     let mut across = vec![0.0, SAFE_EDGE.1, SLIDE_HEIGHT / 2.0, SLIDE_HEIGHT - SAFE_EDGE.1, SLIDE_HEIGHT];
     for other in others {
         down.extend([other.x, other.x + other.w / 2.0, other.x + other.w]);
         across.extend([other.y, other.y + other.h / 2.0, other.y + other.h]);
     }
+    (down, across)
+}
+
+/// The line nearest a position, if one is near enough to pull onto.
+fn near(lines: &[f32], at: f32) -> Option<f32> {
+    lines
+        .iter()
+        .copied()
+        .filter(|line| (line - at).abs() <= SNAP)
+        .min_by(|a, b| (a - at).abs().total_cmp(&(b - at).abs()))
+}
+
+/// Pulls a frame being moved onto nearby lines. Returns the frame, moved if it was near one,
+/// and the lines it now sits on.
+pub fn snapped(frame: SlideRect, others: &[SlideRect]) -> (SlideRect, Vec<Guide>) {
+    let (down, across) = lines(others);
     // The nearest line to any of the frame's own three (start, middle, end) along one way.
     let nearest = |lines: &[f32], start: f32, size: f32| -> Option<(f32, f32)> {
-        let mut best: Option<(f32, f32)> = None;
-        for own in [start, start + size / 2.0, start + size] {
-            for line in lines {
-                let by = line - own;
-                if by.abs() <= SNAP && best.is_none_or(|(have, _)| by.abs() < have.abs()) {
-                    best = Some((by, *line));
-                }
-            }
-        }
-        best
+        [start, start + size / 2.0, start + size]
+            .into_iter()
+            .filter_map(|own| near(lines, own).map(|line| (line - own, line)))
+            .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()))
     };
     let mut frame = frame;
     let mut guides = Vec::new();
@@ -189,6 +197,40 @@ pub fn snapped(frame: SlideRect, others: &[SlideRect]) -> (SlideRect, Vec<Guide>
         guides.push(Guide::Across(line));
     }
     (frame, guides)
+}
+
+/// Pulls the edges a handle is dragging onto nearby lines, leaving the other edges where they
+/// are. Returns the frame and the lines its dragged edges now sit on.
+pub fn snapped_resize(frame: SlideRect, handle: Handle, others: &[SlideRect]) -> (SlideRect, Vec<Guide>) {
+    let (down, across) = lines(others);
+    let (mut left, mut top) = (frame.x, frame.y);
+    let (mut right, mut bottom) = (frame.x + frame.w, frame.y + frame.h);
+    let mut guides = Vec::new();
+    if handle.moves_left()
+        && let Some(line) = near(&down, left).filter(|line| right - line >= MIN_SIDE)
+    {
+        left = line;
+        guides.push(Guide::Down(line));
+    }
+    if handle.moves_right()
+        && let Some(line) = near(&down, right).filter(|line| line - left >= MIN_SIDE)
+    {
+        right = line;
+        guides.push(Guide::Down(line));
+    }
+    if handle.moves_top()
+        && let Some(line) = near(&across, top).filter(|line| bottom - line >= MIN_SIDE)
+    {
+        top = line;
+        guides.push(Guide::Across(line));
+    }
+    if handle.moves_bottom()
+        && let Some(line) = near(&across, bottom).filter(|line| line - top >= MIN_SIDE)
+    {
+        bottom = line;
+        guides.push(Guide::Across(line));
+    }
+    (SlideRect { x: left, y: top, w: right - left, h: bottom - top }, guides)
 }
 
 /// What a drag on the canvas is doing.
@@ -556,7 +598,18 @@ impl EditDraft {
             }
             Drag::Resize { id, handle, from, start } => {
                 let free = resized(from, handle, (point.0 - start.0, point.1 - start.1));
-                (id, if keep_shape { same_shape(from, handle, free) } else { free })
+                if keep_shape {
+                    // Keeping the box's shape decides both edges; lines are not followed.
+                    (id, same_shape(from, handle, free))
+                } else if snap {
+                    let still: Vec<SlideRect> =
+                        self.slide.objects.iter().filter(|o| o.id != id && !o.hidden).filter_map(|o| o.frame).collect();
+                    let (frame, guides) = snapped_resize(free, handle, &still);
+                    self.guides = guides;
+                    (id, frame)
+                } else {
+                    (id, free)
+                }
             }
         };
         let Some(index) = self.slide.objects.iter().position(|o| o.id == id) else { return false };
@@ -653,6 +706,24 @@ mod tests {
         // Near the safe edge it is pulled onto that.
         let (frame, guides) = snapped(SlideRect { x: SAFE_EDGE.0 + 9.0, y: 177.0, w: 400.0, h: 300.0 }, &[]);
         assert_eq!((frame.x, guides), (SAFE_EDGE.0, vec![Guide::Down(SAFE_EDGE.0)]));
+    }
+
+    #[test]
+    fn a_dragged_edge_is_pulled_onto_lines_and_the_other_edges_stay() {
+        // The right edge, 6 units short of the slide's middle, is pulled onto it.
+        let frame = SlideRect { x: 300.0, y: 200.0, w: SLIDE_WIDTH / 2.0 - 306.0, h: 300.0 };
+        let (pulled, guides) = snapped_resize(frame, Handle::Right, &[]);
+        assert_eq!((pulled.x, pulled.x + pulled.w, pulled.y, pulled.h), (300.0, SLIDE_WIDTH / 2.0, 200.0, 300.0));
+        assert_eq!(guides, [Guide::Down(SLIDE_WIDTH / 2.0)]);
+        // A corner follows a line each way: here the safe edge at the top left.
+        let frame = SlideRect { x: SAFE_EDGE.0 + 5.0, y: SAFE_EDGE.1 - 7.0, w: 400.0, h: 300.0 };
+        let (pulled, guides) = snapped_resize(frame, Handle::TopLeft, &[]);
+        assert_eq!((pulled.x, pulled.y), SAFE_EDGE);
+        assert_eq!((pulled.x + pulled.w, pulled.y + pulled.h), (frame.x + 400.0, frame.y + 300.0));
+        assert_eq!(guides.len(), 2);
+        // The edges not being dragged are never moved, however near a line they are.
+        let frame = SlideRect { x: 3.0, y: 200.0, w: 500.0, h: 300.0 };
+        assert_eq!(snapped_resize(frame, Handle::Bottom, &[]).0, frame);
     }
 
     #[test]

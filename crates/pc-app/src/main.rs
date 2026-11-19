@@ -104,7 +104,8 @@ fn show_key_command(key: &Key, show: &Show) -> Option<Command> {
         Key::Named(NamedKey::ArrowLeft) => Some(Command::Previous),
         Key::Named(NamedKey::Home) => Some(Command::First),
         Key::Named(NamedKey::End) => Some(Command::Last),
-        Key::Named(NamedKey::F1) => Some(Command::ClearAll),
+        // Escape clears everything; F1 does too, for keyboards that have it to hand.
+        Key::Named(NamedKey::Escape | NamedKey::F1) => Some(Command::ClearAll),
         Key::Character(typed) => {
             let mut letters = typed.chars();
             let (Some(letter), None) = (letters.next(), letters.next()) else { return None };
@@ -1125,8 +1126,16 @@ impl ApplicationHandler for App {
             && !self.held.control_key()
             && let Some(command) = show_key_command(&key.logical_key, &self.show)
         {
-            self.apply(vec![command]);
-            return;
+            // Escape clears the screen only when there is nothing else for it to close: a
+            // pop-up or the Settings window takes it first.
+            let state = &running.home_state;
+            let something_open =
+                state.settings_open || state.bible.options.open || egui::Popup::is_any_open(&running.egui_ctx);
+            let escape = matches!(key.logical_key, Key::Named(NamedKey::Escape));
+            if !(escape && something_open) {
+                self.apply(vec![command]);
+                return;
+            }
         }
         // The interface toolkit answers "repaint" to a redraw request itself. Asking for a redraw
         // in reply to a redraw never ends: the window then redraws as fast as it can for ever,
@@ -1373,6 +1382,7 @@ mod tests {
         assert_eq!(key(Key::Named(NamedKey::Home)), Some(Command::First));
         assert_eq!(key(Key::Named(NamedKey::End)), Some(Command::Last));
         assert_eq!(key(Key::Named(NamedKey::F1)), Some(Command::ClearAll));
+        assert_eq!(key(Key::Named(NamedKey::Escape)), Some(Command::ClearAll));
         assert_eq!(key(Key::Named(NamedKey::Tab)), None);
         // Letters jump to the group they stand for, in either case.
         assert_eq!(key(Key::Character("a".into())), jump(0));

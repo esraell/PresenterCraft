@@ -13,7 +13,7 @@ use egui::{
 use pc_engine::{Command, Layer, Show, SlideRef};
 
 use crate::editor::EditDraft;
-use crate::home::{HomeState, SlideView, ThumbOf, ToolMenu, matches_filter};
+use crate::home::{HomeState, SlideView, ThumbOf, matches_filter};
 use crate::icons::{self, Icon};
 
 /// The window behind everything.
@@ -139,17 +139,25 @@ fn load_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// A field for renaming something in place. It keeps the look of the text it stands in for
+/// (same font, same colour, no filled box) and adds only a thin outline, so the words stay
+/// where they were and it is plain that they can now be typed over.
+pub fn rename_field<'t>(text: &'t mut String, font: FontId, ink: Color32, outline: Color32) -> egui::TextEdit<'t> {
+    egui::TextEdit::singleline(text).font(font).text_color(ink).background_color(Color32::TRANSPARENT).frame(
+        Frame::new().stroke(Stroke::new(1.0, outline)).corner_radius(4).inner_margin(egui::Margin::symmetric(4, 1)),
+    )
+}
+
 /// A small heading in capitals, as each section starts with.
 pub fn caption(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).font(semibold(10.5)).color(TEXT_FAINT).extra_letter_spacing(0.8));
 }
 
 /// A button drawn as a rounded block with its words in the middle. `emphasis` picks its
-/// colours: plain, chosen (accent), or live (tally red).
+/// colours: plain, or live (tally red).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Emphasis {
     Plain,
-    Chosen,
     Live,
     /// Nothing to do: drawn faint, and not clickable.
     Idle,
@@ -161,7 +169,6 @@ pub fn block_button(ui: &mut egui::Ui, size: egui::Vec2, text: &str, key: &str, 
     let hovered = response.hovered() && emphasis != Emphasis::Idle;
     let (fill, ink) = match emphasis {
         Emphasis::Plain => (if hovered { HOVER } else { CARD }, TEXT),
-        Emphasis::Chosen => (if hovered { ACCENT } else { ACCENT.gamma_multiply(0.85) }, Color32::WHITE),
         Emphasis::Live => (if hovered { TALLY } else { TALLY.gamma_multiply(0.88) }, Color32::WHITE),
         Emphasis::Idle => (CARD.gamma_multiply(0.7), TEXT_FAINT),
     };
@@ -212,24 +219,32 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
     egui::Panel::top("toolbar").resizable(false).frame(frame).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
+            // The four views. Themes is one of them: it opens the Theme Editor.
             let editing_theme = state.theme_edit.is_some();
             let view = if editing_theme {
-                None
+                3
             } else if state.editing.is_some() {
-                Some(1)
+                1
             } else if state.bible_open {
-                Some(2)
+                2
             } else {
-                Some(0)
+                0
             };
-            let picked = segmented(ui, "views", vec2(74.0, 28.0), &["Show", "Edit", "Bible"], view);
+            let picked = segmented(ui, "views", vec2(74.0, 28.0), &["Show", "Edit", "Bible", "Themes"], Some(view));
             match picked {
+                Some(3) if !editing_theme => {
+                    state.theme_request = Some(crate::home::ThemeRequest::Edit(state.theme_for_songs))
+                }
+                Some(3) => {}
                 // Leaving the Theme Editor goes through the app, which saves the theme.
                 Some(to) if editing_theme => {
                     if let Some(edit) = state.theme_edit.as_mut() {
                         edit.leave = true;
                     }
                     state.bible_open = to == 2;
+                    if to == 1 {
+                        state.open_editor_next = true;
+                    }
                 }
                 Some(0) => {
                     state.editing = None;
@@ -246,27 +261,27 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 }
                 _ => {}
             }
-            ui.add_space(6.0);
-            for (menu, label, hint) in [
-                (ToolMenu::Theme, "Theme", "Which theme songs and Bible slides use"),
-                (ToolMenu::More, "More", "The Theme Editor and Settings"),
-            ] {
-                let open = matches!(state.menu, Some((now, _)) if now == menu);
-                let emphasis =
-                    if open || (menu == ToolMenu::More && editing_theme) { Emphasis::Chosen } else { Emphasis::Plain };
-                let response = block_button(ui, vec2(70.0, 28.0), label, "", emphasis).on_hover_text(hint);
-                if response.clicked() {
-                    // A second click on the button closes its menu.
-                    if open {
-                        state.menu = None;
-                    } else {
-                        state.menu = Some((menu, pos2(response.rect.min.x, response.rect.max.y + 8.0)));
-                        state.menu_fresh = true;
-                    }
-                }
+            // Asked for while the Theme Editor was open: it has closed now, so open the slide editor.
+            if state.open_editor_next && state.theme_edit.is_none() {
+                state.open_editor_next = false;
+                let at = show.cursor().unwrap_or(SlideRef { presentation: show.selected(), slide: 0 });
+                state.editing = EditDraft::of(show, at);
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Settings, at the far right.
+                let (gear, response) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
+                let on = state.settings_open;
+                ui.painter().rect_filled(gear, RADIUS, if on || response.hovered() { HOVER } else { CARD });
+                icons::paint(
+                    ui.painter(),
+                    Icon::Gear,
+                    Rect::from_center_size(gear.center(), vec2(15.0, 15.0)),
+                    TEXT_DIM,
+                );
+                if response.on_hover_text("Settings (Command-comma)").clicked() {
+                    state.settings_open = !state.settings_open;
+                }
                 // The audience output: a tally light, its name, and whether it is on.
                 let on = show.output_enabled();
                 let (rect, response) = ui.allocate_exact_size(vec2(148.0, 30.0), Sense::click());
@@ -358,7 +373,7 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
         ui.add_space(2.0);
         if let Some(name) = state.renaming_service.as_mut() {
             let field = ui.add(
-                egui::TextEdit::singleline(name).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(10, 6)),
+                rename_field(name, FontId::proportional(13.5), TEXT, ACCENT).desired_width(f32::INFINITY),
             );
             field.request_focus();
             let done = ui.input(|input| input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Escape));
@@ -628,7 +643,10 @@ pub fn program_panel(
 
         // Clear: the big one takes everything off; the two under it take one layer each.
         let clear_all = if any_live { Emphasis::Live } else { Emphasis::Idle };
-        if block_button(ui, vec2(width, 40.0), "Clear All", "F1", clear_all).on_hover_text("Clear All").clicked() {
+        if block_button(ui, vec2(width, 40.0), "Clear All", "esc", clear_all)
+            .on_hover_text("Clear All (Escape)")
+            .clicked()
+        {
             commands.push(Command::ClearAll);
         }
         ui.horizontal(|ui| {

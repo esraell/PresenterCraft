@@ -121,10 +121,8 @@ pub struct HomeState {
     pub theme_for_bible: usize,
     /// What the Theme menu or the Theme Editor has just asked for. The app takes this.
     pub theme_request: Option<ThemeRequest>,
-    /// A menu open under a toolbar button, and where its top-left corner is.
-    pub menu: Option<(ToolMenu, egui::Pos2)>,
-    /// True on the frame a menu opened, so the click that opened it does not close it.
-    pub menu_fresh: bool,
+    /// Set when Edit was pressed in the Theme Editor: the slide editor opens once it has closed.
+    pub open_editor_next: bool,
     /// What is typed in the Bible page's two fields, and its rows of translations.
     pub bible: BiblePage,
 }
@@ -493,13 +491,6 @@ pub enum ThemeRequest {
     Edit(usize),
 }
 
-/// A menu that opens under a toolbar button.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToolMenu {
-    Theme,
-    More,
-}
-
 /// The picture of the audience screen for the Program panel: what is there now, what was
 /// there before, and how far the new one has faded in (1 when there is no fade).
 #[derive(Clone, Copy, Debug, Default)]
@@ -566,8 +557,7 @@ impl Default for HomeState {
             theme_for_songs: 0,
             theme_for_bible: 0,
             theme_request: None,
-            menu: None,
-            menu_fresh: false,
+            open_editor_next: false,
             bible: BiblePage::default(),
         }
     }
@@ -672,7 +662,6 @@ pub fn home_ui(
     if !ui.ctx().text_edit_focused() && ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::N)) {
         state.new_song = true;
     }
-    tool_menu(ui, state);
     settings_window(ui, state);
     if state.editing.is_some() {
         edit_view(ui, show, state, theme, thumb, canvas);
@@ -687,121 +676,6 @@ pub fn home_ui(
         slide_area(ui, show, state, theme, thumb, &mut commands);
     }
     commands
-}
-
-/// The menu open under a toolbar button, if any. A click anywhere else closes it.
-fn tool_menu(ui: &mut egui::Ui, state: &mut HomeState) {
-    let Some((menu, corner)) = state.menu else { return };
-    let mut close = ui.input(|input| input.key_pressed(egui::Key::Escape));
-    let area = egui::Area::new(egui::Id::unique("tool menu"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(corner)
-        .fade_in(false)
-        .constrain(true)
-        .show(ui.ctx(), |ui| {
-            Frame::new()
-                .fill(crate::studio::CARD)
-                .corner_radius(10)
-                .stroke(Stroke::new(1.0, crate::studio::LINE))
-                .inner_margin(6)
-                .show(ui, |ui| {
-                    ui.set_min_width(190.0);
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    let row = |ui: &mut egui::Ui, text: &str, ticked: bool, built: bool| -> bool {
-                        let (rect, response) =
-                            ui.allocate_exact_size(vec2(ui.available_width().max(190.0), 24.0), Sense::click());
-                        if built && response.hovered() {
-                            ui.painter().rect_filled(rect, 5.0, TAB_BLUE);
-                        }
-                        let ink = if built { Color32::from_gray(238) } else { Color32::from_gray(125) };
-                        if ticked {
-                            ui.painter().text(
-                                rect.left_center() + vec2(6.0, 0.0),
-                                Align2::LEFT_CENTER,
-                                "✓",
-                                FontId::proportional(13.0),
-                                ink,
-                            );
-                        }
-                        ui.painter().text(
-                            rect.left_center() + vec2(24.0, 0.0),
-                            Align2::LEFT_CENTER,
-                            text,
-                            FontId::proportional(13.0),
-                            ink,
-                        );
-                        if !built {
-                            response.on_hover_text(not_built(text));
-                            return false;
-                        }
-                        response.clicked()
-                    };
-                    match menu {
-                        ToolMenu::Theme => {
-                            // One short list says which theme each kind of slide uses.
-                            let names = state.theme_names.clone();
-                            let heading = |ui: &mut egui::Ui, text: &str| {
-                                ui.add_space(2.0);
-                                ui.label(egui::RichText::new(text).size(10.5).strong().color(Color32::from_gray(150)));
-                            };
-                            heading(ui, "  SONGS USE");
-                            for (index, name) in names.iter().enumerate() {
-                                if row(ui, name, index == state.theme_for_songs, true) {
-                                    state.theme_request = Some(ThemeRequest::UseForSongs(index));
-                                    close = true;
-                                }
-                            }
-                            ui.separator();
-                            heading(ui, "  BIBLE SLIDES USE");
-                            for (index, name) in names.iter().enumerate() {
-                                if row(ui, name, index == state.theme_for_bible, true) {
-                                    state.theme_request = Some(ThemeRequest::UseForBible(index, state.bible_layout));
-                                    close = true;
-                                }
-                                // Keeps the passage in the service, to be brought back with one click.
-                                let saved = state.bible.saved();
-                                let save = ui
-                                    .add_enabled(saved.is_some(), egui::Button::new("Save to Service"))
-                                    .on_hover_text("Keep this passage in the service, ready to open again")
-                                    .on_disabled_hover_text("Look a passage up first");
-                                if save.clicked()
-                                    && let Some(saved) = saved
-                                {
-                                    state.services.add(crate::service::Item::Passage(saved));
-                                }
-                            }
-                            ui.separator();
-                            if row(ui, "New Theme…", false, true) {
-                                state.theme_request = Some(ThemeRequest::New);
-                                close = true;
-                            }
-                            if row(ui, "Edit Themes…", false, true) {
-                                state.theme_request = Some(ThemeRequest::Edit(state.theme_for_songs));
-                                close = true;
-                            }
-                        }
-                        ToolMenu::More => {
-                            if row(ui, "Theme Editor", state.theme_edit.is_some(), true) {
-                                state.theme_request = Some(ThemeRequest::Edit(state.theme_for_songs));
-                                close = true;
-                            }
-                            ui.separator();
-                            if row(ui, "Settings…", state.settings_open, true) {
-                                state.settings_open = !state.settings_open;
-                                close = true;
-                            }
-                        }
-                    }
-                });
-        });
-    // A click outside the menu closes it; the click that opened it does not count.
-    let fresh = std::mem::take(&mut state.menu_fresh);
-    let clicked_away = ui.input(|input| {
-        input.pointer.any_click() && input.pointer.interact_pos().is_some_and(|at| !area.response.rect.contains(at))
-    });
-    if close || (clicked_away && !fresh) {
-        state.menu = None;
-    }
 }
 
 const EDIT_PANEL: Color32 = Color32::from_rgb(20, 22, 26);
@@ -931,8 +805,7 @@ fn edit_view(
                         );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Plus, "Add a slide"));
                     } else {
-                        // The theme being edited. Choosing another edits that one; which theme
-                        // songs and Bible slides use is set from the Theme button.
+                        // The theme being edited. Choosing another edits that one.
                         let editing = state.theme_edit.as_ref().map_or(0, |edit| edit.index);
                         let in_use = state.theme_names.get(editing).cloned().unwrap_or_default();
                         egui::ComboBox::from_id_salt("theme picker").selected_text(in_use).width(120.0).show_ui(
@@ -951,6 +824,31 @@ fn edit_view(
                         );
                     }
                 });
+                // Which kinds of slide use this theme. Ticking one moves that kind to this theme;
+                // to take it away, tick it on another theme.
+                if let Some(index) = state.theme_edit.as_ref().map(|edit| edit.index) {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("USED BY").size(10.0).color(DIM));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let (mut songs, mut bible) = (state.theme_for_songs == index, state.theme_for_bible == index);
+                        let hint = "To change this, tick it on the theme that should be used instead";
+                        if ui
+                            .add_enabled(!songs, egui::Checkbox::new(&mut songs, "Songs"))
+                            .on_disabled_hover_text(hint)
+                            .changed()
+                        {
+                            state.theme_request = Some(ThemeRequest::UseForSongs(index));
+                        }
+                        if ui
+                            .add_enabled(!bible, egui::Checkbox::new(&mut bible, "Bible"))
+                            .on_disabled_hover_text(hint)
+                            .changed()
+                        {
+                            state.theme_request = Some(ThemeRequest::UseForBible(index, state.bible_layout));
+                        }
+                    });
+                }
                 // The theme's name, always in reach: type to rename it.
                 if let Some(edit) = state.theme_edit.as_mut() {
                     ui.add_space(4.0);
@@ -1029,7 +927,12 @@ fn edit_view(
                                     );
                                     let field = ui.put(
                                         place,
-                                        egui::TextEdit::singleline(name).margin(egui::Margin::symmetric(4, 1)),
+                                        crate::studio::rename_field(
+                                            name,
+                                            FontId::proportional(13.0),
+                                            crate::studio::TEXT,
+                                            crate::studio::ACCENT,
+                                        ),
                                     );
                                     if std::mem::take(&mut rename_started) {
                                         field.request_focus();
@@ -1249,9 +1152,9 @@ fn edit_view(
                         let renaming = state.renaming_group.as_ref().is_some_and(|(at, _)| *at == group_index);
                         if renaming && let Some((_, typed)) = state.renaming_group.as_mut() {
                             let place =
-                                Rect::from_min_max(pos2(bar.min.x + 16.0, bar.min.y + 1.0), bar.max - vec2(4.0, 1.0));
+                                Rect::from_min_max(pos2(bar.min.x + 14.0, bar.min.y + 1.0), bar.max - vec2(4.0, 1.0));
                             let field =
-                                ui.put(place, egui::TextEdit::singleline(typed).margin(egui::Margin::symmetric(4, 1)));
+                                ui.put(place, crate::studio::rename_field(typed, FontId::proportional(12.5), ink, ink));
                             if std::mem::take(&mut state.rename_started) {
                                 field.request_focus();
                             }
@@ -1919,6 +1822,17 @@ fn bible_area(
                             state.theme_request = Some(ThemeRequest::UseForBible(index, layout));
                         }
                     }
+                    // Keeps the passage in the service, to be brought back with one click.
+                    let saved = state.bible.saved();
+                    let save = ui
+                        .add_enabled(saved.is_some(), egui::Button::new("Save to Service"))
+                        .on_hover_text("Keep this passage in the service, ready to open again")
+                        .on_disabled_hover_text("Look a passage up first");
+                    if save.clicked()
+                        && let Some(saved) = saved
+                    {
+                        state.services.add(crate::service::Item::Passage(saved));
+                    }
                 });
             });
 
@@ -2096,7 +2010,13 @@ fn slide_area(
                 // The title; a double click, or a new song, turns it into a field to retype it.
                 if let Some(title) = state.renaming_song.as_mut() {
                     let field = ui.add(
-                        egui::TextEdit::singleline(title).font(crate::studio::semibold(18.0)).desired_width(320.0),
+                        crate::studio::rename_field(
+                            title,
+                            crate::studio::semibold(18.0),
+                            crate::studio::TEXT,
+                            crate::studio::ACCENT,
+                        )
+                        .desired_width(320.0),
                     );
                     if std::mem::take(&mut state.rename_started) {
                         field.request_focus();
