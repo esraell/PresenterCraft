@@ -108,6 +108,11 @@ pub struct HomeState {
     /// A song's arrangements changed in the Show view: the song, its arrangements, and the one
     /// it is played in.
     pub arrangement_request: Option<(usize, Vec<pc_model::Arrangement>, Option<pc_model::Uuid>)>,
+    /// The libraries, the one shown (`None` for All Songs), and true when they have changed and
+    /// are to be saved.
+    pub libraries: Vec<crate::libraries::Library>,
+    pub library_shown: Option<pc_model::Uuid>,
+    pub libraries_changed: bool,
     /// A song whose looping is to be turned on or off, from its menu.
     pub song_loop_request: Option<usize>,
     /// A theme chosen for a song from its menu: the song, and the theme by its place (`None`
@@ -724,6 +729,9 @@ impl Default for HomeState {
             song_request: None,
             song_theme_request: None,
             song_loop_request: None,
+            libraries: Vec::new(),
+            library_shown: None,
+            libraries_changed: false,
             arrangement_request: None,
             theme_ids: Vec::new(),
             confirm_delete_song: None,

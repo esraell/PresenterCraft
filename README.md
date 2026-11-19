@@ -51,6 +51,9 @@ ProPresenter.
   Wipe (each from any side), Iris and Zoom In, with their time, from the bar under the slides.
 - New Song (Command-N, or + beside LIBRARY) asks for the song's title and theme, and takes its
   words pasted in (a line in square brackets starts a group, a blank line a new slide).
+- **Libraries**: beside LIBRARY, choose All Songs or a library of your own (Christmas, Youth…);
+  a song's right-click menu puts it in or takes it out of each, and a new song made while a
+  library is shown goes into it.
 - A Library of songs above a Service list (songs and saved Bible passages, in running order).
   Several services can be kept and switched between; the line between the two lists can be
   dragged, and the library folded away. Service items can be dragged into a new order, and

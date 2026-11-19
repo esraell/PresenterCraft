@@ -9,6 +9,7 @@ mod home;
 mod icons;
 mod images;
 mod inspector;
+mod libraries;
 mod links;
 mod live_tabs;
 mod load;
@@ -1532,10 +1533,16 @@ impl App {
         self.apply(vec![Command::Select(index)]);
         if let Some(running) = self.running.as_mut() {
             let state = &mut running.home_state;
-            state.song_keys.push(match &path {
+            let key = match &path {
                 Some(path) => path.with_extension("").to_string_lossy().into_owned(),
                 None => format!("title:{title}"),
-            });
+            };
+            // A song made while a library is shown goes into that library.
+            if let Some(library) = state.library_shown.and_then(|id| state.libraries.iter_mut().find(|l| l.id == id)) {
+                library.toggle(&key);
+                state.libraries_changed = true;
+            }
+            state.song_keys.push(key);
             // Back to the slides of the new song.
             state.editing = None;
             state.bible_open = false;
@@ -2103,6 +2110,13 @@ impl App {
                     }
                 }
             }
+            // Testing aid: show a library, by its name.
+            if running.frames == GO_LIVE_AT + 2
+                && let Ok(name) = std::env::var("PRESENTERCRAFT_LIBRARY")
+            {
+                let state = &mut running.home_state;
+                state.library_shown = state.libraries.iter().find(|library| library.name == name).map(|l| l.id);
+            }
             // Testing aid: open the Stage Layouts window.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_STAGE_LAYOUTS").is_some() {
                 running.home_state.stage_editor_open = true;
@@ -2489,6 +2503,11 @@ impl App {
         {
             state.notice = Some(problem);
         }
+        if std::mem::take(&mut state.libraries_changed)
+            && let Err(problem) = libraries::save(&state.libraries)
+        {
+            state.notice = Some(problem);
+        }
         // Props that clear themselves, once their time is up.
         let props = state.props.clone();
         state.props_live.retain(|(id, since)| {
@@ -2832,6 +2851,7 @@ impl ApplicationHandler<String> for App {
                 running.home_state.messages = messages::load();
                 running.home_state.props = props::load();
                 running.home_state.macros = macros::load();
+                running.home_state.libraries = libraries::load();
                 running.home_state.stage_layouts = stage::load_layouts();
                 running.home_state.audio_tracks = audio::load();
                 // Macros set to run when PresenterCraft starts.

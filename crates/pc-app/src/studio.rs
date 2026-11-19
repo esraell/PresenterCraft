@@ -684,17 +684,26 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
         });
         state.service_height = Some(strip_shown.response.rect.height());
 
-        // ---- The library.
-        let total = (0..show.presentations().len()).filter(|index| listed(*index)).count();
+        // ---- The library: All Songs, or one library's songs.
+        let library = state.library_shown.and_then(|id| state.libraries.iter().find(|library| library.id == id));
+        if library.is_none() {
+            state.library_shown = None;
+        }
+        let in_library = |index: usize| {
+            library.is_none_or(|library| state.song_keys.get(index).is_some_and(|key| library.has(key)))
+        };
+        let total = (0..show.presentations().len()).filter(|index| listed(*index) && in_library(*index)).count();
         let shown: Vec<usize> = show
             .presentations()
             .iter()
             .enumerate()
-            .filter(|(index, song)| listed(*index) && matches_filter(&song.title, &state.filter))
+            .filter(|(index, song)| listed(*index) && in_library(*index) && matches_filter(&song.title, &state.filter))
             .map(|(index, _)| index)
             .collect();
+        let library_name = library.map(|library| library.name.clone());
         ui.horizontal(|ui| {
             caption(ui, "LIBRARY");
+            library_picker(ui, state, library_name.as_deref());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // The arrow folds the library away, leaving the service more room.
                 let arrow = if state.library_collapsed { "⌄" } else { "⌃" };
@@ -751,6 +760,20 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                     if ui.button("Add to Service").clicked() {
                         add = Some(index);
                         ui.close();
+                    }
+                    // The libraries the song is in.
+                    if let Some(key) = state.song_keys.get(index).cloned() {
+                        ui.menu_button("Libraries", |ui| {
+                            if state.libraries.is_empty() {
+                                ui.label(egui::RichText::new("No libraries yet. Make one from the LIBRARY menu.").color(TEXT_DIM));
+                            }
+                            for library in &mut state.libraries {
+                                if ui.add(egui::Button::selectable(library.has(&key), library.name.as_str())).clicked() {
+                                    library.toggle(&key);
+                                    state.libraries_changed = true;
+                                }
+                            }
+                        });
                     }
                     ui.separator();
                     if ui.button("Rename").clicked() {
@@ -822,6 +845,52 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
 
 /// The right column: what the audience sees now, the buttons that take it away, stepping
 /// through the slides, and what comes next.
+/// The menu beside LIBRARY: All Songs or one library, a new library, and renaming or deleting
+/// the one shown.
+fn library_picker(ui: &mut egui::Ui, state: &mut HomeState, shown: Option<&str>) {
+    let label = shown.map_or_else(|| "All Songs ▾".to_owned(), |name| format!("{name} ▾"));
+    let picker = ui
+        .add(egui::Label::new(egui::RichText::new(label).font(semibold(11.5)).color(TEXT_DIM)).sense(Sense::click()))
+        .on_hover_text("Choose a library");
+    egui::Popup::from_toggle_button_response(&picker)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(200.0);
+            if ui.add(egui::Button::selectable(state.library_shown.is_none(), "All Songs")).clicked() {
+                state.library_shown = None;
+                ui.close();
+            }
+            for library in &state.libraries {
+                let on = state.library_shown == Some(library.id);
+                let name = if library.name.trim().is_empty() { "Untitled" } else { library.name.as_str() };
+                if ui.add(egui::Button::selectable(on, name)).clicked() {
+                    state.library_shown = Some(library.id);
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button("New Library").on_hover_text("Add songs to it from a song's right-click menu").clicked() {
+                let made = crate::libraries::Library::new(crate::libraries::new_name(&state.libraries));
+                state.library_shown = Some(made.id);
+                state.libraries.push(made);
+                state.libraries_changed = true;
+            }
+            if let Some(at) = state.library_shown.and_then(|id| state.libraries.iter().position(|l| l.id == id)) {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Name").color(TEXT_DIM));
+                    let field = ui.add(egui::TextEdit::singleline(&mut state.libraries[at].name).desired_width(140.0));
+                    state.libraries_changed |= field.changed();
+                });
+                if ui.button("Delete Library").on_hover_text("The songs stay in All Songs").clicked() {
+                    state.libraries.remove(at);
+                    state.library_shown = None;
+                    state.libraries_changed = true;
+                    ui.close();
+                }
+            }
+        });
+}
+
 pub fn program_panel(
     ui: &mut egui::Ui,
     show: &Show,
