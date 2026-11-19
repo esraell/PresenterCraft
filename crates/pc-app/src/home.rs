@@ -11,6 +11,8 @@ use egui::{
 use pc_engine::{Command, Layer, Show, SlideRef};
 use pc_model::{Rgba, Slide};
 
+use crate::icons::{self, Icon};
+
 /// The one accent colour: the live slide's outline and selections.
 pub const ACCENT: Color32 = Color32::from_rgb(64, 156, 255);
 const BAR: Color32 = Color32::from_rgb(38, 38, 42);
@@ -65,69 +67,140 @@ fn not_built(what: &str) -> String {
     format!("{what} (not built yet)")
 }
 
-/// A small placeholder button: a symbol, dim, that only explains itself.
-fn ghost(ui: &mut egui::Ui, symbol: &str, what: &str) {
-    let (rect, response) = ui.allocate_exact_size(vec2(22.0, 20.0), Sense::hover());
+/// What a button shows: one of the app's icons, or a short piece of text.
+#[derive(Clone, Copy)]
+enum Face {
+    Icon(Icon),
+    Text(&'static str),
+}
+
+impl From<Icon> for Face {
+    fn from(icon: Icon) -> Face {
+        Face::Icon(icon)
+    }
+}
+
+impl From<&'static str> for Face {
+    fn from(text: &'static str) -> Face {
+        Face::Text(text)
+    }
+}
+
+fn paint_face(ui: &egui::Ui, face: Face, rect: Rect, text_size: f32, color: Color32) {
+    match face {
+        Face::Icon(icon) => icons::paint(ui.painter(), icon, rect, color),
+        Face::Text(text) => {
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(text_size), color);
+        }
+    }
+}
+
+/// A small placeholder button: an icon, dim, that only explains itself.
+fn ghost(ui: &mut egui::Ui, face: impl Into<Face>, what: &str) {
+    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::hover());
     if response.hovered() {
         ui.painter().rect_filled(rect, 4.0, Color32::from_gray(48));
     }
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, symbol, FontId::proportional(13.0), DIM);
+    paint_face(ui, face.into(), Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), 12.5, DIM);
     response.on_hover_text(not_built(what));
 }
 
 /// A section heading with placeholder buttons at its right edge.
-fn heading_with(ui: &mut egui::Ui, text: &str, buttons: &[(&str, &str)]) {
+fn heading_with(ui: &mut egui::Ui, text: &str, buttons: &[(Icon, &str)]) {
     ui.horizontal(|ui| {
         section_label(ui, text);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            for (symbol, what) in buttons {
-                ghost(ui, symbol, what);
+            for (icon, what) in buttons {
+                ghost(ui, *icon, what);
             }
         });
     });
 }
 
-/// One toolbar item: a symbol above a small label. Items that are not built are dim.
-fn tool(ui: &mut egui::Ui, symbol: &str, label: &str, selected: bool, built: bool) -> egui::Response {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(50.0, 40.0), if built { Sense::click() } else { Sense::hover() });
+/// One row in a list: an icon, a name, and optional dim text at the right edge.
+fn list_row(ui: &mut egui::Ui, icon: Icon, name: &str, right: &str, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
     let painter = ui.painter();
     if selected {
-        painter.rect_filled(rect, 6.0, Color32::from_gray(64));
+        painter.rect_filled(rect, 5.0, ACCENT.gamma_multiply(0.55));
     } else if response.hovered() {
-        painter.rect_filled(rect, 6.0, Color32::from_gray(50));
+        painter.rect_filled(rect, 5.0, Color32::from_gray(44));
     }
+    let ink = if selected { Color32::WHITE } else { Color32::from_gray(215) };
+    let icon_rect = Rect::from_center_size(rect.left_center() + vec2(15.0, 0.0), vec2(14.0, 14.0));
+    icons::paint(painter, icon, icon_rect, if selected { Color32::WHITE } else { ACCENT });
+    let right_width = if right.is_empty() { 0.0 } else { 52.0 };
+    let text_clip = Rect::from_min_max(rect.min + vec2(30.0, 0.0), rect.max - vec2(right_width + 6.0, 0.0));
+    painter.with_clip_rect(text_clip).text(
+        rect.left_center() + vec2(30.0, 0.0),
+        Align2::LEFT_CENTER,
+        name,
+        FontId::proportional(13.0),
+        ink,
+    );
+    if !right.is_empty() {
+        painter.text(
+            rect.right_center() - vec2(8.0, 0.0),
+            Align2::RIGHT_CENTER,
+            right,
+            FontId::proportional(11.0),
+            if selected { Color32::from_gray(220) } else { DIM },
+        );
+    }
+    response
+}
+
+/// One toolbar item: an icon on a rounded chip above a small label. Items that are not built
+/// are dim.
+fn tool(ui: &mut egui::Ui, face: impl Into<Face>, label: &str, selected: bool, built: bool) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(52.0, 50.0), if built { Sense::click() } else { Sense::hover() });
+    let chip = Rect::from_center_size(rect.center_top() + vec2(0.0, 17.0), vec2(40.0, 28.0));
+    let painter = ui.painter();
+    let fill = if selected {
+        Color32::from_gray(96)
+    } else if response.hovered() {
+        Color32::from_gray(66)
+    } else {
+        Color32::from_gray(52)
+    };
+    painter.rect_filled(chip, 9.0, fill);
     let ink = if !built {
-        DIM
+        Color32::from_gray(125)
     } else if selected {
         Color32::WHITE
     } else {
-        Color32::from_gray(200)
+        Color32::from_gray(215)
     };
-    painter.text(rect.center_top() + vec2(0.0, 13.0), Align2::CENTER_CENTER, symbol, FontId::proportional(16.0), ink);
-    painter.text(rect.center_bottom() - vec2(0.0, 8.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), ink);
+    paint_face(ui, face.into(), Rect::from_center_size(chip.center(), vec2(16.0, 16.0)), 15.0, ink);
+    ui.painter().text(
+        rect.center_bottom() - vec2(0.0, 7.0),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(10.5),
+        ink,
+    );
     if built { response } else { response.on_hover_text(not_built(label)) }
 }
 
-/// A toolbar item for a screen: a status light above its name. `None` is a screen that is not
-/// built yet.
+/// A toolbar item for a screen: a status light on a chip above its name. `None` is a screen
+/// that is not built yet.
 fn screen_light(ui: &mut egui::Ui, label: &str, on: Option<bool>) -> egui::Response {
     let built = on.is_some();
     let (rect, response) =
-        ui.allocate_exact_size(vec2(58.0, 40.0), if built { Sense::click() } else { Sense::hover() });
+        ui.allocate_exact_size(vec2(60.0, 50.0), if built { Sense::click() } else { Sense::hover() });
+    let chip = Rect::from_center_size(rect.center_top() + vec2(0.0, 17.0), vec2(40.0, 28.0));
     let painter = ui.painter();
-    if response.hovered() {
-        painter.rect_filled(rect, 6.0, Color32::from_gray(50));
-    }
+    painter.rect_filled(chip, 9.0, if response.hovered() { Color32::from_gray(66) } else { Color32::from_gray(52) });
     let light = match on {
         Some(true) => ON,
         Some(false) => OFF,
-        None => Color32::from_gray(70),
+        None => Color32::from_gray(90),
     };
-    painter.circle_filled(rect.center_top() + vec2(0.0, 13.0), 6.5, light);
-    let ink = if built { Color32::from_gray(200) } else { DIM };
-    painter.text(rect.center_bottom() - vec2(0.0, 8.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), ink);
+    painter.circle_filled(chip.center(), 7.0, light);
+    let ink = if built { Color32::from_gray(215) } else { Color32::from_gray(125) };
+    painter.text(rect.center_bottom() - vec2(0.0, 7.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), ink);
     if built { response } else { response.on_hover_text(not_built(label)) }
 }
 
@@ -156,19 +229,19 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, commands: &mut Vec<Command>) {
     egui::Panel::top("toolbar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            tool(ui, "🔍", "Search", false, false);
+            tool(ui, Icon::Search, "Search", false, false);
             ui.add_space(8.0);
             tool(ui, "Aa", "Text", false, false);
-            tool(ui, "◧", "Theme", false, false);
+            tool(ui, Icon::Theme, "Theme", false, false);
             ui.add_space(8.0);
-            tool(ui, "▶", "Show", true, true);
-            tool(ui, "✎", "Edit", false, false);
-            tool(ui, "≡", "Reflow", false, false);
-            tool(ui, "§", "Bible", false, false);
-            tool(ui, "⋯", "More", false, false);
+            tool(ui, Icon::Play, "Show", true, true);
+            tool(ui, Icon::Pencil, "Edit", false, false);
+            tool(ui, Icon::Reflow, "Reflow", false, false);
+            tool(ui, Icon::Book, "Bible", false, false);
+            tool(ui, Icon::More, "More", false, false);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                tool(ui, "◎", "Status", false, false);
+                tool(ui, Icon::Status, "Status", false, false);
                 ui.add_space(8.0);
                 ui.separator();
                 screen_light(ui, "Stage", None);
@@ -183,9 +256,9 @@ fn toolbar(ui: &mut egui::Ui, show: &Show, commands: &mut Vec<Command>) {
                 }
                 ui.separator();
                 ui.add_space(8.0);
-                tool(ui, "◉", "Live", false, false);
-                tool(ui, "◐", "Look", false, false);
-                tool(ui, "▣", "Media", false, false);
+                tool(ui, Icon::Live, "Live", false, false);
+                tool(ui, Icon::Look, "Look", false, false);
+                tool(ui, Icon::Picture, "Media", false, false);
             });
         });
     });
@@ -202,7 +275,7 @@ fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
             |ui| {
                 section_label(ui, "MEDIA");
                 ui.add_space(2.0);
-                heading_with(ui, "Playlists", &[("+", "Add a media playlist")]);
+                heading_with(ui, "Playlists", &[(Icon::Plus, "Add a media playlist")]);
                 ui.label(egui::RichText::new("No media playlists yet").size(11.5).color(DIM));
             },
         );
@@ -211,9 +284,9 @@ fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
         });
 
         Frame::new().inner_margin(8).show(ui, |ui| {
-            heading_with(ui, "LIBRARY", &[("⌃", "Collapse"), ("+", "Add a library")]);
+            heading_with(ui, "LIBRARY", &[(Icon::ChevronUp, "Collapse"), (Icon::Plus, "Add a library")]);
             // One library for now: everything that was opened.
-            ui.add_sized([ui.available_width(), 22.0], egui::Button::selectable(false, "▤  Songs"));
+            list_row(ui, Icon::Library, "Songs", "", false);
             ui.add_space(6.0);
             section_label(ui, "PLAYLIST");
             ui.label(egui::RichText::new("No playlists yet").size(11.5).color(DIM));
@@ -222,19 +295,16 @@ fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
 
         Frame::new().inner_margin(8).show(ui, |ui| {
             let shown = show.presentations().iter().filter(|p| matches_filter(&p.title, &state.filter)).count();
-            heading_with(ui, &format!("{shown} ITEMS"), &[("+", "Add an item")]);
+            let items = if shown == 1 { "1 ITEM".to_owned() } else { format!("{shown} ITEMS") };
+            heading_with(ui, &items, &[(Icon::Plus, "Add an item")]);
             ui.add_space(2.0);
             egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]).show(ui, |ui| {
                 for (index, presentation) in show.presentations().iter().enumerate() {
                     if !matches_filter(&presentation.title, &state.filter) {
                         continue;
                     }
-                    let row = ui.add_sized(
-                        [ui.available_width(), 22.0],
-                        egui::Button::selectable(index == show.selected(), format!("▤  {}", presentation.title))
-                            .right_text(egui::RichText::new("Songs").weak().size(11.0)),
-                    );
-                    if row.clicked() {
+                    let selected = index == show.selected();
+                    if list_row(ui, Icon::Document, &presentation.title, "Songs", selected).clicked() {
                         commands.push(Command::Select(index));
                     }
                 }
@@ -250,7 +320,7 @@ fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
 
 /// One button in the column beside the preview. Each clears one layer from the screen and is
 /// lit while that layer is showing. Returns true when a working one is clicked.
-fn layer_button(ui: &mut egui::Ui, symbol: &str, lit: bool, built: bool, hint: &str) -> bool {
+fn layer_button(ui: &mut egui::Ui, icon: Icon, lit: bool, built: bool, hint: &str) -> bool {
     let (rect, response) =
         ui.allocate_exact_size(vec2(26.0, 19.0), if built { Sense::click() } else { Sense::hover() });
     let fill = if lit {
@@ -268,7 +338,7 @@ fn layer_button(ui: &mut egui::Ui, symbol: &str, lit: bool, built: bool, hint: &
     } else {
         DIM
     };
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, symbol, FontId::proportional(12.0), ink);
+    icons::paint(ui.painter(), icon, Rect::from_center_size(rect.center(), vec2(13.0, 13.0)), ink);
     let hint = if built { hint.to_owned() } else { not_built(hint) };
     response.on_hover_text(hint).clicked() && built
 }
@@ -313,24 +383,26 @@ fn live_panel(
             ui.painter().rect_stroke(rect, 4.0, Stroke::new(2.0, edge), StrokeKind::Outside);
 
             ui.vertical(|ui| {
-                if layer_button(ui, "✖", live, true, "Clear everything from the screen (F1)") {
+                if layer_button(ui, Icon::Close, live, true, "Clear everything from the screen (F1)") {
                     commands.push(Command::ClearAll);
                 }
-                layer_button(ui, "♪", false, false, "Clear audio");
-                layer_button(ui, "✉", false, false, "Clear messages");
-                layer_button(ui, "◆", false, false, "Clear props");
-                layer_button(ui, "❢", false, false, "Clear announcements");
-                if layer_button(ui, "▤", live, true, "Clear the slide: take the words off the screen (C)") {
+                layer_button(ui, Icon::Note, false, false, "Clear audio");
+                layer_button(ui, Icon::Message, false, false, "Clear messages");
+                layer_button(ui, Icon::Layers, false, false, "Clear props");
+                layer_button(ui, Icon::Megaphone, false, false, "Clear announcements");
+                if layer_button(ui, Icon::Slide, live, true, "Clear the slide: take the words off the screen (C)") {
                     commands.push(Command::Clear(Layer::Slides));
                 }
-                layer_button(ui, "▣", false, false, "Clear media");
-                layer_button(ui, "◙", false, false, "Clear video input");
+                layer_button(ui, Icon::Picture, false, false, "Clear media");
+                layer_button(ui, Icon::Camera, false, false, "Clear video input");
             });
         });
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Audience screen  ⌄").size(11.5).color(Color32::from_gray(150)))
+            ui.label(egui::RichText::new("Audience screen").size(11.5).color(Color32::from_gray(150)))
                 .on_hover_text(not_built("Choose which screen the preview shows"));
+            let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+            icons::paint(ui.painter(), Icon::ChevronDown, rect, Color32::from_gray(150));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| match show.live_slide() {
                 Some((presentation, _)) => {
                     let at = show.live().map_or(0, |l| l.slide + 1);
@@ -350,9 +422,9 @@ fn live_panel(
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.add_space(ui.available_width() / 2.0 - 36.0);
-            ghost(ui, "▤", "Presentation playback");
-            ghost(ui, "❢", "Announcement playback");
-            ghost(ui, "♪", "Audio playback");
+            ghost(ui, Icon::Slide, "Presentation playback");
+            ghost(ui, Icon::Megaphone, "Announcement playback");
+            ghost(ui, Icon::Note, "Audio playback");
         });
         ui.vertical_centered(|ui| ui.label(egui::RichText::new("No media playing").size(11.5).color(DIM)));
         let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 10.0), Sense::hover());
@@ -361,11 +433,11 @@ fn live_panel(
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.label(egui::RichText::new("--:--").size(11.0).color(DIM));
             ui.add_space((ui.available_width() - 150.0 - 30.0).max(0.0) / 2.0);
-            ghost(ui, "↺", "Back 15 seconds");
-            ghost(ui, "▶", "Play or pause");
-            ghost(ui, "↻", "Forward 15 seconds");
-            ghost(ui, "⇥", "Jump to the last 30 seconds");
-            ghost(ui, "⚑", "Markers");
+            ghost(ui, Icon::Back, "Back 15 seconds");
+            ghost(ui, Icon::Pause, "Play or pause");
+            ghost(ui, Icon::Forward, "Forward 15 seconds");
+            ghost(ui, Icon::ToEnd, "Jump to the last 30 seconds");
+            ghost(ui, Icon::Flag, "Markers");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(egui::RichText::new("--:--").size(11.0).color(DIM));
             });
@@ -373,26 +445,27 @@ fn live_panel(
         ui.add_space(4.0);
 
         // The tabs: audio, stage, timers, messages, props, macros. Stage is the one shown.
-        let tabs =
-            [("♪", "Audio"), ("▦", "Stage"), ("◷", "Timers"), ("➤", "Messages"), ("◆", "Props"), ("M", "Macros")];
+        let tabs: [(Face, &str); 6] = [
+            (Face::Icon(Icon::Note), "Audio"),
+            (Face::Icon(Icon::Stage), "Stage"),
+            (Face::Icon(Icon::Clock), "Timers"),
+            (Face::Icon(Icon::Message), "Messages"),
+            (Face::Icon(Icon::Layers), "Props"),
+            (Face::Text("[M]"), "Macros"),
+        ];
         let tab_width = ui.available_width() / tabs.len() as f32;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (index, (symbol, name)) in tabs.iter().enumerate() {
-                let (rect, response) = ui.allocate_exact_size(vec2(tab_width, 24.0), Sense::hover());
+            for (index, (face, name)) in tabs.iter().enumerate() {
+                let (rect, response) = ui.allocate_exact_size(vec2(tab_width, 28.0), Sense::hover());
                 let selected = index == 1;
                 ui.painter().rect_filled(
                     rect,
                     0.0,
                     if selected { ACCENT.gamma_multiply(0.75) } else { Color32::from_gray(46) },
                 );
-                ui.painter().text(
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    *symbol,
-                    FontId::proportional(13.0),
-                    if selected { Color32::WHITE } else { DIM },
-                );
+                let ink = if selected { Color32::WHITE } else { Color32::from_gray(150) };
+                paint_face(ui, *face, Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), 12.0, ink);
                 response.on_hover_text(not_built(name));
             }
         });
@@ -412,7 +485,7 @@ fn live_panel(
             });
         });
 
-        heading_with(ui, "STAGE", &[("+", "Add a stage screen"), ("✎", "Edit stage layouts")]);
+        heading_with(ui, "STAGE", &[(Icon::Plus, "Add a stage screen"), (Icon::Pencil, "Edit stage layouts")]);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(egui::RichText::new("Stage screen").size(12.5).color(DIM));
@@ -430,11 +503,11 @@ fn live_panel(
 /// The transition buttons and duration that sit at the left of a bottom bar.
 fn transition_controls(ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.x = 2.0;
-    ghost(ui, "+", "Add");
+    ghost(ui, Icon::Plus, "Add");
     ui.add_space(6.0);
-    ghost(ui, "▮▮", "Cut");
-    ghost(ui, "◪", "Dissolve");
-    ghost(ui, "▶▏", "More transitions");
+    ghost(ui, Icon::Cut, "Cut");
+    ghost(ui, Icon::Dissolve, "Dissolve");
+    ghost(ui, Icon::Transition, "More transitions");
     ui.add_space(6.0);
     ui.label(egui::RichText::new("0.4s").size(11.5).color(DIM)).on_hover_text(not_built("Transition time"));
 }
@@ -447,9 +520,9 @@ fn media_bin(ui: &mut egui::Ui) {
             egui::Panel::top("media path").resizable(false).frame(panel_frame(BAR, 5)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    ghost(ui, "◫", "Show or hide the media list");
-                    ghost(ui, "‹", "Back");
-                    ghost(ui, "›", "Forward");
+                    ghost(ui, Icon::Sidebar, "Show or hide the media list");
+                    ghost(ui, Icon::ChevronLeft, "Back");
+                    ghost(ui, Icon::ChevronRight, "Forward");
                     ui.add_space(6.0);
                     ui.label(egui::RichText::new("Playlists").size(12.0).color(DIM));
                 });
@@ -461,8 +534,8 @@ fn media_bin(ui: &mut egui::Ui) {
                         ui.spacing_mut().item_spacing.x = 2.0;
                         let mut size = 0.5_f32;
                         ui.add_enabled(false, egui::Slider::new(&mut size, 0.0..=1.0).show_value(false));
-                        ghost(ui, "≡", "List view");
-                        ghost(ui, "▦", "Grid view");
+                        ghost(ui, Icon::Rows, "List view");
+                        ghost(ui, Icon::Grid, "Grid view");
                         ui.add_space(8.0);
                         let mut nothing = String::new();
                         ui.add_enabled(
@@ -494,7 +567,7 @@ fn slide_area(
             |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Songs").strong().size(15.0).color(Color32::WHITE));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, "⚙", "View settings"));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| ghost(ui, Icon::Gear, "View settings"));
                 });
             },
         );
@@ -505,11 +578,16 @@ fn slide_area(
                     ui.spacing_mut().item_spacing.x = 2.0;
                     ui.add(egui::Slider::new(&mut state.thumb_width, 120.0..=480.0).show_value(false))
                         .on_hover_text("Slide size");
-                    ghost(ui, "◌", "View options");
-                    ghost(ui, "≡", "Table view");
+                    ghost(ui, Icon::Options, "View options");
+                    ghost(ui, Icon::Rows, "Table view");
                     ghost(ui, "T", "Text view");
-                    let (rect, response) = ui.allocate_exact_size(vec2(22.0, 20.0), Sense::hover());
-                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "▦", FontId::proportional(13.0), ACCENT);
+                    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::hover());
+                    icons::paint(
+                        ui.painter(),
+                        Icon::Grid,
+                        Rect::from_center_size(rect.center(), vec2(14.0, 14.0)),
+                        ACCENT,
+                    );
                     response.on_hover_text("Grid view");
                 });
             });
@@ -521,17 +599,19 @@ fn slide_area(
         };
         egui::Panel::top("song header").resizable(false).frame(panel_frame(BAR, 5)).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("▤  {}", presentation.title)).size(13.5));
+                let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                icons::paint(ui.painter(), Icon::Document, rect, ACCENT);
+                ui.label(egui::RichText::new(presentation.title.as_str()).size(13.5));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    ghost(ui, "▶▏", "Transition for this presentation");
-                    ghost(ui, "◎", "Destination");
+                    ghost(ui, Icon::Transition, "Transition for this presentation");
+                    ghost(ui, Icon::Target, "Destination");
                     ui.add_space(6.0);
-                    ghost(ui, "◫", "Timeline");
-                    ghost(ui, "≣", "Arrangements");
-                    ghost(ui, "✍", "Operator notes");
+                    ghost(ui, Icon::Timeline, "Timeline");
+                    ghost(ui, Icon::Arrangement, "Arrangements");
+                    ghost(ui, Icon::Notes, "Operator notes");
                     ui.add_space(6.0);
-                    ghost(ui, "▷", "Slide show");
+                    ghost(ui, Icon::SlideShow, "Slide show");
                 });
             });
         });

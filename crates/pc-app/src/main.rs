@@ -2,6 +2,7 @@
 
 mod displays;
 mod home;
+mod icons;
 mod load;
 mod output;
 mod thumbs;
