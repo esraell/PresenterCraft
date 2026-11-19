@@ -223,6 +223,8 @@ pub struct Prefs {
     /// The name the audience screen is sent under over NDI, and whether it was on.
     pub ndi_name: String,
     pub ndi_on: bool,
+    /// How tall the service's part of the left column was dragged to be. `None` until it is.
+    pub service_height: Option<f32>,
 }
 
 impl Default for Prefs {
@@ -234,6 +236,7 @@ impl Default for Prefs {
             slide_view: "grid".to_owned(),
             ndi_name: "PresenterCraft Audience".to_owned(),
             ndi_on: false,
+            service_height: None,
         }
     }
 }

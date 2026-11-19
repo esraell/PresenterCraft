@@ -95,6 +95,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
     Ok(Some(options))
 }
 
+/// The id of the sample song the app starts with.
+const SAMPLE_SONG_ID: Uuid = Uuid::from_u128(0x7361_6d70_6c65_5f73_6f6e_6700_0000_0001);
+
 /// What a theme calls its templates, in order.
 fn template_names(theme: &Theme) -> Vec<String> {
     theme.templates.iter().map(|template| template.name.clone()).collect()
@@ -794,6 +797,7 @@ impl App {
         };
         let (changed, leave, index) = (std::mem::take(&mut edit.changed), edit.leave, edit.index);
         if changed {
+            let mut bible_template_gone = false;
             let theme = edit.theme.clone();
             // The template Bible slides use keeps its link when templates are added or
             // removed around it; if it was removed, the first one takes its place.
@@ -805,6 +809,7 @@ impl App {
                 if moved {
                     theme_store::remember_in_use(&self.theme, &theme, self.bible_layout);
                 }
+                bible_template_gone = now.is_none();
             }
             if let Some(slot) = self.themes.get_mut(index) {
                 *slot = theme;
@@ -814,6 +819,11 @@ impl App {
             }
             self.unsaved_since = Some(Instant::now());
             self.themes_changed();
+            // The template Bible slides used was deleted: the translations are pointed at
+            // the boxes of the one that took its place, as when a template is chosen.
+            if bible_template_gone && let Some(running) = self.running.as_mut() {
+                running.home_state.bible.assign_boxes();
+            }
             // A theme is written at once, so nothing is lost if the app stops without
             // warning. While a box is being dragged it waits for the drag to end.
             let dragging =
@@ -1357,7 +1367,11 @@ fn main() -> ExitCode {
     let (media_paths, song_paths): (Vec<PathBuf>, Vec<PathBuf>) =
         options.paths.iter().cloned().partition(|path| media::is_media(path));
     let songs = if song_paths.is_empty() {
-        vec![(parse_song_text("Sample song", load::SAMPLE_SONG), None)]
+        // The sample always has the same id, so that once it has been changed and saved the
+        // saved one is known to be it.
+        let mut sample = parse_song_text("Sample song", load::SAMPLE_SONG);
+        sample.id = SAMPLE_SONG_ID;
+        vec![(sample, None)]
     } else {
         let (songs, problems) = load::load_songs(&song_paths);
         for problem in &problems {
@@ -1384,9 +1398,9 @@ fn main() -> ExitCode {
         eprintln!("{problem}");
     }
     made_here.sort_by_key(|loaded| loaded.song.title.to_lowercase());
-    // The sample song is only for an empty library: once the app has songs of its own (the
-    // sample itself, if it was changed, is one of them) it is not added again.
-    if song_paths.is_empty() && !made_here.is_empty() {
+    // The sample song stays in the library. Once it has been changed it is saved like any
+    // other song, and the saved one is shown in place of the one built in.
+    if song_paths.is_empty() && made_here.iter().any(|loaded| loaded.song.id == SAMPLE_SONG_ID) {
         songs.clear();
         sources.clear();
     }

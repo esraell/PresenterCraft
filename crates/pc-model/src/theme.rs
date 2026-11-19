@@ -729,6 +729,9 @@ mod tests {
         let theme = Theme::from_json(&old.to_string()).unwrap();
         assert_eq!(theme.templates.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Lyrics", "One language"]);
         assert_eq!(theme.templates[0].boxes, builtin.templates[0].boxes);
+        // Written out, it is a file of the new kind that reads back the same.
+        assert_eq!(Theme::from_json(&theme.to_json()), Ok(theme.clone()));
+        assert!(theme.to_json().contains("\"version\": 2"));
         // Read again, the templates have the same ids.
         let again = Theme::from_json(&old.to_string()).unwrap();
         assert_eq!(again.templates[1].id, theme.templates[1].id);

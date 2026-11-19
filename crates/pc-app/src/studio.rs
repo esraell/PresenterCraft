@@ -390,9 +390,9 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
         let strip = egui::Panel::bottom("service strip")
             .resizable(true)
             .size_range(130.0..=(column_height - 150.0).max(130.0))
-            .default_size(fitted.max(220.0))
+            .default_size(state.service_height.unwrap_or(fitted.max(220.0)))
             .frame(Frame::new());
-        strip.show(ui, |ui| {
+        let strip_shown = strip.show(ui, |ui| {
             // The strip's own top edge is the line between the library and the service.
             ui.add_space(12.0);
             // ---- The service.
@@ -523,6 +523,7 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 None => {}
             }
         });
+        state.service_height = Some(strip_shown.response.rect.height());
 
         // ---- The library.
         let total = (0..show.presentations().len()).filter(|index| listed(*index)).count();

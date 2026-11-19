@@ -63,6 +63,8 @@ pub struct HomeState {
     pub confirm_delete_theme: Option<usize>,
     /// The open theme's name while it is being retyped in the list of themes.
     pub renaming_theme: Option<String>,
+    /// How tall the service's part of the left column is, as last drawn; kept between runs.
+    pub service_height: Option<f32>,
     /// The song a new slide has just been asked for, at its end. The app adds it.
     pub add_slide: Option<usize>,
     /// Objects copied in the editor, and the words that went to the system clipboard with them.
@@ -339,13 +341,15 @@ impl BiblePage {
         use crate::bible::ReferenceStyle;
         let mut rows = Vec::new();
         let mut missing = Vec::new();
+        // A box the Bible template no longer has is not a place to send anything.
+        let known = |role: &Option<String>| {
+            role.clone().map(pc_model::Role).filter(|role| self.boxes.iter().any(|(have, _)| have == role))
+        };
         for row in &saved.rows {
             match self.shelf.position(&row.bible) {
-                Some(bible) => rows.push(BibleRow {
-                    bible,
-                    verse: row.verse.clone().map(pc_model::Role),
-                    reference: row.reference.clone().map(pc_model::Role),
-                }),
+                Some(bible) => {
+                    rows.push(BibleRow { bible, verse: known(&row.verse), reference: known(&row.reference) })
+                }
                 None => missing.push(row.bible.to_uppercase()),
             }
         }
@@ -531,6 +535,7 @@ impl Default for HomeState {
             pending_group_name: None,
             confirm_delete_theme: None,
             renaming_theme: None,
+            service_height: None,
             add_slide: None,
             object_clip: Vec::new(),
             object_clip_text: String::new(),
@@ -587,6 +592,7 @@ impl HomeState {
             .to_owned(),
             ndi_name: self.ndi_name.clone(),
             ndi_on: !matches!(self.ndi_status, NdiStatus::Off),
+            service_height: self.service_height.map(f32::round),
         }
     }
 
@@ -600,6 +606,7 @@ impl HomeState {
             "table" => SlideView::Table,
             _ => SlideView::Grid,
         };
+        self.service_height = prefs.service_height;
         if !prefs.ndi_name.trim().is_empty() {
             self.ndi_name = prefs.ndi_name.clone();
         }
@@ -839,7 +846,9 @@ fn edit_view(
     let delete_template_key = delete
         && theme_mode
         && state.editing.as_ref().is_some_and(|draft| draft.selected.is_none())
-        && state.renaming_template.is_none();
+        && state.renaming_template.is_none()
+        && state.confirm_delete_template.is_none()
+        && state.confirm_delete_theme.is_none();
     // Left: the slide navigator, with the slide's objects below it.
     let mut chosen = None;
     let mut chosen_template = None;
@@ -1837,9 +1846,15 @@ fn confirm_delete_template(ui: &mut egui::Ui, state: &mut HomeState) {
         && edit.theme.remove_template(template)
     {
         edit.changed = true;
-        // The template before it, or the new first one, is opened in its place.
-        edit.template = template.saturating_sub(1);
-        state.editing = Some(EditDraft::of_slide(edit.theme.templates[edit.template].as_slide(), edit.template));
+        // The template being edited stays open. If it was the one deleted, the one before
+        // it (or the new first one) is opened in its place.
+        let was = edit.template;
+        edit.template = if was >= template { was.saturating_sub(1) } else { was };
+        if was == template {
+            state.editing = Some(EditDraft::of_slide(edit.theme.templates[edit.template].as_slide(), edit.template));
+        } else if let Some(draft) = state.editing.as_mut() {
+            draft.at.slide = edit.template;
+        }
     }
 }
 
@@ -2676,6 +2691,40 @@ mod tests {
     use pc_model::parse_song_text;
 
     use super::*;
+
+    #[test]
+    fn the_bible_pages_set_up_survives_being_saved_and_read_back() {
+        let role = |name: &str| Some(pc_model::Role(name.to_owned()));
+        let mut page = BiblePage { shelf: crate::bible::Shelf::shipped(), ..BiblePage::default() };
+        let (kjv, syn) = (page.shelf.position("kjv").unwrap(), page.shelf.position("syn").unwrap());
+        // Not the usual set-up: Synodal first, in the translation box; KJV in the main box
+        // with no reference; and the options changed.
+        page.rows = vec![
+            BibleRow { bible: syn, verse: role("translation"), reference: role("reference") },
+            BibleRow { bible: kjv, verse: role("primary"), reference: None },
+        ];
+        page.options.show_verse_numbers = !page.options.show_verse_numbers;
+        page.options.reference = crate::bible::ReferenceStyle::PassageLast;
+        let text = serde_json::to_string(&page.settings()).unwrap();
+
+        let mut fresh = BiblePage { shelf: crate::bible::Shelf::shipped(), ..BiblePage::default() };
+        assert_ne!(fresh.choices(), page.choices());
+        let missing = fresh.apply_settings(&serde_json::from_str(&text).unwrap());
+        assert!(missing.is_empty());
+        assert_eq!(fresh.rows.len(), 2);
+        for (got, want) in fresh.rows.iter().zip(&page.rows) {
+            assert_eq!((got.bible, &got.verse, &got.reference), (want.bible, &want.verse, &want.reference));
+        }
+        assert_eq!(fresh.options.show_verse_numbers, page.options.show_verse_numbers);
+        assert_eq!(fresh.options.reference, crate::bible::ReferenceStyle::PassageLast);
+        assert_eq!(fresh.choices(), page.choices());
+
+        // A box the Bible template does not have is sent nowhere, not drawn over the main text.
+        let mut narrow = BiblePage { shelf: crate::bible::Shelf::shipped(), ..BiblePage::default() };
+        narrow.boxes.retain(|(have, _)| *have != pc_model::Role::translation());
+        narrow.apply_settings(&serde_json::from_str(&text).unwrap());
+        assert_eq!((&narrow.rows[0].verse, &narrow.rows[0].reference), (&None, &role("reference")));
+    }
 
     fn input(key: Option<Key>) -> RawInput {
         RawInput {
