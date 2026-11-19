@@ -115,6 +115,11 @@ Without the NDI SDK, everything else builds with:
 
     cargo run --release --no-default-features
 
+On a Mac, to get a proper `PresenterCraft.app` (named correctly in the menu bar and the Dock):
+
+    scripts/macos-app.sh
+    open target/release/PresenterCraft.app
+
 Song text files can be opened from the command line (`cargo run --release -- songs/*.txt`).
 Other options: `--list-displays`, `--output-display N`.
 
