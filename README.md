@@ -236,7 +236,9 @@ ProPresenter.
 ## Not built yet
 
 What is planned, roughly in the order it matters for a Sunday service. Sizes and details are
-worked out as each is built; nothing here is promised by a date.
+worked out as each is built; nothing here is promised by a date. The full list, about 170
+features with their size and how much each matters on a Sunday, is in
+[docs/roadmap.md](docs/roadmap.md).
 
 **Coming first**
 - Importing songs: from text, rich text and Word files and the clipboard (with how slides are
