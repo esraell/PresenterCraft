@@ -892,14 +892,18 @@ fn text_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
     if link != object.link {
         // The box's own words say what it is linked to, so its picture in the editor does too.
         let placeholder = text.is_empty() || text == "Text" || (text.starts_with('[') && text.ends_with(']'));
-        if let Some(chosen) = link
-            && placeholder
-        {
-            let name = match chosen {
-                pc_model::TextLink::Timer { id } => timer_name(id),
-                _ => None,
-            };
-            *text = crate::links::placeholder(chosen, name);
+        match link {
+            Some(chosen) if placeholder => {
+                let name = match chosen {
+                    pc_model::TextLink::Timer { id } => timer_name(id),
+                    _ => None,
+                };
+                *text = crate::links::placeholder(chosen, name);
+            }
+            // Unlinked: the words the link put there go too, and the box says "Text" again, as a
+            // new one does. Words of its own were never replaced, so they stay.
+            None if placeholder => *text = "Text".to_owned(),
+            _ => {}
         }
         object.link = link;
     }
