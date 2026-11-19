@@ -3486,7 +3486,6 @@ fn bible_area(
                             &mut bible.shelf,
                             &mut bible.downloads,
                             button.rect,
-                            "Songs",
                             &crate::bible::ThemeChoice {
                                 names: &state.theme_names,
                                 template_names: &state.template_names,

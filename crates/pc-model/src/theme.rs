@@ -900,6 +900,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_themes_picture_and_new_text_settings_survive_its_file() {
+        let mut theme = Theme::builtin();
+        theme.background_picture = Some("abc.png".to_owned());
+        let first = &mut theme.templates[0].boxes[0];
+        first.line_fill = LineFill { on: true, full_width: true, ..LineFill::default() };
+        first.list = ListStyle::Numbers;
+        first.scroll = Scroll::Up;
+        let back = Theme::from_json(&theme.to_json()).unwrap();
+        assert_eq!(back, theme);
+        // A theme file from before these settings reads with them off.
+        let mut old = Theme::builtin();
+        old.background_picture = None;
+        let plain = Theme::from_json(&old.to_json()).unwrap();
+        assert_eq!(plain.templates[0].boxes[0].scroll, Scroll::None);
+    }
+
+    #[test]
     fn lists_mark_each_line_with_words_and_skip_blank_ones() {
         assert_eq!(ListStyle::Numbers.apply("One\n\nTwo\n  Three"), "1.  One\n\n2.  Two\n3.  Three");
         assert_eq!(ListStyle::Bullets.apply("One"), "•  One");

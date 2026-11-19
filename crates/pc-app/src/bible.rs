@@ -444,7 +444,6 @@ pub struct BibleOptions {
     pub show_verse_numbers: bool,
     pub break_on_new_verse: bool,
     pub display_translation: bool,
-    pub preserve_font_color: bool,
     pub reference: ReferenceStyle,
     /// What went wrong with the last download, for the operator.
     pub problem: Option<String>,
@@ -464,7 +463,6 @@ impl Default for BibleOptions {
             show_verse_numbers: false,
             break_on_new_verse: true,
             display_translation: false,
-            preserve_font_color: false,
             reference: ReferenceStyle::VerseReferences,
             problem: None,
             menu_was_open: false,
@@ -498,7 +496,6 @@ pub fn options_popup(
     shelf: &mut Shelf,
     downloads: &mut crate::bible_store::Downloads,
     button: Rect,
-    library: &str,
     themes: &ThemeChoice,
 ) -> Option<(usize, usize)> {
     let mut picked_theme = None;
@@ -578,7 +575,7 @@ pub fn options_popup(
                             ui.vertical(|ui| {
                                 ui.set_width(size.x - 144.0 - 32.0);
                                 if options.pane == 0 {
-                                    picked_theme = slide_options(ui, options, library, themes);
+                                    picked_theme = slide_options(ui, options, themes);
                                 } else {
                                     bibles(ui, options, shelf, downloads);
                                 }
@@ -600,12 +597,7 @@ pub fn options_popup(
     picked_theme
 }
 
-fn slide_options(
-    ui: &mut egui::Ui,
-    options: &mut BibleOptions,
-    library: &str,
-    themes: &ThemeChoice,
-) -> Option<(usize, usize)> {
+fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, themes: &ThemeChoice) -> Option<(usize, usize)> {
     let mut picked_theme = None;
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
@@ -615,8 +607,6 @@ fn slide_options(
                 .on_hover_text("Start a new slide at each verse");
             ui.checkbox(&mut options.display_translation, "Display Translation")
                 .on_hover_text("Show the Bible's short name, such as KJV, with the reference");
-            ui.checkbox(&mut options.preserve_font_color, "Preserve Font Color")
-                .on_hover_text("Keep the colours the Bible itself gives, such as red letters");
         });
         ui.add_space(12.0);
         ui.vertical(|ui| {
@@ -678,13 +668,6 @@ fn slide_options(
             .on_hover_text(
                 "The theme and layout Bible slides use. Its boxes are what the Verse and Reference menus offer.",
             );
-        ui.end_row();
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(egui::RichText::new("Import Library").strong())
-        });
-        egui::ComboBox::from_id_salt("bible import library").selected_text(library).width(120.0).show_ui(ui, |ui| {
-            ui.label(library);
-        });
         ui.end_row();
     });
     picked_theme
