@@ -102,6 +102,9 @@ pub struct HomeState {
     pub slide_clip: Option<Slide>,
     /// A change to a slide asked for from its menu.
     pub slide_request: Option<(SlideRef, SlideRequest)>,
+    /// A song's arrangements changed in the Show view: the song, its arrangements, and the one
+    /// it is played in.
+    pub arrangement_request: Option<(usize, Vec<pc_model::Arrangement>, Option<pc_model::Uuid>)>,
     /// A theme chosen for a song from its menu: the song, and the theme by its place (`None`
     /// puts it back on the songs theme).
     pub song_theme_request: Option<(usize, Option<usize>)>,
@@ -698,6 +701,7 @@ impl Default for HomeState {
             slide_request: None,
             song_request: None,
             song_theme_request: None,
+            arrangement_request: None,
             theme_ids: Vec::new(),
             confirm_delete_song: None,
             removed_songs: Vec::new(),
@@ -3489,6 +3493,145 @@ fn bible_area(
     });
 }
 
+/// The Arrangement button beside a song's title: play the song as written or in one of its
+/// arrangements, make a new one, rename, duplicate or delete the one in use.
+fn arrangement_menu(ui: &mut egui::Ui, index: usize, song: &pc_model::Presentation, state: &mut HomeState) {
+    let active = song.active_arrangement();
+    let named = |arrangement: &pc_model::Arrangement| {
+        if arrangement.name.trim().is_empty() { "Untitled".to_owned() } else { arrangement.name.clone() }
+    };
+    let label =
+        active.map_or_else(|| "Arrangement".to_owned(), |arrangement| format!("Arrangement: {}", named(arrangement)));
+    let button = ui.small_button(label).on_hover_text("Play the song's groups in another order");
+    let mut arrangements = song.arrangements.clone();
+    let mut chosen = song.arrangement;
+    egui::Popup::from_toggle_button_response(&button)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(220.0);
+            if ui.add(egui::Button::selectable(active.is_none(), "As Written")).clicked() {
+                chosen = None;
+            }
+            for arrangement in &song.arrangements {
+                let on = active.is_some_and(|have| have.id == arrangement.id);
+                if ui.add(egui::Button::selectable(on, named(arrangement))).clicked() {
+                    chosen = Some(arrangement.id);
+                }
+            }
+            ui.separator();
+            if ui.button("New Arrangement").on_hover_text("Starts with the groups as written").clicked() {
+                let made = song.new_arrangement();
+                chosen = Some(made.id);
+                arrangements.push(made);
+            }
+            if let Some(at) = active.and_then(|have| arrangements.iter().position(|a| a.id == have.id)) {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Name").color(DIM));
+                    ui.add(egui::TextEdit::singleline(&mut arrangements[at].name).desired_width(150.0));
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Duplicate").clicked() {
+                        let copy = pc_model::Arrangement {
+                            id: pc_model::Uuid::new_v4(),
+                            name: format!("{} copy", arrangements[at].name),
+                            groups: arrangements[at].groups.clone(),
+                        };
+                        chosen = Some(copy.id);
+                        arrangements.push(copy);
+                    }
+                    if ui.button("Delete").clicked() {
+                        arrangements.remove(at);
+                        chosen = None;
+                    }
+                });
+            }
+        });
+    if chosen != song.arrangement || arrangements != song.arrangements {
+        state.arrangement_request = Some((index, arrangements, chosen));
+    }
+}
+
+/// The groups of the arrangement in use, in the order they are played. The one on screen is
+/// lit; a click goes to it; its menu moves or removes it; + adds a group at the end.
+fn arrangement_strip(
+    ui: &mut egui::Ui,
+    show: &Show,
+    song: &pc_model::Presentation,
+    state: &mut HomeState,
+    commands: &mut Vec<Command>,
+) {
+    let Some(arrangement) = song.active_arrangement() else { return };
+    let index = show.selected();
+    // Each entry: its place in the arrangement, its group, and the steps of the play order it covers.
+    let mut step = 0;
+    let mut chips = Vec::new();
+    for (at, id) in arrangement.groups.iter().enumerate() {
+        let Some(group) = song.groups.iter().find(|group| group.id == *id) else { continue };
+        chips.push((at, group, step));
+        step += group.slides.len();
+    }
+    let here = show.cursor().filter(|cursor| cursor.presentation == index).and(show.position()).map(|(step, _)| step);
+    let mut groups = arrangement.groups.clone();
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        let count = chips.len();
+        for (chip, (at, group, first)) in chips.iter().enumerate() {
+            let live = here.is_some_and(|step| step >= *first && step < first + group.slides.len());
+            let ink = color32(group.color);
+            let words = egui::RichText::new(group.name.as_str()).size(12.0).color(Color32::WHITE);
+            let button = egui::Button::new(words)
+                .fill(if live { ink } else { ink.gamma_multiply(0.45) })
+                .stroke(if live { Stroke::new(1.5, Color32::WHITE) } else { Stroke::NONE })
+                .corner_radius(5.0)
+                .min_size(vec2(0.0, 22.0));
+            let response = ui.add(button).on_hover_text("Click to show this part; right-click to move or remove it");
+            if response.clicked() {
+                commands.push(Command::GoToStep { presentation: index, step: *first });
+            }
+            response.context_menu(|ui| {
+                if ui.add_enabled(chip > 0, egui::Button::new("Move Left")).clicked() {
+                    groups.swap(*at, chips[chip - 1].0);
+                    changed = true;
+                    ui.close();
+                }
+                if ui.add_enabled(chip + 1 < count, egui::Button::new("Move Right")).clicked() {
+                    groups.swap(*at, chips[chip + 1].0);
+                    changed = true;
+                    ui.close();
+                }
+                if ui.button("Repeat").on_hover_text("Play this part again straight after").clicked() {
+                    groups.insert(*at + 1, group.id);
+                    changed = true;
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Remove").clicked() {
+                    groups.remove(*at);
+                    changed = true;
+                    ui.close();
+                }
+            });
+        }
+        let add = ui.small_button("+").on_hover_text("Add a group to the end");
+        egui::Popup::menu(&add).show(|ui| {
+            for group in &song.groups {
+                if ui.button(group.name.as_str()).clicked() {
+                    groups.push(group.id);
+                    changed = true;
+                }
+            }
+        });
+    });
+    if changed {
+        let mut arrangements = song.arrangements.clone();
+        if let Some(edited) = arrangements.iter_mut().find(|have| have.id == arrangement.id) {
+            edited.groups = groups;
+        }
+        state.arrangement_request = Some((index, arrangements, song.arrangement));
+    }
+}
+
 /// The middle: the selected song's name and how its slides are laid out, then the slides.
 fn slide_area(
     ui: &mut egui::Ui,
@@ -3597,6 +3740,9 @@ fn slide_area(
                 {
                     state.reflow = Some((show.selected(), pc_model::to_song_text(presentation)));
                 }
+                if !from_bible {
+                    arrangement_menu(ui, show.selected(), presentation, state);
+                }
                 if ui
                     .add(egui::Button::selectable(state.show_notes, "Notes"))
                     .on_hover_text("Show the notes of the slide on screen, for whoever runs the slides")
@@ -3610,6 +3756,14 @@ fn slide_area(
                 );
             });
         });
+        // The arrangement the song is played in, as a row of its groups.
+        if presentation.active_arrangement().is_some() {
+            let strip = Frame::new().inner_margin(egui::Margin { left: 20, right: 16, top: 0, bottom: 8 });
+            egui::Panel::top("arrangement strip")
+                .resizable(false)
+                .frame(strip)
+                .show(ui, |ui| arrangement_strip(ui, show, presentation, state, commands));
+        }
         // The bar under the slides, as ProPresenter has it: Add Slide on the left; the
         // transition, the slide view and the slide size on the right.
         egui::Panel::bottom("slide bar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {

@@ -43,6 +43,8 @@ pub fn parse_song_text(title: &str, text: &str) -> Presentation {
         groups,
         copyright: crate::Copyright::default(),
         theme: None,
+        arrangements: Vec::new(),
+        arrangement: None,
     }
 }
 

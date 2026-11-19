@@ -19,7 +19,8 @@ pub use theme::{
 };
 pub use transition::{Direction, Transition, TransitionKind};
 pub use types::{
-    Copyright, Group, ImageFit, MediaItem, Object, ObjectKind, Presentation, Rgba, Role, Shape, Slide, StrokeLook,
+    Arrangement, Copyright, Group, ImageFit, MediaItem, Object, ObjectKind, Presentation, Rgba, Role, Shape, Slide,
+    StrokeLook,
 };
 pub use uuid::Uuid;
 

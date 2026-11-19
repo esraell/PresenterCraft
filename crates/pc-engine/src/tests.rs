@@ -329,3 +329,66 @@ fn a_replaced_presentation_keeps_the_live_slide_by_its_id() {
     s.replace_presentation_following(0, without_b);
     assert_eq!(s.live(), None);
 }
+
+/// Verse 1, Chorus, Verse 2 (one slide each), arranged Verse 1, Chorus, Verse 2, Chorus.
+fn arranged() -> Show {
+    let mut song = parse_song_text("Song", "[Verse 1]\nA\n\n[Chorus]\nC\n\n[Verse 2]\nD\n");
+    let (v1, chorus, v2) = (song.groups[0].id, song.groups[1].id, song.groups[2].id);
+    let mut arrangement = song.new_arrangement();
+    arrangement.groups = vec![v1, chorus, v2, chorus];
+    song.arrangement = Some(arrangement.id);
+    song.arrangements.push(arrangement);
+    Show::new(vec![Arc::new(song)])
+}
+
+#[test]
+fn next_follows_the_arrangement_and_knows_which_chorus_it_is_on() {
+    let mut s = arranged();
+    s.apply(Command::Next);
+    assert_eq!((s.live(), s.position()), (at(0, 0), Some((0, 4))));
+    s.apply(Command::Next);
+    assert_eq!((s.live(), s.position()), (at(0, 1), Some((1, 4))), "the first chorus");
+    assert_eq!(s.upcoming(), at(0, 2));
+    s.apply(Command::Next);
+    assert_eq!(s.live(), at(0, 2));
+    s.apply(Command::Next);
+    assert_eq!((s.live(), s.position()), (at(0, 1), Some((3, 4))), "the second chorus");
+    assert_eq!(s.upcoming(), None, "the end of the arrangement");
+    assert!(!s.apply(Command::Next).slides);
+    s.apply(Command::Previous);
+    assert_eq!(s.live(), at(0, 2));
+    // Clicking the chorus from Verse 2 lands on the chorus after it, and Last on the last one.
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 1 }));
+    assert_eq!(s.position(), Some((3, 4)));
+    s.apply(Command::First);
+    s.apply(Command::GoToStep { presentation: 0, step: 1 });
+    assert_eq!((s.live(), s.position()), (at(0, 1), Some((1, 4))));
+    s.apply(Command::Last);
+    assert_eq!(s.position(), Some((3, 4)));
+}
+
+#[test]
+fn a_disabled_slide_is_passed_over_in_the_arrangement() {
+    let mut s = arranged();
+    let mut song = (*s.presentations()[0]).clone();
+    song.groups[2].slides[0].enabled = false;
+    s.replace_presentation(0, Arc::new(song));
+    s.apply(Command::GoToStep { presentation: 0, step: 1 });
+    // Verse 2 is disabled: Next goes from the first chorus to the second, the same slide.
+    assert!(!s.apply(Command::Next).slides, "the same slide stays on screen");
+    assert_eq!(s.position(), Some((3, 4)));
+}
+
+#[test]
+fn a_deleted_group_or_an_undo_keeps_the_place_in_the_arrangement() {
+    let mut s = arranged();
+    s.apply(Command::GoToStep { presentation: 0, step: 3 });
+    let before = s.presentations()[0].clone();
+    // Verse 2 is deleted: the arrangement is Verse 1, Chorus, Chorus, and the second chorus is on.
+    let without_v2 = Arc::new(before.without_slide(2).unwrap());
+    s.replace_presentation_following(0, without_v2);
+    assert_eq!((s.live(), s.position()), (at(0, 1), Some((2, 3))));
+    // Undo puts Verse 2 back; the second chorus is still the one on screen.
+    s.replace_presentation_following(0, before);
+    assert_eq!((s.live(), s.position()), (at(0, 1), Some((3, 4))));
+}

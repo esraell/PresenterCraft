@@ -446,6 +446,22 @@ pub struct Presentation {
     /// The theme the song is drawn with, by its id; `None` uses the theme songs use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<Uuid>,
+    /// Orders of the song's groups to play it in, such as verse, chorus, verse, chorus.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arrangements: Vec<Arrangement>,
+    /// The arrangement the song is played in, by its id; `None` plays the groups as written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrangement: Option<Uuid>,
+}
+
+/// An order to play a song's groups in. A group can come more than once, and a group left out
+/// is not played.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Arrangement {
+    pub id: Uuid,
+    pub name: String,
+    /// The groups, by their ids, in the order they are played.
+    pub groups: Vec<Uuid>,
 }
 
 /// A song's copyright details, as a CCLI report asks for them.
@@ -493,6 +509,41 @@ impl Presentation {
         self.groups.iter().map(|g| g.slides.len()).sum()
     }
 
+    /// The arrangement the song is played in, if one is chosen and still there.
+    pub fn active_arrangement(&self) -> Option<&Arrangement> {
+        let id = self.arrangement?;
+        self.arrangements.iter().find(|arrangement| arrangement.id == id)
+    }
+
+    /// The slides, by their places, in the order they are played: the chosen arrangement's
+    /// groups in turn, or the groups as written when no arrangement is chosen. A group the song
+    /// no longer has is passed over; if none of the arrangement's groups is left, the groups
+    /// are played as written.
+    pub fn order(&self) -> Vec<usize> {
+        let mut starts = Vec::with_capacity(self.groups.len());
+        let mut at = 0;
+        for group in &self.groups {
+            starts.push(at);
+            at += group.slides.len();
+        }
+        let written = || (0..at).collect::<Vec<usize>>();
+        let Some(arrangement) = self.active_arrangement() else { return written() };
+        let order: Vec<usize> = arrangement
+            .groups
+            .iter()
+            .filter_map(|id| self.groups.iter().position(|group| group.id == *id))
+            .flat_map(|index| starts[index]..starts[index] + self.groups[index].slides.len())
+            .collect();
+        if order.is_empty() { written() } else { order }
+    }
+
+    /// A new arrangement with the groups as written, named after how many there are.
+    pub fn new_arrangement(&self) -> Arrangement {
+        let taken = |name: &str| self.arrangements.iter().any(|arrangement| arrangement.name == name);
+        let name = (1..).map(|n| format!("Arrangement {n}")).find(|name| !taken(name)).unwrap_or_default();
+        Arrangement { id: Uuid::new_v4(), name, groups: self.groups.iter().map(|group| group.id).collect() }
+    }
+
     /// The slide at a flat index across all groups, in order, with its group.
     pub fn slide(&self, index: usize) -> Option<(&Group, &Slide)> {
         let mut remaining = index;
@@ -531,13 +582,16 @@ impl Presentation {
         let before: Vec<&Slide> = self.slides().map(|(_, slide)| slide).collect();
         let mut index = 0;
         let mut groups = parsed.groups;
-        for (at, group) in groups.iter_mut().enumerate() {
+        // Each group takes the id of the first group before it of the same name not yet taken,
+        // so arrangements keep their groups when one is added, removed or moved.
+        let mut taken = vec![false; self.groups.len()];
+        for group in &mut groups {
             if let Some(same) = self.groups.iter().find(|old| old.name == group.name) {
                 group.color = same.color;
             }
-            // A group in the same place with the same name is the same group.
-            if let Some(same) = self.groups.get(at).filter(|old| old.name == group.name) {
-                group.id = same.id;
+            if let Some(at) = self.groups.iter().zip(&taken).position(|(old, used)| !used && old.name == group.name) {
+                taken[at] = true;
+                group.id = self.groups[at].id;
             }
             for slide in &mut group.slides {
                 if let Some(old) = before.get(index) {
@@ -558,6 +612,8 @@ impl Presentation {
             groups,
             copyright: self.copyright.clone(),
             theme: self.theme,
+            arrangements: self.arrangements.clone(),
+            arrangement: self.arrangement,
         }
     }
 
@@ -627,6 +683,15 @@ impl Presentation {
         } else {
             let tail = copy.groups[group].slides.split_off(at);
             let started = Group { id: Uuid::new_v4(), name: name.to_owned(), color, slides: tail };
+            // Wherever an arrangement plays the group that was split, it plays the new one after.
+            let (split, new) = (copy.groups[group].id, started.id);
+            for arrangement in &mut copy.arrangements {
+                arrangement.groups = arrangement
+                    .groups
+                    .iter()
+                    .flat_map(|id| if *id == split { vec![*id, new] } else { vec![*id] })
+                    .collect();
+            }
             copy.groups.insert(group + 1, started);
         }
         Some(copy)
@@ -779,9 +844,61 @@ mod tests {
             groups: Vec::new(),
             copyright: Copyright::default(),
             theme: None,
+            arrangements: Vec::new(),
+            arrangement: None,
         };
         let (first, at) = empty.with_slide_added();
         assert_eq!((first.slide_count(), at), (1, 0));
         assert_eq!(first.slide(0).unwrap().1.objects[0].role, Some(Role::primary()));
+    }
+}
+
+#[cfg(test)]
+mod arrangement_tests {
+    use super::*;
+
+    /// Verse 1 (two slides), Chorus (one), Verse 2 (one).
+    fn song() -> Presentation {
+        crate::parse_song_text("Song", "[Verse 1]\nA\n\nB\n\n[Chorus]\nC\n\n[Verse 2]\nD\n")
+    }
+
+    #[test]
+    fn an_arrangement_plays_its_groups_in_its_order_and_repeats_them() {
+        let mut song = song();
+        assert_eq!(song.order(), [0, 1, 2, 3], "no arrangement: as written");
+        let (v1, chorus, v2) = (song.groups[0].id, song.groups[1].id, song.groups[2].id);
+        let mut arrangement = song.new_arrangement();
+        assert_eq!(arrangement.groups, [v1, chorus, v2]);
+        arrangement.groups = vec![v1, chorus, v2, chorus];
+        song.arrangement = Some(arrangement.id);
+        song.arrangements.push(arrangement);
+        assert_eq!(song.order(), [0, 1, 2, 3, 2]);
+        // A group the song no longer has is passed over.
+        let without_v2 = song.without_slide(3).unwrap();
+        assert_eq!(without_v2.order(), [0, 1, 2, 2]);
+        // An arrangement with none of its groups left plays the song as written.
+        song.arrangements[0].groups = vec![Uuid::new_v4()];
+        assert_eq!(song.order(), [0, 1, 2, 3]);
+        assert_eq!(song.new_arrangement().name, "Arrangement 2");
+    }
+
+    #[test]
+    fn splitting_a_group_or_reflowing_keeps_arrangements_whole() {
+        let mut song = song();
+        let (v1, chorus) = (song.groups[0].id, song.groups[1].id);
+        let mut arrangement = song.new_arrangement();
+        arrangement.groups = vec![v1, chorus, v1];
+        song.arrangement = Some(arrangement.id);
+        song.arrangements.push(arrangement);
+        // Verse 1's second slide starts a new group: it is played after each Verse 1.
+        let split = song.with_group_starting(1, "Pre-Chorus").unwrap();
+        assert_eq!(split.order(), [0, 1, 2, 0, 1]);
+        // A group added before the others in Reflow leaves the rest with their ids.
+        let text = "[Intro]\nI\n\n[Verse 1]\nA\n\nB\n\n[Chorus]\nC\n\n[Verse 2]\nD\n";
+        let reflowed = song.reflowed(text);
+        assert_eq!(reflowed.groups[1].id, v1);
+        assert_eq!(reflowed.groups[2].id, chorus);
+        assert_eq!(reflowed.order(), [1, 2, 3, 1, 2]);
+        assert_eq!(reflowed.arrangements, song.arrangements);
     }
 }

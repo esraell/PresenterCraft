@@ -934,8 +934,10 @@ pub fn program_panel(
                 commands.push(Command::Previous);
             }
             let (middle, _) = ui.allocate_exact_size(vec2(64.0, 36.0), Sense::hover());
-            let place = match (at, song) {
-                (Some(at), Some(song)) => format!("{} / {}", at.slide + 1, song.slide_count()),
+            // The place in the song's play order, which an arrangement can make longer.
+            let place = match (show.position(), at, song) {
+                (Some((step, length)), _, _) => format!("{} / {length}", step + 1),
+                (None, Some(at), Some(song)) => format!("{} / {}", at.slide + 1, song.slide_count()),
                 _ => "–".to_owned(),
             };
             ui.painter().text(middle.center(), Align2::CENTER_CENTER, place, FontId::monospace(12.5), TEXT_DIM);
@@ -950,7 +952,7 @@ pub fn program_panel(
 
         // What the next slide says, so the operator can read ahead.
         caption(ui, "NEXT");
-        let next = at.and_then(|at| Some((song?, song?.slide(at.slide + 1)?)));
+        let next = show.upcoming().and_then(|up| Some((song?, song?.slide(up.slide)?)));
         Frame::new().fill(CARD).corner_radius(RADIUS).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
             ui.set_width(width - 24.0);
             match next {

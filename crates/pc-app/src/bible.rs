@@ -269,6 +269,8 @@ pub fn build_passage(
         groups,
         copyright: pc_model::Copyright::default(),
         theme: None,
+        arrangements: Vec::new(),
+        arrangement: None,
     })
 }
 

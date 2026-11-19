@@ -196,11 +196,11 @@ fn action_commands(show: &Show, state: &home::HomeState, action: &pc_model::Show
         }]),
         ShowAction::Audience { on } => Some(vec![Command::SetOutputEnabled(*on)]),
         ShowAction::Song { key } => {
-            // The song's first slide that is not disabled.
+            // The song's first slide in its play order that is not disabled.
             let at = state.song_keys.iter().position(|have| have == key);
             let first = at.and_then(|at| {
                 let song = show.presentations().get(at)?;
-                song.groups.iter().flat_map(|group| &group.slides).position(|slide| slide.enabled)
+                song.order().into_iter().find(|slide| song.slide(*slide).is_some_and(|(_, s)| s.enabled))
             });
             Some(match (at, first) {
                 (Some(at), Some(slide)) => {
@@ -904,10 +904,9 @@ impl App {
         if command != Command::Next || !state.continuous {
             return command;
         }
+        // Only at the end of the song's play order.
         let Some(live) = self.show.live() else { return command };
-        let Some(song) = self.show.presentations().get(live.presentation) else { return command };
-        let last_enabled = (0..song.slide_count()).rev().find(|at| song.slide(*at).is_some_and(|(_, s)| s.enabled));
-        if last_enabled != Some(live.slide) {
+        if self.show.upcoming().is_some() {
             return command;
         }
         let Some(key) = state.song_keys.get(live.presentation) else { return command };
@@ -922,7 +921,7 @@ impl App {
         });
         match next.and_then(|at| {
             let song = self.show.presentations().get(at)?;
-            let first = (0..song.slide_count()).find(|slide| song.slide(*slide).is_some_and(|(_, s)| s.enabled))?;
+            let first = song.order().into_iter().find(|slide| song.slide(*slide).is_some_and(|(_, s)| s.enabled))?;
             Some(pc_engine::SlideRef { presentation: at, slide: first })
         }) {
             Some(target) => Command::GoTo(target),
@@ -937,10 +936,10 @@ impl App {
             return;
         };
         let slide = self.show.live_slide().map(|(_, slide)| Arc::new(slide.clone()));
-        // The slide after the one on screen, for the stage screens.
-        let next = self.show.live().and_then(|at| {
+        // The slide Next would show, in the song's play order, for the stage screens.
+        let next = self.show.live().and(self.show.upcoming()).and_then(|at| {
             let song = self.show.presentations().get(at.presentation)?;
-            song.slide(at.slide + 1).map(|(_, slide)| Arc::new(slide.clone()))
+            song.slide(at.slide).map(|(_, slide)| Arc::new(slide.clone()))
         });
         let media = self.show.live_media().and_then(|index| self.pictures.get(index)).cloned();
         // The audience comes first: tell the output before drawing anything for the operator.
@@ -978,9 +977,9 @@ impl App {
         running.preview_shows_stage = state.preview_stage;
         if state.preview_stage {
             // The stage screens' picture: the time, this slide, the next, a timer, the stage message.
-            let next = self.show.live().and_then(|at| {
+            let next = self.show.live().and(self.show.upcoming()).and_then(|at| {
                 let song = self.show.presentations().get(at.presentation)?;
-                song.slide(at.slide + 1).map(|(_, slide)| slide.clone())
+                song.slide(at.slide).map(|(_, slide)| slide.clone())
             });
             let overlay = running.overlay_sent.clone().unwrap_or_default();
             let picture = stage::slide(slide.as_deref(), next.as_ref(), &overlay);
@@ -1094,6 +1093,42 @@ impl App {
             running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
             running.home_window.request_redraw();
         }
+        if changes.slides {
+            self.refresh_output();
+        }
+    }
+
+    /// Keeps a song's arrangements as changed in the Show view, and the one it is played in.
+    fn handle_arrangement(&mut self) {
+        let Some((index, arrangements, chosen)) =
+            self.running.as_mut().and_then(|r| r.home_state.arrangement_request.take())
+        else {
+            return;
+        };
+        let Some(song) = self.show.presentations().get(index).cloned() else { return };
+        let changed = pc_model::Presentation { arrangements, arrangement: chosen, ..(*song).clone() };
+        if changed == *song {
+            return;
+        }
+        // Typing an arrangement's name is one step to undo, not one for each letter.
+        let only_named = |a: &pc_model::Presentation, b: &pc_model::Presentation| {
+            a.arrangement == b.arrangement
+                && a.arrangements.len() == b.arrangements.len()
+                && a.arrangements.iter().zip(&b.arrangements).all(|(x, y)| x.id == y.id && x.groups == y.groups)
+        };
+        let renaming = only_named(&changed, &song) && self.history.peek(false) == Some(index);
+        if !renaming {
+            self.history.remember(index, song);
+        }
+        let changes = self.show.replace_presentation(index, Arc::new(changed));
+        if !self.unsaved.contains(&index) {
+            self.unsaved.push(index);
+        }
+        self.save_unsaved();
+        if let Some(running) = self.running.as_ref() {
+            running.home_window.request_redraw();
+        }
+        // The stage screens show the next slide in the new order.
         if changes.slides {
             self.refresh_output();
         }
@@ -1361,6 +1396,8 @@ impl App {
             groups: vec![verse],
             copyright: pc_model::Copyright::default(),
             theme: None,
+            arrangements: Vec::new(),
+            arrangement: None,
         };
         // New songs live in the app's Songs folder, each in a file named by its id, so two
         // songs with one title never collide.
@@ -1908,6 +1945,31 @@ impl App {
             // Testing aid: open Settings.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_SETTINGS").is_some() {
                 running.home_state.settings_open = true;
+            }
+            // Testing aid: arrange the first song Verse, Chorus, Verse, Chorus, and show the
+            // second chorus.
+            if std::env::var_os("PRESENTERCRAFT_ARRANGE").is_some() {
+                if running.frames == GO_LIVE_AT + 1
+                    && let Some(song) = self.show.presentations().first()
+                    && song.groups.len() >= 2
+                {
+                    let (verse, chorus) = (song.groups[0].id, song.groups[1].id);
+                    let mut arrangement = song.new_arrangement();
+                    arrangement.name = "Sunday".to_owned();
+                    arrangement.groups = vec![verse, chorus, verse, chorus];
+                    let chosen = Some(arrangement.id);
+                    running.home_state.arrangement_request = Some((0, vec![arrangement], chosen));
+                }
+                if running.frames == GO_LIVE_AT + 4
+                    && let Some(song) = self.show.presentations().first()
+                {
+                    let chorus = song.groups.get(1).map(|group| group.id);
+                    let in_chorus =
+                        |slide: &usize| song.slide(*slide).is_some_and(|(group, _)| Some(group.id) == chorus);
+                    if let Some(step) = song.order().iter().rposition(in_chorus) {
+                        commands.push(Command::GoToStep { presentation: 0, step });
+                    }
+                }
             }
             // Testing aid: show the stage picture in the Program preview.
             if running.frames == GO_LIVE_AT + 2 && std::env::var("PRESENTERCRAFT_PREVIEW").as_deref() == Ok("stage") {
@@ -2813,6 +2875,7 @@ impl ApplicationHandler<String> for App {
                 self.handle_audio();
                 self.handle_slide_request();
                 self.handle_song_theme();
+                self.handle_arrangement();
                 self.handle_copyright();
                 self.handle_reflow();
                 self.handle_media_request();
@@ -2991,6 +3054,8 @@ fn main() -> ExitCode {
             groups: Vec::new(),
             copyright: pc_model::Copyright::default(),
             theme: None,
+            arrangements: Vec::new(),
+            arrangement: None,
         });
         sources.push(None);
     }

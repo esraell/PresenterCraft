@@ -35,6 +35,12 @@ pub enum Command {
     /// Show another presentation's slides to the operator. Never changes what is live.
     Select(usize),
     GoTo(SlideRef),
+    /// The slide at this place in a presentation's play order (see `Presentation::order`), for
+    /// a group an arrangement plays more than once.
+    GoToStep {
+        presentation: usize,
+        step: usize,
+    },
     /// Show the media item with this index behind the words.
     ShowMedia(usize),
     Next,
@@ -64,6 +70,9 @@ pub struct Show {
     selected: usize,
     live: Option<SlideRef>,
     cursor: Option<SlideRef>,
+    /// Where the cursor is in its presentation's play order. A slide whose group an
+    /// arrangement plays twice is at two places; this says which.
+    step: Option<usize>,
     media: Vec<MediaItem>,
     live_media: Option<usize>,
     output_enabled: bool,
@@ -77,6 +86,7 @@ impl Show {
             selected: 0,
             live: None,
             cursor: None,
+            step: None,
             media: Vec::new(),
             live_media: None,
             output_enabled: true,
@@ -98,6 +108,38 @@ impl Show {
     /// The last slide that was live. Kept after a clear so `Next` can continue from it.
     pub fn cursor(&self) -> Option<SlideRef> {
         self.cursor
+    }
+
+    /// Where the cursor is in its presentation's play order, and how long that order is.
+    pub fn position(&self) -> Option<(usize, usize)> {
+        let cursor = self.cursor?;
+        Some((self.step?, self.order(cursor.presentation).len()))
+    }
+
+    /// The slide `Next` would put on screen after the cursor (the live slide, or the last one
+    /// live), in the play order; `None` at the end of the song.
+    pub fn upcoming(&self) -> Option<SlideRef> {
+        let cursor = self.cursor?;
+        let (at, step) = self.next_target()?;
+        (at != cursor || step != self.step).then_some(at)
+    }
+
+    /// A presentation's slides, by their places, in the order they are played.
+    fn order(&self, presentation: usize) -> Vec<usize> {
+        self.presentations.get(presentation).map_or_else(Vec::new, |song| song.order())
+    }
+
+    /// The place of a slide in its presentation's play order: the first place at or after the
+    /// cursor's (in the same presentation), otherwise its first place.
+    fn step_of(&self, at: SlideRef) -> Option<usize> {
+        let order = self.order(at.presentation);
+        let from = self.step.filter(|_| self.cursor.is_some_and(|cursor| cursor.presentation == at.presentation));
+        let from = from.unwrap_or(0).min(order.len());
+        order[from..]
+            .iter()
+            .position(|slide| *slide == at.slide)
+            .map(|offset| from + offset)
+            .or_else(|| order.iter().position(|slide| *slide == at.slide))
     }
 
     pub fn live_slide(&self) -> Option<(&Arc<Presentation>, &Slide)> {
@@ -190,11 +232,15 @@ impl Show {
     /// the new presentation still has a slide at that position; otherwise the slide layer is
     /// cleared. Reports a slide change when the presentation was the live one.
     pub fn replace_presentation(&mut self, index: usize, presentation: Arc<Presentation>) -> Changes {
+        let was = self.cursor_occurrence(index);
         let Some(slot) = self.presentations.get_mut(index) else { return Changes::default() };
         let count = presentation.slide_count();
         *slot = presentation;
         if self.cursor.is_some_and(|c| c.presentation == index && c.slide >= count) {
             self.cursor = None;
+        }
+        if let Some(cursor) = self.cursor.filter(|c| c.presentation == index) {
+            self.step = self.nth_place(cursor, was);
         }
         match self.live {
             Some(live) if live.presentation == index => {
@@ -224,6 +270,7 @@ impl Show {
             presentation.groups.iter().flat_map(|group| &group.slides).position(|slide| slide.id == id)
         };
         let (live_at, cursor_at) = (live_id.map(place_of), cursor_id.map(place_of));
+        let was = self.cursor_occurrence(index);
         let changes = self.replace_presentation(index, presentation);
         if let (Some(found), Some(live)) = (live_at, self.live.as_mut().filter(|live| live.presentation == index)) {
             match found {
@@ -237,7 +284,26 @@ impl Show {
                 None => self.cursor = None,
             }
         }
+        self.step = self.cursor.filter(|c| c.presentation == index).and_then(|cursor| self.nth_place(cursor, was));
         changes
+    }
+
+    /// Which time the cursor's slide is played, counting from 0, in a presentation's play
+    /// order: the second chorus is 1. `None` when the cursor isn't in that presentation.
+    fn cursor_occurrence(&self, presentation: usize) -> Option<usize> {
+        let cursor = self.cursor.filter(|c| c.presentation == presentation)?;
+        let order = self.order(presentation);
+        let step = self.cursor_step(cursor, &order)?;
+        Some(order[..step].iter().filter(|slide| **slide == cursor.slide).count())
+    }
+
+    /// The place in the play order where a slide is played for the given time (or its last
+    /// time, if it isn't played that often), or its first place if no time is given.
+    fn nth_place(&self, at: SlideRef, occurrence: Option<usize>) -> Option<usize> {
+        let order = self.order(at.presentation);
+        let places: Vec<usize> =
+            order.iter().enumerate().filter(|(_, slide)| **slide == at.slide).map(|(step, _)| step).collect();
+        places.get(occurrence.unwrap_or(0)).or(places.last()).copied()
     }
 
     /// Keeps what is live and the cursor on the same slides after a slide was removed from, or
@@ -258,6 +324,9 @@ impl Show {
         let was = self.live;
         shift(&mut self.live);
         shift(&mut self.cursor);
+        if self.cursor.is_some_and(|c| c.presentation == presentation) {
+            self.refind_step();
+        }
         Changes { slides: was.is_some() && self.live.is_none(), ..Changes::default() }
     }
 
@@ -270,7 +339,11 @@ impl Show {
                 }
                 Changes::default()
             }
-            Command::GoTo(target) => self.go_to(Some(target)),
+            Command::GoTo(target) => self.go_to(Some((target, None))),
+            Command::GoToStep { presentation, step } => {
+                let slide = self.order(presentation).get(step).copied();
+                self.go_to(slide.map(|slide| (SlideRef { presentation, slide }, Some(step))))
+            }
             Command::Next => self.go_to(self.next_target()),
             Command::Previous => self.go_to(self.previous_target()),
             Command::First => self.go_to(self.edge_of_selected(false)),
@@ -302,12 +375,20 @@ impl Show {
         self.presentations.get(presentation).map_or(0, |p| p.slide_count())
     }
 
-    /// Makes `target` live if it names a real slide that is not already live.
-    fn go_to(&mut self, target: Option<SlideRef>) -> Changes {
-        let Some(target) = target else {
+    /// Makes `target` live if it names a real slide that is not disabled, at the place in the
+    /// play order given (or the one found for it). A slide already live only moves its place:
+    /// what is on screen doesn't change.
+    fn go_to(&mut self, target: Option<(SlideRef, Option<usize>)>) -> Changes {
+        let Some((target, step)) = target else {
             return Changes::default();
         };
-        if target.slide >= self.slide_count(target.presentation) || self.live == Some(target) || !self.enabled(target) {
+        if target.slide >= self.slide_count(target.presentation) || !self.enabled(target) {
+            return Changes::default();
+        }
+        let step = step.or_else(|| self.step_of(target));
+        self.step = step;
+        if self.live == Some(target) {
+            self.cursor = Some(target);
             return Changes::default();
         }
         self.live = Some(target);
@@ -323,32 +404,63 @@ impl Show {
             .is_some_and(|(_, slide)| slide.enabled)
     }
 
-    /// The next slide after the cursor that is not disabled. At the end of the song it stays
-    /// where it is, so after a clear the last slide can be shown again.
-    fn next_target(&self) -> Option<SlideRef> {
-        match self.cursor {
-            Some(cursor) => (cursor.slide + 1..self.slide_count(cursor.presentation))
-                .map(|slide| SlideRef { slide, ..cursor })
-                .find(|at| self.enabled(*at))
-                .or(Some(cursor)),
-            None => self.edge_of_selected(false),
+    /// Where the cursor is in its play order: its step if that still names its slide,
+    /// otherwise the first place the slide is played.
+    fn cursor_step(&self, cursor: SlideRef, order: &[usize]) -> Option<usize> {
+        self.step
+            .filter(|step| order.get(*step) == Some(&cursor.slide))
+            .or_else(|| order.iter().position(|slide| *slide == cursor.slide))
+    }
+
+    /// The next slide in the play order after the cursor that is not disabled, with its place.
+    /// At the end of the song it stays where it is, so after a clear the last slide can be
+    /// shown again. A cursor on a slide the arrangement leaves out goes on as written.
+    fn next_target(&self) -> Option<(SlideRef, Option<usize>)> {
+        let Some(cursor) = self.cursor else { return self.edge_of_selected(false) };
+        let order = self.order(cursor.presentation);
+        let stay = Some((cursor, self.step));
+        match self.cursor_step(cursor, &order) {
+            Some(here) => (here + 1..order.len())
+                .map(|step| (SlideRef { slide: order[step], ..cursor }, Some(step)))
+                .find(|(at, _)| self.enabled(*at))
+                .or(stay),
+            None => (cursor.slide + 1..self.slide_count(cursor.presentation))
+                .map(|slide| (SlideRef { slide, ..cursor }, None))
+                .find(|(at, _)| self.enabled(*at))
+                .or(stay),
         }
     }
 
-    /// The slide before the cursor that is not disabled; at the start of the song it stays.
-    fn previous_target(&self) -> Option<SlideRef> {
+    /// The slide before the cursor in the play order that is not disabled; at the start of the
+    /// song it stays.
+    fn previous_target(&self) -> Option<(SlideRef, Option<usize>)> {
         let cursor = self.cursor?;
-        (0..cursor.slide).rev().map(|slide| SlideRef { slide, ..cursor }).find(|at| self.enabled(*at)).or(Some(cursor))
+        let order = self.order(cursor.presentation);
+        let stay = Some((cursor, self.step));
+        match self.cursor_step(cursor, &order) {
+            Some(here) => (0..here)
+                .rev()
+                .map(|step| (SlideRef { slide: order[step], ..cursor }, Some(step)))
+                .find(|(at, _)| self.enabled(*at))
+                .or(stay),
+            None => (0..cursor.slide)
+                .rev()
+                .map(|slide| (SlideRef { slide, ..cursor }, None))
+                .find(|(at, _)| self.enabled(*at))
+                .or(stay),
+        }
     }
 
-    /// The selected song's first (or last) slide that is not disabled.
-    fn edge_of_selected(&self, last: bool) -> Option<SlideRef> {
-        let at = |slide| SlideRef { presentation: self.selected, slide };
-        let count = self.slide_count(self.selected);
-        if last {
-            (0..count).rev().map(at).find(|at| self.enabled(*at))
-        } else {
-            (0..count).map(at).find(|at| self.enabled(*at))
-        }
+    /// The selected song's first (or last) slide in its play order that is not disabled.
+    fn edge_of_selected(&self, last: bool) -> Option<(SlideRef, Option<usize>)> {
+        let order = self.order(self.selected);
+        let at = |step: usize| (SlideRef { presentation: self.selected, slide: order[step] }, Some(step));
+        let enabled = |(at, _): &(SlideRef, Option<usize>)| self.enabled(*at);
+        if last { (0..order.len()).rev().map(at).find(enabled) } else { (0..order.len()).map(at).find(enabled) }
+    }
+
+    /// Finds the cursor's place in the play order again, after its presentation changed.
+    fn refind_step(&mut self) {
+        self.step = self.cursor.and_then(|cursor| self.step_of(cursor));
     }
 }

@@ -42,6 +42,11 @@ ProPresenter.
 - Songs shown as a grid of slides, an Easy view (words only) or a Table view, with a size
   slider. Click a slide, or use the keys below, to put it on the audience screen.
 - Groups (Verse 1, Chorus, Bridge…) with coloured bars and one-key jumps.
+- **Arrangements**: a song's groups in the order to sing them (Verse 1, Chorus, Verse 2, Chorus…),
+  from Arrangement beside its title. Next and Previous follow it, a group can come more than
+  once, the stage screens and the NEXT card show what comes next in it, and a row of its
+  groups shows the one on screen; click one to go to it, right-click to move, repeat or
+  remove it, + to add a group.
 - Transitions between slides: Cut, Dissolve, Fade Black, Fade White, Push, Move In, Reveal,
   Wipe (each from any side), Iris and Zoom In, with their time, from the bar under the slides.
 - A Library of songs above a Service list (songs and saved Bible passages, in running order).
