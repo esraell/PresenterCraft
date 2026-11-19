@@ -168,10 +168,24 @@ ProPresenter.
 
 Among the things PresenterCraft can't do yet:
 
-- Videos and live video inputs.
-- Most of ProPresenter's 37 transitions (ten are built).
+- Videos and live video inputs (pictures work).
 - Formatting one word differently from the rest of its box.
-- Importing songs from other presentation apps or from CCLI SongSelect.
+- Slide sizes other than 1920 × 1080.
+- A timeline that times slides, media and audio together (a slide can go on by itself after a
+  time, and a song can loop).
+- Most of ProPresenter's 37 transitions (ten are built), and a transition for the media bin or
+  props of their own.
+- Media playlists and settings for each media item (scaling, looping, in and out points); audio
+  playlists, shuffle and crossfade.
+- The Announcements layer, Clear Groups, and Show Slide on Stage Screens Only.
+- Saved looks to switch between, masks other than covered edges, corner pin, alpha and NDI
+  modes, and a theme for each screen.
+- Fills other than a colour (gradients, media, cut-out text), feathering, objects shown only
+  under conditions, and pen, web and sticker objects; baseline and paragraph spacing; builds
+  delivered bullet by bullet.
+- Saving a Bible passage as a song of its own.
+- Importing songs from other presentation apps or from CCLI SongSelect; exporting and printing.
+- Undo that names what it undoes, editable key mappings, and a Slide Labels settings pane.
 - Tested builds for Windows and Linux.
 - Remote control, an API, and MCP.
 
