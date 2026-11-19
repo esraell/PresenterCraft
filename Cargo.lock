@@ -2156,6 +2156,8 @@ dependencies = [
  "pc-render",
  "png",
  "pollster",
+ "serde",
+ "serde_json",
  "sha2",
  "ureq",
  "winit",

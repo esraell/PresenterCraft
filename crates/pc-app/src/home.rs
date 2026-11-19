@@ -44,6 +44,12 @@ pub struct HomeState {
     pub columns: usize,
     /// The slide picked out without being shown, by a right-click.
     pub selected_slide: Option<SlideRef>,
+    /// The running orders, and the one in front.
+    pub services: crate::service::Services,
+    /// For each presentation, the name its song is found by again in a service.
+    pub song_keys: Vec<String>,
+    /// The service's name while it is being retyped.
+    pub renaming_service: Option<String>,
     /// Displayed thumbnail width in points.
     /// Text typed into the library's filter box.
     pub filter: String,
@@ -193,6 +199,76 @@ impl BiblePage {
         true
     }
 
+    /// The passage now shown, as something a service can keep.
+    pub fn saved(&self) -> Option<crate::service::SavedPassage> {
+        use crate::bible::ReferenceStyle;
+        if self.shown.is_empty() {
+            return None;
+        }
+        let rows = self
+            .rows
+            .iter()
+            .filter_map(|row| {
+                Some(crate::service::SavedRow {
+                    bible: self.shelf.bibles.get(row.bible)?.id.clone(),
+                    verse: row.verse.as_ref().map(|role| role.0.clone()),
+                    reference: row.reference.as_ref().map(|role| role.0.clone()),
+                })
+            })
+            .collect();
+        let o = &self.options;
+        Some(crate::service::SavedPassage {
+            lookup: self.shown.clone(),
+            rows,
+            show_verse_numbers: o.show_verse_numbers,
+            break_on_new_verse: o.break_on_new_verse,
+            display_translation: o.display_translation,
+            reference_style: match o.reference {
+                ReferenceStyle::VerseReferences => "verse",
+                ReferenceStyle::PassageEach => "passage_each",
+                ReferenceStyle::PassageLast => "passage_last",
+                ReferenceStyle::NoReference => "none",
+            }
+            .to_owned(),
+        })
+    }
+
+    /// Brings a saved passage back: its translations and options are set as they were, and
+    /// it is looked up. A translation that is no longer installed is left out, and said so.
+    pub fn open_saved(&mut self, saved: &crate::service::SavedPassage, live: Option<usize>) {
+        use crate::bible::ReferenceStyle;
+        let mut rows = Vec::new();
+        let mut missing = Vec::new();
+        for row in &saved.rows {
+            match self.shelf.position(&row.bible) {
+                Some(bible) => rows.push(BibleRow {
+                    bible,
+                    verse: row.verse.clone().map(pc_model::Role),
+                    reference: row.reference.clone().map(pc_model::Role),
+                }),
+                None => missing.push(row.bible.to_uppercase()),
+            }
+        }
+        if !rows.is_empty() {
+            self.rows = rows;
+        }
+        let o = &mut self.options;
+        o.show_verse_numbers = saved.show_verse_numbers;
+        o.break_on_new_verse = saved.break_on_new_verse;
+        o.display_translation = saved.display_translation;
+        o.reference = match saved.reference_style.as_str() {
+            "passage_each" => ReferenceStyle::PassageEach,
+            "passage_last" => ReferenceStyle::PassageLast,
+            "none" => ReferenceStyle::NoReference,
+            _ => ReferenceStyle::VerseReferences,
+        };
+        self.lookup = saved.lookup.clone();
+        self.look_up(live);
+        if !missing.is_empty() && self.message.is_none() {
+            self.message = Some(format!("Not installed, so left out: {}.", missing.join(", ")));
+        }
+    }
+
     /// The choices a passage is made with, as text, so a change to any of them can be noticed.
     fn choices(&self) -> String {
         let o = &self.options;
@@ -322,6 +398,9 @@ impl Default for HomeState {
             slide_view: SlideView::Grid,
             columns: 4,
             selected_slide: None,
+            services: crate::service::Services::default(),
+            song_keys: Vec::new(),
+            renaming_service: None,
             filter: String::new(),
             output_stopped: false,
             drop_hover: false,
@@ -526,6 +605,17 @@ fn tool_menu(ui: &mut egui::Ui, state: &mut HomeState) {
                                 if row(ui, name, index == state.theme_for_bible, true) {
                                     state.theme_request = Some(ThemeRequest::UseForBible(index));
                                     close = true;
+                                }
+                                // Keeps the passage in the service, to be brought back with one click.
+                                let saved = state.bible.saved();
+                                let save = ui
+                                    .add_enabled(saved.is_some(), egui::Button::new("Save to Service"))
+                                    .on_hover_text("Keep this passage in the service, ready to open again")
+                                    .on_disabled_hover_text("Look a passage up first");
+                                if save.clicked()
+                                    && let Some(saved) = saved
+                                {
+                                    state.services.add(crate::service::Item::Passage(saved));
                                 }
                             }
                             ui.separator();

@@ -10,6 +10,7 @@ mod inspector;
 mod load;
 mod media;
 mod output;
+mod service;
 mod studio;
 mod theme_store;
 mod thumbs;
@@ -360,6 +361,18 @@ impl App {
                 output_placement: placement,
                 theme_names: self.themes.iter().map(|theme| theme.name.clone()).collect(),
                 theme_for_songs: self.songs_theme,
+                services: service::load(),
+                // A song is found again by its file, without the ending (which changes when
+                // it is first saved); one with no file, by its title.
+                song_keys: self
+                    .sources
+                    .iter()
+                    .zip(self.show.presentations())
+                    .map(|(source, song)| match source {
+                        Some(path) => path.with_extension("").to_string_lossy().into_owned(),
+                        None => format!("title:{}", song.title),
+                    })
+                    .collect(),
                 theme_for_bible: self.bible_theme,
                 bible: home::BiblePage {
                     slots: Some(self.bible_slots),
@@ -997,6 +1010,13 @@ impl ApplicationHandler for App {
                     }
                 }
                 self.handle_themes();
+                // The services are written as soon as they change; the file is small.
+                if let Some(running) = self.running.as_mut()
+                    && std::mem::take(&mut running.home_state.services.changed)
+                    && let Err(problem) = service::save(&running.home_state.services)
+                {
+                    running.home_state.notice = Some(problem);
+                }
                 self.update_canvas();
                 self.move_output();
                 self.switch_ndi();

@@ -1,0 +1,323 @@
+//! Services: the running order for a gathering. A service lists songs and saved Bible
+//! passages in the order they will be used, so everything is one click away during it.
+
+use serde::{Deserialize, Serialize};
+
+/// One translation of a saved passage: which Bible, and the theme boxes its words and
+/// reference go in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedRow {
+    /// The Bible's short name for files, such as `kjv`.
+    pub bible: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verse: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+/// A Bible passage kept for later: what was typed, in which translations, made how.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedPassage {
+    /// What to type in Scripture Lookup to get it, such as `John 3:16-18`.
+    pub lookup: String,
+    pub rows: Vec<SavedRow>,
+    #[serde(default)]
+    pub show_verse_numbers: bool,
+    #[serde(default = "yes")]
+    pub break_on_new_verse: bool,
+    #[serde(default)]
+    pub display_translation: bool,
+    /// `verse`, `passage_each`, `passage_last` or `none`.
+    #[serde(default)]
+    pub reference_style: String,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// One thing in a service.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Item {
+    /// A song from the library. `key` finds it again next time; `title` is shown if it cannot
+    /// be found.
+    Song {
+        key: String,
+        title: String,
+    },
+    Passage(SavedPassage),
+}
+
+impl Item {
+    /// What the item is called in the list.
+    pub fn title(&self) -> &str {
+        match self {
+            Item::Song { title, .. } => title,
+            Item::Passage(passage) => &passage.lookup,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Service {
+    pub name: String,
+    pub items: Vec<Item>,
+}
+
+/// Every service, and which one is in front.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Services {
+    pub list: Vec<Service>,
+    pub current: usize,
+    /// The item last clicked in the service in front, which is shown as chosen.
+    #[serde(skip)]
+    pub chosen: Option<usize>,
+    /// Set by every change. The app writes the services to their file and clears this.
+    #[serde(skip)]
+    pub changed: bool,
+}
+
+impl Default for Services {
+    fn default() -> Services {
+        Services {
+            list: vec![Service { name: "Service".to_owned(), items: Vec::new() }],
+            current: 0,
+            chosen: None,
+            changed: false,
+        }
+    }
+}
+
+const FORMAT: &str = "presentercraft-services";
+
+#[derive(Serialize, Deserialize)]
+struct File {
+    format: String,
+    version: u32,
+    #[serde(flatten)]
+    services: Services,
+}
+
+impl Services {
+    /// The service in front. There is always one.
+    pub fn front(&self) -> &Service {
+        &self.list[self.current.min(self.list.len() - 1)]
+    }
+
+    fn front_mut(&mut self) -> &mut Service {
+        let at = self.current.min(self.list.len() - 1);
+        self.changed = true;
+        &mut self.list[at]
+    }
+
+    /// Adds an item to the end of the service in front and chooses it. A song already in the
+    /// service is chosen where it is, not added again.
+    pub fn add(&mut self, item: Item) {
+        if let Item::Song { key, .. } = &item
+            && let Some(at) =
+                self.front().items.iter().position(|have| matches!(have, Item::Song { key: k, .. } if k == key))
+        {
+            self.chosen = Some(at);
+            return;
+        }
+        let items = &mut self.front_mut().items;
+        items.push(item);
+        self.chosen = Some(self.front().items.len() - 1);
+    }
+
+    /// Takes an item out of the service in front. Returns true if there was one.
+    pub fn remove(&mut self, index: usize) -> bool {
+        if index >= self.front().items.len() {
+            return false;
+        }
+        self.front_mut().items.remove(index);
+        self.chosen = None;
+        true
+    }
+
+    /// Moves an item one place earlier or later. Returns true if it moved.
+    pub fn nudge(&mut self, index: usize, earlier: bool) -> bool {
+        let count = self.front().items.len();
+        let to = if earlier { index.checked_sub(1) } else { Some(index + 1).filter(|to| *to < count) };
+        let Some(to) = to.filter(|_| index < count) else { return false };
+        self.front_mut().items.swap(index, to);
+        self.chosen = Some(to);
+        true
+    }
+
+    /// Brings another service to the front.
+    pub fn show(&mut self, index: usize) {
+        if index < self.list.len() && index != self.current {
+            self.current = index;
+            self.chosen = None;
+            self.changed = true;
+        }
+    }
+
+    /// Makes a new, empty service and brings it to the front.
+    pub fn add_service(&mut self) {
+        let name = (1..).map(|n| format!("Service {n}")).find(|name| self.list.iter().all(|s| &s.name != name));
+        self.list.push(Service { name: name.unwrap_or_default(), items: Vec::new() });
+        self.current = self.list.len() - 1;
+        self.chosen = None;
+        self.changed = true;
+    }
+
+    /// Renames the service in front. An empty name is refused.
+    pub fn rename(&mut self, name: &str) {
+        let name = name.trim();
+        if !name.is_empty() && self.front().name != name {
+            self.front_mut().name = name.to_owned();
+        }
+    }
+
+    /// Removes the service in front. The last one cannot be removed.
+    pub fn remove_service(&mut self) -> bool {
+        if self.list.len() <= 1 {
+            return false;
+        }
+        self.list.remove(self.current.min(self.list.len() - 1));
+        self.current = self.current.saturating_sub(1).min(self.list.len() - 1);
+        self.chosen = None;
+        self.changed = true;
+        true
+    }
+
+    pub fn to_json(&self) -> String {
+        let file = File { format: FORMAT.to_owned(), version: 1, services: self.clone() };
+        let mut text = serde_json::to_string_pretty(&file).unwrap_or_default();
+        text.push('\n');
+        text
+    }
+
+    /// Reads the services file. The error is a plain sentence.
+    pub fn from_json(text: &str) -> Result<Services, String> {
+        let file: File =
+            serde_json::from_str(text).map_err(|e| format!("The services file could not be read ({e})."))?;
+        if file.format != FORMAT {
+            return Err("That is not a PresenterCraft services file.".to_owned());
+        }
+        if file.version > 1 {
+            return Err("The services file was made by a newer PresenterCraft.".to_owned());
+        }
+        let mut services = file.services;
+        if services.list.is_empty() {
+            services.list = Services::default().list;
+        }
+        services.current = services.current.min(services.list.len() - 1);
+        Ok(services)
+    }
+}
+
+fn file() -> Option<std::path::PathBuf> {
+    crate::bible_store::data_dir().map(|dir| dir.join("services.json"))
+}
+
+/// The services as last saved, or one empty service.
+pub fn load() -> Services {
+    let read = file().and_then(|path| std::fs::read_to_string(path).ok());
+    match read.map(|text| Services::from_json(&text)) {
+        Some(Ok(services)) => services,
+        Some(Err(problem)) => {
+            eprintln!("{problem}");
+            Services::default()
+        }
+        None => Services::default(),
+    }
+}
+
+/// Writes the services to their file. The error is a plain sentence.
+pub fn save(services: &Services) -> Result<(), String> {
+    let path = file().ok_or_else(|| "Could not find where to keep services on this computer.".to_owned())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not make the app's folder: {e}"))?;
+    }
+    let partial = path.with_extension("json.part");
+    std::fs::write(&partial, services.to_json())
+        .and_then(|()| std::fs::rename(&partial, &path))
+        .map_err(|e| format!("Could not save the services: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn song(key: &str) -> Item {
+        Item::Song { key: key.to_owned(), title: key.to_uppercase() }
+    }
+
+    fn passage(lookup: &str) -> Item {
+        Item::Passage(SavedPassage {
+            lookup: lookup.to_owned(),
+            rows: vec![SavedRow { bible: "kjv".to_owned(), verse: Some("primary".to_owned()), reference: None }],
+            show_verse_numbers: false,
+            break_on_new_verse: true,
+            display_translation: false,
+            reference_style: "verse".to_owned(),
+        })
+    }
+
+    #[test]
+    fn items_are_added_in_order_and_a_song_is_not_added_twice() {
+        let mut services = Services::default();
+        services.add(song("a"));
+        services.add(passage("John 3:16"));
+        services.add(song("a"));
+        assert_eq!(services.front().items.len(), 2);
+        assert_eq!(services.chosen, Some(0));
+        // The same passage may be wanted twice.
+        services.add(passage("John 3:16"));
+        assert_eq!(services.front().items.len(), 3);
+        assert!(services.changed);
+    }
+
+    #[test]
+    fn items_move_and_leave() {
+        let mut services = Services::default();
+        for key in ["a", "b", "c"] {
+            services.add(song(key));
+        }
+        assert!(services.nudge(2, true));
+        assert_eq!(services.front().items.iter().map(Item::title).collect::<Vec<_>>(), ["A", "C", "B"]);
+        assert!(!services.nudge(0, true));
+        assert!(!services.nudge(2, false));
+        assert!(services.remove(1));
+        assert!(!services.remove(9));
+        assert_eq!(services.front().items.len(), 2);
+    }
+
+    #[test]
+    fn services_are_made_shown_renamed_and_removed_but_never_all() {
+        let mut services = Services::default();
+        services.add(song("a"));
+        services.add_service();
+        assert_eq!((services.list.len(), services.current), (2, 1));
+        assert!(services.front().items.is_empty());
+        services.rename("  Sunday ");
+        services.rename("   ");
+        assert_eq!(services.front().name, "Sunday");
+        services.show(0);
+        assert_eq!(services.front().items.len(), 1);
+        assert!(services.remove_service());
+        assert_eq!(services.front().name, "Sunday");
+        assert!(!services.remove_service());
+    }
+
+    #[test]
+    fn services_survive_their_file_and_other_files_are_refused() {
+        let mut services = Services::default();
+        services.add(song("a"));
+        services.add(passage("Пс 22:1-3"));
+        services.add_service();
+        let mut again = Services::from_json(&services.to_json()).unwrap();
+        // What is chosen and whether anything changed are not kept.
+        again.changed = services.changed;
+        again.chosen = services.chosen;
+        assert_eq!(again, services);
+        assert!(Services::from_json("{}").is_err());
+        assert!(
+            Services::from_json("{\"format\":\"something else\",\"version\":1,\"list\":[],\"current\":0}").is_err()
+        );
+    }
+}
