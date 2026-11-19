@@ -2325,8 +2325,31 @@ pub enum AudioRequest {
 pub enum MediaRequest {
     Choose,
     Remove(usize),
+    /// A slide showing this media item, added to the song shown after its chosen slide.
+    AddAsSlide(usize),
     /// How an item fills the screen, and whether a video loops.
     Look(usize, pc_model::ImageFit, bool),
+}
+
+/// A media bin item being dragged, by its place in the bin.
+#[derive(Clone, Copy)]
+pub struct MediaDrag(pub usize);
+
+/// A slide that shows a media item when it goes on screen (or none), its words and the rest
+/// kept: its Show Media action is the item.
+pub fn slide_with_media(slide: &Slide, media: Option<pc_model::Uuid>) -> Slide {
+    let mut actions: Vec<pc_model::ShowAction> =
+        slide.actions.iter().filter(|action| !matches!(action, pc_model::ShowAction::Media { .. })).cloned().collect();
+    actions.extend(media.map(|id| pc_model::ShowAction::Media { id }));
+    Slide { actions, ..slide.clone() }
+}
+
+/// The media item a slide shows when it goes on screen, if it has one.
+pub fn media_of(slide: &Slide) -> Option<pc_model::Uuid> {
+    slide.actions.iter().rev().find_map(|action| match action {
+        pc_model::ShowAction::Media { id } => Some(*id),
+        _ => None,
+    })
 }
 
 /// A change to a song asked for from its right-click menu in the library.
@@ -4116,10 +4139,15 @@ fn slide_area(
         egui::Panel::bottom("slide bar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&show.selected()));
-                if !from_bible
-                    && ui.button("+  Add Slide").on_hover_text("Add a slide laid out like the last one").clicked()
-                {
-                    state.add_slide = Some(show.selected());
+                if !from_bible {
+                    let add = ui.button("+  Add Slide").on_hover_text("Add a slide laid out like the last one");
+                    if add.clicked() {
+                        state.add_slide = Some(show.selected());
+                    }
+                    // A media item dropped on it is added as a slide.
+                    if let Some(dropped) = add.dnd_release_payload::<MediaDrag>() {
+                        state.media_request = Some(MediaRequest::AddAsSlide(dropped.0));
+                    }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| crate::studio::view_controls(ui, state));
             });
@@ -4198,6 +4226,22 @@ fn slide_grid(
                         state.selected_slide = None;
                         commands.push(Command::GoTo(here));
                     }
+                    // A media item dragged from the bin onto a slide becomes what the slide shows.
+                    if !from_bible {
+                        if response.dnd_hover_payload::<MediaDrag>().is_some() {
+                            ui.painter().rect_stroke(
+                                rect,
+                                6.0,
+                                Stroke::new(2.0, crate::studio::ACCENT),
+                                StrokeKind::Outside,
+                            );
+                        }
+                        if let Some(dropped) = response.dnd_release_payload::<MediaDrag>()
+                            && let Some(item) = show.media().get(dropped.0)
+                        {
+                            state.pending_edit = Some((here, slide_with_media(slide, Some(item.id))));
+                        }
+                    }
                     if response.secondary_clicked() {
                         state.selected_slide = Some(here);
                     }
@@ -4236,6 +4280,27 @@ fn slide_grid(
                                 for name in GROUP_NAMES {
                                     if ui.button(name).clicked() {
                                         state.slide_request = Some((here, SlideRequest::Group(name.to_owned())));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            // The media the slide puts behind its words when it goes on screen.
+                            ui.menu_button("Media", |ui| {
+                                let own = media_of(slide);
+                                if ui.add(egui::Button::selectable(own.is_none(), "No Media")).clicked() {
+                                    state.pending_edit = Some((here, slide_with_media(slide, None)));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if show.media().is_empty() {
+                                    ui.label(egui::RichText::new("The media bin is empty.").color(DIM));
+                                }
+                                for item in show.media() {
+                                    if ui
+                                        .add(egui::Button::selectable(own == Some(item.id), item.name.as_str()))
+                                        .clicked()
+                                    {
+                                        state.pending_edit = Some((here, slide_with_media(slide, Some(item.id))));
                                         ui.close();
                                     }
                                 }
@@ -4596,6 +4661,26 @@ fn slide_grid(
                     }
                 }
             });
+            // Under the slides: a media item dragged from the bin and dropped here is added as a
+            // slide of its own.
+            if !from_bible {
+                let height = ui.available_height().max(90.0);
+                let (place, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+                if response.dnd_hover_payload::<MediaDrag>().is_some() {
+                    let zone = Rect::from_min_size(place.min + vec2(0.0, 8.0), vec2(place.width(), 70.0));
+                    ui.painter().rect_stroke(zone, 8.0, Stroke::new(2.0, crate::studio::ACCENT), StrokeKind::Inside);
+                    ui.painter().text(
+                        zone.center(),
+                        Align2::CENTER_CENTER,
+                        "Drop to add as a slide",
+                        FontId::proportional(13.0),
+                        crate::studio::TEXT_DIM,
+                    );
+                }
+                if let Some(dropped) = response.dnd_release_payload::<MediaDrag>() {
+                    state.media_request = Some(MediaRequest::AddAsSlide(dropped.0));
+                }
+            }
         });
         ui.add_space(12.0);
     });

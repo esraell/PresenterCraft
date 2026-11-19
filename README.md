@@ -73,6 +73,10 @@ ProPresenter.
   right-click menu sets its Scaling (Scale to Fill, Scale to Fit, Stretch to Fill), whether a
   video loops, and the media playlists it is in; the menu beside MEDIA shows All Media or one
   playlist, and makes, renames and deletes them.
+- **Media slides**: drag a media item onto a slide to have that slide show it when it goes on
+  screen, or onto the space under the slides (or Add Slide) to add a slide of its own; also
+  Add to Song as Slide on the item's right-click menu, and Media on a slide's. The slide's
+  thumbnail shows the media behind its words.
 - A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
   or bridge starts), Copy and Paste Text Style, Label (Blank Slide, Instrumental, Repeat, Spoken Word), Transition (its own,
   or as all slides), Hot Key (a letter or digit that puts the slide on screen, shown on its

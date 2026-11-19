@@ -687,3 +687,25 @@ fn a_gradient_fill_runs_from_one_colour_to_the_other() {
     assert!(left[0] > 200 && left[2] < 60, "the left is red: {left:?}");
     assert!(right[2] > 200 && right[0] < 60, "the right is blue: {right:?}");
 }
+
+/// A blank drawing between two drawings of the same picture must not lose the picture (vello
+/// 0.12 threw its picture atlas away on a scene of plain fills only).
+#[test]
+fn a_picture_still_shows_after_a_blank_drawing() {
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let photo = flat(1600, 1200, [230, 30, 30]);
+    let mut draw = |media: Option<&pc_render::Picture>| {
+        let layers = pc_render::Layers { media_fit: pc_model::ImageFit::Fill, media, ..Default::default() };
+        let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), 160, 90);
+        let texture = target_texture(device, 160, 90);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        painter.paint(device, queue, &built.scene, &view, 160, 90).expect("paint");
+        pixel(&read_pixels(device, queue, &texture).expect("read back"), 160, 80, 45)
+    };
+    assert!(is_about(draw(Some(&photo)), [230, 30, 30]));
+    assert!(is_about(draw(None), [0, 0, 0]), "the blank drawing is black");
+    assert!(is_about(draw(Some(&photo)), [230, 30, 30]), "the picture is still there");
+}

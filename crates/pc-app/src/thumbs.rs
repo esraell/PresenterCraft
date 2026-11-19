@@ -66,6 +66,7 @@ impl Thumbs {
         gpu: &Gpu,
         egui_renderer: &mut egui_wgpu::Renderer,
         slide: &Slide,
+        media: Option<(&Picture, pc_model::ImageFit)>,
         theme: &Theme,
     ) -> Option<(egui::TextureId, bool)> {
         self.get_layers(
@@ -73,8 +74,8 @@ impl Thumbs {
             egui_renderer,
             slide.id,
             &Layers {
-                media_fit: pc_model::ImageFit::Fill,
-                media: None,
+                media_fit: media.map_or(pc_model::ImageFit::Fill, |(_, fit)| fit),
+                media: media.map(|(picture, _)| picture),
                 slide: Some(slide),
                 overlay: None,
                 time: 0.0,

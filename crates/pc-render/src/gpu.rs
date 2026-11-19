@@ -31,6 +31,23 @@ impl Painter {
     ) -> Result<(), String> {
         let params =
             RenderParams { base_color: Color::BLACK, width: w, height: h, antialiasing_method: AaConfig::Area };
+        // A scene of plain colour fills only (no text, gradient or picture) makes vello 0.12 take
+        // a shortcut that throws its picture atlas away while still counting the pictures in it
+        // as uploaded, so the next picture drawn from it comes out black. Such a scene is given a
+        // gradient no one can see, so it takes the usual way.
+        if scene.encoding().resources.patches.is_empty() {
+            let mut padded = scene.clone();
+            let unseen = vello::peniko::Gradient::new_linear((0.0, 0.0), (1.0, 0.0))
+                .with_stops([Color::TRANSPARENT, Color::TRANSPARENT]);
+            padded.fill(
+                vello::peniko::Fill::NonZero,
+                vello::kurbo::Affine::IDENTITY,
+                &unseen,
+                None,
+                &vello::kurbo::Rect::new(0.0, 0.0, 1.0, 1.0),
+            );
+            return self.renderer.render_to_texture(device, queue, &padded, target, &params).map_err(|e| e.to_string());
+        }
         self.renderer.render_to_texture(device, queue, scene, target, &params).map_err(|e| e.to_string())
     }
 }

@@ -1367,7 +1367,11 @@ pub fn media_strip(
                         if shown.as_ref().is_some_and(|playlist| !playlist.has(&item.path)) {
                             continue;
                         }
-                        let (rect, response) = ui.allocate_exact_size(image_size + vec2(0.0, 18.0), Sense::click());
+                        let (rect, response) =
+                            ui.allocate_exact_size(image_size + vec2(0.0, 18.0), Sense::click_and_drag());
+                        // Dragged onto a slide, it becomes what the slide shows; onto the space
+                        // under the slides, a slide of its own.
+                        response.dnd_set_drag_payload(crate::home::MediaDrag(index));
                         if response.clicked() {
                             commands.push(Command::ShowMedia(index));
                         }
@@ -1704,6 +1708,14 @@ fn media_item_menu(ui: &mut egui::Ui, state: &mut HomeState, index: usize, item:
             .clicked()
     {
         state.media_request = Some(MediaRequest::Look(index, item.fit, !item.looping));
+        ui.close();
+    }
+    if ui
+        .button("Add to Song as Slide")
+        .on_hover_text("A slide that shows this when it goes on screen, after the song's chosen slide")
+        .clicked()
+    {
+        state.media_request = Some(MediaRequest::AddAsSlide(index));
         ui.close();
     }
     ui.menu_button("Playlists", |ui| {

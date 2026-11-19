@@ -1624,6 +1624,29 @@ impl App {
                     self.add_dropped_file(&path);
                 }
             }
+            MediaRequest::AddAsSlide(index) => {
+                let Some(item) = self.show.media().get(index).cloned() else { return };
+                let song = self.show.selected();
+                let Some(count) = self.show.presentations().get(song).map(|song| song.slide_count()) else { return };
+                if count == 0 || self.bible_slots.contains(&song) {
+                    return;
+                }
+                // After the slide picked out in the song shown, or at its end.
+                let after = self.show.cursor().filter(|at| at.presentation == song).map_or(count - 1, |at| at.slide);
+                let name = std::path::Path::new(&item.name)
+                    .file_stem()
+                    .map_or(item.name.clone(), |stem| stem.to_string_lossy().into_owned());
+                let slide =
+                    Slide { label: Some(name), ..home::slide_with_media(&Slide::new(Vec::new()), Some(item.id)) };
+                if let Some(running) = self.running.as_mut() {
+                    running.home_state.slide_request = Some((
+                        pc_engine::SlideRef { presentation: song, slide: after },
+                        home::SlideRequest::PasteAfter(slide),
+                    ));
+                    running.home_window.request_redraw();
+                }
+                applog::event("media", &format!("added {} to a song as a slide", item.path.display()));
+            }
             MediaRequest::Look(index, fit, looping) => {
                 let changes = self.show.set_media_look(index, fit, looping);
                 if changes.media {
@@ -2355,15 +2378,21 @@ impl App {
         let mut full = egui_ctx.run_ui(raw_input, |ui| {
             // The toolkit may run this closure twice in one frame, and input arrives only the
             // first time, so add to the list rather than replace it.
+            // A slide that shows a media item has it behind its words in its thumbnail.
+            let media_for = |slide: &Slide| {
+                let id = home::media_of(slide)?;
+                let at = show.media().iter().position(|item| item.id == id)?;
+                Some((pictures.get(at)?, show.media()[at].fit))
+            };
             let mut thumb = |which: ThumbOf| match which {
-                ThumbOf::Slide(slide) => thumbs.get(gpu, egui_renderer, slide, songs_theme),
-                ThumbOf::BibleSlide(slide) => thumbs.get(gpu, egui_renderer, slide, bible_theme),
+                ThumbOf::Slide(slide) => thumbs.get(gpu, egui_renderer, slide, media_for(slide), songs_theme),
+                ThumbOf::BibleSlide(slide) => thumbs.get(gpu, egui_renderer, slide, None, bible_theme),
                 ThumbOf::Layout(index, slide) => {
                     // A layout is made anew each frame; a fixed id lets its thumbnail be kept
                     // until the theme changes, when every thumbnail is dropped.
                     let mut kept = slide.clone();
                     kept.id = Uuid::from_u128(0x7068_656d_655f_6c61_796f_7574_0000_0000 + index as u128);
-                    thumbs.get(gpu, egui_renderer, &kept, theme)
+                    thumbs.get(gpu, egui_renderer, &kept, None, theme)
                 }
                 ThumbOf::Media(index) => {
                     let (item, picture) = (show.media().get(index)?, pictures.get(index)?);
