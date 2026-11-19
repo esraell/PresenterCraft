@@ -1580,23 +1580,58 @@ pub fn media_strip(
     thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
     commands: &mut Vec<Command>,
 ) {
-    // Folded away from the View menu, unless there is something to say or a file is being dropped.
-    if state.media_hidden && state.notice.is_none() && !state.drop_hover {
-        return;
-    }
+    // Folded down (with its chevron, or from the View menu) to a slim bar that opens it again;
+    // opened by itself while there is something to say or a file is being dropped.
+    let folded = state.media_hidden && state.notice.is_none() && !state.drop_hover;
     let empty = show.media().is_empty();
-    let height = if empty && !state.drop_hover { 40.0 } else { 148.0 };
-    let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(16, 10));
+    let height = if folded { 30.0 } else { 148.0 };
+    let margin = if folded { egui::Margin::symmetric(16, 4) } else { egui::Margin::symmetric(16, 10) };
+    let frame = Frame::new().fill(PANEL).inner_margin(margin);
     egui::Panel::bottom("media bin").resizable(false).exact_size(height).frame(frame).show(ui, |ui| {
         let area = ui.max_rect().expand2(vec2(16.0, 10.0));
+        if folded {
+            ui.horizontal(|ui| {
+                let (place, response) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+                let ink = if response.hovered() { TEXT } else { TEXT_DIM };
+                icons::paint(
+                    ui.painter(),
+                    Icon::ChevronUp,
+                    Rect::from_center_size(place.left_center() + vec2(7.0, 0.0), vec2(11.0, 11.0)),
+                    ink,
+                );
+                let count = show.media().len();
+                let words = match count {
+                    0 => "MEDIA".to_owned(),
+                    1 => "MEDIA  ·  1 item".to_owned(),
+                    n => format!("MEDIA  ·  {n} items"),
+                };
+                ui.painter().text(
+                    place.left_center() + vec2(20.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    words,
+                    semibold(11.5),
+                    ink,
+                );
+                if response.on_hover_text("Show the media bin").clicked() {
+                    state.media_hidden = false;
+                }
+            });
+            return;
+        }
         ui.horizontal(|ui| {
+            // Folds the bin down to a slim bar.
+            let (fold, response) = ui.allocate_exact_size(vec2(16.0, 18.0), Sense::click());
+            let ink = if response.hovered() { TEXT } else { TEXT_FAINT };
+            icons::paint(ui.painter(), Icon::ChevronDown, Rect::from_center_size(fold.center(), vec2(11.0, 11.0)), ink);
+            if response.on_hover_text("Hide the media bin").clicked() {
+                state.media_hidden = true;
+            }
             caption(ui, "MEDIA");
             media_playlist_picker(ui, state);
             let note = match &state.notice {
                 Some(notice) => egui::RichText::new(notice.as_str()).size(12.0).color(Color32::from_rgb(255, 170, 120)),
-                None if empty => egui::RichText::new("Drop pictures or videos on the window to add backgrounds")
-                    .size(12.0)
-                    .color(TEXT_FAINT),
+                // The empty bin says it itself, below.
+                None if empty => egui::RichText::new("").size(12.0).color(TEXT_FAINT),
                 None => egui::RichText::new("Click a picture or video to put it behind the words")
                     .size(12.0)
                     .color(TEXT_FAINT),
@@ -1623,6 +1658,39 @@ pub fn media_strip(
                     .show(|ui| transition_picker(ui, &mut state.media_transition, "media"));
             });
         });
+        // Nothing in it yet: a big place to click, or to drop files on.
+        if empty && !state.drop_hover {
+            ui.add_space(6.0);
+            let (place, response) = ui.allocate_exact_size(ui.available_size(), Sense::click());
+            let hot = response.hovered();
+            let painter = ui.painter();
+            painter.rect_filled(place, 10.0, if hot { CARD } else { PANEL });
+            dashed_rect(painter, place.shrink(1.0), Stroke::new(1.5, if hot { TEXT_DIM } else { LINE }));
+            let middle = place.center();
+            icons::paint(
+                painter,
+                Icon::Picture,
+                Rect::from_center_size(middle - vec2(0.0, 16.0), vec2(30.0, 30.0)),
+                if hot { TEXT } else { TEXT_DIM },
+            );
+            painter.text(
+                middle + vec2(0.0, 14.0),
+                Align2::CENTER_CENTER,
+                "Click or drag pictures and videos here to add them",
+                semibold(13.0),
+                if hot { TEXT } else { TEXT_DIM },
+            );
+            painter.text(
+                middle + vec2(0.0, 32.0),
+                Align2::CENTER_CENTER,
+                "Then click one to put it behind the words, or drag it onto a slide",
+                FontId::proportional(11.5),
+                TEXT_FAINT,
+            );
+            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                state.media_request = Some(crate::home::MediaRequest::Choose);
+            }
+        }
         if !empty {
             ui.add_space(4.0);
             let image_size = vec2(144.0, 81.0);
@@ -1783,6 +1851,23 @@ pub fn media_strip(
             );
         }
     });
+}
+
+/// A rounded-looking dashed outline: short dashes along each side of `rect`.
+fn dashed_rect(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
+    let (dash, gap) = (7.0, 5.0);
+    let corners = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
+    for side in 0..4 {
+        let (from, to) = (corners[side], corners[(side + 1) % 4]);
+        let length = from.distance(to);
+        let along = (to - from) / length.max(1.0);
+        let mut at = 8.0;
+        while at < length - 8.0 {
+            let end = (at + dash).min(length - 8.0);
+            painter.line_segment([from + along * at, from + along * end], stroke);
+            at += dash + gap;
+        }
+    }
 }
 
 /// Carries on a drag across the media bin (see `Sweep`): while the pointer is in the bin, a box
