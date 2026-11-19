@@ -252,6 +252,18 @@ impl App {
             .with_title("PresenterCraft")
             .with_inner_size(winit::dpi::LogicalSize::new(1440.0, 900.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(1100.0, 700.0));
+        // A run that only saves a picture of the window stays out of the way: its windows open
+        // behind everything else and do not take the keyboard, so whoever is using the
+        // computer is not interrupted.
+        let quiet = self.options.capture_home.is_some();
+        let behind = |attrs: winit::window::WindowAttributes| {
+            if quiet {
+                attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom)
+            } else {
+                attrs
+            }
+        };
+        let home_attrs = behind(home_attrs);
         let home_window =
             Arc::new(el.create_window(home_attrs).map_err(|e| format!("Could not open the home window: {e}"))?);
         let home_display =
@@ -265,10 +277,13 @@ impl App {
             }
             Placement::Windowed => output_attrs.with_inner_size(winit::dpi::LogicalSize::new(960.0, 540.0)),
         };
+        let output_attrs = behind(output_attrs);
         let output_window =
             Arc::new(el.create_window(output_attrs).map_err(|e| format!("Could not open the output window: {e}"))?);
         output_window.set_cursor_visible(false);
-        home_window.focus_window();
+        if !quiet {
+            home_window.focus_window();
+        }
 
         let mut context = RenderContext::new();
         let home_surface = context
@@ -1062,7 +1077,14 @@ fn main() -> ExitCode {
         sources.push(None);
     }
 
-    let event_loop = match EventLoop::new() {
+    let mut builder = EventLoop::builder();
+    // A run that only saves a picture must not come to the front of whatever is in use.
+    #[cfg(target_os = "macos")]
+    if options.capture_home.is_some() {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        builder.with_activation_policy(ActivationPolicy::Accessory).with_activate_ignoring_other_apps(false);
+    }
+    let event_loop = match builder.build() {
         Ok(event_loop) => event_loop,
         Err(e) => {
             eprintln!("Could not start the window system: {e}");
