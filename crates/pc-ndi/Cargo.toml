@@ -1,0 +1,16 @@
+[package]
+name = "pc-ndi"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Builds against the NDI SDK, which must be installed. Without it this crate still builds and
+# reports that NDI is not included.
+sdk = ["dep:grafton-ndi"]
+
+[dependencies]
+grafton-ndi = { version = "=2.1.0", default-features = false, optional = true }
+
+[lints]
+workspace = true

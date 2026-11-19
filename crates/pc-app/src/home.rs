@@ -14,6 +14,7 @@ use pc_render::object_frame;
 
 use crate::displays::{DisplayInfo, Placement};
 use crate::editor::EditDraft;
+use crate::output::NdiStatus;
 
 use crate::icons::{self, Icon};
 
@@ -88,6 +89,13 @@ pub struct HomeState {
     /// Where the operator has just asked for the audience output to go. The app takes this
     /// and moves the output.
     pub requested_placement: Option<Placement>,
+    /// The name the audience screen is sent under over NDI, and what NDI is doing now.
+    pub ndi_name: String,
+    pub ndi_status: NdiStatus,
+    /// True when this build includes NDI.
+    pub ndi_available: bool,
+    /// The operator has just switched NDI on (with a name) or off. The app takes this.
+    pub requested_ndi: Option<Option<String>>,
     /// What is typed in the Bible page's two fields, and its rows of translations.
     pub bible: BiblePage,
 }
@@ -191,6 +199,10 @@ impl Default for HomeState {
             displays: Vec::new(),
             output_placement: Placement::Windowed,
             requested_placement: None,
+            ndi_name: "PresenterCraft Audience".to_owned(),
+            ndi_status: NdiStatus::Off,
+            ndi_available: pc_ndi::NdiOutput::AVAILABLE,
+            requested_ndi: None,
             bible: BiblePage::default(),
         }
     }
@@ -1686,8 +1698,36 @@ fn screens_pane(ui: &mut egui::Ui, state: &mut HomeState) {
     section_label(ui, "STAGE SCREEN");
     ui.label(egui::RichText::new("The stage screen is not built yet.").color(DIM));
     ui.add_space(12.0);
-    section_label(ui, "OUTPUTS");
-    ui.label(egui::RichText::new("NDI and other outputs are not built yet.").color(DIM));
+    section_label(ui, "NDI OUTPUT");
+    if !state.ndi_available {
+        ui.label(egui::RichText::new("This build of PresenterCraft does not include NDI.").color(DIM));
+    } else {
+        let on = !matches!(state.ndi_status, NdiStatus::Off);
+        let mut wanted = on;
+        ui.checkbox(&mut wanted, "Send the audience screen over NDI")
+            .on_hover_text("Other computers on the network can then show the audience screen");
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            let name = ui.add_enabled(!on, egui::TextEdit::singleline(&mut state.ndi_name).desired_width(240.0));
+            name.on_disabled_hover_text("Switch NDI off to change the name");
+        });
+        if wanted != on {
+            state.requested_ndi = Some(wanted.then(|| state.ndi_name.clone()));
+        }
+        match &state.ndi_status {
+            NdiStatus::Off => {
+                ui.label(egui::RichText::new("Off").color(DIM));
+            }
+            NdiStatus::On(name) => {
+                ui.label(egui::RichText::new(format!("Sending as \"{name}\" at 1920 x 1080")).color(ON));
+            }
+            NdiStatus::Failed(reason) => {
+                ui.label(egui::RichText::new(reason.as_str()).color(Color32::from_rgb(255, 150, 120)));
+            }
+        }
+    }
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("NDI® is a registered trademark of Vizrt NDI AB.").size(10.5).color(DIM));
 }
 
 /// Says which of a song's fonts this computer does not have, and offers a place to look for

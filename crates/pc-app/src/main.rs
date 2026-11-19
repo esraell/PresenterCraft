@@ -467,6 +467,23 @@ impl App {
         }
     }
 
+    /// Switches the NDI output on or off as asked in Settings.
+    fn switch_ndi(&mut self) {
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let Some(wanted) = running.home_state.requested_ndi.take() else {
+            return;
+        };
+        if let Some(output) = &running.output {
+            output.send(OutputMsg::Ndi(wanted));
+            // NDI needs the current picture as soon as it starts.
+            output.send(OutputMsg::Redraw);
+        }
+        // Starting NDI takes a moment on the output thread; look again shortly to show how it went.
+        running.next_repaint = Some(Instant::now() + Duration::from_millis(400));
+    }
+
     /// Moves the audience output to the display chosen in Settings, or into a window.
     fn move_output(&mut self) {
         let Some(running) = self.running.as_mut() else {
@@ -519,6 +536,9 @@ impl App {
         thumbs.begin_frame();
         if running.home_state.settings_open {
             running.home_state.displays = display_list(home_window.available_monitors());
+        }
+        if let Some(output) = &running.output {
+            running.home_state.ndi_status = output.ndi_status();
         }
         if running.output.as_ref().is_none_or(OutputHandle::is_finished) {
             running.home_state.output_stopped = true;
@@ -658,9 +678,17 @@ impl ApplicationHandler for App {
             return;
         }
         match self.start(el) {
-            Ok(Some(running)) => {
+            Ok(Some(mut running)) => {
+                // Testing aid: start with NDI on under this name.
+                if let Ok(name) = std::env::var("PRESENTERCRAFT_NDI") {
+                    running.home_state.requested_ndi = Some(Some(name));
+                }
                 running.home_window.request_redraw();
                 self.running = Some(running);
+                // Testing aid: start with the first slide on screen.
+                if std::env::var_os("PRESENTERCRAFT_GO_LIVE").is_some() {
+                    self.apply(vec![Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 0 })]);
+                }
             }
             Ok(None) => el.exit(),
             Err(message) => {
@@ -748,6 +776,7 @@ impl ApplicationHandler for App {
                 }
                 self.update_canvas();
                 self.move_output();
+                self.switch_ndi();
                 // Leaving the Edit view writes the songs changed there straight away.
                 let editing = self.running.as_ref().is_some_and(|r| r.home_state.editing.is_some());
                 if !editing && !self.unsaved.is_empty() {

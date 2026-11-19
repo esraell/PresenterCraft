@@ -15,6 +15,21 @@ goes fullscreen on it; with one display it opens as an ordinary window.
     --list-displays        print the connected displays
     --output-display N     put the output on display N
 
+## NDI output
+
+The audience screen can be sent over the network as an NDI source, at 1920 x 1080. NDI is an
+optional part of the build, because it needs the NDI SDK installed on the computer that builds it:
+
+```
+cargo run --release --features ndi
+```
+
+Then switch it on in Settings, Screens, NDI output. A build without `--features ndi` works the
+same and says NDI is not included. Nothing from the NDI SDK is in this repository;
+`docs/licences/ndi.md` lists what the SDK's licence asks before a build with NDI is published.
+
+NDI® is a registered trademark of Vizrt NDI AB.
+
 ## Keys
 
 | Key | Does |

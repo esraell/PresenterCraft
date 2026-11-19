@@ -8,7 +8,12 @@ publish.workspace = true
 name = "presentercraft"
 path = "src/main.rs"
 
+[features]
+# Sends screens over NDI. Needs the NDI SDK installed to build; see docs/licences/ndi.md.
+ndi = ["pc-ndi/sdk"]
+
 [dependencies]
+pc-ndi.workspace = true
 pc-model.workspace = true
 pc-engine.workspace = true
 pc-render.workspace = true
