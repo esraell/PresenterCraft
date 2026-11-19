@@ -202,6 +202,9 @@ struct Output {
     /// How the next new picture fades in: the slides' transition, or the media's when only the
     /// media changed.
     look: pc_model::Transition,
+    /// How often and how long the screens are drawn, and how many video pictures came, for the log.
+    timing: crate::applog::Timing,
+    video_pictures: u64,
 }
 
 fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver<OutputMsg>, ndi_status: NdiStatuses) {
@@ -240,6 +243,8 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         overlay: Overlay::default(),
         video_picture: None,
         look: pc_model::Transition::of(pc_model::TransitionKind::Cut),
+        timing: crate::applog::Timing::new("screen drawings"),
+        video_pictures: 0,
         device,
         queue,
     };
@@ -585,7 +590,7 @@ impl Output {
                     let target = self.ndi_target.get_or_insert_with(|| target_texture(&self.device, w, h));
                     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
                     if let Err(e) = self.painter.paint(&self.device, &self.queue, &scene, &view, w, h) {
-                        return eprintln!("The NDI picture could not be drawn: {e}");
+                        return crate::applog::problem("output", &format!("The NDI picture could not be drawn: {e}"));
                     }
                     match read_pixels(&self.device, &self.queue, target) {
                         Ok(pixels) => {
@@ -608,6 +613,17 @@ impl Output {
     /// the frame asks for a dissolve; anything else (a resize, an uncovered window) is drawn
     /// at once.
     fn draw(&mut self, new_picture: bool) {
+        let started = Instant::now();
+        self.draw_now(new_picture);
+        self.timing.add(started.elapsed());
+        let (videos, screens, ndi) = (self.video_pictures, self.targets.len(), self.ndi.len());
+        let extra = || format!("{videos} video pictures, {screens} windows, {ndi} NDI");
+        if self.timing.report_each_minute("output", extra) {
+            self.video_pictures = 0;
+        }
+    }
+
+    fn draw_now(&mut self, new_picture: bool) {
         // Cheap copies: the picture and the slide are shared, not duplicated.
         let frame = self.frame.clone();
         self.send_ndi(&frame);
@@ -695,6 +711,7 @@ impl Output {
             return false;
         };
         self.video_picture = Picture::from_rgba(frame.width, frame.height, frame.rgba);
+        self.video_pictures += 1;
         self.video_picture.is_some()
     }
 
@@ -755,7 +772,7 @@ impl Output {
             let target = self.ndi_target.get_or_insert_with(|| target_texture(&self.device, w, h));
             let view = target.create_view(&wgpu::TextureViewDescriptor::default());
             if let Err(e) = self.painter.paint(&self.device, &self.queue, &scene, &view, w, h) {
-                return eprintln!("The NDI picture could not be drawn: {e}");
+                return crate::applog::problem("output", &format!("The NDI picture could not be drawn: {e}"));
             }
             match read_pixels(&self.device, &self.queue, target) {
                 Ok(pixels) => {
@@ -814,7 +831,7 @@ impl Output {
         let (w, h) = (target.config.width, target.config.height);
         let view = target.texture.create_view(&wgpu::TextureViewDescriptor::default());
         if let Err(e) = painter.paint(device, queue, scene, &view, w, h) {
-            return eprintln!("The output could not draw a frame: {e}");
+            return crate::applog::problem("output", &format!("The output could not draw a frame: {e}"));
         }
         // A lost or outdated surface is set up again and tried once more; anything else
         // (hidden window, timeout) skips this frame and the next message redraws.

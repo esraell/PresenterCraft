@@ -1,5 +1,6 @@
 //! PresenterCraft: a home window with a slide grid, and a separate output for the audience.
 
+mod applog;
 mod audio;
 mod bible;
 mod bible_store;
@@ -660,6 +661,9 @@ struct App {
     failed: bool,
     /// Set when a test capture has been saved and the program should end.
     capture_done: bool,
+    /// How often and how long the operator window is drawn, and the last notice, for the log.
+    home_timing: applog::Timing,
+    notice_logged: Option<String>,
 }
 
 impl App {
@@ -823,6 +827,9 @@ impl App {
         };
         let mut any = false;
         let mut output_changed = false;
+        if !commands.is_empty() {
+            applog::event("command", &format!("{commands:?}"));
+        }
         for command in commands {
             // Clear All, and Clear Audio, stop the audio.
             if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Audio)) {
@@ -846,6 +853,14 @@ impl App {
         // A slide that has just gone on screen does what it says. One reached by another slide's
         // actions counts one step further along a chain, which stops after a few steps.
         let depth = self.action_depth.map_or(0, |depth| depth + 1);
+        if self.show.live() != live_before {
+            let what = self.show.live().and_then(|at| {
+                let song = self.show.presentations().get(at.presentation)?;
+                let group = song.slide(at.slide).map_or("", |(group, _)| group.name.as_str());
+                Some(format!("{} slide {} ({group})", song.title, at.slide + 1))
+            });
+            applog::event("live", &what.unwrap_or_else(|| "cleared".to_owned()));
+        }
         if self.show.live() != live_before
             && let Some((_, slide)) = self.show.live_slide()
             && !slide.actions.is_empty()
@@ -916,12 +931,16 @@ impl App {
             }
             return;
         }
-        self.video = None;
+        if self.video.take().is_some() {
+            applog::event("video", "stopped");
+        }
         let Some(running) = self.running.as_mut() else { return };
         running.home_state.video_live = None;
         let Some(item) = live else { return };
+        let started = Instant::now();
         match pc_video::Player::open(&item.path) {
             Ok(mut player) => {
+                applog::event("video", &format!("opened {} in {:?}", item.path.display(), started.elapsed()));
                 player.set_looping(item.looping);
                 player.play();
                 running.home_state.video_live = Some(home::VideoLive {
@@ -934,7 +953,10 @@ impl App {
                 });
                 self.video = Some((item.id, player));
             }
-            Err(problem) => running.home_state.notice = Some(problem),
+            Err(problem) => {
+                applog::event("video", &format!("could not open {}: {problem}", item.path.display()));
+                running.home_state.notice = Some(problem);
+            }
         }
     }
 
@@ -945,6 +967,7 @@ impl App {
         let wait = player.tick();
         let running = self.running.as_mut()?;
         if let Some(problem) = player.problem() {
+            applog::event("video", &problem);
             running.home_state.notice = Some(problem);
             running.home_state.video_live = None;
             self.video = None;
@@ -1017,6 +1040,9 @@ impl App {
             Some(AudioRequest::Play(id)) => {
                 // A track chosen while another plays crossfades from it, if a crossfade is set.
                 let fade = Duration::from_secs_f32(state.audio.crossfade.clamp(0.0, 10.0));
+                if let Some(track) = state.audio.track(id) {
+                    applog::event("audio", &format!("play {} (crossfade {fade:?})", track.path.display()));
+                }
                 if let Some(track) = state.audio.track(id)
                     && let Err(problem) = self.player.play_fading(track, fade)
                 {
@@ -1054,6 +1080,8 @@ impl App {
         let fade = Duration::from_secs_f32(state.audio.crossfade.clamp(0.0, 10.0));
         let pick = |count: usize| (Uuid::new_v4().as_u128() % count as u128) as usize;
         if let Some(ended) = self.player.ended() {
+            let name = state.audio.track(ended).map_or("", |track| track.name.as_str());
+            applog::event("audio", &format!("ended {name}"));
             if state.audio.through
                 && let Some(next) = state.audio.after(ended, pick)
                 && let Err(problem) = self.player.play(next)
@@ -1311,20 +1339,40 @@ impl App {
             running.home_window.request_redraw();
             return;
         }
-        let result = media::load_picture(path);
+        // A file already in the bin isn't added twice; it joins the playlist shown, if any.
+        let already = self.show.media().iter().any(|item| item.path == path);
+        let started = Instant::now();
+        let result = if already { Ok(None) } else { media::load_picture(path).map(Some) };
         let Some(running) = self.running.as_mut() else {
             return;
         };
         running.home_state.drop_hover = false;
         match result {
-            Ok(picture) => {
-                let name = path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
-                self.show.add_media(MediaItem::new(name, path.to_owned()));
-                self.pictures.push(picture);
-                running.home_state.notice = None;
+            Ok(loaded) => {
+                if let Some(picture) = loaded {
+                    let name =
+                        path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
+                    self.show.add_media(MediaItem::new(name, path.to_owned()));
+                    self.pictures.push(picture);
+                    running.home_state.notice = None;
+                    applog::event("media", &format!("added {} in {:?}", path.display(), started.elapsed()));
+                } else {
+                    running.home_state.notice = Some("That file is already in the media bin.".to_owned());
+                }
+                // Added while a media playlist is shown, it goes into that playlist, so it shows.
+                let state = &mut running.home_state;
+                if let Some(playlist) =
+                    state.media_playlist_shown.and_then(|id| state.media_playlists.iter_mut().find(|p| p.id == id))
+                    && !playlist.has(path)
+                {
+                    playlist.toggle(path);
+                }
                 self.save_media_list();
             }
-            Err(message) => running.home_state.notice = Some(message),
+            Err(message) => {
+                applog::event("media", &format!("could not add {}: {message}", path.display()));
+                running.home_state.notice = Some(message);
+            }
         }
         if let Some(running) = self.running.as_mut() {
             running.home_window.request_redraw();
@@ -1337,7 +1385,7 @@ impl App {
             .show
             .media()
             .iter()
-            .map(|item| media::Entry { path: item.path.clone(), fit: item.fit, looping: item.looping })
+            .map(|item| media::Entry { id: item.id, path: item.path.clone(), fit: item.fit, looping: item.looping })
             .collect();
         let playlists = self.running.as_ref().map(|r| r.home_state.media_playlists.clone()).unwrap_or_default();
         if let Err(problem) = media::save_list(&media::List { entries, playlists })
@@ -3393,7 +3441,20 @@ impl ApplicationHandler<String> for App {
                     .and_then(|s| s.parse::<f32>().ok())
                     .is_some_and(|after| self.started.elapsed().as_secs_f32() >= after) => {}
             WindowEvent::RedrawRequested => {
+                let drawing = Instant::now();
                 let commands = self.draw_home();
+                self.home_timing.add(drawing.elapsed());
+                self.home_timing.report_each_minute("window", || {
+                    applog::memory_mb().map_or_else(String::new, |mb| format!("{mb} MB resident"))
+                });
+                // Every notice shown to the operator goes in the log too.
+                let notice = self.running.as_ref().and_then(|r| r.home_state.notice.clone());
+                if notice != self.notice_logged {
+                    if let Some(notice) = &notice {
+                        applog::event("notice", notice);
+                    }
+                    self.notice_logged = notice;
+                }
                 self.apply(commands);
                 // Testing aid: choose menu bar items by their ids, one every few frames, the way
                 // a click on them reaches the app.
@@ -3536,6 +3597,7 @@ impl ApplicationHandler<String> for App {
 }
 
 fn main() -> ExitCode {
+    applog::start();
     // Picture objects on slides are read from the app's Images folder.
     pc_render::set_picture_loader(images::load);
     let options = match parse_args(std::env::args().skip(1)) {
@@ -3679,6 +3741,8 @@ fn main() -> ExitCode {
         running: None,
         failed: false,
         capture_done: false,
+        home_timing: applog::Timing::new("operator window drawings"),
+        notice_logged: None,
     };
     // The pictures that were in the media bin last time, then any named on the command line.
     let saved = media::load_list();
@@ -3686,15 +3750,26 @@ fn main() -> ExitCode {
     let mut pictures_to_load = saved.entries;
     for path in &media_paths {
         if !pictures_to_load.iter().any(|entry| &entry.path == path) {
-            pictures_to_load.push(media::Entry { path: path.clone(), fit: pc_model::ImageFit::Fill, looping: true });
+            pictures_to_load.push(media::Entry {
+                id: Uuid::new_v4(),
+                path: path.clone(),
+                fit: pc_model::ImageFit::Fill,
+                looping: true,
+            });
         }
     }
     for entry in &pictures_to_load {
         let path = &entry.path;
+        // A file listed twice (as an earlier version could save it) is shown once.
+        if app.show.media().iter().any(|item| &item.path == path) {
+            continue;
+        }
         match media::load_picture(path) {
             Ok(picture) => {
                 let name = path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
+                // Its id is kept between runs, so a slide's action that shows it still finds it.
                 app.show.add_media(MediaItem {
+                    id: entry.id,
                     fit: entry.fit,
                     looping: entry.looping,
                     ..MediaItem::new(name, path.clone())

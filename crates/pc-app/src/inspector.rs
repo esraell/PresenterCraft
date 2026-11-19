@@ -14,7 +14,8 @@ use crate::home::HomeState;
 
 const PANEL: Color32 = Color32::from_rgb(29, 29, 29);
 const TAB_IDLE: Color32 = Color32::from_rgb(85, 85, 85);
-const BLUE: Color32 = Color32::from_rgb(47, 123, 246);
+/// What is chosen: grey, as the rest of the app.
+const BLUE: Color32 = crate::studio::SELECTED;
 const CONTROL: Color32 = Color32::from_rgb(45, 45, 45);
 const FIELD: Color32 = Color32::from_rgb(20, 20, 20);
 const RULE: Color32 = Color32::from_rgb(50, 50, 50);

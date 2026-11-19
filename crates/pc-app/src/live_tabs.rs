@@ -430,7 +430,7 @@ fn messages_tab(ui: &mut egui::Ui, state: &mut HomeState) {
     ui.add_space(4.0);
     let label = if showing { "Hide" } else { "Show" };
     let button = egui::Button::new(egui::RichText::new(label).color(Color32::WHITE))
-        .fill(if showing { TALLY } else { ACCENT })
+        .fill(if showing { TALLY } else { crate::studio::SELECTED })
         .min_size(vec2(ui.available_width(), 30.0));
     if ui.add(button).on_hover_text("Show this message over the slides on the audience screens").clicked() {
         state.message_live = if showing { None } else { Some((id, Instant::now())) };
@@ -1121,7 +1121,7 @@ fn stage_tab(ui: &mut egui::Ui, state: &mut HomeState) {
     let label = if showing { "Hide" } else { "Show" };
     let has_words = !state.stage_message.trim().is_empty();
     let button = egui::Button::new(egui::RichText::new(label).color(Color32::WHITE))
-        .fill(if showing { TALLY } else { ACCENT })
+        .fill(if showing { TALLY } else { crate::studio::SELECTED })
         .min_size(vec2(ui.available_width(), 30.0));
     if ui.add_enabled(has_words || showing, button).clicked() {
         state.stage_message_live = !showing;

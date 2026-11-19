@@ -17,14 +17,15 @@ use crate::screens::{Kind, Output, Screen};
 use crate::icons::{self, Icon};
 
 /// Bars around the slide area and the media bin.
-const BAR: Color32 = Color32::from_rgb(20, 22, 26);
+const BAR: Color32 = crate::studio::PANEL;
 /// The pills that hold toolbar items, and text fields.
-const FIELD: Color32 = Color32::from_rgb(30, 33, 37);
-const TAB_BLUE: Color32 = Color32::from_rgb(76, 141, 255);
-const SIDE: Color32 = Color32::from_rgb(20, 22, 26);
-const CANVAS: Color32 = Color32::from_rgb(14, 15, 17);
+const FIELD: Color32 = crate::studio::CARD;
+/// The outline of what is chosen.
+const CHOSEN_LINE: Color32 = crate::studio::ACCENT;
+const SIDE: Color32 = crate::studio::PANEL;
+const CANVAS: Color32 = crate::studio::BG;
 const ON: Color32 = Color32::from_rgb(50, 208, 116);
-const DIM: Color32 = Color32::from_rgb(154, 160, 168);
+const DIM: Color32 = crate::studio::TEXT_DIM;
 
 /// How a presentation's slides are laid out in the Show view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -984,12 +985,12 @@ pub fn home_ui(
     commands
 }
 
-const EDIT_PANEL: Color32 = Color32::from_rgb(20, 22, 26);
-const EDIT_HEADER: Color32 = Color32::from_rgb(26, 29, 33);
-const EDIT_SURROUND: Color32 = Color32::from_rgb(38, 41, 46);
-const EDIT_STATUS: Color32 = Color32::from_rgb(20, 22, 26);
-const EDIT_SELECTED: Color32 = Color32::from_rgb(36, 67, 122);
-const EDIT_OUTLINE: Color32 = Color32::from_rgb(76, 141, 255);
+const EDIT_PANEL: Color32 = crate::studio::PANEL;
+const EDIT_HEADER: Color32 = Color32::from_rgb(44, 44, 46);
+const EDIT_SURROUND: Color32 = Color32::from_rgb(54, 54, 56);
+const EDIT_STATUS: Color32 = crate::studio::PANEL;
+const EDIT_SELECTED: Color32 = crate::studio::SELECTED;
+const EDIT_OUTLINE: Color32 = Color32::from_rgb(230, 230, 234);
 /// Half the side of a resize handle, in screen points.
 const HANDLE: f32 = 4.5;
 
@@ -1989,8 +1990,11 @@ fn edit_view(
                             centre + vec2(d.x * cos - d.y * sin, d.x * sin + d.y * cos)
                         })
                         .collect();
-                let stroke =
-                    if selected { Stroke::new(1.5, TAB_BLUE) } else { Stroke::new(1.0, Color32::from_white_alpha(45)) };
+                let stroke = if selected {
+                    Stroke::new(1.5, CHOSEN_LINE)
+                } else {
+                    Stroke::new(1.0, Color32::from_white_alpha(45))
+                };
                 ui.painter().add(egui::Shape::closed_line(corners, stroke));
                 if selected && draft.also.is_empty() && object.rotation == 0.0 && draft.typing != Some(object.id) {
                     for handle in crate::editor::Handle::ALL {
@@ -1998,7 +2002,7 @@ fn edit_view(
                         let at = slide.min + vec2(x, y) * scale;
                         let knob = Rect::from_center_size(at, vec2(HANDLE * 2.0, HANDLE * 2.0));
                         ui.painter().rect_filled(knob, 1.5, Color32::WHITE);
-                        ui.painter().rect_stroke(knob, 1.5, Stroke::new(1.0, TAB_BLUE), StrokeKind::Inside);
+                        ui.painter().rect_stroke(knob, 1.5, Stroke::new(1.0, CHOSEN_LINE), StrokeKind::Inside);
                     }
                 }
             }

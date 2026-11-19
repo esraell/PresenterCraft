@@ -276,7 +276,8 @@ pub fn build_passage(
     })
 }
 
-const BLUE: Color32 = Color32::from_rgb(47, 123, 246);
+/// What is chosen: grey, as the rest of the app.
+const BLUE: Color32 = crate::studio::SELECTED;
 const SHELL: Color32 = Color32::from_rgb(30, 30, 30);
 const PANE: Color32 = Color32::from_rgb(48, 48, 48);
 const DIM: Color32 = Color32::from_gray(160);

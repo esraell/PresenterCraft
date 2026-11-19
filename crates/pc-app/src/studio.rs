@@ -16,20 +16,25 @@ use crate::editor::EditDraft;
 use crate::home::{HomeState, SlideView, ThumbOf, matches_filter};
 use crate::icons::{self, Icon};
 
+// A grey studio: neutral greys with no tint, light grey for what is chosen, and red only for
+// what is on screen.
+
 /// The window behind everything.
-pub const BG: Color32 = Color32::from_rgb(14, 15, 17);
+pub const BG: Color32 = Color32::from_rgb(28, 28, 29);
 /// Side panels and bars.
-pub const PANEL: Color32 = Color32::from_rgb(20, 22, 26);
+pub const PANEL: Color32 = Color32::from_rgb(38, 38, 39);
 /// Things raised off a panel: buttons, cards, fields.
-pub const CARD: Color32 = Color32::from_rgb(30, 33, 37);
-pub const HOVER: Color32 = Color32::from_rgb(40, 44, 50);
+pub const CARD: Color32 = Color32::from_rgb(52, 52, 54);
+pub const HOVER: Color32 = Color32::from_rgb(64, 64, 66);
 /// The rare line between two areas.
-pub const LINE: Color32 = Color32::from_rgb(38, 42, 47);
-pub const TEXT: Color32 = Color32::from_rgb(232, 234, 237);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(154, 160, 168);
-pub const TEXT_FAINT: Color32 = Color32::from_rgb(104, 110, 118);
-/// Selected, in focus, chosen.
-pub const ACCENT: Color32 = Color32::from_rgb(76, 141, 255);
+pub const LINE: Color32 = Color32::from_rgb(60, 60, 62);
+pub const TEXT: Color32 = Color32::from_rgb(236, 236, 236);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(168, 168, 170);
+pub const TEXT_FAINT: Color32 = Color32::from_rgb(118, 118, 120);
+/// Chosen, in focus: outlines, lines and marks in light grey (and, faded, a lighter row).
+pub const ACCENT: Color32 = Color32::from_rgb(205, 205, 208);
+/// The fill of a chosen tab or button, under white words.
+pub const SELECTED: Color32 = Color32::from_rgb(88, 88, 92);
 /// On screen right now. Used for nothing else.
 pub const TALLY: Color32 = Color32::from_rgb(255, 69, 58);
 /// The output is on and ready.
@@ -763,7 +768,7 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
             if response.hovered() || ui.rect_contains_pointer(plus) {
                 let button = ui.interact(plus, ui.scope_id().with(("add to playlist", index)), Sense::click());
                 let ink = if button.hovered() { Color32::WHITE } else { TEXT_DIM };
-                ui.painter().rect_filled(plus, 5.0, if button.hovered() { ACCENT } else { HOVER });
+                ui.painter().rect_filled(plus, 5.0, if button.hovered() { SELECTED } else { HOVER });
                 icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
                 if button.on_hover_text(format!("Add to {front}")).clicked() {
                     add = Some(index);

@@ -34,6 +34,9 @@ fn list_file() -> Option<PathBuf> {
 /// A file in the media bin and how it is shown.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
+    /// Kept between runs, so slide actions that show the item find it again.
+    #[serde(default = "pc_model::Uuid::new_v4")]
+    pub id: pc_model::Uuid,
     pub path: PathBuf,
     #[serde(default = "filled")]
     pub fit: pc_model::ImageFit,
@@ -99,7 +102,10 @@ impl List {
     /// Reads the file's words. A file from before media settings is a plain list of files.
     pub fn from_json(text: &str) -> Option<List> {
         if let Ok(paths) = serde_json::from_str::<Vec<PathBuf>>(text) {
-            let entries = paths.into_iter().map(|path| Entry { path, fit: filled(), looping: true }).collect();
+            let entries = paths
+                .into_iter()
+                .map(|path| Entry { id: pc_model::Uuid::new_v4(), path, fit: filled(), looping: true })
+                .collect();
             return Some(List { entries, playlists: Vec::new() });
         }
         serde_json::from_str(text).ok()
@@ -203,7 +209,12 @@ mod tests {
         backgrounds.toggle(Path::new("/a/sky.png"));
         assert_eq!(new_playlist_name(std::slice::from_ref(&backgrounds)), "New Playlist 2");
         let list = List {
-            entries: vec![Entry { path: "/a/sky.png".into(), fit: pc_model::ImageFit::Fit, looping: false }],
+            entries: vec![Entry {
+                id: pc_model::Uuid::new_v4(),
+                path: "/a/sky.png".into(),
+                fit: pc_model::ImageFit::Fit,
+                looping: false,
+            }],
             playlists: vec![backgrounds],
         };
         assert_eq!(List::from_json(&serde_json::to_string(&list).unwrap()), Some(list));
