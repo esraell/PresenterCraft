@@ -3704,6 +3704,7 @@ fn target_menu(
     labels: &[String],
     taken: &[pc_model::Role],
     with_verse: Option<&pc_model::Role>,
+    width: f32,
 ) {
     let is_with_verse = with_verse.is_some() && target.as_ref() == with_verse;
     // A box is called what the theme calls it.
@@ -3719,7 +3720,7 @@ fn target_menu(
         Some(role) => label_of(role),
         None => "None".to_owned(),
     };
-    egui::ComboBox::from_id_salt(salt).selected_text(shown).width(130.0).height(360.0).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt(salt).selected_text(shown).width(width).height(360.0).show_ui(ui, |ui| {
         let entry = |ui: &mut egui::Ui, name: &str, lit: Option<&pc_model::Role>, chosen: bool, free: bool| -> bool {
             let (row, response) =
                 ui.allocate_exact_size(vec2(170.0, 34.0), if free { Sense::click() } else { Sense::hover() });
@@ -3798,6 +3799,12 @@ fn bible_area(
 
         Frame::new().fill(SIDE).inner_margin(egui::Margin::symmetric(8, 8)).show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            // One row when there is room for the fields and the actions together; otherwise the
+            // fields share the first row and the actions take a second.
+            let across = ui.available_width();
+            let wide = across >= 1040.0;
+            let fields = if wide { 470.0 } else { (across - 90.0).max(200.0) };
+            let (lookup_width, search_width) = ((fields * 0.52).min(260.0), (fields * 0.48).min(240.0));
             ui.horizontal(|ui| {
                 let entered = |response: &egui::Response, ui: &egui::Ui| {
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
@@ -3808,7 +3815,7 @@ fn bible_area(
                         egui::TextEdit::singleline(&mut state.bible.lookup)
                             .id(lookup_id)
                             .hint_text("Scripture Lookup")
-                            .desired_width(240.0),
+                            .desired_width(lookup_width),
                     )
                     .on_hover_text("Type a reference, such as John 3:16, and press Return");
                 if entered(&lookup, ui) {
@@ -3866,95 +3873,21 @@ fn bible_area(
                     ui.close();
                 }
                 let search =
-                    ui.add(egui::TextEdit::singleline(&mut state.bible.search).hint_text("Search").desired_width(230.0))
+                    ui.add(egui::TextEdit::singleline(&mut state.bible.search).hint_text("Search").desired_width(search_width))
                         .on_hover_text("Type words to find in the first Bible, and press Return");
                 if entered(&search, ui) {
                     state.bible.find();
                 }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let button = ui.add(egui::Button::selectable(state.bible.options.open, "Options"))
-                        .on_hover_text("How verses become slides, and which Bibles are installed");
-                    if button.clicked() {
-                        state.bible.options.open = !state.bible.options.open;
-                    }
-                    if state.bible.options.open {
-                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                            state.bible.options.open = false;
-                        }
-                        let bible = &mut state.bible;
-                        let picked = crate::bible::options_popup(
-                            ui.ctx(),
-                            &mut bible.options,
-                            &mut bible.shelf,
-                            &mut bible.downloads,
-                            button.rect,
-                            &crate::bible::ThemeChoice {
-                                names: &state.theme_names,
-                                template_names: &state.template_names,
-                                layouts: &state.theme_layouts,
-                                theme: state.theme_for_bible,
-                                layout: state.bible_layout,
-                            },
-                        );
-                        if let Some((index, layout)) = picked {
-                            state.theme_request = Some(ThemeRequest::UseForBible(index, layout));
-                        }
-                        if let Some(index) = state.bible.options.remove.take() {
-                            state.bible.remove_bible(index);
-                        }
-                    }
-                    // One click each: the passage into the playlist in front (named on the
-                    // button; the arrow beside it picks another), or a presentation of its own.
-                    let saved = state.bible.saved();
-                    let front = state.services.front().name.clone();
-                    let add = ui
-                        .add_enabled(saved.is_some(), egui::Button::new(format!("Add to \u{201c}{front}\u{201d}")))
-                        .on_hover_text("Put this passage in the playlist, to open again with these settings")
-                        .on_disabled_hover_text("Look a passage up first");
-                    if add.clicked()
-                        && let Some(saved) = saved.clone()
-                    {
-                        state.notice = Some(format!("Added {} to {front}.", saved.lookup));
-                        state.services.add(crate::service::Item::Passage(saved));
-                    }
-                    if state.services.list.len() > 1 {
-                        let other = ui
-                            .add_enabled(saved.is_some(), egui::Button::new("▾"))
-                            .on_hover_text("Add to another playlist");
-                        egui::Popup::from_toggle_button_response(&other)
-                            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                            .show(|ui| {
-                                let Some(saved) = saved.clone() else { return };
-                                let names: Vec<String> =
-                                    state.services.list.iter().map(|playlist| playlist.name.clone()).collect();
-                                for (at, name) in names.iter().enumerate() {
-                                    if ui.button(format!("Add to \u{201c}{name}\u{201d}")).clicked() {
-                                        state.services.add_to(at, crate::service::Item::Passage(saved.clone()));
-                                        state.notice = Some(format!("Added {} to {name}.", saved.lookup));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                    }
-                    // A presentation of its own in the library, named by the passage and its
-                    // Bibles: "John 3:16-18 (KJV, SYN)".
-                    let as_presentation = ui
-                        .add_enabled(saved.is_some(), egui::Button::new("Save as Presentation"))
-                        .on_hover_text("Make this passage a presentation in the library, drawn with the Bible's theme")
-                        .on_disabled_hover_text("Look a passage up first");
-                    if as_presentation.clicked()
-                        && let Some(saved) = saved
-                    {
-                        let bibles: Vec<String> = saved.rows.iter().map(|row| row.bible.to_uppercase()).collect();
-                        let title = if bibles.is_empty() {
-                            saved.lookup.clone()
-                        } else {
-                            format!("{} ({})", saved.lookup, bibles.join(", "))
-                        };
-                        state.bible_song_request = Some((state.bible.showing, title));
-                    }
-                });
+                if wide {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| bible_actions(ui, state));
+                }
             });
+            // Too narrow for one row: the actions go on a row of their own, under the fields.
+            if !wide {
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| bible_actions(ui, state));
+                });
+            }
 
             let mut add = false;
             let mut remove = None;
@@ -3964,10 +3897,13 @@ fn bible_area(
             let used: Vec<(BibleTarget, BibleTarget)> =
                 state.bible.rows.iter().map(|row| (row.verse.clone(), row.reference.clone())).collect();
             let bibles_used: Vec<usize> = state.bible.rows.iter().filter_map(|row| row.bible).collect();
+            // On a narrow page the pickers give up some width, so License and + still fit.
+            let tight = ui.available_width() < 820.0;
+            let (bible_width, menu_width) = if tight { (150.0, 100.0) } else { (200.0, 130.0) };
             for (index, row) in state.bible.rows.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     let chosen = row.bible.and_then(|at| state.bible.shelf.bibles.get(at)).map_or("None", |b| b.name.as_str());
-                    egui::ComboBox::from_id_salt(("bible translation", index)).selected_text(chosen).width(200.0).show_ui(
+                    egui::ComboBox::from_id_salt(("bible translation", index)).selected_text(chosen).width(bible_width).show_ui(
                         ui,
                         |ui| {
                             // None frees the row's Bible for another row: to swap two, set one
@@ -4010,11 +3946,20 @@ fn bible_area(
                             .flatten()
                             .collect()
                     };
-                    target_menu(ui, ("bible verse", index), &mut row.verse, &boxes, &labels, &taken(true), None);
+                    target_menu(ui, ("bible verse", index), &mut row.verse, &boxes, &labels, &taken(true), None, menu_width);
                     ui.add_space(8.0);
                     ui.label("Reference");
                     let with = row.verse.clone();
-                    target_menu(ui, ("bible reference", index), &mut row.reference, &boxes, &labels, &taken(false), with.as_ref());
+                    target_menu(
+                        ui,
+                        ("bible reference", index),
+                        &mut row.reference,
+                        &boxes,
+                        &labels,
+                        &taken(false),
+                        with.as_ref(),
+                        menu_width,
+                    );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         // The first row adds a translation; the others remove themselves.
                         if index == 0 {
@@ -4155,6 +4100,87 @@ fn bible_area(
 /// The rulers along the top and left of the Edit view's canvas, in the slide's own pixels: a
 /// mark every 100, numbered as often as there is room for, with the selected object's extent
 /// shown on each.
+/// The Bible page's actions, laid out from the right: Options, then keeping the passage (in the
+/// playlist in front, another playlist, or as a presentation).
+fn bible_actions(ui: &mut egui::Ui, state: &mut HomeState) {
+    let button = ui
+        .add(egui::Button::selectable(state.bible.options.open, "Options"))
+        .on_hover_text("How verses become slides, and which Bibles are installed");
+    if button.clicked() {
+        state.bible.options.open = !state.bible.options.open;
+    }
+    if state.bible.options.open {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            state.bible.options.open = false;
+        }
+        let bible = &mut state.bible;
+        let picked = crate::bible::options_popup(
+            ui.ctx(),
+            &mut bible.options,
+            &mut bible.shelf,
+            &mut bible.downloads,
+            button.rect,
+            &crate::bible::ThemeChoice {
+                names: &state.theme_names,
+                template_names: &state.template_names,
+                layouts: &state.theme_layouts,
+                theme: state.theme_for_bible,
+                layout: state.bible_layout,
+            },
+        );
+        if let Some((index, layout)) = picked {
+            state.theme_request = Some(ThemeRequest::UseForBible(index, layout));
+        }
+        if let Some(index) = state.bible.options.remove.take() {
+            state.bible.remove_bible(index);
+        }
+    }
+    // One click each: the passage into the playlist in front (named on the
+    // button; the arrow beside it picks another), or a presentation of its own.
+    let saved = state.bible.saved();
+    let front = state.services.front().name.clone();
+    let add = ui
+        .add_enabled(saved.is_some(), egui::Button::new(format!("Add to \u{201c}{front}\u{201d}")))
+        .on_hover_text("Put this passage in the playlist, to open again with these settings")
+        .on_disabled_hover_text("Look a passage up first");
+    if add.clicked()
+        && let Some(saved) = saved.clone()
+    {
+        state.notice = Some(format!("Added {} to {front}.", saved.lookup));
+        state.services.add(crate::service::Item::Passage(saved));
+    }
+    if state.services.list.len() > 1 {
+        let other = ui.add_enabled(saved.is_some(), egui::Button::new("▾")).on_hover_text("Add to another playlist");
+        egui::Popup::from_toggle_button_response(&other)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                let Some(saved) = saved.clone() else { return };
+                let names: Vec<String> = state.services.list.iter().map(|playlist| playlist.name.clone()).collect();
+                for (at, name) in names.iter().enumerate() {
+                    if ui.button(format!("Add to \u{201c}{name}\u{201d}")).clicked() {
+                        state.services.add_to(at, crate::service::Item::Passage(saved.clone()));
+                        state.notice = Some(format!("Added {} to {name}.", saved.lookup));
+                        ui.close();
+                    }
+                }
+            });
+    }
+    // A presentation of its own in the library, named by the passage and its
+    // Bibles: "John 3:16-18 (KJV, SYN)".
+    let as_presentation = ui
+        .add_enabled(saved.is_some(), egui::Button::new("Save as Presentation"))
+        .on_hover_text("Make this passage a presentation in the library, drawn with the Bible's theme")
+        .on_disabled_hover_text("Look a passage up first");
+    if as_presentation.clicked()
+        && let Some(saved) = saved
+    {
+        let bibles: Vec<String> = saved.rows.iter().map(|row| row.bible.to_uppercase()).collect();
+        let title =
+            if bibles.is_empty() { saved.lookup.clone() } else { format!("{} ({})", saved.lookup, bibles.join(", ")) };
+        state.bible_song_request = Some((state.bible.showing, title));
+    }
+}
+
 fn rulers(painter: &egui::Painter, area: Rect, ruler: f32, slide: Rect, scale: f32, selected: Option<SlideRect>) {
     let band = Color32::from_rgb(12, 12, 12);
     let top = Rect::from_min_max(pos2(area.min.x + ruler, area.min.y), pos2(area.max.x, area.min.y + ruler));
