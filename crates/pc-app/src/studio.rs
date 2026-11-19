@@ -353,35 +353,7 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 if response.on_hover_text("Settings (Command-comma)").clicked() {
                     state.preferences_open = !state.preferences_open;
                 }
-                // The audience output: a tally light, its name, and whether it is on.
-                let on = show.output_enabled();
-                let (rect, response) = ui.allocate_exact_size(vec2(148.0, 30.0), Sense::click());
-                let painter = ui.painter();
-                painter.rect_filled(rect, RADIUS, if response.hovered() { HOVER } else { CARD });
-                let light = if on { READY } else { TEXT_FAINT };
-                painter.circle_filled(rect.left_center() + vec2(15.0, 0.0), 4.5, light);
-                painter.text(
-                    rect.left_center() + vec2(28.0, 0.0),
-                    Align2::LEFT_CENTER,
-                    "Audience",
-                    FontId::proportional(13.5),
-                    TEXT,
-                );
-                painter.text(
-                    rect.right_center() - vec2(12.0, 0.0),
-                    Align2::RIGHT_CENTER,
-                    if on { "ON" } else { "OFF" },
-                    FontId::proportional(11.0),
-                    if on { READY } else { TEXT_DIM },
-                );
-                let hint = if on {
-                    "The audience output is on. Click to switch it off."
-                } else {
-                    "The audience output is off. Click to switch it on."
-                };
-                if response.on_hover_text(hint).clicked() {
-                    commands.push(Command::SetOutputEnabled(!on));
-                }
+                // Laid out from the right: Stage, then Audience to its left, so Audience reads first.
                 // The stage screens: a light and whether they are on.
                 let stage_on = state.stage_on;
                 let (rect, response) = ui.allocate_exact_size(vec2(118.0, 30.0), Sense::click());
@@ -413,6 +385,35 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 };
                 if response.on_hover_text(hint).clicked() {
                     state.stage_on = !stage_on;
+                }
+                // The audience output: a tally light, its name, and whether it is on.
+                let on = show.output_enabled();
+                let (rect, response) = ui.allocate_exact_size(vec2(148.0, 30.0), Sense::click());
+                let painter = ui.painter();
+                painter.rect_filled(rect, RADIUS, if response.hovered() { HOVER } else { CARD });
+                let light = if on { READY } else { TEXT_FAINT };
+                painter.circle_filled(rect.left_center() + vec2(15.0, 0.0), 4.5, light);
+                painter.text(
+                    rect.left_center() + vec2(28.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    "Audience",
+                    FontId::proportional(13.5),
+                    TEXT,
+                );
+                painter.text(
+                    rect.right_center() - vec2(12.0, 0.0),
+                    Align2::RIGHT_CENTER,
+                    if on { "ON" } else { "OFF" },
+                    FontId::proportional(11.0),
+                    if on { READY } else { TEXT_DIM },
+                );
+                let hint = if on {
+                    "The audience output is on. Click to switch it off."
+                } else {
+                    "The audience output is off. Click to switch it on."
+                };
+                if response.on_hover_text(hint).clicked() {
+                    commands.push(Command::SetOutputEnabled(!on));
                 }
             });
         });
@@ -1755,7 +1756,11 @@ pub fn media_strip(
                 ui,
                 |ui| {
                     let mut placed: Vec<(usize, Rect)> = Vec::new();
+                    // Room round the row, so the outline of an item on screen or picked out is
+                    // not cut off at the edges.
+                    ui.add_space(3.0);
                     ui.horizontal(|ui| {
+                        ui.add_space(3.0);
                         ui.spacing_mut().item_spacing.x = 12.0;
                         let several = state.picked_media.len() > 1;
                         for (index, item) in show.media().iter().enumerate() {

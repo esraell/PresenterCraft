@@ -13,7 +13,7 @@ use crate::editor::MIN_SIDE;
 use crate::home::HomeState;
 
 const PANEL: Color32 = Color32::from_rgb(29, 29, 29);
-const TAB_IDLE: Color32 = Color32::from_rgb(85, 85, 85);
+const TAB_IDLE: Color32 = Color32::from_rgb(46, 46, 48);
 /// What is chosen: grey, as the rest of the app.
 const BLUE: Color32 = crate::studio::SELECTED;
 const CONTROL: Color32 = Color32::from_rgb(45, 45, 45);
@@ -391,9 +391,19 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
                     vec2(tab_width, tabs.height()),
                 );
                 let selected = state.inspector.tab == tab;
-                ui.painter().rect_filled(rect.shrink2(vec2(0.5, 0.0)), 0.0, if selected { BLUE } else { TAB_IDLE });
-                ui.painter().text(rect.center(), Align2::CENTER_CENTER, name, FontId::proportional(12.5), INK);
-                if ui.interact(rect, ui.scope_id().with(("inspector tab", index)), Sense::click()).clicked() {
+                let response = ui.interact(rect, ui.scope_id().with(("inspector tab", index)), Sense::click());
+                // The open tab stands out: light, with dark words and a bar under it; the others
+                // are dark, with dim words.
+                let (fill, ink, font) = if selected {
+                    (crate::studio::ACCENT, crate::studio::BG, crate::studio::semibold(12.5))
+                } else if response.hovered() {
+                    (crate::studio::HOVER, INK, FontId::proportional(12.5))
+                } else {
+                    (TAB_IDLE, crate::studio::TEXT_DIM, FontId::proportional(12.5))
+                };
+                ui.painter().rect_filled(rect.shrink2(vec2(0.5, 0.0)), 0.0, fill);
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, name, font, ink);
+                if response.clicked() {
                     state.inspector.tab = tab;
                 }
             }
