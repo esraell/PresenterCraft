@@ -13,6 +13,7 @@ mod menubar;
 mod output;
 mod screens;
 mod service;
+mod stage;
 mod studio;
 mod theme_store;
 mod thumbs;
@@ -353,6 +354,8 @@ struct Running {
     ndi_sent: Vec<(Uuid, String)>,
     /// The names the screens were last told to show while being identified.
     identify_sent: Option<Vec<(Uuid, String)>>,
+    /// The stage screens the output was last told of, and whether they were on.
+    stage_sent: Option<(Vec<Uuid>, bool)>,
     output: Option<OutputHandle>,
     /// The Screens window, while it is open.
     screens_window: Option<PanelWindow>,
@@ -520,6 +523,7 @@ impl App {
             retired: Vec::new(),
             ndi_sent: Vec::new(),
             identify_sent: None,
+            stage_sent: None,
             output: Some(output),
             screens_window: None,
             gpu,
@@ -601,6 +605,11 @@ impl App {
             return;
         };
         let slide = self.show.live_slide().map(|(_, slide)| Arc::new(slide.clone()));
+        // The slide after the one on screen, for the stage screens.
+        let next = self.show.live().and_then(|at| {
+            let song = self.show.presentations().get(at.presentation)?;
+            song.slide(at.slide + 1).map(|(_, slide)| Arc::new(slide.clone()))
+        });
         let media = self.show.live_media().and_then(|index| self.pictures.get(index)).cloned();
         // The audience comes first: tell the output before drawing anything for the operator.
         if let Some(output) = &running.output {
@@ -610,6 +619,7 @@ impl App {
                 theme: theme.clone(),
                 enabled: self.show.output_enabled(),
                 dissolve: running.home_state.dissolve_seconds(),
+                next,
             };
             if !output.send(OutputMsg::Show(frame)) {
                 running.home_state.output_stopped = true;
@@ -1159,6 +1169,19 @@ impl App {
             output.send(OutputMsg::Redraw);
         }
 
+        // Stage screens: which they are, and whether they are on.
+        let stage = (
+            list.iter()
+                .filter(|screen| screen.kind == screens::Kind::Stage)
+                .map(|screen| screen.id)
+                .collect::<Vec<_>>(),
+            home_state.stage_on,
+        );
+        if running.stage_sent.as_ref() != Some(&stage) {
+            output.send(OutputMsg::Stage { screens: stage.0.clone(), on: stage.1 });
+            running.stage_sent = Some(stage);
+        }
+
         // Identify Screens: every screen shows its own name while it is ticked.
         let names = home_state.identify.then(|| list.iter().map(|screen| (screen.id, screen.name.clone())).collect());
         if names != *identify_sent {
@@ -1526,6 +1549,7 @@ impl App {
             A::ClearSlide => commands.push(Command::Clear(pc_engine::Layer::Slides)),
             A::ClearMedia => commands.push(Command::Clear(pc_engine::Layer::Media)),
             A::Audience => commands.push(Command::SetOutputEnabled(!self.show.output_enabled())),
+            A::Stage => state.stage_on = !state.stage_on,
             A::IdentifyScreens => state.identify = !state.identify,
             A::Website => {
                 if let Err(e) =
@@ -1565,6 +1589,7 @@ impl App {
             let output_on = self.show.output_enabled();
             menu.set_checked(|action| match action {
                 A::Audience => output_on,
+                A::Stage => state.stage_on,
                 A::IdentifyScreens => state.identify,
                 _ => action == view || action == slide_view,
             });

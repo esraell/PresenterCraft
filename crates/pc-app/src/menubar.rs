@@ -33,6 +33,7 @@ pub enum Action {
     ClearSlide,
     ClearMedia,
     Audience,
+    Stage,
     IdentifyScreens,
     ConfigureScreens,
     Website,
@@ -164,6 +165,7 @@ pub const MENUS: &[(&str, &[Entry])] = &[
         "Screens",
         &[
             Check(Action::Audience, "Audience Output", cmd('1')),
+            Check(Action::Stage, "Stage Output", cmd('2')),
             Check(Action::IdentifyScreens, "Identify Screens", None),
             Line,
             Do(Action::ConfigureScreens, "Configure Screens…", option_cmd('1')),
@@ -298,6 +300,7 @@ mod mac {
         match key {
             'A'..='Z' => LETTERS.get(usize::from(key as u8 - b'A')).copied(),
             '1' => Some(Code::Digit1),
+            '2' => Some(Code::Digit2),
             ',' => Some(Code::Comma),
             _ => None,
         }

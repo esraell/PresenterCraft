@@ -24,6 +24,8 @@ winit = "=0.30.13"
 egui = { version = "=0.37.0", features = ["default_fonts"] }
 egui-wgpu = "=0.37.0"
 egui-winit = "=0.37.0"
+# The time on stage screens, in the computer's own time zone.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The macOS menu bar.
 muda = { version = "=0.21.2", default-features = false }
 uuid = { version = "1", features = ["v4", "serde"] }

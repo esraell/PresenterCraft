@@ -80,6 +80,8 @@ ProPresenter.
 **Screens**
 - Any number of audience screens, each sent to a display, a window, or the network over NDI,
   all showing the same picture. Open them with the gear button or **Cmd+,**.
+- Stage screens for the people on stage: the words on screen now, the next slide's words, and
+  the time.
 - A screen whose display is unplugged waits for it instead of jumping to another display.
   Identify Screens shows each screen's name on it.
 
@@ -87,14 +89,15 @@ ProPresenter.
 
 **On the Mac**
 - A menu bar with the usual menus and shortcuts (New Song, Undo, Cut/Copy/Paste, the views,
-  Clear, Audience Output on/off with Cmd+1, Configure Screens), showing only what works.
+  Clear, Audience and Stage Output on/off with Cmd+1 and Cmd+2, Configure Screens), showing
+  only what works.
 
 ## Not built yet
 
 Among the things PresenterCraft can't do yet:
 
 - Videos, audio, and live video inputs.
-- Stage screens (confidence monitors), timers, messages, props, macros.
+- Stage layouts other than the built-in one; timers, messages, props, macros.
 - Transitions other than Cut and Dissolve.
 - Formatting one word differently from the rest of its box; line and letter spacing.
 - Importing songs from other presentation apps or from CCLI SongSelect.
@@ -139,7 +142,7 @@ Other options: `--list-displays`, `--output-display N`.
 | P, T, I, E, O | Pre-chorus, Tag, Intro, Ending, Outro |
 | Cmd+N | new song |
 | Cmd+, or Option+Cmd+1 | Screens |
-| Cmd+1 | audience output on/off |
+| Cmd+1 / Cmd+2 | audience / stage screens on or off |
 | Control+S, E, B, T | Show, Edit, Bible, Themes |
 
 The letter for each group is shown on its first slide.

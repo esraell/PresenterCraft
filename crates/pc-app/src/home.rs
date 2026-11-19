@@ -12,7 +12,7 @@ use pc_render::object_frame;
 
 use crate::displays::DisplayInfo;
 use crate::editor::EditDraft;
-use crate::screens::{Output, Screen};
+use crate::screens::{Kind, Output, Screen};
 
 use crate::icons::{self, Icon};
 
@@ -113,6 +113,8 @@ pub struct HomeState {
     pub screen_status: Vec<(String, bool)>,
     /// The screen chosen in the Screens window.
     pub screen_selected: usize,
+    /// True while the stage screens are on.
+    pub stage_on: bool,
     /// True while every screen shows its own name instead of the show.
     pub identify: bool,
     /// An NDI name being typed in the Screens window, and the screen it is for. It is used
@@ -568,6 +570,7 @@ impl Default for HomeState {
             screens_changed: false,
             screen_status: Vec::new(),
             screen_selected: 0,
+            stage_on: true,
             identify: false,
             ndi_draft: None,
             ndi_available: pc_ndi::NdiOutput::AVAILABLE,
@@ -604,6 +607,7 @@ impl HomeState {
             }
             .to_owned(),
             service_height: self.service_height.map(f32::round),
+            stage_off: !self.stage_on,
             ..crate::service::Prefs::default()
         }
     }
@@ -619,6 +623,7 @@ impl HomeState {
             _ => SlideView::Grid,
         };
         self.service_height = prefs.service_height;
+        self.stage_on = !prefs.stage_off;
     }
 
     /// How long a new picture takes to fade in on the output; zero when slides cut.
@@ -1738,38 +1743,20 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
         .exact_size(214.0)
         .frame(Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 12 }))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                crate::studio::caption(ui, "AUDIENCE");
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let hint = if output_on { "The audience screens are on" } else { "The audience screens are off" };
-                    if switch(ui, output_on, hint) {
-                        commands.push(Command::SetOutputEnabled(!output_on));
-                    }
-                });
-            });
-            ui.add_space(8.0);
             egui::Panel::bottom("screen list buttons").resizable(false).frame(Frame::new()).show(ui, |ui| {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
                     let small = vec2(26.0, 22.0);
-                    let add = ui.add_sized(small, egui::Button::new("+")).on_hover_text("Add a screen");
-                    if add.clicked() {
-                        let name = crate::screens::next_name(&state.screens);
-                        // A new screen goes nowhere until it is told where, so nothing
-                        // changes on any display by surprise.
-                        state.screens.push(Screen::new(name, Output::Off));
-                        state.screen_selected = state.screens.len() - 1;
-                        state.ndi_draft = None;
-                        changed = true;
-                    }
-                    let only = state.screens.len() <= 1;
+                    let only = state.screens.iter().filter(|screen| screen.kind == Kind::Audience).count() <= 1
+                        && state.screens.get(state.screen_selected).is_some_and(|screen| screen.kind == Kind::Audience);
                     let remove = ui
                         .add_enabled_ui(!only, |ui| ui.add_sized(small, egui::Button::new("−")))
                         .inner
                         .on_hover_text("Remove the selected screen")
-                        .on_disabled_hover_text("There is always one screen. Set its output to Off to show nothing.");
-                    if remove.clicked() && !only {
+                        .on_disabled_hover_text(
+                            "There is always one audience screen. Set its output to Off to show nothing.",
+                        );
+                    if remove.clicked() && !only && state.screen_selected < state.screens.len() {
                         state.screens.remove(state.screen_selected);
                         state.screen_selected = state.screen_selected.saturating_sub(1);
                         state.ndi_draft = None;
@@ -1786,29 +1773,74 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
                 });
             });
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                for index in 0..state.screens.len() {
-                    let shown = state.screen_status.get(index).is_some_and(|(_, shown)| *shown);
-                    let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
-                    let selected = state.screen_selected == index;
-                    if selected {
-                        ui.painter().rect_filled(row, 6.0, ACCENT.gamma_multiply(0.35));
-                    } else if response.hovered() {
-                        ui.painter().rect_filled(row, 6.0, HOVER);
+                for kind in [Kind::Audience, Kind::Stage] {
+                    // The section's heading, with + to add a screen of its kind and a switch for all of them.
+                    ui.horizontal(|ui| {
+                        crate::studio::caption(ui, if kind == Kind::Audience { "AUDIENCE" } else { "STAGE" });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let (on, what) = match kind {
+                                Kind::Audience => (output_on, "audience"),
+                                Kind::Stage => (state.stage_on, "stage"),
+                            };
+                            let hint = format!("The {what} screens are {}", if on { "on" } else { "off" });
+                            if switch(ui, on, &hint) {
+                                match kind {
+                                    Kind::Audience => commands.push(Command::SetOutputEnabled(!output_on)),
+                                    Kind::Stage => state.stage_on = !state.stage_on,
+                                }
+                            }
+                            let add = ui
+                                .add_sized(vec2(22.0, 20.0), egui::Button::new("+").frame(false))
+                                .on_hover_text(format!("Add a {what} screen"));
+                            if add.clicked() {
+                                let name = crate::screens::next_name(&state.screens, kind);
+                                // A new screen goes nowhere until it is told where, so nothing
+                                // changes on any display by surprise.
+                                let screen = match kind {
+                                    Kind::Audience => Screen::new(name, Output::Off),
+                                    Kind::Stage => Screen::stage(name, Output::Off),
+                                };
+                                state.screens.push(screen);
+                                state.screen_selected = state.screens.len() - 1;
+                                state.ndi_draft = None;
+                                changed = true;
+                            }
+                        });
+                    });
+                    ui.add_space(4.0);
+                    let mut any = false;
+                    for index in 0..state.screens.len() {
+                        if state.screens[index].kind != kind {
+                            continue;
+                        }
+                        any = true;
+                        let shown = state.screen_status.get(index).is_some_and(|(_, shown)| *shown);
+                        let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+                        let selected = state.screen_selected == index;
+                        if selected {
+                            ui.painter().rect_filled(row, 6.0, ACCENT.gamma_multiply(0.35));
+                        } else if response.hovered() {
+                            ui.painter().rect_filled(row, 6.0, HOVER);
+                        }
+                        // A green light when the screen is being shown somewhere.
+                        let light = if shown { ON } else { TEXT_FAINT };
+                        ui.painter().circle_filled(row.left_center() + vec2(12.0, 0.0), 4.0, light);
+                        ui.painter().with_clip_rect(row.shrink(2.0)).text(
+                            row.left_center() + vec2(24.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            state.screens[index].name.as_str(),
+                            FontId::proportional(13.5),
+                            TEXT,
+                        );
+                        if response.clicked() {
+                            state.screen_selected = index;
+                            state.ndi_draft = None;
+                        }
                     }
-                    // A green light when the screen is being shown somewhere.
-                    let light = if shown { ON } else { TEXT_FAINT };
-                    ui.painter().circle_filled(row.left_center() + vec2(12.0, 0.0), 4.0, light);
-                    ui.painter().with_clip_rect(row.shrink(2.0)).text(
-                        row.left_center() + vec2(24.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        state.screens[index].name.as_str(),
-                        FontId::proportional(13.5),
-                        TEXT,
-                    );
-                    if response.clicked() {
-                        state.screen_selected = index;
-                        state.ndi_draft = None;
+                    if !any {
+                        ui.label(egui::RichText::new("None. Press + to add one.").size(12.0).color(TEXT_FAINT));
                     }
+                    ui.add_space(14.0);
                 }
             });
         });
@@ -1820,7 +1852,8 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
         let (status, shown) = state.screen_status.get(index).cloned().unwrap_or_default();
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(screen.name.as_str()).font(crate::studio::semibold(18.0)).color(TEXT));
-            ui.label(egui::RichText::new("1920 × 1080").size(13.0).color(TEXT_DIM));
+            let what = if screen.kind == Kind::Stage { "Stage  ·  1920 × 1080" } else { "1920 × 1080" };
+            ui.label(egui::RichText::new(what).size(13.0).color(TEXT_DIM));
         });
         ui.add_space(12.0);
 
@@ -1920,6 +1953,14 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
             Output::Off => "This screen is kept in the list and shows nowhere.",
         };
         ui.label(egui::RichText::new(about).size(11.5).color(TEXT_DIM));
+        if screen.kind == Kind::Stage {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new("A stage screen shows the words on screen now, the next slide's words under them, and the time.")
+                    .size(11.5)
+                    .color(TEXT_DIM),
+            );
+        }
     });
     state.screens_changed |= changed;
     commands

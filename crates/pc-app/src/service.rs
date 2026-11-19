@@ -228,6 +228,8 @@ pub struct Prefs {
     pub ndi_on: bool,
     /// How tall the service's part of the left column was dragged to be. `None` until it is.
     pub service_height: Option<f32>,
+    /// True when the stage screens were switched off.
+    pub stage_off: bool,
 }
 
 impl Default for Prefs {
@@ -240,6 +242,7 @@ impl Default for Prefs {
             ndi_name: "PresenterCraft Audience".to_owned(),
             ndi_on: false,
             service_height: None,
+            stage_off: false,
         }
     }
 }

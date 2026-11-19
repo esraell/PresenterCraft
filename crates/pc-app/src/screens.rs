@@ -22,11 +22,24 @@ pub enum Output {
     Off,
 }
 
+/// What a screen is for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// For the people in the room, the stream and the recording: the slides themselves.
+    #[default]
+    Audience,
+    /// For the people on stage: the slide on screen, the next slide and the time.
+    Stage,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Screen {
     pub id: Uuid,
     pub name: String,
     pub output: Output,
+    #[serde(default)]
+    pub kind: Kind,
 }
 
 /// Where a screen ends up on this computer as it is now.
@@ -42,7 +55,11 @@ pub enum Placed {
 
 impl Screen {
     pub fn new(name: String, output: Output) -> Screen {
-        Screen { id: Uuid::new_v4(), name, output }
+        Screen { id: Uuid::new_v4(), name, output, kind: Kind::Audience }
+    }
+
+    pub fn stage(name: String, output: Output) -> Screen {
+        Screen { kind: Kind::Stage, ..Screen::new(name, output) }
     }
 }
 
@@ -56,10 +73,16 @@ pub fn starting(ndi: Option<&str>) -> Vec<Screen> {
     screens
 }
 
-/// A name no screen in the list has: "Screen 3" when there are two, and so on.
-pub fn next_name(screens: &[Screen]) -> String {
-    (screens.len() + 1..)
-        .map(|n| format!("Screen {n}"))
+/// A name no screen in the list has for a new screen of a kind: "Screen 3" when there are two
+/// audience screens, "Stage Screen 1" for the first stage screen, and so on.
+pub fn next_name(screens: &[Screen], kind: Kind) -> String {
+    let base = match kind {
+        Kind::Audience => "Screen",
+        Kind::Stage => "Stage Screen",
+    };
+    let of_kind = screens.iter().filter(|screen| screen.kind == kind).count();
+    (of_kind + 1..)
+        .map(|n| format!("{base} {n}"))
         .find(|name| screens.iter().all(|screen| screen.name != *name))
         .unwrap_or_default()
 }
@@ -219,7 +242,13 @@ mod tests {
         assert_eq!(from_json(&to_json(&screens)), Some(screens.clone()));
         assert_eq!(from_json("{}"), None);
         assert_eq!(from_json(&to_json(&[])), None);
-        assert_eq!(next_name(&screens), "Screen 3");
+        assert_eq!(next_name(&screens, Kind::Audience), "Screen 3");
+        assert_eq!(next_name(&screens, Kind::Stage), "Stage Screen 1");
+        // A file from before stage screens reads, its screens being audience screens.
+        let old = r#"{"format":"presentercraft-screens","version":1,"screens":[{"id":"6f0e1c52-8d1e-4d39-9f38-1a2b3c4d5e01","name":"A","output":"window"}]}"#;
+        assert_eq!(from_json(old).map(|list| list[0].kind), Some(Kind::Audience));
+        let mixed = vec![Screen::new("A".to_owned(), Output::Window), Screen::stage("B".to_owned(), Output::Off)];
+        assert_eq!(from_json(&to_json(&mixed)), Some(mixed));
         assert_eq!(starting(None).len(), 1);
     }
 }

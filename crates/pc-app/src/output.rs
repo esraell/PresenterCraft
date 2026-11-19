@@ -21,6 +21,8 @@ pub struct Frame {
     pub enabled: bool,
     /// How long the picture before fades into this one, in seconds. Zero switches at once.
     pub dissolve: f32,
+    /// The slide after the one on screen, for stage screens.
+    pub next: Option<Arc<Slide>>,
 }
 
 pub enum OutputMsg {
@@ -45,6 +47,11 @@ pub enum OutputMsg {
     },
     /// Stop drawing in a screen's window.
     RemoveSurface(Uuid),
+    /// Which screens are stage screens, and whether stage screens are on.
+    Stage {
+        screens: Vec<Uuid>,
+        on: bool,
+    },
     /// Show each screen's own name on it, so the operator can tell them apart; an empty list
     /// goes back to the show.
     Identify(Vec<(Uuid, String)>),
@@ -141,6 +148,10 @@ struct Output {
     /// While screens are being identified: the name each one shows instead of the show.
     identify: Vec<(Uuid, Arc<Slide>)>,
     identify_theme: Arc<Theme>,
+    /// The stage screens, whether they are on, and the layout they are drawn with.
+    stage: Vec<Uuid>,
+    stage_on: bool,
+    stage_theme: Arc<Theme>,
 }
 
 fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver<OutputMsg>, ndi_status: NdiStatuses) {
@@ -151,7 +162,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
     let mut output = Output {
         painter,
         fonts: Fonts::new(),
-        frame: Frame { media: None, slide: None, theme, enabled: true, dissolve: 0.0 },
+        frame: Frame { media: None, slide: None, theme, enabled: true, dissolve: 0.0, next: None },
         targets: Vec::new(),
         fading: None,
         ndi: Vec::new(),
@@ -159,6 +170,9 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         ndi_status,
         identify: Vec::new(),
         identify_theme: Arc::new(Theme::builtin()),
+        stage: Vec::new(),
+        stage_on: true,
+        stage_theme: Arc::new(crate::stage::theme()),
         device,
         queue,
     };
@@ -171,6 +185,19 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                 Ok(msg) => Some(msg),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => return,
+            }
+        } else if output.has_stage() {
+            // Stage screens show the time: wake at the start of each second to redraw them.
+            let into_second = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(Duration::ZERO, |since| Duration::from_nanos(u64::from(since.subsec_nanos())));
+            match rx.recv_timeout(Duration::from_secs(1).saturating_sub(into_second) + Duration::from_millis(5)) {
+                Ok(msg) => Some(msg),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    output.draw_stage();
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
         } else {
             match rx.recv() {
@@ -197,6 +224,10 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                 OutputMsg::Redraw => {}
                 OutputMsg::SetNdi { id, name } => output.set_ndi(id, name),
                 OutputMsg::RemoveSurface(id) => output.targets.retain(|target| target.id != id),
+                OutputMsg::Stage { screens, on } => {
+                    output.stage = screens;
+                    output.stage_on = on;
+                }
                 OutputMsg::Identify(names) => {
                     output.identify = names
                         .into_iter()
@@ -292,6 +323,11 @@ impl Output {
         if let Some((_, name)) = self.identify.iter().find(|(have, _)| *have == id) {
             return (None, Some(name.clone()), self.identify_theme.clone());
         }
+        if self.stage.contains(&id) {
+            let words =
+                self.stage_on.then(|| Arc::new(crate::stage::slide(frame.slide.as_deref(), frame.next.as_deref())));
+            return (None, words, self.stage_theme.clone());
+        }
         if frame.enabled {
             (frame.media.clone(), frame.slide.clone(), frame.theme.clone())
         } else {
@@ -314,7 +350,7 @@ impl Output {
         // The show is drawn once and sent to all; a screen being identified gets its own picture.
         let mut shared: Option<Vec<u8>> = None;
         for id in ids {
-            let own = self.identify.iter().any(|(have, _)| *have == id);
+            let own = self.identify.iter().any(|(have, _)| *have == id) || self.stage.contains(&id);
             let pixels = match shared.as_ref().filter(|_| !own) {
                 Some(pixels) => pixels.clone(),
                 None => {
@@ -363,8 +399,10 @@ impl Output {
                 Some((from, to)) => Some(pc_render::cross_fade(&from, &to, amount.unwrap_or(1.0), w, h)),
                 None => target.shown.take(),
             };
+            // Stage screens change at once: the people on stage need the words now.
+            let stage = self.stage.contains(&id);
             match before {
-                Some(from) if new_picture && frame.dissolve > 0.0 => {
+                Some(from) if new_picture && frame.dissolve > 0.0 && !stage => {
                     target.fade = Some((from, scene));
                     fading = true;
                 }
@@ -377,6 +415,48 @@ impl Output {
         self.fading = fading.then(|| (Instant::now(), frame.dissolve));
         if fading {
             self.step_fade();
+        }
+    }
+
+    /// True when there is a stage screen to keep the time on.
+    fn has_stage(&self) -> bool {
+        self.stage_on
+            && (self.targets.iter().any(|target| self.stage.contains(&target.id))
+                || self.ndi.iter().any(|(id, _)| self.stage.contains(id)))
+    }
+
+    /// Draws the stage screens again, for the time, leaving the others as they are.
+    fn draw_stage(&mut self) {
+        let frame = self.frame.clone();
+        for index in 0..self.targets.len() {
+            let (id, w, h) = {
+                let target = &self.targets[index];
+                (target.id, target.config.width, target.config.height)
+            };
+            if !self.stage.contains(&id) {
+                continue;
+            }
+            let scene = self.scene_for(id, &frame, w, h);
+            self.present(index, &scene);
+            self.targets[index].shown = Some(scene);
+        }
+        let (w, h) = NDI_SIZE;
+        let stage_ndi: Vec<Uuid> = self.ndi.iter().map(|(id, _)| *id).filter(|id| self.stage.contains(id)).collect();
+        for id in stage_ndi {
+            let scene = self.scene_for(id, &frame, w, h);
+            let target = self.ndi_target.get_or_insert_with(|| target_texture(&self.device, w, h));
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            if let Err(e) = self.painter.paint(&self.device, &self.queue, &scene, &view, w, h) {
+                return eprintln!("The NDI picture could not be drawn: {e}");
+            }
+            match read_pixels(&self.device, &self.queue, target) {
+                Ok(pixels) => {
+                    if let Some((_, ndi)) = self.ndi.iter().find(|(have, _)| *have == id) {
+                        ndi.show(w, h, pixels);
+                    }
+                }
+                Err(e) => return eprintln!("The NDI picture could not be read back: {e}"),
+            }
         }
     }
 
