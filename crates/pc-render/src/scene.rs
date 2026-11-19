@@ -188,6 +188,7 @@ fn draw_picture(scene: &mut Scene, placed: Affine, file: &str, fit: ImageFit, re
 /// A box made as tall as its text at the text's own size (inside its margins), about its middle.
 fn fitted_container(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> SlideRect {
     let text = &*style.line_transform.apply(text);
+    let text = &*style.list.apply(text);
     let text = &*style.caps.apply(text);
     let [left, top, right, bottom] = style.margins.map(|margin| margin.max(0.0));
     let width = (rect.w - left - right).max(1.0);
@@ -398,6 +399,7 @@ fn draw_text_box(
     rect: SlideRect,
 ) -> bool {
     let text = &*style.line_transform.apply(text);
+    let text = &*style.list.apply(text);
     let text = &*style.caps.apply(text);
     // The text is laid out inside the box's margins.
     let [left, top, right, bottom] = style.margins.map(|margin| margin.max(0.0));
@@ -428,6 +430,32 @@ fn draw_text_box(
     // Six faint layers add up to the wanted opacity where they all overlap.
     let layer_alpha = 1.0 - (1.0 - look.opacity.clamp(0.0, 1.0)).powf(1.0 / 6.0);
     let spread = f64::from(look.blur.max(0.0)) / 3.0;
+
+    // A band of colour behind each line: under its words, or across the box.
+    if style.line_fill.on {
+        let pad_x = f64::from(style.size) * 0.2;
+        let pad_y = f64::from(style.size) * 0.06;
+        let corner = f64::from(style.size) * 0.12;
+        for line in layout.lines() {
+            let m = line.metrics();
+            if m.advance - m.hanging_advance <= 0.0 {
+                continue;
+            }
+            let (left, right) = if style.line_fill.full_width {
+                (0.0, f64::from(rect.w))
+            } else {
+                (f64::from(m.offset) - pad_x, f64::from(m.offset + m.advance - m.hanging_advance) + pad_x)
+            };
+            let band = RoundedRect::new(
+                left,
+                f64::from(m.content_block_min_coord) - pad_y,
+                right,
+                f64::from(m.content_block_max_coord) + pad_y,
+                if style.line_fill.full_width { 0.0 } else { corner },
+            );
+            scene.fill(Fill::NonZero, origin, color(style.line_fill.color), None, &band);
+        }
+    }
 
     for pass in [Pass::Shadow, Pass::Outline, Pass::Fill] {
         if (pass == Pass::Shadow && !style.shadow) || (pass == Pass::Outline && outline_width <= 0.0) {

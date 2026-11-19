@@ -448,3 +448,23 @@ fn a_picture_object_sits_in_its_place_as_its_fit_says() {
     let grey = pixel(&missing, w, near_top.0, near_top.1);
     assert!(grey[0] > 60 && grey[0].abs_diff(grey[2]) < 20, "{grey:?}");
 }
+
+#[test]
+fn a_text_background_is_drawn_behind_the_lines_or_across_the_box() {
+    use pc_model::{LineFill, ObjectKind, Rgba};
+    let blue = [20, 40, 220];
+    let band = |full_width: bool| {
+        let mut s = slide("II", None);
+        let ObjectKind::Text { style, .. } = &mut s.objects[0].kind else { panic!("a text object") };
+        style.line_fill = Some(LineFill { on: true, color: Rgba::rgb(blue[0], blue[1], blue[2]), full_width });
+        style.shadow = Some(false);
+        render(Some(&s), 640, 360)
+    };
+    let plain = render(Some(&slide("II", None)), 640, 360);
+    let blue_count = |px: &[u8]| px.chunks(4).filter(|p| is_about([p[0], p[1], p[2], p[3]], blue)).count();
+    assert_eq!(blue_count(&plain), 0);
+    let lines_only = band(false);
+    let full = band(true);
+    assert!(blue_count(&lines_only) > 200, "a band sits behind the short line");
+    assert!(blue_count(&full) > blue_count(&lines_only) * 3, "across the box is much wider");
+}

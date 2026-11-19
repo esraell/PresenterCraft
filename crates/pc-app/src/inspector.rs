@@ -56,10 +56,8 @@ pub struct InspectorState {
 
 #[derive(Debug, Default)]
 pub struct Later {
-    lines_only: bool,
     scrolling: bool,
     scroll_direction: usize,
-    list: bool,
     linked_text: bool,
     linked_type: usize,
 }
@@ -444,8 +442,8 @@ fn theme_slide_panel(ui: &mut egui::Ui, state: &mut HomeState) {
         ui.add(egui::TextEdit::singleline(&mut edit.theme.name).desired_width(f32::INFINITY));
     });
     labelled_left(ui, "Size", |ui| {
-        let mut picked = 0;
-        choice_later(ui, "theme size", ui.available_width(), &mut picked, &["1920 x 1080"], "Other slide sizes");
+        ui.label(egui::RichText::new("1920 × 1080").size(12.5).color(INK))
+            .on_hover_text("Every slide is 1920 by 1080; other sizes are not made yet.");
     });
     rule(ui);
     ui.horizontal(|ui| {
@@ -1009,14 +1007,24 @@ fn text_look(
     }
     rule(ui);
 
+    // A colour behind the text: a band under each line's words, or across the box.
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(TICK, ROW), Layout::left_to_right(Align::Center), |ui| {
             ui.set_min_width(TICK);
-            tick_later(ui, &mut inspector.later.lines_only, "Lines Only");
+            tick(ui, &mut wanted.line_fill.on, "Background").on_hover_text("A colour behind the lines of text");
         });
-        if inspector.later.lines_only {
-            let mut picked = 0;
-            choice_later(ui, "lines only", ui.available_width(), &mut picked, &["Full Width"], "Lines Only");
+        if wanted.line_fill.on {
+            let width = (ui.available_width() - 44.0).max(60.0);
+            choice(
+                ui,
+                "line fill",
+                width,
+                &mut wanted.line_fill.full_width,
+                &[(false, "Lines Only"), (true, "Full Width")],
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                colour(ui, &mut wanted.line_fill.color, "The colour behind the text");
+            });
         }
     });
     rule(ui);
@@ -1049,7 +1057,16 @@ fn text_look(
         }
     });
     rule(ui);
-    tick_later(ui, &mut inspector.later.list, "List");
+    // Bullets or numbers before each line.
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(vec2(TICK, ROW), Layout::left_to_right(Align::Center), |ui| {
+            ui.set_min_width(TICK);
+            ui.label(egui::RichText::new("List").size(13.0).strong().color(INK));
+        });
+        let options: Vec<(pc_model::ListStyle, &str)> =
+            pc_model::ListStyle::ALL.iter().map(|list| (*list, list.name())).collect();
+        choice(ui, "list", ui.available_width(), &mut wanted.list, &options);
+    });
     rule(ui);
     ui.horizontal(|ui| {
         ui.allocate_ui_with_layout(vec2(TICK, ROW), Layout::left_to_right(Align::Center), |ui| {

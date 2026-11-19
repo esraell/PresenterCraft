@@ -194,6 +194,8 @@ fn base_box() -> BoxStyle {
         line_height: pc_model::LINE_HEIGHT,
         letter_spacing: 0.0,
         margins: [0.0; 4],
+        line_fill: pc_model::LineFill::default(),
+        list: Default::default(),
     }
 }
 

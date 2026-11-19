@@ -146,6 +146,70 @@ impl LineTransform {
     }
 }
 
+/// A colour behind text: behind each line on its own, or across the box's whole width.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LineFill {
+    pub on: bool,
+    pub color: Rgba,
+    /// Each line's band goes from one side of the box to the other, not just under its words.
+    #[serde(default)]
+    pub full_width: bool,
+}
+
+impl Default for LineFill {
+    fn default() -> LineFill {
+        LineFill { on: false, color: Rgba { r: 0, g: 0, b: 0, a: 170 }, full_width: false }
+    }
+}
+
+/// Marks put before each line of a box's text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListStyle {
+    #[default]
+    None,
+    /// A bullet before each line.
+    Bullets,
+    /// 1., 2., 3. before the lines.
+    Numbers,
+}
+
+impl ListStyle {
+    pub const ALL: [ListStyle; 3] = [ListStyle::None, ListStyle::Bullets, ListStyle::Numbers];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ListStyle::None => "None",
+            ListStyle::Bullets => "Bullets",
+            ListStyle::Numbers => "Numbers",
+        }
+    }
+
+    /// The text with each line that has words on it marked.
+    pub fn apply<'a>(self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        let mark = |number: usize| match self {
+            ListStyle::None => String::new(),
+            ListStyle::Bullets => "•  ".to_owned(),
+            ListStyle::Numbers => format!("{number}.  "),
+        };
+        if self == ListStyle::None {
+            return text.into();
+        }
+        let mut number = 0;
+        text.lines()
+            .map(|line| {
+                if line.trim().is_empty() {
+                    return line.to_owned();
+                }
+                number += 1;
+                format!("{}{}", mark(number), line.trim_start())
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into()
+    }
+}
+
 impl BoxStyle {
     /// Makes the same change to this look as was made between `before` and `after`: whatever
     /// differs between those two is copied from `after`; the rest of this look is left alone.
@@ -177,7 +241,9 @@ impl BoxStyle {
             line_transform,
             line_height,
             letter_spacing,
-            margins
+            margins,
+            line_fill,
+            list
         );
         self.min_size = self.min_size.min(self.size);
     }
@@ -247,6 +313,12 @@ pub struct BoxStyle {
     /// Room kept clear inside the box's edges, in slide units: left, top, right, bottom.
     #[serde(default)]
     pub margins: [f32; 4],
+    /// A colour behind the text's lines.
+    #[serde(default)]
+    pub line_fill: LineFill,
+    /// Bullets or numbers before the lines.
+    #[serde(default)]
+    pub list: ListStyle,
 }
 
 /// The distance from one line to the next that text has unless it is given another.
@@ -479,6 +551,8 @@ impl Theme {
             line_height: LINE_HEIGHT,
             letter_spacing: 0.0,
             margins: [0.0; 4],
+            line_fill: LineFill::default(),
+            list: Default::default(),
         };
         let main =
             base(Role::primary(), SlideRect { x: 120.0, y: 170.0, w: 1680.0, h: 400.0 }, 96.0, 40.0, Rgba::WHITE, 6.0);
@@ -653,6 +727,10 @@ pub struct TextStyle {
     pub letter_spacing: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub margins: Option<[f32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_fill: Option<LineFill>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<ListStyle>,
 }
 
 impl TextStyle {
@@ -683,6 +761,8 @@ impl TextStyle {
             line_height: Some(look.line_height),
             letter_spacing: Some(look.letter_spacing),
             margins: Some(look.margins),
+            line_fill: Some(look.line_fill),
+            list: Some(look.list),
         }
     }
 
@@ -714,6 +794,8 @@ impl TextStyle {
             line_height: self.line_height.unwrap_or(base.line_height),
             letter_spacing: self.letter_spacing.unwrap_or(base.letter_spacing),
             margins: self.margins.unwrap_or(base.margins),
+            line_fill: self.line_fill.unwrap_or(base.line_fill),
+            list: self.list.unwrap_or(base.list),
         }
     }
 
@@ -739,6 +821,8 @@ impl TextStyle {
             line_height: (wanted.line_height != base.line_height).then_some(wanted.line_height),
             letter_spacing: (wanted.letter_spacing != base.letter_spacing).then_some(wanted.letter_spacing),
             margins: (wanted.margins != base.margins).then_some(wanted.margins),
+            line_fill: (wanted.line_fill != base.line_fill).then_some(wanted.line_fill),
+            list: (wanted.list != base.list).then_some(wanted.list),
         }
     }
 }
@@ -769,6 +853,13 @@ pub fn missing_fonts(used: &[String], installed: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_mark_each_line_with_words_and_skip_blank_ones() {
+        assert_eq!(ListStyle::Numbers.apply("One\n\nTwo\n  Three"), "1.  One\n\n2.  Two\n3.  Three");
+        assert_eq!(ListStyle::Bullets.apply("One"), "•  One");
+        assert_eq!(ListStyle::None.apply("One\nTwo"), "One\nTwo");
+    }
 
     fn slide_with(roles: &[Role]) -> Slide {
         Slide::new(roles.iter().map(|role| Object::text(role.clone(), "words")).collect())
