@@ -267,6 +267,45 @@ impl Presentation {
         None
     }
 
+    /// A copy with a new, empty slide at the end, and that slide's position. The new slide is
+    /// laid out like the one before it (the same boxes, in the same places, with the same
+    /// look) with no words in them, and joins the last group. A song with no slides gets a
+    /// first one with a main-language box.
+    pub fn with_slide_added(&self) -> (Presentation, usize) {
+        let mut copy = self.clone();
+        let slide = match copy.groups.iter().rev().find_map(|group| group.slides.last()) {
+            Some(last) => {
+                let objects = last
+                    .objects
+                    .iter()
+                    .map(|object| {
+                        let ObjectKind::Text { style, .. } = &object.kind;
+                        Object {
+                            id: Uuid::new_v4(),
+                            kind: ObjectKind::Text { text: String::new(), style: style.clone() },
+                            ..object.clone()
+                        }
+                    })
+                    .collect();
+                Slide::new(objects)
+            }
+            None => Slide::new(vec![Object::text(Role::primary(), "")]),
+        };
+        if copy.groups.is_empty() {
+            copy.groups.push(Group {
+                id: Uuid::new_v4(),
+                name: String::new(),
+                color: Rgba::rgb(128, 128, 128),
+                slides: Vec::new(),
+            });
+        }
+        if let Some(group) = copy.groups.last_mut() {
+            group.slides.push(slide);
+        }
+        let index = copy.slide_count() - 1;
+        (copy, index)
+    }
+
     /// Every slide with its group, in order.
     pub fn slides(&self) -> impl Iterator<Item = (&Group, &Slide)> {
         self.groups.iter().flat_map(|g| g.slides.iter().map(move |s| (g, s)))
@@ -281,4 +320,29 @@ pub struct MediaItem {
     /// The file's name, shown under its thumbnail.
     pub name: String,
     pub path: std::path::PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_slide_added_at_the_end_is_laid_out_like_the_one_before_with_no_words() {
+        let song = crate::parse_song_text("Song", "[Verse 1]\nOne\n--\nОдин\n\n[Chorus]\nTwo\n--\nДва\n");
+        let (longer, at) = song.with_slide_added();
+        assert_eq!((longer.slide_count(), at), (3, 2));
+        let (group, added) = longer.slide(at).unwrap();
+        assert_eq!(group.name, "Chorus");
+        let (_, before) = longer.slide(1).unwrap();
+        assert_eq!(added.objects.len(), before.objects.len());
+        for (new, old) in added.objects.iter().zip(&before.objects) {
+            assert_eq!((new.role.clone(), new.frame, new.as_text()), (old.role.clone(), old.frame, Some("")));
+            assert_ne!(new.id, old.id);
+        }
+        // A song with nothing in it gets a first slide with a main box.
+        let empty = Presentation { id: Uuid::new_v4(), title: "Empty".to_owned(), groups: Vec::new() };
+        let (first, at) = empty.with_slide_added();
+        assert_eq!((first.slide_count(), at), (1, 0));
+        assert_eq!(first.slide(0).unwrap().1.objects[0].role, Some(Role::primary()));
+    }
 }

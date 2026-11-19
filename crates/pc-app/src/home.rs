@@ -63,6 +63,8 @@ pub struct HomeState {
     pub confirm_delete_theme: Option<usize>,
     /// The open theme's name while it is being retyped in the list of themes.
     pub renaming_theme: Option<String>,
+    /// The song a new slide has just been asked for, at its end. The app adds it.
+    pub add_slide: Option<usize>,
     /// Objects copied in the editor, and the words that went to the system clipboard with them.
     pub object_clip: Vec<pc_model::Object>,
     pub object_clip_text: String,
@@ -540,6 +542,7 @@ impl Default for HomeState {
             pending_group_name: None,
             confirm_delete_theme: None,
             renaming_theme: None,
+            add_slide: None,
             object_clip: Vec::new(),
             object_clip_text: String::new(),
             services: crate::service::Services::default(),
@@ -1319,6 +1322,25 @@ fn edit_view(
                                 chosen = Some(here);
                             }
                             index += 1;
+                        }
+                    }
+                    // After the last slide: a blank tile with a plus. It adds a slide laid out
+                    // like the one before it.
+                    if !groups.is_empty() || presentation.is_some() {
+                        let (cell, response) = ui.allocate_exact_size(vec2(width, image_size.y + 22.0), Sense::click());
+                        let tile = Rect::from_min_size(cell.min + vec2(8.0, 8.0), image_size);
+                        let hovered = response.hovered();
+                        let line = if hovered { crate::studio::ACCENT } else { Color32::from_gray(90) };
+                        ui.painter().rect_filled(tile, 4.0, Color32::from_gray(if hovered { 34 } else { 24 }));
+                        ui.painter().rect_stroke(tile, 4.0, Stroke::new(1.0, line), StrokeKind::Inside);
+                        icons::paint(
+                            ui.painter(),
+                            Icon::Plus,
+                            Rect::from_center_size(tile.center(), vec2(18.0, 18.0)),
+                            line,
+                        );
+                        if response.on_hover_text("Add a slide, laid out like the one before it").clicked() {
+                            state.add_slide = Some(at.presentation);
                         }
                     }
                 });

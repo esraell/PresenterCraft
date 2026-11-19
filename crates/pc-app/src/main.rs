@@ -612,6 +612,20 @@ impl App {
             }
             running.home_window.request_redraw();
         }
+        // A slide added at the end of a song in the editor: it is made, and opened to edit.
+        if let Some(index) = running.home_state.add_slide.take()
+            && let Some(song) = self.show.presentations().get(index)
+        {
+            let (longer, slide) = song.with_slide_added();
+            self.show.replace_presentation(index, Arc::new(longer));
+            if !self.unsaved.contains(&index) {
+                self.unsaved.push(index);
+            }
+            self.unsaved_since = Some(Instant::now());
+            let at = pc_engine::SlideRef { presentation: index, slide };
+            running.home_state.editing = EditDraft::of(&self.show, at);
+            running.home_window.request_redraw();
+        }
         if !std::mem::take(&mut running.home_state.new_song) {
             return;
         }
