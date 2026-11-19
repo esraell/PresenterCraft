@@ -1,7 +1,7 @@
 # Roadmap
 
-These are the features planned for SoftPresenter, beyond what the README's
-[What works today](../README.md#what-works-today) lists. Sizes and order may change as each one
+These are the features planned for SoftPresenter, beyond what
+[features.md](features.md) lists. Sizes and order may change as each one
 is built, and nothing here is promised by a date. Ideas are welcome as
 [issues](https://github.com/esraell/SoftPresenter/issues).
 

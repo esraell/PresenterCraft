@@ -17,7 +17,7 @@ short conversation up front saves work that can't be used.
 
 ## Building and checking
 
-The [README](README.md#build-and-run) says how to build and run SoftPresenter; nothing from
+The [README](README.md#get-started) says how to build and run SoftPresenter; nothing from
 NDI is needed to build it. Before you send a change, run the same three checks the automatic
 checks run, with test windows kept out of the way:
 

@@ -89,8 +89,10 @@ message.
   `docs/licences/`, and in `NOTICE.md` if it ships with the app.
 - **Tests that need a GPU** go in `crates/sp-render/tests/golden.rs`, which the automatic checks
   leave out, or are marked `#[ignore]` with the reason.
-- **The README follows the code.** When what works changes, update "What works today" and "Not
-  built yet" in the same commit.
+- **The docs follow the code.** When what works changes, update
+  [docs/features.md](docs/features.md) in the same commit (and the README's one-line overview
+  if a whole area changes). When a planned feature is built, take it off
+  [docs/roadmap.md](docs/roadmap.md).
 - **Words.** British spelling (colour, licence, behaviour). Plain words in the interface, the
   way a church volunteer would say them.
 

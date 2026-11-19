@@ -21,7 +21,8 @@ in CONTRIBUTING.md, with your Signed-off-by line (git commit -s).
 
 - [ ] `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
       `SOFTPRESENTER_QUIET=1 cargo test --workspace` pass
-- [ ] The README's "What works today" and "Not built yet" are updated if what works changed
+- [ ] docs/features.md (and docs/roadmap.md, if a planned feature is now built) updated if what
+      works changed
 - [ ] Nothing from another presentation product: no names, wording, screenshots or looks
 - [ ] No song lyrics or Bible text that isn't public domain
 - [ ] Every commit is signed off (`git commit -s`)
