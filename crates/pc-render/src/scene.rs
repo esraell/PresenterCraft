@@ -324,15 +324,14 @@ mod tests {
         use pc_model::{Caps, TextStyle};
         let mut object = Object::text(Role::primary(), "Light rises\nover the hills");
         object.fill = Some(Rgba { r: 0, g: 0, b: 0, a: 160 });
-        if let ObjectKind::Text { style, .. } = &mut object.kind {
-            *style = TextStyle {
-                valign: Some(VAlign::Bottom),
-                caps: Some(Caps::AllCaps),
-                underline: Some(true),
-                strike: Some(true),
-                ..TextStyle::default()
-            };
-        }
+        let ObjectKind::Text { style, .. } = &mut object.kind;
+        *style = TextStyle {
+            valign: Some(VAlign::Bottom),
+            caps: Some(Caps::AllCaps),
+            underline: Some(true),
+            strike: Some(true),
+            ..TextStyle::default()
+        };
         assert!(!overflows(&Slide::new(vec![object])));
     }
 

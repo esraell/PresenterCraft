@@ -1,5 +1,6 @@
 //! PresenterCraft: a home window with a slide grid, and a separate output for the audience.
 
+mod bible;
 mod displays;
 mod editor;
 mod home;
@@ -640,6 +641,11 @@ impl App {
             // Testing aid: show the Bible page.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_BIBLE").is_some() {
                 running.home_state.bible_open = true;
+                // Testing aid: open the Options pop-up on the named pane.
+                if let Ok(pane) = std::env::var("PRESENTERCRAFT_BIBLE_OPTIONS") {
+                    running.home_state.bible.options.open = true;
+                    running.home_state.bible.options.pane = usize::from(pane == "bibles");
+                }
             }
             // Testing aid: also open the slide editor, to check how it looks.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_EDITOR").is_some() {

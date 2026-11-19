@@ -130,11 +130,12 @@ pub struct BibleRow {
 }
 
 /// The Bible page's fields. Looking verses up is not built yet; this holds the layout's state.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct BiblePage {
     pub lookup: String,
     pub search: String,
     pub rows: Vec<BibleRow>,
+    pub options: crate::bible::BibleOptions,
 }
 
 impl Default for BiblePage {
@@ -142,6 +143,7 @@ impl Default for BiblePage {
         BiblePage {
             lookup: String::new(),
             search: String::new(),
+            options: crate::bible::BibleOptions::default(),
             // Two translations side by side is the usual case here: one for each language.
             rows: vec![
                 BibleRow { verse: BibleTarget::Main, reference: BibleTarget::Main },
@@ -1592,7 +1594,17 @@ fn bible_area(ui: &mut egui::Ui, state: &mut HomeState) {
                 ui.add(egui::TextEdit::singleline(&mut state.bible.search).hint_text("Search").desired_width(230.0))
                     .on_hover_text("Search the Bible for words");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_enabled(false, egui::Button::new("Options")).on_disabled_hover_text(not_built("Bible options"));
+                    let button = ui.add(egui::Button::selectable(state.bible.options.open, "Options"))
+                        .on_hover_text("How verses become slides, and which Bibles are installed");
+                    if button.clicked() {
+                        state.bible.options.open = !state.bible.options.open;
+                    }
+                    if state.bible.options.open {
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            state.bible.options.open = false;
+                        }
+                        crate::bible::options_popup(ui.ctx(), &mut state.bible.options, button.rect, "Songs");
+                    }
                 });
             });
 
