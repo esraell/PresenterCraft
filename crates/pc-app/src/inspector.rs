@@ -617,6 +617,17 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
     }
     rule(ui);
 
+    // A picture: how it sits in its place.
+    if let pc_model::ObjectKind::Image { fit, .. } = &mut object.kind {
+        ui.horizontal(|ui| {
+            title(ui, "Picture");
+            let options: Vec<(pc_model::ImageFit, &str)> =
+                pc_model::ImageFit::ALL.iter().map(|fit| (*fit, fit.name())).collect();
+            choice(ui, "picture fit", 120.0, fit, &options);
+        });
+        rule(ui);
+    }
+
     ui.horizontal(|ui| {
         title(ui, "Opacity");
         ui.spacing_mut().slider_width = INNER - 72.0 - 14.0;

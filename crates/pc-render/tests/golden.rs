@@ -412,3 +412,39 @@ fn transitions_put_each_picture_where_it_belongs() {
     assert_eq!(shade_at(TransitionKind::Iris, 0.0, w / 2), 0);
     assert_eq!(shade_at(TransitionKind::Iris, 1.0, 1), 255);
 }
+
+/// A wide red picture for any file but "missing.png", which can't be read.
+fn wide_red(file: &str) -> Option<pc_render::Picture> {
+    (file != "missing.png").then(|| flat(200, 100, [230, 30, 30]))
+}
+
+#[test]
+fn a_picture_object_sits_in_its_place_as_its_fit_says() {
+    use pc_model::{ImageFit, Object, ObjectKind, SlideRect};
+    pc_render::set_picture_loader(wide_red);
+    let (w, h) = (192, 108);
+    // A square place in the middle of the slide; the picture is twice as wide as it is tall.
+    let place = SlideRect { x: 660.0, y: 240.0, w: 600.0, h: 600.0 };
+    let draw = |file: &str, fit: ImageFit| {
+        let mut object = Object::image(file.to_owned(), "Picture".to_owned(), 200, 100);
+        object.frame = Some(place);
+        object.kind = ObjectKind::Image { file: file.to_owned(), fit };
+        render_layers(None, Some(&Slide::new(vec![object])), w, h)
+    };
+    // The square's middle, a point near its top (above a fitted picture), and outside it.
+    let (middle, near_top, outside) = ((96, 54), (96, 28), (40, 54));
+    let red = [230, 30, 30];
+    let fit = draw("logo.png", ImageFit::Fit);
+    assert!(is_about(pixel(&fit, w, middle.0, middle.1), red));
+    assert!(is_about(pixel(&fit, w, near_top.0, near_top.1), [0, 0, 0]), "a fitted picture leaves room above");
+    assert!(is_about(pixel(&fit, w, outside.0, outside.1), [0, 0, 0]));
+    for filled in [ImageFit::Fill, ImageFit::Stretch] {
+        let pixels = draw("logo.png", filled);
+        assert!(is_about(pixel(&pixels, w, near_top.0, near_top.1), red), "{filled:?} fills the place");
+        assert!(is_about(pixel(&pixels, w, outside.0, outside.1), [0, 0, 0]), "{filled:?} stays inside it");
+    }
+    // A picture that can't be read is a grey box, not nothing.
+    let missing = draw("missing.png", ImageFit::Fit);
+    let grey = pixel(&missing, w, near_top.0, near_top.1);
+    assert!(grey[0] > 60 && grey[0].abs_diff(grey[2]) < 20, "{grey:?}");
+}

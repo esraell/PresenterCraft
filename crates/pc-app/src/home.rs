@@ -123,6 +123,10 @@ pub struct HomeState {
     pub removed_songs: Vec<usize>,
     /// A change to the selected objects asked for from the menu bar.
     pub edit_request: Option<EditRequest>,
+    /// True when a picture is to be chosen for the slide being edited; the picture chosen, copied
+    /// into the Images folder, waiting to be put on the slide.
+    pub picture_request: bool,
+    pub picture_to_add: Option<crate::images::Imported>,
     /// A view asked for from the menu bar: 0 Show, 1 Edit, 2 Bible, 3 Themes. The toolbar
     /// takes it as if its tab had been clicked.
     pub view_request: Option<usize>,
@@ -683,6 +687,8 @@ impl Default for HomeState {
             start_audience_off: false,
             copyright_request: None,
             edit_request: None,
+            picture_request: false,
+            picture_to_add: None,
             slide_clip: None,
             slide_request: None,
             song_request: None,
@@ -1040,9 +1046,23 @@ fn edit_view(
             }
         }
     }
+    // A picture chosen for the slide, put on it now so the change is saved like any other.
+    if let Some(picture) = state.picture_to_add.take()
+        && !theme_mode
+        && let Some(draft) = state.editing.as_mut()
+    {
+        draft.add_image(&picture);
+    }
     // A change asked for from the menu bar.
     if let (Some(request), Some(draft)) = (state.edit_request.take(), state.editing.as_mut()) {
         match request {
+            EditRequest::AddText => draft.add_text(),
+            // A theme's layout holds only its text boxes.
+            EditRequest::AddShape(shape) => {
+                if !theme_mode {
+                    draft.add_shape(shape);
+                }
+            }
             EditRequest::Bold => {
                 let bold = draft
                     .selected_object()
@@ -1213,7 +1233,11 @@ fn edit_view(
                                 // A hidden object's row is greyed.
                                 let ink = if object.hidden { Color32::from_gray(120) } else { Color32::from_gray(230) };
                                 // T for text, a diamond for a shape.
-                                let mark = if object.as_text().is_some() { "T" } else { "◆" };
+                                let mark = match object.kind {
+                                    pc_model::ObjectKind::Text { .. } => "T",
+                                    pc_model::ObjectKind::Image { .. } => "▣",
+                                    pc_model::ObjectKind::Shape { .. } => "◆",
+                                };
                                 ui.painter().text(
                                     row.left_center() + vec2(12.0, 0.0),
                                     Align2::LEFT_CENTER,
@@ -1924,10 +1948,28 @@ fn edit_view(
 
         // The object tools: a text box, and (on a song's slide) the shapes.
         let shapes_too = !theme_mode;
-        let offset = if shapes_too { -52.0 } else { 0.0 };
+        let offset = if shapes_too { -104.0 } else { 0.0 };
         if shapes_too {
-            let shapes_bar =
-                Rect::from_center_size(pos2(slide.center().x + 52.0, slide.min.y - 22.0), vec2(96.0, 28.0));
+            // A picture from a file.
+            let picture_bar =
+                Rect::from_center_size(pos2(slide.center().x + 104.0, slide.min.y - 22.0), vec2(96.0, 28.0));
+            let picture = ui.interact(picture_bar, ui.scope_id().with("add picture"), Sense::click());
+            ui.painter().rect_filled(
+                picture_bar,
+                8.0,
+                if picture.hovered() { crate::studio::HOVER } else { crate::studio::CARD },
+            );
+            ui.painter().text(
+                picture_bar.center(),
+                Align2::CENTER_CENTER,
+                "Picture…",
+                crate::studio::semibold(12.5),
+                crate::studio::TEXT,
+            );
+            if picture.on_hover_text("Put a picture from a file on the slide").clicked() {
+                state.picture_request = true;
+            }
+            let shapes_bar = Rect::from_center_size(pos2(slide.center().x, slide.min.y - 22.0), vec2(96.0, 28.0));
             let shapes = ui.interact(shapes_bar, ui.scope_id().with("add shape"), Sense::click());
             ui.painter().rect_filled(
                 shapes_bar,
@@ -2074,6 +2116,8 @@ pub enum EditRequest {
     Lock,
     UnlockAll,
     DeselectAll,
+    AddText,
+    AddShape(pc_model::Shape),
 }
 
 /// Each word with a capital first letter, the rest as they are.

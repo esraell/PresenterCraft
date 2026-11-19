@@ -42,6 +42,10 @@ pub enum Action {
     SendToBack,
     Lock,
     UnlockAll,
+    InsertText,
+    InsertPicture,
+    /// A shape, by its place in the list of shapes.
+    InsertShape(u8),
     ShowView,
     EditView,
     BibleView,
@@ -213,6 +217,24 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Line,
             Do(Action::Lock, "Lock", None),
             Do(Action::UnlockAll, "Unlock All", None),
+        ],
+    ),
+    (
+        "Insert",
+        &[
+            Do(Action::InsertText, "Text Box", None),
+            Do(Action::InsertPicture, "Picture…", shift_cmd('I')),
+            Line,
+            Do(Action::InsertShape(0), "Rounded Rect", None),
+            Do(Action::InsertShape(1), "Rectangle", None),
+            Do(Action::InsertShape(2), "Ellipse", None),
+            Do(Action::InsertShape(3), "Triangle", None),
+            Do(Action::InsertShape(4), "Right Triangle", None),
+            Do(Action::InsertShape(5), "Rhombus", None),
+            Do(Action::InsertShape(6), "Polygon", None),
+            Do(Action::InsertShape(7), "Star", None),
+            Do(Action::InsertShape(8), "Double Arrow", None),
+            Do(Action::InsertShape(9), "Arrow", None),
         ],
     ),
     (
@@ -410,6 +432,9 @@ pub fn needs_editor(action: Action) -> bool {
             | A::SendToBack
             | A::Lock
             | A::UnlockAll
+            | A::InsertText
+            | A::InsertPicture
+            | A::InsertShape(_)
     )
 }
 

@@ -8,7 +8,7 @@ use pc_render::Picture;
 /// most a few thousand pixels wide, and a phone photo kept at full size costs tens of megabytes.
 pub const MAX_SIDE: u32 = 2560;
 
-const PICTURES: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+pub const PICTURES: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
 
 /// The file endings of pictures, as the file chooser lists them.
 pub const PICTURE_ENDINGS: [&str; 6] = PICTURES;

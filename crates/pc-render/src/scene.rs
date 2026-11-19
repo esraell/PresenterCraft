@@ -1,7 +1,7 @@
 use parley::{Alignment, AlignmentOptions, FontWeight, Layout, LineHeight, PositionedLayoutItem, StyleProperty};
 use pc_model::{
-    Align, BoxStyle, Object, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, Shape, Slide, SlideRect, Theme,
-    VAlign,
+    Align, BoxStyle, ImageFit, Object, ObjectKind, Rgba, SLIDE_HEIGHT, SLIDE_WIDTH, Scaling, Shape, Slide, SlideRect,
+    Theme, VAlign,
 };
 use vello::kurbo::{Affine, BezPath, Ellipse, Join, Rect, RoundedRect, Shape as _, Stroke};
 use vello::peniko::{Color, Fill, Mix};
@@ -94,7 +94,7 @@ fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: 
                 Some(look) if look.scaling == Scaling::ContainerUpOrDown => fitted_container(fonts, text, &look, rect),
                 _ => rect,
             },
-            ObjectKind::Shape { .. } => rect,
+            ObjectKind::Shape { .. } | ObjectKind::Image { .. } => rect,
         };
         // Turn the object about its own centre.
         let centre = (f64::from(rect.x + rect.w / 2.0), f64::from(rect.y + rect.h / 2.0));
@@ -110,7 +110,7 @@ fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: 
         // The object's outline: its shape, or the box a text object sits in.
         let outline = match &object.kind {
             ObjectKind::Shape { shape } => shape_path(*shape, rect),
-            ObjectKind::Text { .. } => {
+            ObjectKind::Text { .. } | ObjectKind::Image { .. } => {
                 let (x, y) = (f64::from(rect.x), f64::from(rect.y));
                 Rect::new(x, y, x + f64::from(rect.w), y + f64::from(rect.h)).to_path(0.1)
             }
@@ -138,6 +138,9 @@ fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: 
         if let Some(line) = object.stroke.filter(|line| line.width > 0.0) {
             scene.stroke(&Stroke::new(f64::from(line.width)), placed, color(line.color), None, &outline);
         }
+        if let ObjectKind::Image { file, fit } = &object.kind {
+            draw_picture(scene, placed, file, *fit, rect, &outline);
+        }
         if let ObjectKind::Text { text, style } = &object.kind {
             // The theme's style for the object's role, with the object's own settings over it.
             let Some(style) = template.text_style(object.role.as_ref(), style) else { continue };
@@ -148,6 +151,38 @@ fn draw_objects(scene: &mut Scene, fonts: &mut Fonts, to_target: Affine, slide: 
         }
     }
     overflow
+}
+
+/// A picture object's picture in its place, fitted as it says. A picture that can't be read is
+/// drawn as a grey box with a cross, so it can still be seen, moved and deleted.
+fn draw_picture(scene: &mut Scene, placed: Affine, file: &str, fit: ImageFit, rect: SlideRect, outline: &BezPath) {
+    let (x, y, w, h) = (f64::from(rect.x), f64::from(rect.y), f64::from(rect.w), f64::from(rect.h));
+    let Some(picture) = crate::pictures::picture(file) else {
+        scene.fill(Fill::NonZero, placed, Color::from_rgba8(90, 90, 96, 255), None, outline);
+        let mut cross = BezPath::new();
+        cross.move_to((x, y));
+        cross.line_to((x + w, y + h));
+        cross.move_to((x + w, y));
+        cross.line_to((x, y + h));
+        scene.stroke(&Stroke::new(4.0), placed, Color::from_rgba8(150, 150, 156, 255), None, &cross);
+        return;
+    };
+    let (pic_w, pic_h) = (f64::from(picture.width()), f64::from(picture.height()));
+    let (scale_x, scale_y) = match fit {
+        ImageFit::Fit => {
+            let scale = (w / pic_w).min(h / pic_h);
+            (scale, scale)
+        }
+        ImageFit::Fill => {
+            let scale = (w / pic_w).max(h / pic_h);
+            (scale, scale)
+        }
+        ImageFit::Stretch => (w / pic_w, h / pic_h),
+    };
+    let offset = (x + (w - pic_w * scale_x) / 2.0, y + (h - pic_h * scale_y) / 2.0);
+    scene.push_clip_layer(Fill::NonZero, placed, outline);
+    scene.draw_image(&picture.image, placed * Affine::translate(offset) * Affine::scale_non_uniform(scale_x, scale_y));
+    scene.pop_layer();
 }
 
 /// A box made as tall as its text at the text's own size (inside its margins), about its middle.

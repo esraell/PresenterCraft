@@ -18,7 +18,9 @@ pub use theme::{
     VAlign, fonts_used, missing_fonts,
 };
 pub use transition::{Direction, Transition, TransitionKind};
-pub use types::{Copyright, Group, MediaItem, Object, ObjectKind, Presentation, Rgba, Role, Shape, Slide, StrokeLook};
+pub use types::{
+    Copyright, Group, ImageFit, MediaItem, Object, ObjectKind, Presentation, Rgba, Role, Shape, Slide, StrokeLook,
+};
 pub use uuid::Uuid;
 
 /// Slides are authored at this size and scaled to the screen.

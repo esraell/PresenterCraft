@@ -7,6 +7,7 @@ mod displays;
 mod editor;
 mod home;
 mod icons;
+mod images;
 mod inspector;
 mod live_tabs;
 mod load;
@@ -1011,6 +1012,23 @@ impl App {
     }
 
     /// Carries out a change to the media bin: choosing pictures to add, or removing one.
+    /// Asks for a picture to put on the slide being edited, and copies it into the Images folder.
+    fn handle_picture_request(&mut self) {
+        let Some(running) = self.running.as_mut() else { return };
+        if !std::mem::take(&mut running.home_state.picture_request) {
+            return;
+        }
+        let chosen =
+            rfd::FileDialog::new().set_title("Choose a Picture").add_filter("Pictures", &media::PICTURES).pick_file();
+        let state = &mut running.home_state;
+        match chosen.map(|path| images::import(&path)) {
+            Some(Ok(picture)) => state.picture_to_add = Some(picture),
+            Some(Err(problem)) => state.notice = Some(problem),
+            None => {}
+        }
+        running.home_window.request_redraw();
+    }
+
     fn handle_media_request(&mut self) {
         use home::MediaRequest;
         let Some(request) = self.running.as_mut().and_then(|r| r.home_state.media_request.take()) else { return };
@@ -1828,6 +1846,13 @@ impl App {
                         draft.typing_started = true;
                     }
                 }
+                // Testing aid: put a picture from a file on the slide, as Picture… does.
+                if let Some(path) = std::env::var_os("PRESENTERCRAFT_CAPTURE_PICTURE") {
+                    match images::import(std::path::Path::new(&path)) {
+                        Ok(picture) => running.home_state.picture_to_add = Some(picture),
+                        Err(problem) => eprintln!("{problem}"),
+                    }
+                }
                 // Testing aid: which tab of the inspector to show.
                 running.home_state.inspector.tab = match std::env::var("PRESENTERCRAFT_INSPECTOR_TAB").as_deref() {
                     Ok("shape") => inspector::InspectorTab::Shape,
@@ -2191,6 +2216,13 @@ impl App {
                     _ => E::UnlockAll,
                 });
             }
+            A::InsertText => state.edit_request = Some(home::EditRequest::AddText),
+            A::InsertShape(at) => {
+                if let Some(shape) = pc_model::Shape::ALL.get(usize::from(at)) {
+                    state.edit_request = Some(home::EditRequest::AddShape(*shape));
+                }
+            }
+            A::InsertPicture => state.picture_request = state.editing.is_some() && state.theme_edit.is_none(),
             A::Quit => {}
             A::Settings => state.preferences_open = true,
             A::ConfigureScreens => state.settings_open = true,
@@ -2588,6 +2620,7 @@ impl ApplicationHandler<String> for App {
                 self.handle_copyright();
                 self.handle_reflow();
                 self.handle_media_request();
+                self.handle_picture_request();
                 self.handle_song_request();
                 // A template chosen from a slide's menu: the slide is changed and, if it is on
                 // screen, the screen too.
@@ -2693,6 +2726,8 @@ impl ApplicationHandler<String> for App {
 }
 
 fn main() -> ExitCode {
+    // Picture objects on slides are read from the app's Images folder.
+    pc_render::set_picture_loader(images::load);
     let options = match parse_args(std::env::args().skip(1)) {
         Ok(Some(options)) => options,
         Ok(None) => {

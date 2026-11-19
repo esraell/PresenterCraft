@@ -449,6 +449,15 @@ impl EditDraft {
         self.slide.objects.push(object);
     }
 
+    /// Puts a picture on the slide, selected.
+    pub fn add_image(&mut self, picture: &crate::images::Imported) {
+        self.record();
+        let object = Object::image(picture.file.clone(), picture.name.clone(), picture.width, picture.height);
+        self.selected = Some(object.id);
+        self.also.clear();
+        self.slide.objects.push(object);
+    }
+
     /// Every selected object: the first selected, then the rest.
     pub fn selection(&self) -> Vec<Uuid> {
         self.selected.into_iter().chain(self.also.iter().copied()).collect()

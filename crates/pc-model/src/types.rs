@@ -70,6 +70,38 @@ pub enum ObjectKind {
     },
     /// A drawn shape filling the object's place, in the object's fill colour.
     Shape { shape: Shape },
+    /// A picture from a file, in the object's place. `file` is a name in the app's Images
+    /// folder, or a whole path.
+    Image {
+        file: String,
+        #[serde(default)]
+        fit: ImageFit,
+    },
+}
+
+/// How a picture sits in its object's place.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageFit {
+    /// All of the picture shows, as large as fits, keeping its shape.
+    #[default]
+    Fit,
+    /// The place is filled, keeping the picture's shape; what hangs over is cut off.
+    Fill,
+    /// The picture is stretched to the place's shape.
+    Stretch,
+}
+
+impl ImageFit {
+    pub const ALL: [ImageFit; 3] = [ImageFit::Fit, ImageFit::Fill, ImageFit::Stretch];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ImageFit::Fit => "Fit",
+            ImageFit::Fill => "Fill",
+            ImageFit::Stretch => "Stretch",
+        }
+    }
 }
 
 /// The shapes the editor can draw.
@@ -271,12 +303,24 @@ impl Object {
         }
     }
 
-    /// The object's words, if it is a text object.
+    /// A picture from a file, sized to the picture's shape and centred on the slide.
+    pub fn image(file: String, name: String, width: u32, height: u32) -> Object {
+        let aspect = width.max(1) as f32 / height.max(1) as f32;
+        let (w, h) = if aspect >= 16.0 / 9.0 { (960.0, 960.0 / aspect) } else { (540.0 * aspect, 540.0) };
+        Object {
+            name,
+            frame: Some(SlideRect { x: (crate::SLIDE_WIDTH - w) / 2.0, y: (crate::SLIDE_HEIGHT - h) / 2.0, w, h }),
+            fill: None,
+            kind: ObjectKind::Image { file, fit: ImageFit::Fit },
+            ..Object::shape(Shape::Rectangle)
+        }
+    }
+
     /// The object's own text settings, over its theme box.
     pub fn text_style(&self) -> Option<&crate::TextStyle> {
         match &self.kind {
             ObjectKind::Text { style, .. } => Some(style),
-            ObjectKind::Shape { .. } => None,
+            ObjectKind::Shape { .. } | ObjectKind::Image { .. } => None,
         }
     }
 
@@ -284,14 +328,14 @@ impl Object {
     pub fn text_style_mut(&mut self) -> Option<&mut crate::TextStyle> {
         match &mut self.kind {
             ObjectKind::Text { style, .. } => Some(style),
-            ObjectKind::Shape { .. } => None,
+            ObjectKind::Shape { .. } | ObjectKind::Image { .. } => None,
         }
     }
 
     pub fn as_text(&self) -> Option<&str> {
         match &self.kind {
             ObjectKind::Text { text, .. } => Some(text),
-            ObjectKind::Shape { .. } => None,
+            ObjectKind::Shape { .. } | ObjectKind::Image { .. } => None,
         }
     }
 }
@@ -600,7 +644,7 @@ impl Presentation {
                             ObjectKind::Text { style, .. } => {
                                 ObjectKind::Text { text: String::new(), style: style.clone() }
                             }
-                            shape @ ObjectKind::Shape { .. } => shape.clone(),
+                            other @ (ObjectKind::Shape { .. } | ObjectKind::Image { .. }) => other.clone(),
                         };
                         Object { id: Uuid::new_v4(), kind, ..object.clone() }
                     })
