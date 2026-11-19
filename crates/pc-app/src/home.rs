@@ -55,6 +55,10 @@ pub struct HomeState {
     /// with the song's place, for the app to take.
     pub renaming_song: Option<String>,
     pub pending_title: Option<(usize, String)>,
+    /// The group being renamed in the editor's slide list (its place in the song) and the name
+    /// as typed; and a name just typed, with the song's and group's places, for the app to take.
+    pub renaming_group: Option<(usize, String)>,
+    pub pending_group_name: Option<(usize, usize, String)>,
     /// Objects copied in the editor, and the words that went to the system clipboard with them.
     pub object_clip: Vec<pc_model::Object>,
     pub object_clip_text: String,
@@ -451,6 +455,8 @@ impl Default for HomeState {
             new_song: false,
             renaming_song: None,
             pending_title: None,
+            renaming_group: None,
+            pending_group_name: None,
             object_clip: Vec::new(),
             object_clip_text: String::new(),
             services: crate::service::Services::default(),
@@ -1134,8 +1140,9 @@ fn edit_view(
                     let width = ui.available_width();
                     let image_size = vec2(width - 16.0, (width - 16.0) * 9.0 / 16.0);
                     let mut index = 0;
-                    for group in presentation.map(|p| p.groups.as_slice()).unwrap_or_default() {
-                        let (bar, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
+                    let groups = presentation.map(|p| p.groups.as_slice()).unwrap_or_default();
+                    for (group_index, group) in groups.iter().enumerate() {
+                        let (bar, bar_response) = ui.allocate_exact_size(vec2(width, 22.0), Sense::click());
                         ui.painter().rect_filled(bar, 0.0, color32(group.color).gamma_multiply(0.8));
                         let ink = text_on(group.color);
                         icons::paint(
@@ -1144,14 +1151,42 @@ fn edit_view(
                             Rect::from_center_size(bar.left_center() + vec2(9.0, 0.0), vec2(8.0, 8.0)),
                             ink,
                         );
-                        let name = if group.name.is_empty() { "No group" } else { group.name.as_str() };
-                        ui.painter().text(
-                            bar.left_center() + vec2(18.0, 0.0),
-                            Align2::LEFT_CENTER,
-                            name,
-                            FontId::proportional(12.5),
-                            ink,
-                        );
+                        // The group's name; a click turns it into a field to retype it.
+                        let renaming = state.renaming_group.as_ref().is_some_and(|(at, _)| *at == group_index);
+                        if renaming && let Some((_, typed)) = state.renaming_group.as_mut() {
+                            let place =
+                                Rect::from_min_max(pos2(bar.min.x + 16.0, bar.min.y + 1.0), bar.max - vec2(4.0, 1.0));
+                            let field =
+                                ui.put(place, egui::TextEdit::singleline(typed).margin(egui::Margin::symmetric(4, 1)));
+                            if std::mem::take(&mut state.rename_started) {
+                                field.request_focus();
+                            }
+                            let (enter, escape) = ui.input(|input| {
+                                (input.key_pressed(egui::Key::Enter), input.key_pressed(egui::Key::Escape))
+                            });
+                            if escape {
+                                state.renaming_group = None;
+                            } else if enter || field.lost_focus() {
+                                if typed.trim() != group.name {
+                                    state.pending_group_name =
+                                        Some((at.presentation, group_index, typed.trim().to_owned()));
+                                }
+                                state.renaming_group = None;
+                            }
+                        } else {
+                            let name = if group.name.is_empty() { "No group" } else { group.name.as_str() };
+                            ui.painter().text(
+                                bar.left_center() + vec2(18.0, 0.0),
+                                Align2::LEFT_CENTER,
+                                name,
+                                FontId::proportional(12.5),
+                                ink,
+                            );
+                            if bar_response.on_hover_text("Click to rename this group").clicked() {
+                                state.renaming_group = Some((group_index, group.name.clone()));
+                                state.rename_started = true;
+                            }
+                        }
 
                         for slide in &group.slides {
                             let here = SlideRef { presentation: at.presentation, slide: index };

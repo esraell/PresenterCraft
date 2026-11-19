@@ -558,6 +558,25 @@ impl App {
             }
             self.unsaved_since = Some(Instant::now());
         }
+        // A group renamed in the editor: its name changes, and its colour with it.
+        if let Some((index, group, name)) = running.home_state.pending_group_name.take()
+            && let Some(song) = self.show.presentations().get(index)
+            && group < song.groups.len()
+        {
+            let mut renamed = (**song).clone();
+            renamed.groups[group].color = pc_model::group_color(&name);
+            renamed.groups[group].name = name;
+            let ids: Vec<Uuid> = renamed.groups[group].slides.iter().map(|slide| slide.id).collect();
+            self.show.replace_presentation(index, Arc::new(renamed));
+            if !self.unsaved.contains(&index) {
+                self.unsaved.push(index);
+            }
+            self.unsaved_since = Some(Instant::now());
+            for id in ids {
+                running.thumbs.forget(id, &mut running.egui_renderer);
+            }
+            running.home_window.request_redraw();
+        }
         if !std::mem::take(&mut running.home_state.new_song) {
             return;
         }
