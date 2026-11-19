@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pc_engine::{Command, Layer, Show};
-use pc_model::{MediaItem, Role, Slide, TextBox, Theme, Uuid, clean_box_text, parse_song_text};
+use pc_model::{MediaItem, Object, Role, Slide, Theme, Uuid, clean_box_text, parse_song_text};
 use pc_render::vello::util::RenderContext;
 use pc_render::wgpu;
 use pc_render::{Layers, Picture};
@@ -444,10 +444,13 @@ impl App {
     fn save_unsaved(&mut self) {
         let mut problem = None;
         for index in std::mem::take(&mut self.unsaved) {
-            if let (Some(Some(path)), Some(song)) = (self.sources.get(index), self.show.presentations().get(index))
-                && let Err(e) = load::save_song(path, song)
-            {
-                problem = Some(format!("The change was not saved. {e}"));
+            let (Some(Some(path)), Some(song)) = (self.sources.get(index), self.show.presentations().get(index)) else {
+                continue;
+            };
+            match load::save_song(path, song) {
+                // From now on the song lives in the file that was just written.
+                Ok(written) => self.sources[index] = Some(written),
+                Err(e) => problem = Some(format!("The change was not saved. {e}")),
             }
         }
         self.unsaved_since = None;
@@ -471,7 +474,7 @@ impl App {
             for (role, text) in [(Role::primary(), &draft.primary), (Role::translation(), &draft.translation)] {
                 let text = clean_box_text(text);
                 if !text.is_empty() {
-                    boxes.push(TextBox { role, text });
+                    boxes.push(Object::text(role, text));
                 }
             }
             running.canvas =

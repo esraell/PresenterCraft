@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use pc_model::{Presentation, parse_song_text, to_song_text};
+use pc_model::{Presentation, from_json, parse_song_text, to_json};
 
 /// The song shown when the program is started without any files.
 pub const SAMPLE_SONG: &str = include_str!("../../../samples/sample-song.txt");
@@ -13,18 +13,32 @@ pub struct Loaded {
     pub path: PathBuf,
 }
 
-/// Saves a song over its file. The new text is written beside the file first and then moved
-/// into place, so a crash cannot leave half a song.
-pub fn save_song(path: &Path, song: &Presentation) -> Result<(), String> {
-    let name = path.file_name().map_or_else(|| "song".into(), |n| n.to_string_lossy().into_owned());
-    let temporary = path.with_file_name(format!(".{name}.saving"));
-    std::fs::write(&temporary, to_song_text(song))
-        .and_then(|()| std::fs::rename(&temporary, path))
-        .map_err(|e| format!("{}: could not be saved ({e}).", path.display()))
+/// The extension of PresenterCraft's own song file.
+pub const SONG_EXTENSION: &str = "pcpres";
+
+/// The PresenterCraft song file that belongs with a path: the same name with our extension.
+/// A text file keeps its words only; anything more (where objects sit, how they look) lives in
+/// this file beside it.
+pub fn song_file_for(path: &Path) -> PathBuf {
+    path.with_extension(SONG_EXTENSION)
 }
 
-/// Loads every path given: a file is one song, a folder is every `.txt` file directly inside
-/// it in name order. Returns the songs in order and one plain message for each path that
+/// Saves a song as a PresenterCraft song file beside the file it came from, and returns where
+/// it was written. A text file it was read from is left untouched. The new file is written
+/// under a temporary name first and then moved into place, so a crash cannot leave half a song.
+pub fn save_song(path: &Path, song: &Presentation) -> Result<PathBuf, String> {
+    let target = song_file_for(path);
+    let name = target.file_name().map_or_else(|| "song".into(), |n| n.to_string_lossy().into_owned());
+    let temporary = target.with_file_name(format!(".{name}.saving"));
+    std::fs::write(&temporary, to_json(song))
+        .and_then(|()| std::fs::rename(&temporary, &target))
+        .map_err(|e| format!("{}: could not be saved ({e}).", target.display()))?;
+    Ok(target)
+}
+
+/// Loads every path given: a file is one song, a folder is every song directly inside it in
+/// name order. A song is a text file or a PresenterCraft song file; where both exist with the
+/// same name, the PresenterCraft file is the one read, because it holds the later edits. Returns the songs in order and one plain message for each path that
 /// could not be used.
 pub fn load_songs(paths: &[PathBuf]) -> (Vec<Loaded>, Vec<String>) {
     let mut songs = Vec::new();
@@ -45,18 +59,28 @@ pub fn load_songs(paths: &[PathBuf]) -> (Vec<Loaded>, Vec<String>) {
     (songs, problems)
 }
 
+fn has_extension(path: &Path, wanted: &str) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case(wanted))
+}
+
 fn text_files_in(folder: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(folder)
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("txt")))
+        .filter(|p| p.is_file() && (has_extension(p, "txt") || has_extension(p, SONG_EXTENSION)))
         .collect();
+    // Of song.txt and song.pcpres, keep only the PresenterCraft file.
+    let ours: Vec<PathBuf> = files.iter().filter(|p| has_extension(p, SONG_EXTENSION)).cloned().collect();
+    files.retain(|p| has_extension(p, SONG_EXTENSION) || !ours.contains(&song_file_for(p)));
     files.sort();
     Ok(files)
 }
 
 fn load_one(path: &Path, songs: &mut Vec<Loaded>, problems: &mut Vec<String>) {
+    // A text file that has been edited has a PresenterCraft file beside it; read that.
+    let edited = song_file_for(path);
+    let path = if !has_extension(path, SONG_EXTENSION) && edited.is_file() { edited.as_path() } else { path };
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) => return problems.push(format!("{}: {e}", path.display())),
@@ -64,9 +88,16 @@ fn load_one(path: &Path, songs: &mut Vec<Loaded>, problems: &mut Vec<String>) {
     let Ok(text) = String::from_utf8(bytes) else {
         return problems.push(format!("{}: not a UTF-8 text file", path.display()));
     };
-    let title = path.file_stem().map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
-    // A byte order mark some editors add would otherwise become part of the first line.
-    let song = parse_song_text(&title, text.trim_start_matches('\u{feff}'));
+    let song = if has_extension(path, SONG_EXTENSION) {
+        match from_json(&text) {
+            Ok(song) => song,
+            Err(reason) => return problems.push(format!("{}: {reason}", path.display())),
+        }
+    } else {
+        let title = path.file_stem().map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
+        // A byte order mark some editors add would otherwise become part of the first line.
+        parse_song_text(&title, text.trim_start_matches('\u{feff}'))
+    };
     if song.slide_count() == 0 {
         return problems.push(format!("{}: no slides found", path.display()));
     }
@@ -169,17 +200,55 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_song_reads_back_the_same_and_leaves_no_temporary_file() {
+    fn saving_writes_our_file_beside_the_text_file_and_leaves_the_text_alone() {
         let dir = TempDir::new("save");
         let path = dir.write("song.txt", "[Verse]\nOld\n".as_bytes());
         let (mut songs, _) = load_songs(std::slice::from_ref(&path));
-        let edited = songs.remove(0).song.with_slide_text(0, "New words", "Новые слова").unwrap();
-        save_song(&path, &edited).unwrap();
+        let mut edited = songs.remove(0).song.with_slide_text(0, "New words", "Новые слова").unwrap();
+        edited.groups[0].slides[0].objects[0].frame =
+            Some(pc_model::SlideRect { x: 10.0, y: 20.0, w: 300.0, h: 200.0 });
+        let written = save_song(&path, &edited).unwrap();
+        assert_eq!(written, dir.0.join("song.pcpres"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[Verse]\nOld\n", "the text file must not change");
+
+        // Opening the text file again gives the edited song, moved object and all.
         let (again, problems) = load_songs(std::slice::from_ref(&path));
-        assert!(problems.is_empty());
-        assert_eq!(again[0].song.slide(0).unwrap().1.boxes, edited.slide(0).unwrap().1.boxes);
-        let left: Vec<_> = std::fs::read_dir(&dir.0).unwrap().filter_map(Result::ok).map(|e| e.file_name()).collect();
-        assert_eq!(left.len(), 1, "only the song should remain: {left:?}");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(again[0].song, edited);
+        assert_eq!(again[0].path, written);
+
+        let mut left: Vec<_> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["song.pcpres", "song.txt"], "no temporary file should remain");
+    }
+
+    #[test]
+    fn a_folder_reads_our_file_in_place_of_a_text_file_with_the_same_name() {
+        let dir = TempDir::new("prefer");
+        let a = dir.write("a.txt", b"From text\n");
+        dir.write("b.txt", b"Only text\n");
+        let edited = parse_song_text("a", "From our file\n");
+        save_song(&a, &edited).unwrap();
+        let (songs, problems) = load_songs(std::slice::from_ref(&dir.0));
+        assert!(problems.is_empty(), "{problems:?}");
+        let words: Vec<_> =
+            songs.iter().map(|s| s.song.slide(0).unwrap().1.objects[0].as_text().unwrap().to_owned()).collect();
+        assert_eq!(words, vec!["From our file", "Only text"]);
+    }
+
+    #[test]
+    fn a_damaged_or_newer_song_file_is_reported_and_skipped() {
+        let dir = TempDir::new("damaged");
+        let bad = dir.write("bad.pcpres", b"{ not json");
+        let newer = dir.write("newer.pcpres", br#"{"format":"presentercraft-presentation","version":99}"#);
+        let (songs, problems) = load_songs(&[bad, newer]);
+        assert!(songs.is_empty());
+        assert!(problems[0].contains("not a PresenterCraft song file"), "{problems:?}");
+        assert!(problems[1].contains("newer PresenterCraft"), "{problems:?}");
     }
 
     #[test]
@@ -194,6 +263,6 @@ mod tests {
         let song = parse_song_text("Sample song", SAMPLE_SONG);
         assert!(song.slide_count() >= 6);
         assert!(song.slides().any(|(_, s)| s.text_for(&Role::translation()).is_some()));
-        assert!(song.slides().any(|(_, s)| s.boxes.len() == 1));
+        assert!(song.slides().any(|(_, s)| s.objects.len() == 1));
     }
 }

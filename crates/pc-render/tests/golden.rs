@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use pc_model::{Role, Slide, TextBox, Theme};
+use pc_model::{Object, Role, Slide, Theme};
 use pc_render::vello::util::RenderContext;
 use pc_render::{Fonts, Painter, build_scene, read_pixels, target_texture, wgpu};
 
@@ -26,9 +26,9 @@ fn render_with(slide: Option<&Slide>, theme: &Theme, w: u32, h: u32) -> Vec<u8> 
 }
 
 fn slide(primary: &str, translation: Option<&str>) -> Slide {
-    let mut boxes = vec![TextBox { role: Role::primary(), text: primary.to_owned() }];
+    let mut boxes = vec![Object::text(Role::primary(), primary)];
     if let Some(t) = translation {
-        boxes.push(TextBox { role: Role::translation(), text: t.to_owned() });
+        boxes.push(Object::text(Role::translation(), t));
     }
     Slide::new(boxes)
 }
@@ -275,4 +275,50 @@ fn words_are_drawn_over_the_media() {
     let px = render_layers(Some(&flat(16, 9, blue)), Some(&s), 1920, 1080);
     assert!(is_about(pixel(&px, 1920, 20, 20), blue), "the corner should show the picture");
     assert!(count_lit(&px) > 3_000, "the white words should be on top of the picture");
+}
+
+#[test]
+fn a_moved_object_is_drawn_where_it_was_put() {
+    use pc_model::SlideRect;
+    let mut s = slide("X", None);
+    // Bottom-right quarter of the slide.
+    s.objects[0].frame = Some(SlideRect { x: 960.0, y: 540.0, w: 960.0, h: 540.0 });
+    let px = render(Some(&s), 640, 360);
+    let lit = |x0: u32, y0: u32| {
+        (y0..y0 + 180)
+            .flat_map(|y| (x0..x0 + 320).map(move |x| (x, y)))
+            .filter(|(x, y)| pixel(&px, 640, *x, *y)[0] > 200)
+            .count()
+    };
+    assert_eq!(lit(0, 0) + lit(320, 0) + lit(0, 180), 0, "nothing should be drawn outside the object's quarter");
+    assert!(lit(320, 180) > 100, "the letter should be in the bottom-right quarter");
+}
+
+#[test]
+fn a_faded_object_is_dimmer_and_a_turned_one_moves_its_ink() {
+    let upright = slide("IIIIIIII", None);
+    let px_upright = render(Some(&upright), 640, 360);
+    let mut faded = slide("IIIIIIII", None);
+    faded.objects[0].opacity = 0.3;
+    let px_faded = render(Some(&faded), 640, 360);
+    assert!(count_lit(&px_upright) > 200);
+    assert_eq!(count_lit(&px_faded), 0, "at 30% no pixel should stay bright white");
+    assert!(px_faded.chunks(4).any(|p| p[0] > 40), "but the letters are still there");
+
+    let mut turned = slide("IIIIIIII", None);
+    turned.objects[0].rotation = 90.0;
+    let px_turned = render(Some(&turned), 640, 360);
+    // Upright, the row of letters is wide and short; turned, it is tall and narrow.
+    let extent = |px: &[u8]| {
+        let lit: Vec<(u32, u32)> = (0..360)
+            .flat_map(|y| (0..640).map(move |x| (x, y)))
+            .filter(|(x, y)| pixel(px, 640, *x, *y)[0] > 200)
+            .collect();
+        let xs = lit.iter().map(|p| p.0);
+        let ys = lit.iter().map(|p| p.1);
+        (xs.clone().max().unwrap() - xs.min().unwrap(), ys.clone().max().unwrap() - ys.min().unwrap())
+    };
+    let (wide, short) = extent(&px_upright);
+    let (narrow, tall) = extent(&px_turned);
+    assert!(wide > short && tall > narrow, "upright {wide}x{short}, turned {narrow}x{tall}");
 }

@@ -3,7 +3,7 @@
 
 use uuid::Uuid;
 
-use crate::types::{Group, Presentation, Rgba, Role, Slide, TextBox};
+use crate::types::{Group, Object, Presentation, Rgba, Role, Slide};
 
 /// Parses a song written in the plain-text format.
 ///
@@ -114,10 +114,10 @@ impl SlideDraft {
         let draft = std::mem::take(self);
         let mut boxes = Vec::new();
         if !draft.primary.is_empty() {
-            boxes.push(TextBox { role: Role::primary(), text: draft.primary.join("\n") });
+            boxes.push(Object::text(Role::primary(), draft.primary.join("\n")));
         }
         if !draft.translation.is_empty() {
-            boxes.push(TextBox { role: Role::translation(), text: draft.translation.join("\n") });
+            boxes.push(Object::text(Role::translation(), draft.translation.join("\n")));
         }
         if !boxes.is_empty() {
             group.slides.push(Slide::new(boxes));
@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(s.text_for(&Role::primary()), Some("Line a\nLine b"));
         assert_eq!(s.text_for(&Role::translation()), Some("Строка а\nСтрока б"));
         let (_, s) = p.slide(1).unwrap();
-        assert_eq!(s.boxes.len(), 1);
+        assert_eq!(s.objects.len(), 1);
     }
 
     #[test]
@@ -190,8 +190,8 @@ mod tests {
     #[test]
     fn empty_side_of_split_makes_no_empty_box() {
         let p = parse_song_text("T", "A\n--\n\nB\n--\n");
-        assert_eq!(p.slide(0).unwrap().1.boxes.len(), 1);
-        assert_eq!(p.slide(1).unwrap().1.boxes.len(), 1);
+        assert_eq!(p.slide(0).unwrap().1.objects.len(), 1);
+        assert_eq!(p.slide(1).unwrap().1.objects.len(), 1);
         let p = parse_song_text("T", "--\nТолько перевод\n");
         assert_eq!(p.slide(0).unwrap().1.text_for(&Role::translation()), Some("Только перевод"));
         assert_eq!(p.slide(0).unwrap().1.text_for(&Role::primary()), None);
@@ -223,7 +223,7 @@ mod tests {
         let shape = |p: &Presentation| {
             p.groups
                 .iter()
-                .map(|g| (g.name.clone(), g.slides.iter().map(|s| s.boxes.clone()).collect::<Vec<_>>()))
+                .map(|g| (g.name.clone(), g.slides.iter().map(Slide::texts).collect::<Vec<_>>()))
                 .collect::<Vec<_>>()
         };
         assert_eq!(shape(&p), shape(&again));
@@ -242,13 +242,15 @@ mod tests {
         let edited = p.with_slide_text(1, "New words\n\nsecond line", "Перевод").unwrap();
         assert_eq!(edited.id, p.id);
         assert_eq!(edited.slide(1).unwrap().1.id, p.slide(1).unwrap().1.id);
+        // The object that was there keeps its id, so anything pointing at it still does.
+        assert_eq!(edited.slide(1).unwrap().1.objects[0].id, p.slide(1).unwrap().1.objects[0].id);
         assert_eq!(edited.slide(1).unwrap().1.text_for(&Role::primary()), Some("New words\nsecond line"));
         assert_eq!(edited.slide(1).unwrap().1.text_for(&Role::translation()), Some("Перевод"));
         assert_eq!(edited.slide(0).unwrap().1, p.slide(0).unwrap().1);
         assert_eq!(edited.slide(2).unwrap().1, p.slide(2).unwrap().1);
         // Emptying the translation removes that box; emptying both is refused.
         let one_box = p.with_slide_text(0, "A", "  ").unwrap();
-        assert_eq!(one_box.slide(0).unwrap().1.boxes.len(), 1);
+        assert_eq!(one_box.slide(0).unwrap().1.objects.len(), 1);
         assert!(p.with_slide_text(0, "", "\n").is_none());
         assert!(p.with_slide_text(9, "A", "").is_none());
     }

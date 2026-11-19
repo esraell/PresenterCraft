@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 use crate::types::{Rgba, Role};
 
 /// A rectangle in slide units (the slide is 1920 x 1080).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SlideRect {
     pub x: f32,
     pub y: f32,

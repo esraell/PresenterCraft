@@ -26,7 +26,7 @@ fn goto_reports_slide_change() {
     let c = s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 1 }));
     assert!(c.slides);
     assert_eq!(s.live(), at(0, 1));
-    assert_eq!(s.live_slide().unwrap().1.boxes[0].text, "B");
+    assert_eq!(s.live_slide().unwrap().1.objects[0].as_text(), Some("B"));
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn replacing_a_presentation_keeps_what_is_live_when_it_still_exists() {
     let c = s.replace_presentation(0, Arc::new(parse_song_text("One", "A\n\nB\n\nEdited\n")));
     assert!(c.slides, "the live slide's words changed");
     assert_eq!(s.live(), at(0, 2));
-    assert_eq!(s.live_slide().unwrap().1.boxes[0].text, "Edited");
+    assert_eq!(s.live_slide().unwrap().1.objects[0].as_text(), Some("Edited"));
     // Fewer slides: the live slide is gone, so the layer is cleared.
     let c = s.replace_presentation(0, Arc::new(parse_song_text("One", "A\n")));
     assert!(c.slides);
@@ -257,5 +257,5 @@ fn replacing_a_presentation_that_is_not_live_changes_no_layer() {
     s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 0 }));
     let c = s.replace_presentation(1, Arc::new(parse_song_text("Two", "New\n")));
     assert!(!c.slides);
-    assert_eq!(s.presentations()[1].slide(0).unwrap().1.boxes[0].text, "New");
+    assert_eq!(s.presentations()[1].slide(0).unwrap().1.objects[0].as_text(), Some("New"));
 }
