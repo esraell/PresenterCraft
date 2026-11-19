@@ -1,0 +1,7 @@
+# The Rust version everyone builds with: the owner's Mac, the automatic checks and contributors.
+# Moving to a newer Rust is a deliberate one-line change here, so a new release can't turn the
+# checks red on its own (each release adds lints, and clippy warnings fail the checks).
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

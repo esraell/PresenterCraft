@@ -1,0 +1,57 @@
+name: Checks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A newer push cancels the run still going for an older one on the same branch or pull request,
+# so runs don't queue for the few free Mac machines.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Format, lints and tests
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      PRESENTERCRAFT_QUIET: "1"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the Rust version in rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --exclude pc-render
+      - name: Tests (pc-render, without the picture tests)
+        run: cargo test -p pc-render --lib
+      - name: Say which tests were left out
+        run: >-
+          echo "::notice title=Picture tests skipped::crates/pc-render/tests/golden.rs compares
+          against pictures made on the maintainer's Mac with its GPU and fonts, so it runs there,
+          not here."
+
+  dco:
+    name: Sign-offs
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Every commit is signed off
+        run: >-
+          sh .github/scripts/dco-check.sh
+          "${{ github.event.pull_request.base.sha }}"
+          "${{ github.event.pull_request.head.sha }}"
