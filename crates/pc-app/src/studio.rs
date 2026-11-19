@@ -834,6 +834,24 @@ pub fn program_panel(
             let (dot, _) = ui.allocate_exact_size(vec2(10.0, 12.0), Sense::hover());
             ui.painter().circle_filled(dot.center(), 4.5, if any_live && on { TALLY } else { TEXT_FAINT });
             caption(ui, "PROGRAM");
+            // Which screens the preview shows: the audience's, or the stage's.
+            let shown = if state.preview_stage { "STAGE ▾" } else { "AUDIENCE ▾" };
+            let chooser = ui
+                .add(
+                    egui::Label::new(
+                        egui::RichText::new(shown).font(semibold(10.5)).color(TEXT_DIM).extra_letter_spacing(0.8),
+                    )
+                    .sense(Sense::click()),
+                )
+                .on_hover_text("Choose which screens the preview shows");
+            egui::Popup::menu(&chooser).show(|ui| {
+                for (stage, name) in [(false, "Audience"), (true, "Stage")] {
+                    if ui.add(egui::Button::selectable(state.preview_stage == stage, name)).clicked() {
+                        state.preview_stage = stage;
+                        ui.close();
+                    }
+                }
+            });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let (text, ink) = match (on, any_live) {
                     (false, _) => ("OUTPUT OFF", TALLY),
@@ -859,7 +877,7 @@ pub fn program_panel(
         if fading {
             ui.ctx().request_repaint();
         }
-        if !on {
+        if !on && !state.preview_stage {
             ui.painter().rect_filled(picture, RADIUS, Color32::from_black_alpha(190));
             ui.painter().text(
                 picture.center(),

@@ -427,6 +427,9 @@ struct Running {
     /// fades as the output does.
     preview_before: Option<egui::TextureId>,
     preview_changed: Instant,
+    /// True when the Program preview last drew the stage picture, and when it did.
+    preview_shows_stage: bool,
+    stage_preview_at: Instant,
     home_state: HomeState,
     next_repaint: Option<Instant>,
     /// The Edit view's picture of the slide being edited, and the words it was drawn from.
@@ -597,6 +600,8 @@ impl App {
             preview,
             preview_before: None,
             preview_changed: Instant::now(),
+            preview_shows_stage: false,
+            stage_preview_at: Instant::now(),
             home_state: HomeState {
                 fonts: Arc::new(pc_render::Fonts::new().family_names()),
                 theme_names: self.themes.iter().map(|theme| theme.name.clone()).collect(),
@@ -872,9 +877,40 @@ impl App {
                 running.home_state.output_stopped = true;
             }
         }
+        self.refresh_preview(true);
+    }
+
+    /// Redraws the Program preview: what the audience sees, or what the stage sees. `fade` lets
+    /// it fade from the last picture as the screens do; a clock's tick doesn't fade.
+    fn refresh_preview(&mut self, fade: bool) {
+        let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
+        let Some(running) = self.running.as_mut() else {
+            return;
+        };
+        let slide = self.show.live_slide().map(|(_, slide)| Arc::new(slide.clone()));
+        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).cloned();
+        let state = &running.home_state;
+        running.preview_shows_stage = state.preview_stage;
+        if state.preview_stage {
+            // The stage screens' picture: the time, this slide, the next, a timer, the stage message.
+            let next = self.show.live().and_then(|at| {
+                let song = self.show.presentations().get(at.presentation)?;
+                song.slide(at.slide + 1).map(|(_, slide)| slide.clone())
+            });
+            let overlay = running.overlay_sent.clone().unwrap_or_default();
+            let picture = stage::slide(slide.as_deref(), next.as_ref(), &overlay);
+            let layers = Layers { media: None, slide: Some(&picture), overlay: None };
+            let (now, before) =
+                running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &stage::theme());
+            running.preview = now;
+            running.preview_before = before;
+            let now = Instant::now();
+            running.preview_changed = if fade { now } else { now.checked_sub(Duration::from_secs(60)).unwrap_or(now) };
+            running.stage_preview_at = now;
+            return;
+        }
         // The operator's preview shows the props and a message over the slide, as the audience
         // sees them.
-        let state = &running.home_state;
         let message = state.message_live.and_then(|(id, _)| {
             let message = state.messages.iter().find(|message| message.id == id)?;
             let words = messages::fill_in(&message.text, &state.timers, Instant::now(), timers::seconds_into_day());
@@ -898,7 +934,8 @@ impl App {
         let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &theme);
         running.preview = now;
         running.preview_before = before;
-        running.preview_changed = Instant::now();
+        let now = Instant::now();
+        running.preview_changed = if fade { now } else { now.checked_sub(Duration::from_secs(60)).unwrap_or(now) };
     }
 
     /// Adds a file dropped on the window to the media bin, or says why it could not be added.
@@ -1746,6 +1783,10 @@ impl App {
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_CAPTURE_SETTINGS").is_some() {
                 running.home_state.settings_open = true;
             }
+            // Testing aid: show the stage picture in the Program preview.
+            if running.frames == GO_LIVE_AT + 2 && std::env::var("PRESENTERCRAFT_PREVIEW").as_deref() == Ok("stage") {
+                running.home_state.preview_stage = true;
+            }
             // Testing aid: open a tab under the Program panel, and show the first message.
             if running.frames == GO_LIVE_AT + 2
                 && let Ok(tab) = std::env::var("PRESENTERCRAFT_LIVE_TAB")
@@ -2133,7 +2174,18 @@ impl App {
             let soon = Instant::now() + Duration::from_millis(500);
             running.next_repaint = Some(running.next_repaint.map_or(soon, |at| at.min(soon)));
         }
+        // The stage picture in the Program preview shows the time, so it is redrawn each second;
+        // switching between the audience and the stage redraws it straight away.
+        let switched = running.preview_shows_stage != state.preview_stage;
+        let stage_tick = state.preview_stage && running.stage_preview_at.elapsed() >= Duration::from_secs(1);
+        if state.preview_stage {
+            let soon = Instant::now() + Duration::from_millis(500);
+            running.next_repaint = Some(running.next_repaint.map_or(soon, |at| at.min(soon)));
+        }
         if running.overlay_sent.as_ref() == Some(&overlay) {
+            if switched || stage_tick {
+                self.refresh_preview(switched);
+            }
             return;
         }
         let message_changed = running.overlay_sent.as_ref().is_none_or(|sent| {
@@ -2145,6 +2197,9 @@ impl App {
         running.overlay_sent = Some(overlay);
         if message_changed {
             self.refresh_output();
+        } else if switched || stage_tick || running.preview_shows_stage {
+            // The stage picture shows timers and the stage message, so any change redraws it.
+            self.refresh_preview(switched);
         }
     }
 

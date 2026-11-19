@@ -195,6 +195,8 @@ pub struct HomeState {
     pub messages: Vec<crate::messages::Message>,
     pub messages_changed: bool,
     pub message_selected: Option<pc_model::Uuid>,
+    /// True when the Program preview shows what the stage screens show, not the audience's.
+    pub preview_stage: bool,
     /// A message cut or copied, to paste; and one being renamed in its row, with its name so far.
     pub message_clip: Option<crate::messages::Message>,
     pub message_rename: Option<(pc_model::Uuid, String)>,
@@ -729,6 +731,7 @@ impl Default for HomeState {
             messages: Vec::new(),
             messages_changed: false,
             message_selected: None,
+            preview_stage: false,
             message_clip: None,
             message_rename: None,
             message_live: None,

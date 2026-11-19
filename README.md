@@ -66,6 +66,8 @@ ProPresenter.
   songs, optionally when the app starts), **Audio** (tracks such as walk-in music: play, pause,
   skip 15 seconds, volume; F5 or Clear All stops it), and a **Stage Message** for the people on
   stage, in tabs under the Program panel. A slide can carry the same actions, done when it goes on screen.
+- The Program preview shows what the audience sees, or (from the chooser beside PROGRAM) what
+  the stage screens show, with the time kept up to date.
 
 **Bible**
 - Scripture Lookup in English and Russian (`John 3:16-18`, `jn 3:16`, `Psalm 23`,
