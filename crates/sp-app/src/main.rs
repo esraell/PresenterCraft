@@ -3654,6 +3654,15 @@ impl App {
             A::InsertPicture => state.picture_request = state.editing.is_some() && state.theme_edit.is_none(),
             A::Quit => {}
             A::Settings => state.preferences_open = true,
+            A::InstallCommandLine => {
+                state.notice = Some(match control::install_command() {
+                    Ok(link) => format!(
+                        "Installed the softpresenter command at {}. In Terminal, try: softpresenter status",
+                        link.display()
+                    ),
+                    Err(problem) => problem,
+                });
+            }
             A::ConfigureScreens => state.settings_open = true,
             A::StageLayouts => state.stage_editor_open = true,
             A::NewSong => state.new_song = true,
@@ -4307,9 +4316,41 @@ impl ApplicationHandler<AppEvent> for App {
 }
 
 fn main() -> ExitCode {
-    // `softpresenter ctl …` controls the running app, and nothing else: no window, no log.
-    if std::env::args().nth(1).as_deref() == Some("ctl") {
-        return control::run_client(std::env::args().skip(2).collect());
+    // `softpresenter ctl …` (or just `softpresenter next`, `softpresenter status`…) controls
+    // the running app, and nothing else: no window, no log.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("ctl") => return control::run_client(args[1..].to_vec()),
+        Some("install-cli") => {
+            return match control::install_command() {
+                Ok(link) => {
+                    println!("Installed {}. Try: softpresenter status", link.display());
+                    ExitCode::SUCCESS
+                }
+                Err(problem) => {
+                    eprintln!("{problem}");
+                    ExitCode::from(1)
+                }
+            };
+        }
+        Some(first) if control::is_command(first) && !std::path::Path::new(first).exists() => {
+            return control::run_client(args);
+        }
+        _ => {}
+    }
+    // Started through the installed command (a link outside the app), the app is opened as a
+    // Mac app is, so it is named and placed properly; anything typed after it goes along.
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = control::bundle_opened_through_link() {
+        let mut open = std::process::Command::new("/usr/bin/open");
+        open.arg(&bundle);
+        if !args.is_empty() {
+            open.arg("--args").args(&args);
+        }
+        return match open.status() {
+            Ok(status) if status.success() => ExitCode::SUCCESS,
+            _ => ExitCode::from(1),
+        };
     }
     // Folders kept under the project's old name are renamed to the new one, once, before the
     // log opens in its new place.

@@ -8,6 +8,7 @@ use winit::keyboard::{KeyCode, ModifiersState};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Settings,
+    InstallCommandLine,
     Quit,
     NewSong,
     NewSlide,
@@ -162,6 +163,7 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Entry::System(System::About),
             Line,
             Do(Action::Settings, "Settings…", cmd(',')),
+            Do(Action::InstallCommandLine, "Install Command Line Tool…", None),
             Line,
             Entry::System(System::Services),
             Line,

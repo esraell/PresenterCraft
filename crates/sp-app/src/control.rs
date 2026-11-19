@@ -185,8 +185,9 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
 #[cfg(unix)]
 fn send(args: &[String]) -> Result<Reply, String> {
     let path = socket_path().ok_or("Could not find where the control socket is.")?;
-    let mut stream = std::os::unix::net::UnixStream::connect(&path)
-        .map_err(|_| "SoftPresenter isn't running (or isn't listening for commands).".to_owned())?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&path).map_err(|_| {
+        "SoftPresenter isn't running (or isn't listening for commands). Open it, then try again.".to_owned()
+    })?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
     let mut request =
         serde_json::to_string(&Request { v: PROTOCOL, args: args.to_vec() }).map_err(|e| e.to_string())?;
@@ -202,9 +203,134 @@ fn send(_args: &[String]) -> Result<Reply, String> {
     Err("Controlling SoftPresenter from the command line works on macOS and Linux so far.".to_owned())
 }
 
+/// The first words of the commands, so `softpresenter next` can be typed without `ctl`.
+const COMMANDS: &[&str] = &[
+    "help",
+    "status",
+    "songs",
+    "slides",
+    "playlists",
+    "playlist",
+    "media",
+    "media-playlist",
+    "themes",
+    "screens",
+    "timers",
+    "messages",
+    "props",
+    "macros",
+    "audio",
+    "next",
+    "previous",
+    "prev",
+    "first",
+    "last",
+    "go",
+    "select",
+    "clear",
+    "audience",
+    "stage",
+    "identify",
+    "view",
+    "message",
+    "prop",
+    "timer",
+    "macro",
+    "announce",
+    "bible",
+    "song",
+    "menu",
+];
+
+/// True when `word` starts a command.
+pub fn is_command(word: &str) -> bool {
+    COMMANDS.contains(&word.to_lowercase().as_str())
+}
+
+/// The names the command is installed as.
+pub const COMMAND_NAMES: [&str; 1] = ["softpresenter"];
+
+/// Puts the `softpresenter` command on the PATH: a link to this program in the
+/// first of these folders that is there and can be written to without an administrator:
+/// `~/.local/bin`, then `/opt/homebrew/bin`, then `/usr/local/bin`; failing those,
+/// `~/.local/bin` is made. A link already there is replaced; a file of that name that is not a
+/// link is left alone. Returns where the short one is.
+#[cfg(unix)]
+pub fn install_command() -> Result<PathBuf, String> {
+    let program = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| format!("Could not find this program: {e}"))?;
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("Could not find the home folder.")?;
+    let local = home.join(".local/bin");
+    let writable = |dir: &Path| {
+        std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir())
+            && std::fs::File::create(dir.join(".softpresenter-check")).is_ok_and(|_| {
+                let _ = std::fs::remove_file(dir.join(".softpresenter-check"));
+                true
+            })
+    };
+    let folder = [local.clone(), PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")]
+        .into_iter()
+        .find(|dir| writable(dir))
+        .map_or_else(
+            || {
+                std::fs::create_dir_all(&local)
+                    .map(|()| local.clone())
+                    .map_err(|e| format!("Could not make {}: {e}", local.display()))
+            },
+            Ok,
+        )?;
+    for name in COMMAND_NAMES {
+        let link = folder.join(name);
+        if let Ok(meta) = std::fs::symlink_metadata(&link) {
+            if !meta.file_type().is_symlink() {
+                return Err(format!("There is already a file at {}; it was left alone.", link.display()));
+            }
+            std::fs::remove_file(&link).map_err(|e| format!("Could not replace {}: {e}", link.display()))?;
+        }
+        std::os::unix::fs::symlink(&program, &link).map_err(|e| format!("Could not make {}: {e}", link.display()))?;
+    }
+    let link = folder.join(COMMAND_NAMES[0]);
+    let on_path = std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir == folder));
+    if !on_path && folder == local {
+        return Err(format!(
+            "Installed {}, but ~/.local/bin may not be on your PATH. Add this line to ~/.zshrc: export PATH=\"$HOME/.local/bin:$PATH\"",
+            link.display()
+        ));
+    }
+    Ok(link)
+}
+
+#[cfg(not(unix))]
+pub fn install_command() -> Result<PathBuf, String> {
+    Err("Installing the command line tool works on macOS and Linux so far.".to_owned())
+}
+
+/// The app bundle this program is in, when it was started through a link from outside it (the
+/// installed `softpresenter` command): opening the bundle names and places the app properly.
+#[cfg(target_os = "macos")]
+pub fn bundle_opened_through_link() -> Option<PathBuf> {
+    let started_as = PathBuf::from(std::env::args_os().next()?);
+    let link = std::fs::symlink_metadata(&started_as).ok().filter(|meta| meta.file_type().is_symlink());
+    let started_as = match link {
+        Some(_) => started_as,
+        // Started by name: find it on the PATH.
+        None if started_as.components().count() == 1 => {
+            let path = std::env::var_os("PATH")?;
+            std::env::split_paths(&path).map(|dir| dir.join(&started_as)).find(|candidate| {
+                std::fs::symlink_metadata(candidate).is_ok_and(|meta| meta.file_type().is_symlink())
+            })?
+        }
+        None => return None,
+    };
+    let program = std::fs::canonicalize(&started_as).ok()?;
+    let bundle = program.ancestors().find(|dir| dir.extension().is_some_and(|ext| ext == "app"))?;
+    Some(bundle.to_path_buf())
+}
+
 /// What `ctl help` says.
 pub const HELP: &str = "\
-softpresenter ctl COMMAND …   (add --json for the reply as JSON)
+softpresenter COMMAND …   (add --json for the reply as JSON)
 
 What is going on
   status                       what is on screen, what is next, what is playing
