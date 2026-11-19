@@ -3,9 +3,10 @@
 This file is for AI coding agents (Claude, Codex, Cursor and others). People are welcome to read
 it too.
 
-**Start with the [README](README.md).** It says what SoftPresenter is and who it is for, what
-works today, how to build and run it, the crate map and the checks to run before a change. This
-file doesn't repeat any of that; it adds what an agent needs on top. Two more pages are
+**Start with the [README](README.md).** It says what SoftPresenter is and who it is for, how to
+build and run it, the crate map and the checks to run before a change; what works today, in
+full, is in [docs/features.md](docs/features.md). This file doesn't repeat any of that; it adds
+what an agent needs on top. Two more pages are
 written for agents as much as for people:
 
 - [docs/app-map.md](docs/app-map.md): every view, panel and window, what each part does, the

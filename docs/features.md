@@ -10,7 +10,7 @@ feature changes, this page changes in the same commit.
 
 ## Running a service
 - Songs shown as a grid of slides, an Easy view (words only) or a Table view, with a size
-  slider. Click a slide, or use the keys below, to put it on the audience screen.
+  slider. Click a slide, or use the [keys](../README.md#keys), to put it on the audience screen.
 - Groups (Verse 1, Chorus, Bridge…) with coloured bars and one-key jumps.
 - **Arrangements**: a song's groups in the order to sing them (Verse 1, Chorus, Verse 2, Chorus…),
   from the Arrangement icon at the right of its header. Next and Previous follow it, a group can come more than
@@ -55,6 +55,9 @@ feature changes, this page changes in the same commit.
   right-click menu sets its Scaling (Scale to Fill, Scale to Fit, Stretch to Fill), whether a
   video loops, and the media playlists it is in; the menu beside MEDIA shows All Media or one
   playlist, and makes, renames and deletes them.
+
+![The media bin: three pictures and a video, the picture on screen outlined in red](images/media.png)
+
 - A media playlist can **Follow a Folder**: the pictures and videos in it join the playlist as
   they appear, and one written over (such as a fresh announcements export from Canva) is read
   again and, if on screen, played again. **Play This Playlist** shows its items in turn on the
@@ -100,6 +103,8 @@ feature changes, this page changes in the same commit.
   song's title and group, and the stage message, each dragged into place and resized, with its
   size, colour and alignment.
 
+![A stage screen: the slide on screen in English and Russian, the next slide, a sermon timer and the clock](images/stage.png)
+
 ## Bible
 - Scripture Lookup in English and Russian (`John 3:16-18`, `jn 3:16`, `Psalm 23`,
   `Пс 22:1-3`) and word search.
@@ -113,7 +118,7 @@ feature changes, this page changes in the same commit.
 - One click keeps a passage: Add to "Sunday Morning" puts it in the playlist in front (the ▾
   beside it picks another), to be brought back with the same settings.
 
-![The Bible view: John 3:16-18 in English and Russian](images/bible.png)
+![The Bible view: John 3:16-18 in the King James Version beside the Russian Synodal](images/bible.png)
 
 ## Editing
 - An editor for a song's slides: move, resize and restyle text boxes, with alignment guides
@@ -170,7 +175,7 @@ feature changes, this page changes in the same commit.
 
 ## Screens
 - Any number of audience screens, each sent to a display, a window, or the network over NDI,
-  all showing the same picture. Open them with the gear button or **Cmd+,**.
+  all showing the same picture, set up in the Screens window (**Option-Command-1**).
 - Stage screens for the people on stage: the words on screen now, the next slide's words, the
   time, a running timer and the stage message.
 - A screen whose display is unplugged waits for it instead of jumping to another display.
