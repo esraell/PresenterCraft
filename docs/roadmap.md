@@ -9,31 +9,29 @@ Size: S = under a day, M = days, L = a week or more. Sunday: how much it matters
 
 ## Coming first
 
-1. **Song import from files and the clipboard.** Text, rich text and Word files, and CCLI
-   SongSelect lyric files: getting a church's songs in comes first. · M
-2. **Import from a church's existing presentation software**, so a library can move over in one
+1. **Import from a church's existing presentation software**, so a library can move over in one
    go. A first way in (M), then full file import (L). · M, then L
-3. **PowerPoint import.** As pictures first and editable later: sermon and announcement slides
+2. **PowerPoint import.** As pictures first and editable later: sermon and announcement slides
    arrive as PowerPoint files every week. · L
-4. **FFmpeg in the app.** Without it, MKV, WebM, AVI and some MP4 files won't play on a stock
+3. **FFmpeg in the app.** Without it, MKV, WebM, AVI and some MP4 files won't play on a stock
    Mac. · M
-5. **Media and placeholder items in playlists.** The countdown video, the announcement loop and
+4. **Media and placeholder items in playlists.** The countdown video, the announcement loop and
    a "sermon slides to come" slot belong in the running order. · M
-6. **Fixing a slide's words from the Show view.** Mend a typo on the live slide without leaving
+5. **Fixing a slide's words from the Show view.** Mend a typo on the live slide without leaving
    the Show view. · S–M
-7. **Corner pin (keystone).** Square up a projector that is off-axis. · M
-8. **More slide and macro actions.** Audio tracks and playlists, clearing audio and
+6. **Corner pin (keystone).** Square up a projector that is off-axis. · M
+7. **More slide and macro actions.** Audio tracks and playlists, clearing audio and
    announcements, changing a stage layout or a saved screen setup, running another macro,
    media playlists. · S each
-9. **A whole song that moves on by itself.** Announcement loops with one setting. · S
-10. **Clear buttons of your own.** Each clears a chosen set of layers. · M
-11. **Slides shown on the stage screens only**, and an action that changes a stage layout. · M
-12. **Saved screen setups switched live, and a theme for each screen.** Lyrics off the stream,
+8. **A whole song that moves on by itself.** Announcement loops with one setting. · S
+9. **Clear buttons of your own.** Each clears a chosen set of layers. · M
+10. **Slides shown on the stage screens only**, and an action that changes a stage layout. · M
+11. **Saved screen setups switched live, and a theme for each screen.** Lyrics off the stream,
     lower thirds on NDI. · M
-13. **Fill-in fields in messages**, for paging parents from the nursery. · S–M
-14. **What a video does when it ends, in and out points, and video sound against background
+12. **Fill-in fields in messages**, for paging parents from the nursery. · S–M
+13. **What a video does when it ends, in and out points, and video sound against background
     music.** · M
-15. **A fuller stage layout editor.** Free text, timers chosen by name, a video countdown and
+14. **A fuller stage layout editor.** Free text, timers chosen by name, a video countdown and
     slide pictures. · M
 
 Next in line: the network API with a phone remote, spell check, formatting one word, CCLI usage
@@ -184,9 +182,8 @@ rather than a feature, but no church on Windows can use the app without them.
 
 ## Library, playlists and import/export
 
-- **Importing songs from files and the clipboard.** Text, rich text and Word files, with a choice of how slides are split (paragraph, line or marker), group labels recognised, and the theme, library and playlist to use. (started: text files in SoftPresenter's own format, from the command line only; New Song takes pasted words) · M · High
+- **Choices when importing songs.** How slides are split (paragraph, line or marker, and how many lines), and the theme, library and playlist imported songs go to. (started: File › Import Songs…, drops and `sp song import` read text, lyric, ChordPro, rich-text and Word files, find sections, and share long stretches into slides of up to four lines) · S · Medium
 - **PowerPoint import.** As editable slides, as pictures, or as objects and text (weekly sermon slides). · L · High
-- **SongSelect lyric files.** The files CCLI SongSelect downloads (text and ChordPro) imported as songs with their groups and CCLI details. · S–M · High
 - **Importing from a church's existing presentation software**, so a library can move over in one go: songs, playlists and their media. Some ways in are M, full file import L. · M–L · High
 - **SongSelect inside the app.** Search, preview and import from the search panel (⌘F). May need CCLI's agreement. · L · Medium
 - **Media, placeholder and stream items in a playlist.** A countdown video, an announcement loop, a "sermon slides to come" placeholder, a cue, a video or audio stream, and hidden items. (started: playlists hold songs, saved passages and headers) · M · Medium
@@ -196,7 +193,7 @@ rather than a feature, but no church on Windows can use the app without them.
 - **Arrangement and key chosen per playlist item.** The same song sung differently in two services. (started: one chosen arrangement per song) · S–M · Medium
 - **Planning Center Services.** A plan becomes a playlist, its items match songs in the library, and its sequences become arrangements. · L · Medium
 - **OpenLyrics and EasyWorship import.** OpenLyrics covers OpenLP, Quelea and FreeShow, and could be SoftPresenter's open export format too. · M each · Medium
-- **ChordPro and OpenSong import.** · S–M each · Low
+- **OpenSong import.** (ChordPro is done) · S–M · Low
 - **Exporting a song.** As a file, a bundle with its media, text, or slide pictures. (started: song files can be copied by hand) · S–M · Low
 - **Printing.** Lyrics, slides and playlists, with notes (lyric sheets for the band). · M · Low
 - **Song menu extras.** Hiding an item, moving a song, copying and pasting songs between libraries, and showing a song in its library. (started: dragging to a library, and Duplicate) · S · Low

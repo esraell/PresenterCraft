@@ -4,6 +4,7 @@
 mod action;
 mod build;
 mod format;
+mod import;
 mod link;
 mod song_text;
 mod theme;
@@ -13,6 +14,7 @@ mod types;
 pub use action::{ClearWhat, ShowAction, TimerDo};
 pub use build::{Build, BuildClock, BuildEffect};
 pub use format::{FORMAT_VERSION, from_json, to_json};
+pub use import::{decode_text, import_song_text};
 pub use link::TextLink;
 pub use song_text::{
     GROUP_KEYS, clean_box_text, group_color, groups_for_key, key_for_group, parse_song_text, to_song_text,

@@ -84,6 +84,7 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 | A letter | The slide with that hot key, or the group it stands for (A for the first verse, S for the second, C for the chorus, E for the ending…; the letter shows at the right of a group's bar) |
 | Delete | Delete what is picked out, after asking |
 | Command-N | New song |
+| File › Import Songs… (or drop song files on the window) | Import songs from text, lyric, ChordPro, rich-text or Word files |
 | Command-L | Back to the song on screen |
 
 Every menu bar item, with its shortcut, is listed by `softpresenter ctl menu`; any of them can be

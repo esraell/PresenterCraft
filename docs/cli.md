@@ -79,6 +79,7 @@ needed. Then:
 | Command | Does |
 |---|---|
 | `song new TITLE [FILE.txt]` | A new song, its words from a song text file (a line in square brackets starts a group, a blank line a new slide) |
+| `song import FILE…` | Imports songs from text, lyric, ChordPro, rich-text or Word files, or SoftPresenter song files, as File › Import Songs… does; a song already in the library is skipped. The reply's data lists `imported` and `problems` |
 | `song delete SONG --yes` | Deletes a song (one made in SoftPresenter goes to the Trash) |
 | `playlist open NAME` | Puts a playlist in front |
 | `playlist add SONG [to PLAYLIST]` | Adds a song to a playlist (the one in front if none is named) |

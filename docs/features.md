@@ -23,7 +23,19 @@ feature changes, this page changes in the same commit.
   (its right-click menu) and a slide can each have their own, and the media bin has its own for
   changing from one picture or video to the next.
 - New Song (Command-N, or + over the song list) asks for the song's title and theme, and takes
-  its words pasted in (a line in square brackets starts a group, a blank line a new slide).
+  its words pasted in (a line in square brackets starts a group, a blank line a new slide; a
+  lyric file pasted in whole gives its sections and details, as an import does).
+- **Importing songs.** File › Import Songs…, dropping files on the window, `sp song import
+  FILE…`, or song files named on the command line. It reads plain text in any common encoding
+  (UTF-8, UTF-16, and the older Windows ones for Russian, Ukrainian and Western European
+  languages), the lyric files song services give (title, sections, and a footer whose song
+  number, writers and copyright go into the song's details; a church's own licence number is
+  never kept), ChordPro (sections from its directives, chords taken out), SoftPresenter's own
+  song text and song files, and on macOS rich-text, Word, OpenDocument and web page files.
+  Sections are found from lines naming them ("Verse 1", "Chorus:", "Bridge", "Куплет 1",
+  "Припев", "Приспів"…); slides break at blank lines, and more than four lines without one are
+  shared out evenly (eight lines make two slides of four). A song the library already has,
+  word for word under the same title, isn't added twice.
 - The left column: **LIBRARY** rows (All Songs and libraries of your own,
   such as Christmas or Youth) and **PLAYLISTS** rows on top, and the songs or items of the one
   chosen below, with a filter at the bottom. + beside each heading makes a new one; double-click
@@ -204,6 +216,6 @@ feature changes, this page changes in the same commit.
   [cli.md](cli.md); [app-map.md](app-map.md) maps every part of the app.
 
 ## On the Mac
-- A menu bar with the usual menus and shortcuts (New Song, Undo, Cut/Copy/Paste, the views,
+- A menu bar with the usual menus and shortcuts (New Song, Import Songs…, Undo, Cut/Copy/Paste, the views,
   Clear, Audience and Stage Output on/off with Cmd+1 and Cmd+2, Configure Screens), showing
   only what works.

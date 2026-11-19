@@ -1,8 +1,9 @@
-//! Loading songs from text files.
+//! Loading songs from files: SoftPresenter's own, and songs imported from text, lyric, ChordPro,
+//! rich-text and Word files.
 
 use std::path::{Path, PathBuf};
 
-use sp_model::{Presentation, from_json, parse_song_text, to_json};
+use sp_model::{Presentation, decode_text, from_json, import_song_text, to_json};
 
 /// The song shown when the program is started without any files.
 pub const SAMPLE_SONG: &str = include_str!("../../../samples/sample-song.txt");
@@ -18,6 +19,106 @@ pub const SONG_EXTENSION: &str = "sppres";
 /// The extension songs were saved with before the project was renamed; they still open, and
 /// are saved again under the same name.
 pub const OLD_SONG_EXTENSION: &str = "pcpres";
+
+/// Endings of text files read as songs: plain text, lyric files and ChordPro.
+pub const TEXT_ENDINGS: [&str; 6] = ["txt", "text", "cho", "chordpro", "chopro", "crd"];
+/// Endings of documents read as songs through macOS's own text converter.
+pub const DOCUMENT_ENDINGS: [&str; 6] = ["rtf", "doc", "docx", "odt", "html", "htm"];
+/// A song file is a few kilobytes; anything far bigger is not one, and isn't read into memory.
+const LARGEST_SONG_FILE: u64 = 4 * 1024 * 1024;
+
+/// True for a file SoftPresenter can import as a song (besides its own song files).
+pub fn is_importable(path: &Path) -> bool {
+    TEXT_ENDINGS.iter().chain(&DOCUMENT_ENDINGS).any(|ending| has_extension(path, ending))
+}
+
+/// Every ending a song can be imported from, its own song files included, for file dialogs.
+pub fn import_endings() -> Vec<&'static str> {
+    let mut endings = vec![SONG_EXTENSION, OLD_SONG_EXTENSION];
+    endings.extend(TEXT_ENDINGS);
+    endings.extend(DOCUMENT_ENDINGS);
+    endings
+}
+
+/// Reads a song from a file to import: text in any common encoding, a lyric file, ChordPro,
+/// or (on macOS) a rich-text, Word, OpenDocument or web page file. The error is a plain
+/// sentence for the operator.
+pub fn import_file(path: &Path) -> Result<Presentation, String> {
+    let name = path.file_name().map_or_else(|| "The file".into(), |n| n.to_string_lossy().into_owned());
+    let size = std::fs::metadata(path).map_err(|e| format!("{name} could not be read ({e})."))?.len();
+    if size > LARGEST_SONG_FILE {
+        return Err(format!("{name} is too large to be a song."));
+    }
+    let title = path.file_stem().map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
+    let text = if DOCUMENT_ENDINGS.iter().any(|ending| has_extension(path, ending)) {
+        document_text(path).map_err(|reason| format!("{name} could not be read ({reason})."))?
+    } else {
+        decode_text(&std::fs::read(path).map_err(|e| format!("{name} could not be read ({e})."))?)
+    };
+    let song = import_song_text(&title, &text);
+    if song.slide_count() == 0 {
+        return Err(format!("{name} has no words in it."));
+    }
+    Ok(song)
+}
+
+/// The words of a rich-text, Word, OpenDocument or web page file, from macOS's own converter
+/// (textutil), which ships with every Mac. It gets ten seconds.
+#[cfg(target_os = "macos")]
+fn document_text(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    // A full path, so a file name starting with "-" can't be taken for an option.
+    let full = path.canonicalize().map_err(|e| e.to_string())?;
+    let mut child = Command::new("/usr/bin/textutil")
+        .args(["-convert", "txt", "-encoding", "UTF-8", "-stdout"])
+        .arg(&full)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    // Read while it runs, so a long document can't fill the pipe and stall it.
+    let mut stdout = child.stdout.take().ok_or("no output")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.by_ref().take(LARGEST_SONG_FILE * 4).read_to_end(&mut bytes);
+        bytes
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) => break status,
+            None if started.elapsed() > Duration::from_secs(10) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("it took too long to read".to_owned());
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let bytes = reader.join().map_err(|_| "the converter failed".to_owned())?;
+    if !status.success() {
+        return Err("macOS could not read it as a document".to_owned());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn document_text(_path: &Path) -> Result<String, String> {
+    Err("rich-text and Word files can be imported on macOS for now; save the song as a .txt file".to_owned())
+}
+
+/// Reads one of SoftPresenter's own song files.
+pub fn read_song_file(path: &Path) -> Result<Presentation, String> {
+    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if size > LARGEST_SONG_FILE * 4 {
+        return Err("too large to be a song file".to_owned());
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    from_json(&text)
+}
 
 /// True for a SoftPresenter song file, of either extension.
 pub fn is_song_file(path: &Path) -> bool {
@@ -62,9 +163,7 @@ pub fn load_songs(paths: &[PathBuf]) -> (Vec<Loaded>, Vec<String>) {
     for path in paths {
         if path.is_dir() {
             match text_files_in(path) {
-                Ok(files) if files.is_empty() => {
-                    problems.push(format!("{}: no .txt files in this folder", path.display()))
-                }
+                Ok(files) if files.is_empty() => problems.push(format!("{}: no songs in this folder", path.display())),
                 Ok(files) => files.iter().for_each(|f| load_one(f, &mut songs, &mut problems)),
                 Err(reason) => problems.push(format!("{}: {reason}", path.display())),
             }
@@ -84,7 +183,7 @@ fn text_files_in(folder: &Path) -> Result<Vec<PathBuf>, String> {
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|p| p.is_file() && (has_extension(p, "txt") || is_song_file(p)))
+        .filter(|p| p.is_file() && (is_importable(p) || is_song_file(p)))
         .collect();
     // Of song.txt and song.sppres (or song.pcpres), keep only the SoftPresenter file.
     let ours: Vec<PathBuf> = files.iter().filter(|p| is_song_file(p)).cloned().collect();
@@ -97,22 +196,10 @@ fn load_one(path: &Path, songs: &mut Vec<Loaded>, problems: &mut Vec<String>) {
     // A text file that has been edited has a SoftPresenter file beside it; read that.
     let edited = song_file_for(path);
     let path = if !is_song_file(path) && edited.is_file() { edited.as_path() } else { path };
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) => return problems.push(format!("{}: {e}", path.display())),
-    };
-    let Ok(text) = String::from_utf8(bytes) else {
-        return problems.push(format!("{}: not a UTF-8 text file", path.display()));
-    };
-    let song = if is_song_file(path) {
-        match from_json(&text) {
-            Ok(song) => song,
-            Err(reason) => return problems.push(format!("{}: {reason}", path.display())),
-        }
-    } else {
-        let title = path.file_stem().map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
-        // A byte order mark some editors add would otherwise become part of the first line.
-        parse_song_text(&title, text.trim_start_matches('\u{feff}'))
+    let read = if is_song_file(path) { read_song_file(path) } else { import_file(path) };
+    let song = match read {
+        Ok(song) => song,
+        Err(reason) => return problems.push(format!("{}: {reason}", path.display())),
     };
     if song.slide_count() == 0 {
         return problems.push(format!("{}: no slides found", path.display()));
@@ -122,7 +209,7 @@ fn load_one(path: &Path, songs: &mut Vec<Loaded>, problems: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use sp_model::Role;
+    use sp_model::{Role, parse_song_text};
 
     use super::*;
 
@@ -182,12 +269,16 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf8_is_reported_and_skipped() {
-        let dir = TempDir::new("utf8");
-        let path = dir.write("bad.txt", &[0xff, 0xfe, 0x00]);
+    fn text_in_an_older_windows_encoding_is_read() {
+        let dir = TempDir::new("cp1251");
+        // "Свет над рекой" saved as Windows-1251, as older Russian files are.
+        let path = dir.write(
+            "old.txt",
+            &[0xD1, 0xE2, 0xE5, 0xF2, b' ', 0xED, 0xE0, 0xE4, b' ', 0xF0, 0xE5, 0xEA, 0xEE, 0xE9, b'\n'],
+        );
         let (songs, problems) = load_songs(&[path]);
-        assert!(songs.is_empty());
-        assert!(problems[0].contains("not a UTF-8 text file"), "{problems:?}");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(songs[0].song.slide(0).unwrap().1.text_for(&Role::primary()), Some("Свет над рекой"));
     }
 
     #[test]
@@ -196,7 +287,7 @@ mod tests {
         let path = dir.write("empty.txt", b"\n\n[Verse]\n\n");
         let (songs, problems) = load_songs(&[path]);
         assert!(songs.is_empty());
-        assert!(problems[0].contains("no slides found"));
+        assert!(problems[0].contains("has no words in it"), "{problems:?}");
     }
 
     #[test]
@@ -204,7 +295,7 @@ mod tests {
         let dir = TempDir::new("emptyfolder");
         let (songs, problems) = load_songs(std::slice::from_ref(&dir.0));
         assert!(songs.is_empty());
-        assert!(problems[0].contains("no .txt files"));
+        assert!(problems[0].contains("no songs in this folder"));
     }
 
     #[test]

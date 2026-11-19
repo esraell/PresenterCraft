@@ -1722,6 +1722,14 @@ impl App {
             running.home_window.request_redraw();
             return;
         }
+        // A song file, or text, lyric, ChordPro, rich-text or Word file, is imported as a song.
+        if load::is_importable(path) || load::is_song_file(path) {
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.drop_hover = false;
+            }
+            self.import_songs(&[path.to_owned()]);
+            return;
+        }
         // In the editor (a song's or a theme's), a picture or video dropped on the window goes
         // on the slide or the layout, as Media… puts it there.
         if let Some(running) = self.running.as_mut()
@@ -2311,8 +2319,10 @@ impl App {
         };
         let title = asked.title.clone();
         let id = Uuid::new_v4();
-        // The words given, made into slides; with none, one empty slide in a first verse.
-        let parsed = sp_model::parse_song_text(&title, &asked.words);
+        // The words given, made into slides as an imported song's are (a lyric file pasted in
+        // gives its sections and details); with none, one empty slide in a first verse.
+        let parsed = sp_model::import_song_text(&title, &asked.words);
+        let copyright = parsed.copyright.clone();
         let groups = if parsed.slide_count() > 0 {
             parsed.groups
         } else {
@@ -2328,7 +2338,7 @@ impl App {
             id,
             title: title.clone(),
             groups,
-            copyright: sp_model::Copyright::default(),
+            copyright,
             theme,
             arrangements: Vec::new(),
             arrangement: None,
@@ -2339,8 +2349,92 @@ impl App {
     }
 
     /// Puts a song made in the app into the library, gives it a file in the Songs folder, and
-    /// shows its slides.
+    /// shows its slides with its title ready to type over.
     fn add_new_song(&mut self, song: sp_model::Presentation) {
+        self.add_song(song, true);
+    }
+
+    /// Imports songs from files, as the File menu, a drop on the window and `sp song import`
+    /// do: each goes into the Songs folder (and the library shown, if any), and the first one's
+    /// slides are shown. A song the library already has, word for word under the same title,
+    /// is not added again. Returns the titles imported and a plain sentence for each file that
+    /// wasn't.
+    fn import_songs(&mut self, paths: &[PathBuf]) -> (Vec<String>, Vec<String>) {
+        let mut imported = Vec::new();
+        let mut problems = Vec::new();
+        let mut first = None;
+        for path in paths {
+            let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let read = if load::is_song_file(path) {
+                load::read_song_file(path).map_err(|reason| format!("{name}: {reason}"))
+            } else {
+                load::import_file(path)
+            };
+            let mut song = match read {
+                Ok(song) => song,
+                Err(problem) => {
+                    problems.push(problem);
+                    continue;
+                }
+            };
+            let words = sp_model::to_song_text(&song);
+            let have = self.show.presentations().iter().position(|have| {
+                have.id == song.id
+                    || (have.title.trim().eq_ignore_ascii_case(song.title.trim())
+                        && sp_model::to_song_text(have) == words)
+            });
+            if let Some(at) = have {
+                problems.push(format!("{} is already in the library.", song.title));
+                first.get_or_insert(at);
+                continue;
+            }
+            // A song file copied in gets an id of its own when it was made from another, so
+            // the two are never mixed up.
+            if !load::is_song_file(path) {
+                song.id = Uuid::new_v4();
+            }
+            applog::event("songs", &format!("imported {} from {}", song.title, path.display()));
+            imported.push(song.title.clone());
+            self.add_song(song, false);
+            first.get_or_insert(self.show.presentations().len() - 1);
+        }
+        if let Some(at) = first {
+            self.apply(vec![Command::Select(at)]);
+        }
+        if let Some(running) = self.running.as_mut() {
+            let said = match (imported.as_slice(), problems.as_slice()) {
+                ([], []) => None,
+                ([one], []) => Some(format!("Imported {one}.")),
+                (many, []) => Some(format!("Imported {} songs.", many.len())),
+                ([], [problem]) => Some(problem.clone()),
+                (done, rest) => {
+                    Some(format!("Imported {} of {} songs. {}", done.len(), done.len() + rest.len(), rest.join(" ")))
+                }
+            };
+            if said.is_some() {
+                running.home_state.notice = said;
+            }
+            running.home_window.request_redraw();
+        }
+        (imported, problems)
+    }
+
+    /// Asks which song files to import, and imports them.
+    fn choose_songs_to_import(&mut self) {
+        let endings = load::import_endings();
+        let Some(paths) = rfd::FileDialog::new()
+            .set_title("Import Songs")
+            .add_filter("Songs (text, lyric, ChordPro, rich-text and Word files)", &endings)
+            .pick_files()
+        else {
+            return;
+        };
+        self.import_songs(&paths);
+    }
+
+    /// Puts a song into the library and gives it a file in the Songs folder; `rename` leaves
+    /// its title ready to type over, as for a song just made.
+    fn add_song(&mut self, song: sp_model::Presentation, rename: bool) {
         let (id, title) = (song.id, song.title.clone());
         // New songs live in the app's Songs folder, each in a file named by its id, so two
         // songs with one title never collide.
@@ -2368,7 +2462,7 @@ impl App {
             // Back to the slides of the new song.
             state.editing = None;
             state.bible_open = false;
-            state.rename_started = true;
+            state.rename_started = rename;
             running.home_window.request_redraw();
         }
     }
@@ -3563,6 +3657,9 @@ impl App {
         if action == A::Quit {
             return self.quit(el);
         }
+        if action == A::ImportSongs {
+            return self.choose_songs_to_import();
+        }
         // In the Show view, with nothing being typed, Undo and Redo step through the changes
         // made to songs there.
         let in_show = self.running.as_ref().is_some_and(|r| {
@@ -3666,6 +3763,8 @@ impl App {
             A::ConfigureScreens => state.settings_open = true,
             A::StageLayouts => state.stage_editor_open = true,
             A::NewSong => state.new_song = true,
+            // Handled above, before the window's state is borrowed.
+            A::ImportSongs => {}
             A::NewSlide => {
                 let song = match (&state.editing, &state.theme_edit) {
                     (Some(draft), None) => draft.at.presentation,

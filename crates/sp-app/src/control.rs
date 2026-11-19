@@ -169,7 +169,7 @@ fn answer(stream: std::os::unix::net::UnixStream, deliver: &impl Fn(Incoming)) {
 /// the reply as JSON. Returns the process's exit code.
 pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     let json = args.iter().any(|a| a == "--json");
-    let args: Vec<String> = args.into_iter().filter(|a| a != "--json").collect();
+    let args = with_full_paths(args.into_iter().filter(|a| a != "--json").collect());
     let reply = send(&args);
     let reply = reply.unwrap_or_else(Reply::failed);
     if json {
@@ -180,6 +180,26 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
         eprintln!("{}", reply.text);
     }
     if reply.ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::from(1) }
+}
+
+/// The app doesn't share the terminal's folder, so a file named in `song import` or `song new`
+/// is sent as a full path. Only those commands: elsewhere a word that happens to match a file
+/// in the folder (a song called "notes") is meant as words.
+fn with_full_paths(args: Vec<String>) -> Vec<String> {
+    let names_files = args.first().is_some_and(|w| w.eq_ignore_ascii_case("song"))
+        && args.get(1).is_some_and(|w| w.eq_ignore_ascii_case("import") || w.eq_ignore_ascii_case("new"));
+    if !names_files {
+        return args;
+    }
+    args.into_iter()
+        .enumerate()
+        .map(|(at, word)| match Path::new(&word) {
+            path if at >= 2 && path.is_file() => {
+                path.canonicalize().map_or(word.clone(), |full| full.to_string_lossy().into_owned())
+            }
+            _ => word,
+        })
+        .collect()
 }
 
 #[cfg(unix)]
@@ -358,6 +378,7 @@ Layers and controls
 
 Songs and playlists
   song new TITLE [FILE.txt]    a new song, its words from a song text file
+  song import FILE…            import songs from text, lyric, ChordPro, rich-text or Word files
   song delete SONG --yes
   playlist open NAME
   playlist add SONG [PLAYLIST]
@@ -968,7 +989,9 @@ impl crate::App {
                     return Err("song new TITLE [FILE.txt]".to_owned());
                 }
                 let words = match file {
-                    Some(file) => std::fs::read_to_string(file).map_err(|e| format!("Could not read {file}: {e}"))?,
+                    Some(file) => {
+                        sp_model::decode_text(&std::fs::read(file).map_err(|e| format!("Could not read {file}: {e}"))?)
+                    }
                     None => String::new(),
                 };
                 let request = crate::home::NewSong { title: title.trim().to_owned(), theme: None, words, focus: false };
@@ -990,7 +1013,29 @@ impl crate::App {
                 self.handle_song_request();
                 Ok(Reply::done(format!("Deleted {title}.")))
             }
-            _ => Err("song new TITLE [FILE.txt], or song delete SONG --yes".to_owned()),
+            Some("import") => {
+                let paths: Vec<std::path::PathBuf> = args[2..].iter().map(std::path::PathBuf::from).collect();
+                if paths.is_empty() {
+                    return Err("song import FILE…".to_owned());
+                }
+                let (imported, problems) = self.import_songs(&paths);
+                if imported.is_empty() {
+                    return Err(if problems.is_empty() {
+                        "Nothing was imported.".to_owned()
+                    } else {
+                        problems.join("\n")
+                    });
+                }
+                let mut text = match imported.as_slice() {
+                    [one] => format!("Imported {one}."),
+                    many => format!("Imported {} songs: {}.", many.len(), many.join(", ")),
+                };
+                for problem in &problems {
+                    text.push_str(&format!("\n{problem}"));
+                }
+                Ok(Reply::with(text, serde_json::json!({"imported": imported, "problems": problems})))
+            }
+            _ => Err("song new TITLE [FILE.txt], song import FILE…, or song delete SONG --yes".to_owned()),
         }
     }
 

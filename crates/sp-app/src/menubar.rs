@@ -11,6 +11,7 @@ pub enum Action {
     InstallCommandLine,
     Quit,
     NewSong,
+    ImportSongs,
     NewSlide,
     CloseWindow,
     Undo,
@@ -179,6 +180,7 @@ pub const MENUS: &[(&str, &[Entry])] = &[
         &[
             Do(Action::NewSong, "New Song", cmd('N')),
             Do(Action::NewSlide, "New Slide", shift_cmd('N')),
+            Do(Action::ImportSongs, "Import Songs…", None),
             Line,
             Do(Action::CloseWindow, "Close Window", cmd('W')),
         ],
