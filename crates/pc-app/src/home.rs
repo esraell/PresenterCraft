@@ -40,6 +40,10 @@ const OFF: Color32 = Color32::from_rgb(210, 70, 70);
 const DIM: Color32 = Color32::from_gray(150);
 /// The strip that names what the slide area is showing.
 const TITLE_STRIP: Color32 = Color32::from_rgb(127, 127, 127);
+/// Corner radius of the cards in the right column.
+const CARD: u8 = 10;
+/// Space between the cards in the right column and around them.
+const GAP: f32 = 8.0;
 /// Height of the media bin, shared by its list (left column) and its thumbnails (middle).
 const MEDIA_BIN: f32 = 190.0;
 
@@ -374,7 +378,15 @@ fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut
 /// One button in the column beside the preview. Each clears one layer from the screen and is
 /// lit while that layer is showing. The buttons sit flush against each other with a thin dark
 /// line between them. Returns true when a working one is clicked.
-fn layer_button(ui: &mut egui::Ui, rect: Rect, icon: Icon, lit: bool, built: bool, hint: &str) -> bool {
+fn layer_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    corners: CornerRadius,
+    icon: Icon,
+    lit: bool,
+    built: bool,
+    hint: &str,
+) -> bool {
     let id = ui.scope_id().with(("layer", hint));
     let response = ui.interact(rect, id, if built { Sense::click() } else { Sense::hover() });
     let fill = if lit {
@@ -385,8 +397,10 @@ fn layer_button(ui: &mut egui::Ui, rect: Rect, icon: Icon, lit: bool, built: boo
         FIELD
     };
     let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, fill);
-    painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, DEEP));
+    painter.rect_filled(rect, corners, fill);
+    if corners.se == 0 {
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, DEEP));
+    }
     painter.line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(1.0, DEEP));
     let ink = if lit || built { Color32::from_gray(225) } else { Color32::from_gray(170) };
     icons::paint(painter, icon, Rect::from_center_size(rect.center(), vec2(16.0, 16.0)), ink);
@@ -413,19 +427,23 @@ fn live_panel(
         let layer_height = 29.0;
         let block_height = layer_height * 7.0;
         let (layer_width, strip_width) = (44.0, 28.0);
-        let (block, _) = ui.allocate_exact_size(vec2(full_width, block_height), Sense::hover());
+        ui.add_space(GAP);
+        let (outer, _) = ui.allocate_exact_size(vec2(full_width, block_height), Sense::hover());
+        let block = outer.shrink2(vec2(GAP, 0.0));
         let preview_area = Rect::from_min_max(block.min, pos2(block.max.x - layer_width - strip_width, block.max.y));
         let strip =
             Rect::from_min_max(pos2(preview_area.max.x, block.min.y), pos2(block.max.x - layer_width, block.max.y));
-        ui.painter().rect_filled(preview_area, 0.0, WELL);
+        ui.painter().rect_filled(preview_area, CornerRadius { nw: CARD, sw: CARD, ne: 0, se: 0 }, WELL);
         let picture_height = preview_area.width() * 9.0 / 16.0;
-        let picture = Rect::from_center_size(preview_area.center(), vec2(preview_area.width(), picture_height));
-        ui.painter().rect_filled(picture, 0.0, Color32::BLACK);
+        let picture_width = preview_area.width() - 12.0;
+        let picture_height = picture_height.min(picture_width * 9.0 / 16.0);
+        let picture = Rect::from_center_size(preview_area.center(), vec2(picture_width, picture_height));
+        ui.painter().rect_filled(picture, 6.0, Color32::BLACK);
         if let Some(texture) = preview {
-            egui::Image::from_texture((texture, picture.size())).paint_at(ui, picture);
+            egui::Image::from_texture((texture, picture.size())).corner_radius(6.0).paint_at(ui, picture);
         }
         if !show.output_enabled() {
-            ui.painter().rect_filled(picture, 0.0, Color32::from_black_alpha(190));
+            ui.painter().rect_filled(picture, 6.0, Color32::from_black_alpha(190));
             ui.painter().text(
                 picture.center(),
                 Align2::CENTER_CENTER,
@@ -465,16 +483,23 @@ fn live_panel(
                 pos2(block.max.x - layer_width, block.min.y + layer_height * index as f32),
                 vec2(layer_width, layer_height),
             );
-            if layer_button(ui, rect, icon, lit, built, hint) && icon == Icon::Slide {
+            let corners = match index {
+                0 => CornerRadius { ne: CARD, nw: 0, sw: 0, se: 0 },
+                6 => CornerRadius { se: CARD, nw: 0, sw: 0, ne: 0 },
+                _ => CornerRadius::ZERO,
+            };
+            if layer_button(ui, rect, corners, icon, lit, built, hint) && icon == Icon::Slide {
                 commands.push(Command::Clear(Layer::Slides));
             }
         }
 
         // The bar that names the screen the preview shows.
-        let (bar, bar_response) = ui.allocate_exact_size(vec2(full_width, 24.0), Sense::hover());
-        ui.painter().rect_filled(bar, 0.0, DEEP);
+        ui.add_space(GAP);
+        let (outer, bar_response) = ui.allocate_exact_size(vec2(full_width, 26.0), Sense::hover());
+        let bar = outer.shrink2(vec2(GAP, 0.0));
+        ui.painter().rect_filled(bar, 13.0, DEEP);
         let name = ui.painter().text(
-            bar.left_center() + vec2(22.0, 0.0),
+            bar.left_center() + vec2(14.0, 0.0),
             Align2::LEFT_CENTER,
             "Audience screen",
             FontId::proportional(12.0),
@@ -498,78 +523,79 @@ fn live_panel(
             }
         };
         ui.painter().text(
-            bar.right_center() - vec2(10.0, 0.0),
+            bar.right_center() - vec2(14.0, 0.0),
             Align2::RIGHT_CENTER,
             status,
             FontId::proportional(11.5),
             status_ink,
         );
         bar_response.on_hover_text(not_built("Choose which screen the preview shows"));
-        let (line, _) = ui.allocate_exact_size(vec2(full_width, 1.0), Sense::hover());
-        ui.painter().rect_filled(line, 0.0, Color32::BLACK);
 
         // Playback: which layer the controls drive, what is playing, the scrub bar, the buttons.
-        Frame::new().fill(WELL).inner_margin(egui::Margin { left: 22, right: 22, top: 6, bottom: 10 }).show(ui, |ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-            let width = ui.available_width();
-            let (row, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
-            for (index, (icon, what)) in [
-                (Icon::Slide, "Presentation playback"),
-                (Icon::Megaphone, "Announcement playback"),
-                (Icon::Note, "Audio playback"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let centre = row.center() + vec2((index as f32 - 1.0) * 26.0, 0.0);
-                let ink = if index == 0 { TAB_BLUE } else { Color32::from_gray(170) };
-                icons::paint(ui.painter(), icon, Rect::from_center_size(centre, vec2(15.0, 15.0)), ink);
-                ui.interact(
-                    Rect::from_center_size(centre, vec2(22.0, 20.0)),
-                    ui.scope_id().with(("playback", index)),
-                    Sense::hover(),
-                )
-                .on_hover_text(not_built(what));
-            }
-            ui.add_space(4.0);
-            ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("No media playing").size(12.0).color(Color32::from_gray(150)))
+        Frame::new()
+            .fill(WELL)
+            .corner_radius(CARD)
+            .outer_margin(egui::Margin { left: 8, right: 8, top: 8, bottom: 8 })
+            .inner_margin(egui::Margin { left: 14, right: 14, top: 8, bottom: 10 })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
+                let width = ui.available_width();
+                let (row, _) = ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
+                for (index, (icon, what)) in [
+                    (Icon::Slide, "Presentation playback"),
+                    (Icon::Megaphone, "Announcement playback"),
+                    (Icon::Note, "Audio playback"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let centre = row.center() + vec2((index as f32 - 1.0) * 26.0, 0.0);
+                    let ink = if index == 0 { TAB_BLUE } else { Color32::from_gray(170) };
+                    icons::paint(ui.painter(), icon, Rect::from_center_size(centre, vec2(15.0, 15.0)), ink);
+                    ui.interact(
+                        Rect::from_center_size(centre, vec2(22.0, 20.0)),
+                        ui.scope_id().with(("playback", index)),
+                        Sense::hover(),
+                    )
+                    .on_hover_text(not_built(what));
+                }
+                ui.add_space(4.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("No media playing").size(12.0).color(Color32::from_gray(150)))
+                });
+                ui.add_space(4.0);
+                let (scrub, _) = ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
+                ui.painter().rect_filled(scrub.shrink2(vec2(0.0, 1.0)), 4.0, SCRUB_EMPTY);
+                ui.add_space(2.0);
+                let (row, _) = ui.allocate_exact_size(vec2(width, 26.0), Sense::hover());
+                let time = FontId::proportional(11.5);
+                ui.painter().text(row.left_top(), Align2::LEFT_TOP, "--:--", time.clone(), Color32::from_gray(130));
+                ui.painter().text(row.right_top(), Align2::RIGHT_TOP, "--:--", time, Color32::from_gray(130));
+                for (index, (icon, what)) in [
+                    (Icon::Back, "Back 15 seconds"),
+                    (Icon::Pause, "Play or pause"),
+                    (Icon::Forward, "Forward 15 seconds"),
+                    (Icon::ToEnd, "Jump to the last 30 seconds"),
+                    (Icon::Flag, "Markers"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let centre = pos2(row.center().x + (index as f32 - 2.0) * 29.0, row.max.y - 9.0);
+                    icons::paint(
+                        ui.painter(),
+                        icon,
+                        Rect::from_center_size(centre, vec2(17.0, 17.0)),
+                        Color32::from_gray(190),
+                    );
+                    ui.interact(
+                        Rect::from_center_size(centre, vec2(26.0, 22.0)),
+                        ui.scope_id().with(("transport", index)),
+                        Sense::hover(),
+                    )
+                    .on_hover_text(not_built(what));
+                }
             });
-            ui.add_space(4.0);
-            let (scrub, _) = ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
-            ui.painter().rect_filled(scrub.shrink2(vec2(0.0, 1.0)), 4.0, SCRUB_EMPTY);
-            ui.add_space(2.0);
-            let (row, _) = ui.allocate_exact_size(vec2(width, 26.0), Sense::hover());
-            let time = FontId::proportional(11.5);
-            ui.painter().text(row.left_top(), Align2::LEFT_TOP, "--:--", time.clone(), Color32::from_gray(130));
-            ui.painter().text(row.right_top(), Align2::RIGHT_TOP, "--:--", time, Color32::from_gray(130));
-            for (index, (icon, what)) in [
-                (Icon::Back, "Back 15 seconds"),
-                (Icon::Pause, "Play or pause"),
-                (Icon::Forward, "Forward 15 seconds"),
-                (Icon::ToEnd, "Jump to the last 30 seconds"),
-                (Icon::Flag, "Markers"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let centre = pos2(row.center().x + (index as f32 - 2.0) * 29.0, row.max.y - 9.0);
-                icons::paint(
-                    ui.painter(),
-                    icon,
-                    Rect::from_center_size(centre, vec2(17.0, 17.0)),
-                    Color32::from_gray(190),
-                );
-                ui.interact(
-                    Rect::from_center_size(centre, vec2(26.0, 22.0)),
-                    ui.scope_id().with(("transport", index)),
-                    Sense::hover(),
-                )
-                .on_hover_text(not_built(what));
-            }
-        });
-        let (line, _) = ui.allocate_exact_size(vec2(full_width, 1.0), Sense::hover());
-        ui.painter().rect_filled(line, 0.0, Color32::BLACK);
 
         // The tabs: audio, stage, timers, messages, props, macros. Stage is the one shown.
         let tabs: [(Face, &str); 6] = [
@@ -580,18 +606,21 @@ fn live_panel(
             (Face::Icon(Icon::Layers), "Props"),
             (Face::Text("[M]"), "Macros"),
         ];
-        let (strip, _) = ui.allocate_exact_size(vec2(full_width, 25.0), Sense::hover());
-        let tab_width = full_width / tabs.len() as f32;
+        let (outer, _) = ui.allocate_exact_size(vec2(full_width, 28.0), Sense::hover());
+        let strip = outer.shrink2(vec2(GAP, 0.0));
+        ui.painter().rect_filled(strip, 9.0, TAB);
+        let tab_width = strip.width() / tabs.len() as f32;
         for (index, (face, name)) in tabs.iter().enumerate() {
             let rect = Rect::from_min_size(
                 pos2(strip.min.x + tab_width * index as f32, strip.min.y),
                 vec2(tab_width, strip.height()),
             );
             let selected = index == 1;
-            ui.painter().rect_filled(rect, 0.0, if selected { TAB_BLUE } else { TAB });
-            if index > 0 {
-                ui.painter()
-                    .line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(1.0, Color32::from_gray(60)));
+            if selected {
+                ui.painter().rect_filled(rect.shrink(2.0), 7.0, TAB_BLUE);
+            } else if index > 0 && index != 2 {
+                let (top, bottom) = (rect.left_top() + vec2(0.0, 7.0), rect.left_bottom() - vec2(0.0, 7.0));
+                ui.painter().line_segment([top, bottom], Stroke::new(1.0, Color32::from_gray(110)));
             }
             paint_face(
                 ui,
@@ -603,6 +632,8 @@ fn live_panel(
             ui.interact(rect, ui.scope_id().with(("tab", index)), Sense::hover()).on_hover_text(not_built(name));
         }
 
+        ui.add_space(4.0);
+
         // The stage message sits at the bottom of the column.
         egui::Panel::bottom("stage message").resizable(false).frame(panel_frame(SIDE, 0)).show(ui, |ui| {
             let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
@@ -611,14 +642,14 @@ fn live_panel(
                 ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
                 ui.label(egui::RichText::new("STAGE MESSAGE").size(11.0).strong().color(Color32::from_gray(160)));
                 let (boxed, _) = ui.allocate_exact_size(vec2(ui.available_width(), 84.0), Sense::hover());
-                ui.painter().rect_filled(boxed, 5.0, FIELD);
+                ui.painter().rect_filled(boxed, 9.0, FIELD);
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Shown on the stage screen").size(10.5).color(Color32::from_gray(150)),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let (button, response) = ui.allocate_exact_size(vec2(52.0, 20.0), Sense::hover());
-                        ui.painter().rect_filled(button, 5.0, Color32::from_gray(110));
+                        ui.painter().rect_filled(button, 10.0, Color32::from_gray(110));
                         ui.painter().text(
                             button.center(),
                             Align2::CENTER_CENTER,
@@ -664,8 +695,8 @@ fn live_panel(
                         Color32::from_gray(190),
                     );
                     let (thumb, _) = ui.allocate_exact_size(vec2(88.0, 50.0), Sense::hover());
-                    ui.painter().rect_filled(thumb, 0.0, Color32::BLACK);
-                    ui.painter().rect_stroke(thumb, 0.0, Stroke::new(1.0, Color32::from_gray(40)), StrokeKind::Inside);
+                    ui.painter().rect_filled(thumb, 6.0, Color32::BLACK);
+                    ui.painter().rect_stroke(thumb, 6.0, Stroke::new(1.0, Color32::from_gray(40)), StrokeKind::Inside);
                 });
             });
         });
