@@ -3696,6 +3696,7 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
 /// Each entry has a small picture of the slide with its box filled in. Boxes in `taken` are
 /// in use elsewhere and cannot be chosen. `with_verse`, for a reference menu, is the box the
 /// same translation's words are in: choosing "With Verse" puts the reference there too.
+#[allow(clippy::too_many_arguments)]
 fn target_menu(
     ui: &mut egui::Ui,
     salt: (&str, usize),
