@@ -423,8 +423,9 @@ pub fn box_diagram(
 /// One translation on the Bible page and where its text goes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BibleRow {
-    /// Which Bible, as its place on the shelf.
-    pub bible: usize,
+    /// Which Bible, as its place on the shelf; `None` while the row shows none, so its Bible
+    /// can go to another row (to swap two, say).
+    pub bible: Option<usize>,
     pub verse: BibleTarget,
     pub reference: BibleTarget,
 }
@@ -475,11 +476,11 @@ impl Default for BiblePage {
             // Two translations side by side is the usual case here: one for each language.
             rows: vec![
                 BibleRow {
-                    bible: place("kjv"),
+                    bible: Some(place("kjv")),
                     verse: Some(pc_model::Role::primary()),
                     reference: Some(pc_model::Role::reference()),
                 },
-                BibleRow { bible: place("syn"), verse: Some(pc_model::Role::translation()), reference: None },
+                BibleRow { bible: Some(place("syn")), verse: Some(pc_model::Role::translation()), reference: None },
             ],
             shelf,
             boxes: layout_boxes(&Theme::builtin(), 0),
@@ -505,7 +506,7 @@ impl BiblePage {
     /// installed Bible is already in a row, it says so.
     pub fn add_row(&mut self) -> bool {
         // The next Bible no row is using yet.
-        let unused = (0..self.shelf.bibles.len()).find(|at| self.rows.iter().all(|row| row.bible != *at));
+        let unused = (0..self.shelf.bibles.len()).find(|at| self.rows.iter().all(|row| row.bible != Some(*at)));
         let Some(bible) = unused.filter(|_| self.rows.len() < Self::MAX_ROWS) else {
             if unused.is_none() {
                 self.message = Some(
@@ -515,7 +516,7 @@ impl BiblePage {
             }
             return false;
         };
-        self.rows.push(BibleRow { bible, verse: None, reference: None });
+        self.rows.push(BibleRow { bible: Some(bible), verse: None, reference: None });
         true
     }
 
@@ -524,10 +525,10 @@ impl BiblePage {
         match self.shelf.remove(index) {
             Ok(()) => {
                 for row in &mut self.rows {
-                    if row.bible == index {
-                        row.bible = 0;
-                    } else if row.bible > index {
-                        row.bible -= 1;
+                    match row.bible {
+                        Some(at) if at == index => row.bible = Some(0),
+                        Some(at) if at > index => row.bible = Some(at - 1),
+                        _ => {}
                     }
                 }
                 self.made_with.clear();
@@ -569,7 +570,7 @@ impl BiblePage {
             .iter()
             .filter_map(|row| {
                 Some(crate::service::SavedRow {
-                    bible: self.shelf.bibles.get(row.bible)?.id.clone(),
+                    bible: self.shelf.bibles.get(row.bible?)?.id.clone(),
                     verse: row.verse.as_ref().map(|role| role.0.clone()),
                     reference: row.reference.as_ref().map(|role| role.0.clone()),
                 })
@@ -615,9 +616,11 @@ impl BiblePage {
         };
         for row in &saved.rows {
             match self.shelf.position(&row.bible) {
-                Some(bible) => {
-                    rows.push(BibleRow { bible, verse: known(&row.verse), reference: known(&row.reference) })
-                }
+                Some(bible) => rows.push(BibleRow {
+                    bible: Some(bible),
+                    verse: known(&row.verse),
+                    reference: known(&row.reference),
+                }),
                 None => missing.push(row.bible.to_uppercase()),
             }
         }
@@ -638,6 +641,12 @@ impl BiblePage {
     }
 
     /// The choices a passage is made with, as text, so a change to any of them can be noticed.
+    /// The first row's Bible (skipping rows set to none): the one a passage is looked up and
+    /// searched in.
+    pub fn lead(&self) -> Option<usize> {
+        self.rows.iter().find_map(|row| row.bible)
+    }
+
     pub fn choices(&self) -> String {
         let o = &self.options;
         format!(
@@ -651,8 +660,10 @@ impl BiblePage {
     pub fn look_up(&mut self, live: Option<usize>) {
         let Some(slots) = self.slots else { return };
         let mut rows = Vec::new();
+        // A row set to no Bible is left out.
         for row in &self.rows {
-            match self.shelf.get(row.bible) {
+            let Some(at) = row.bible else { continue };
+            match self.shelf.get(at) {
                 Ok(bible) => rows.push(crate::bible::RowChoice {
                     bible,
                     verse: row.verse.clone(),
@@ -663,6 +674,10 @@ impl BiblePage {
                     return;
                 }
             }
+        }
+        if rows.is_empty() {
+            self.message = Some("Choose a Bible for at least one row.".to_owned());
+            return;
         }
         match crate::bible::build_passage(&self.lookup, &rows, &self.options, self.template) {
             Ok(passage) => {
@@ -686,8 +701,8 @@ impl BiblePage {
 
     /// Makes the passage shown one verse longer, at its end or at its start.
     pub fn step(&mut self, forward: bool, live: Option<usize>) {
-        let Some(row) = self.rows.first() else { return };
-        let (Ok(bible), Ok(range)) = (self.shelf.get(row.bible), pc_bible::parse_reference(&self.shown)) else {
+        let Some(lead) = self.lead() else { return };
+        let (Ok(bible), Ok(range)) = (self.shelf.get(lead), pc_bible::parse_reference(&self.shown)) else {
             return;
         };
         match bible.extend(range, forward) {
@@ -706,8 +721,8 @@ impl BiblePage {
     pub fn find(&mut self) {
         self.found.clear();
         self.message = None;
-        let Some(row) = self.rows.first() else { return };
-        match self.shelf.get(row.bible) {
+        let Some(lead) = self.lead() else { return };
+        match self.shelf.get(lead) {
             Ok(bible) => {
                 for (place, words) in bible.search(&self.search, 60) {
                     let chapter = format!("{} {}", bible.book_name(place.book), place.chapter);
@@ -3810,7 +3825,7 @@ fn bible_area(
                     }
                 }
                 // Book, then chapter, then verse, for when the reference is easier to pick than type.
-                let lead = state.bible.rows.first().map(|row| row.bible).and_then(|at| state.bible.shelf.get(at).ok());
+                let lead = state.bible.lead().and_then(|at| state.bible.shelf.get(at).ok());
                 let mut chosen = None;
                 ui.menu_button("Books", |ui| {
                     let Some(bible) = &lead else { return };
@@ -3948,20 +3963,34 @@ fn bible_area(
             let labels = state.bible.box_labels.clone();
             let used: Vec<(BibleTarget, BibleTarget)> =
                 state.bible.rows.iter().map(|row| (row.verse.clone(), row.reference.clone())).collect();
-            let bibles_used: Vec<usize> = state.bible.rows.iter().map(|row| row.bible).collect();
+            let bibles_used: Vec<usize> = state.bible.rows.iter().filter_map(|row| row.bible).collect();
             for (index, row) in state.bible.rows.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
-                    let chosen = state.bible.shelf.bibles.get(row.bible).map_or("Choose a Bible", |b| b.name.as_str());
+                    let chosen = row.bible.and_then(|at| state.bible.shelf.bibles.get(at)).map_or("None", |b| b.name.as_str());
                     egui::ComboBox::from_id_salt(("bible translation", index)).selected_text(chosen).width(200.0).show_ui(
                         ui,
                         |ui| {
+                            // None frees the row's Bible for another row: to swap two, set one
+                            // row to None, give its Bible to the other, then pick again.
+                            if ui
+                                .add(egui::Button::selectable(row.bible.is_none(), "None"))
+                                .on_hover_text("Show no Bible in this row, so its Bible can go to another row")
+                                .clicked()
+                            {
+                                row.bible = None;
+                            }
+                            ui.separator();
                             // A Bible another row already shows is greyed out.
                             for (place, bible) in state.bible.shelf.bibles.iter().enumerate() {
-                                let elsewhere = place != row.bible && bibles_used.contains(&place);
+                                let elsewhere = row.bible != Some(place) && bibles_used.contains(&place);
                                 let label = format!("{} ({})", bible.name, bible.short);
-                                let item = ui.add_enabled(!elsewhere, egui::Button::selectable(row.bible == place, label));
-                                if item.on_disabled_hover_text("Another row shows this Bible").clicked() {
-                                    row.bible = place;
+                                let item =
+                                    ui.add_enabled(!elsewhere, egui::Button::selectable(row.bible == Some(place), label));
+                                if item
+                                    .on_disabled_hover_text("Another row shows this Bible. Set that row to None first.")
+                                    .clicked()
+                                {
+                                    row.bible = Some(place);
                                 }
                             }
                         },
@@ -3997,7 +4026,7 @@ fn bible_area(
                         }
                         // License: a click shows the Bible's name, abbreviation and terms.
                         let license = ui.add(egui::Button::new(egui::RichText::new("License").size(11.0).color(DIM)).frame(false));
-                        let shelved = state.bible.shelf.bibles.get(row.bible);
+                        let shelved = row.bible.and_then(|at| state.bible.shelf.bibles.get(at));
                         egui::Popup::from_toggle_button_response(&license)
                             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                             .show(|ui| {
@@ -4036,7 +4065,7 @@ fn bible_area(
             .bible
             .rows
             .iter()
-            .filter_map(|row| state.bible.shelf.bibles.get(row.bible))
+            .filter_map(|row| row.bible.and_then(|at| state.bible.shelf.bibles.get(at)))
             .filter(|b| b.loose)
             .map(|b| b.name.as_str())
             .collect();
@@ -5317,8 +5346,8 @@ mod tests {
         // Not the usual set-up: Synodal first, in the translation box; KJV in the main box
         // with no reference; and the options changed.
         page.rows = vec![
-            BibleRow { bible: syn, verse: role("translation"), reference: role("reference") },
-            BibleRow { bible: kjv, verse: role("primary"), reference: None },
+            BibleRow { bible: Some(syn), verse: role("translation"), reference: role("reference") },
+            BibleRow { bible: Some(kjv), verse: role("primary"), reference: None },
         ];
         page.options.show_verse_numbers = !page.options.show_verse_numbers;
         page.options.reference = crate::bible::ReferenceStyle::PassageLast;
@@ -5388,6 +5417,18 @@ mod tests {
     fn show(slides: usize) -> Show {
         let text = (0..slides).map(|i| format!("Slide {i}\n")).collect::<Vec<_>>().join("\n");
         Show::new(vec![Arc::new(parse_song_text("Song", &text))])
+    }
+
+    #[test]
+    fn a_bible_row_set_to_none_frees_its_bible_and_is_left_out() {
+        let mut page = BiblePage { shelf: crate::bible::Shelf::shipped(), ..BiblePage::default() };
+        let first = page.rows[0].bible;
+        page.rows[0].bible = None;
+        assert_eq!(page.lead(), page.rows[1].bible, "the lookup uses the next row with a Bible");
+        // The first row's Bible can now go to the second row: the two have swapped.
+        page.rows[1].bible = first;
+        assert_eq!(page.lead(), first);
+        assert_eq!(page.settings().rows.len(), 1, "a row with no Bible isn't kept");
     }
 
     #[test]

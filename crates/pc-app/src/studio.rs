@@ -328,18 +328,15 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                     state.editing = None;
                     state.bible_open = true;
                 }
-                // Edit opens the slide that was last on screen, or the song's first slide.
                 Some(1) if state.editing.is_none() => {
-                    let at = show.cursor().unwrap_or(SlideRef { presentation: show.selected(), slide: 0 });
-                    state.editing = EditDraft::of(show, at);
+                    state.editing = EditDraft::of(show, slide_to_edit(show, state));
                 }
                 _ => {}
             }
             // Asked for while the Theme Editor was open: it has closed now, so open the slide editor.
             if state.open_editor_next && state.theme_edit.is_none() {
                 state.open_editor_next = false;
-                let at = show.cursor().unwrap_or(SlideRef { presentation: show.selected(), slide: 0 });
-                state.editing = EditDraft::of(show, at);
+                state.editing = EditDraft::of(show, slide_to_edit(show, state));
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -879,6 +876,18 @@ pub fn playlist_song(show: &Show, state: &HomeState, key: &str) -> Option<usize>
         .position(|have| have == key)
         .or_else(|| by_title.and_then(|title| show.presentations().iter().position(|song| song.title == title)))
         .filter(|index| listed(*index))
+}
+
+/// The slide Edit opens: in the song chosen in the Show view (never another song that happens
+/// to be on screen, or on the Announcements layer), the slide picked out with a right-click,
+/// or else the slide on screen if it is in that song, or else the song's first slide.
+pub fn slide_to_edit(show: &Show, state: &HomeState) -> SlideRef {
+    let song = show.selected();
+    state
+        .selected_slide
+        .filter(|at| at.presentation == song)
+        .or_else(|| show.cursor().filter(|at| at.presentation == song))
+        .unwrap_or(SlideRef { presentation: song, slide: 0 })
 }
 
 /// A question asked before something is deleted, drawn as a macOS alert: a small rounded panel
@@ -1661,32 +1670,41 @@ pub fn media_strip(
         // Nothing in it yet: a big place to click, or to drop files on.
         if empty && !state.drop_hover {
             ui.add_space(6.0);
-            let (place, response) = ui.allocate_exact_size(ui.available_size(), Sense::click());
+            // A little short of the bottom, so the dashed edge is never cut off.
+            let room = ui.available_size() - vec2(0.0, 4.0);
+            let (place, response) = ui.allocate_exact_size(room, Sense::click());
             let hot = response.hovered();
             let painter = ui.painter();
             painter.rect_filled(place, 10.0, if hot { CARD } else { PANEL });
             dashed_rect(painter, place.shrink(1.0), Stroke::new(1.5, if hot { TEXT_DIM } else { LINE }));
-            let middle = place.center();
-            icons::paint(
-                painter,
-                Icon::Picture,
-                Rect::from_center_size(middle - vec2(0.0, 16.0), vec2(30.0, 30.0)),
-                if hot { TEXT } else { TEXT_DIM },
-            );
-            painter.text(
-                middle + vec2(0.0, 14.0),
-                Align2::CENTER_CENTER,
-                "Click or drag pictures and videos here to add them",
+            // The icon, and beside it what to do and what comes after, centred together.
+            let ink = if hot { TEXT } else { TEXT_DIM };
+            let title = painter.layout_no_wrap(
+                "Click or drag pictures and videos here to add them".to_owned(),
                 semibold(13.0),
-                if hot { TEXT } else { TEXT_DIM },
+                ink,
             );
-            painter.text(
-                middle + vec2(0.0, 32.0),
-                Align2::CENTER_CENTER,
-                "Then click one to put it behind the words, or drag it onto a slide",
+            let hint = painter.layout_no_wrap(
+                "Then click one to put it behind the words, or drag it onto a slide".to_owned(),
                 FontId::proportional(11.5),
                 TEXT_FAINT,
             );
+            let (icon_side, gap) = (28.0, 14.0);
+            let text_width = title.size().x.max(hint.size().x);
+            let text_height = title.size().y + 3.0 + hint.size().y;
+            let left = place.center().x - (icon_side + gap + text_width) / 2.0;
+            let middle = place.center().y;
+            icons::paint(
+                painter,
+                Icon::Picture,
+                Rect::from_center_size(pos2(left + icon_side / 2.0, middle), vec2(icon_side, icon_side)),
+                ink,
+            );
+            let text_left = left + icon_side + gap;
+            let top = middle - text_height / 2.0;
+            let title_height = title.size().y;
+            painter.galley(pos2(text_left, top), title, ink);
+            painter.galley(pos2(text_left, top + title_height + 3.0), hint, TEXT_FAINT);
             if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 state.media_request = Some(crate::home::MediaRequest::Choose);
             }
@@ -2288,6 +2306,23 @@ mod tests {
             }
         });
         output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn edit_opens_the_song_chosen_not_the_one_last_on_screen() {
+        let song = |title: &str| Arc::new(pc_model::parse_song_text(title, "One\n\nTwo\n\nThree\n"));
+        let mut show = Show::new(vec![song("New Song"), song("Sample song")]);
+        show.apply(Command::GoTo(SlideRef { presentation: 0, slide: 2 }));
+        show.apply(Command::Select(1));
+        let mut state = HomeState::default();
+        assert_eq!(slide_to_edit(&show, &state), SlideRef { presentation: 1, slide: 0 });
+        // A slide of the chosen song picked out with a right-click is the one opened.
+        state.selected_slide = Some(SlideRef { presentation: 1, slide: 1 });
+        assert_eq!(slide_to_edit(&show, &state), SlideRef { presentation: 1, slide: 1 });
+        // In the song on screen, Edit opens the slide on screen.
+        state.selected_slide = None;
+        show.apply(Command::Select(0));
+        assert_eq!(slide_to_edit(&show, &state), SlideRef { presentation: 0, slide: 2 });
     }
 
     #[test]
