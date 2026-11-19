@@ -154,11 +154,20 @@ pub const SAFE_EDGE: (f32, f32) = (SLIDE_WIDTH * 0.05, SLIDE_HEIGHT * 0.05);
 /// How near, in slide units, a dragged object must come to a line to be pulled onto it.
 const SNAP: f32 = 14.0;
 
+/// How far apart the grid's lines are, in slide units: 16 across and 9 down.
+pub const GRID: f32 = 120.0;
+
 /// The lines a box can be lined up with: the slide's edges and middle, the safe edge inside
 /// them, and the edges and middles of the other objects. Down-lines (x) and across-lines (y).
-fn lines(others: &[SlideRect]) -> (Vec<f32>, Vec<f32>) {
+fn lines(others: &[SlideRect], grid: bool) -> (Vec<f32>, Vec<f32>) {
     let mut down = vec![0.0, SAFE_EDGE.0, SLIDE_WIDTH / 2.0, SLIDE_WIDTH - SAFE_EDGE.0, SLIDE_WIDTH];
     let mut across = vec![0.0, SAFE_EDGE.1, SLIDE_HEIGHT / 2.0, SLIDE_HEIGHT - SAFE_EDGE.1, SLIDE_HEIGHT];
+    // With the grid showing, its lines pull too.
+    if grid {
+        let steps = |size: f32| (1..(size / GRID) as usize).map(|n| n as f32 * GRID).collect::<Vec<f32>>();
+        down.extend(steps(SLIDE_WIDTH));
+        across.extend(steps(SLIDE_HEIGHT));
+    }
     for other in others {
         down.extend([other.x, other.x + other.w / 2.0, other.x + other.w]);
         across.extend([other.y, other.y + other.h / 2.0, other.y + other.h]);
@@ -177,8 +186,14 @@ fn near(lines: &[f32], at: f32) -> Option<f32> {
 
 /// Pulls a frame being moved onto nearby lines. Returns the frame, moved if it was near one,
 /// and the lines it now sits on.
+#[cfg(test)]
 pub fn snapped(frame: SlideRect, others: &[SlideRect]) -> (SlideRect, Vec<Guide>) {
-    let (down, across) = lines(others);
+    snapped_on(frame, others, false)
+}
+
+/// As `snapped`, with the grid's lines pulling too when `grid` is true.
+pub fn snapped_on(frame: SlideRect, others: &[SlideRect], grid: bool) -> (SlideRect, Vec<Guide>) {
+    let (down, across) = lines(others, grid);
     // The nearest line to any of the frame's own three (start, middle, end) along one way.
     let nearest = |lines: &[f32], start: f32, size: f32| -> Option<(f32, f32)> {
         [start, start + size / 2.0, start + size]
@@ -201,8 +216,19 @@ pub fn snapped(frame: SlideRect, others: &[SlideRect]) -> (SlideRect, Vec<Guide>
 
 /// Pulls the edges a handle is dragging onto nearby lines, leaving the other edges where they
 /// are. Returns the frame and the lines its dragged edges now sit on.
+#[cfg(test)]
 pub fn snapped_resize(frame: SlideRect, handle: Handle, others: &[SlideRect]) -> (SlideRect, Vec<Guide>) {
-    let (down, across) = lines(others);
+    snapped_resize_on(frame, handle, others, false)
+}
+
+/// As `snapped_resize`, with the grid's lines pulling too when `grid` is true.
+pub fn snapped_resize_on(
+    frame: SlideRect,
+    handle: Handle,
+    others: &[SlideRect],
+    grid: bool,
+) -> (SlideRect, Vec<Guide>) {
+    let (down, across) = lines(others, grid);
     let (mut left, mut top) = (frame.x, frame.y);
     let (mut right, mut bottom) = (frame.x + frame.w, frame.y + frame.h);
     let mut guides = Vec::new();
@@ -271,6 +297,8 @@ pub struct EditDraft {
     marquee_kept: Vec<Uuid>,
     /// The lines a dragged object is lined up with right now, for the canvas to draw.
     pub guides: Vec<Guide>,
+    /// True while the grid shows: its lines pull boxes being moved or resized.
+    pub grid: bool,
     /// The object being renamed in the Objects list, and the name as typed so far.
     pub renaming: Option<(Uuid, String)>,
     /// The text object whose words are being typed on the slide itself, and whether that has
@@ -301,6 +329,7 @@ impl EditDraft {
             marquee_frames: Vec::new(),
             marquee_kept: Vec::new(),
             guides: Vec::new(),
+            grid: false,
             renaming: None,
             typing: None,
             typing_started: false,
@@ -325,6 +354,7 @@ impl EditDraft {
             marquee_frames: Vec::new(),
             marquee_kept: Vec::new(),
             guides: Vec::new(),
+            grid: false,
             renaming: None,
             typing: None,
             typing_started: false,
@@ -860,7 +890,7 @@ impl EditDraft {
                         .filter(|o| !moving.contains(&o.id) && !o.hidden)
                         .filter_map(|o| o.frame)
                         .collect();
-                    let (frame, guides) = snapped(free, &still);
+                    let (frame, guides) = snapped_on(free, &still, self.grid);
                     self.guides = guides;
                     (id, frame)
                 } else {
@@ -876,7 +906,7 @@ impl EditDraft {
                 } else if snap {
                     let still: Vec<SlideRect> =
                         self.slide.objects.iter().filter(|o| o.id != id && !o.hidden).filter_map(|o| o.frame).collect();
-                    let (frame, guides) = snapped_resize(free, handle, &still);
+                    let (frame, guides) = snapped_resize_on(free, handle, &still, self.grid);
                     self.guides = guides;
                     (id, frame)
                 } else {
@@ -979,6 +1009,10 @@ mod tests {
         let (frame, guides) = snapped(far, &[other]);
         assert_eq!((frame.x, guides), (341.0, vec![Guide::Down(341.0)]));
         // Near the safe edge it is pulled onto that.
+        // With the grid on, a box near one of its lines is pulled onto it.
+        let by_grid = SlideRect { x: 245.0, y: 610.0, w: 300.0, h: 100.0 };
+        assert_eq!(snapped(by_grid, &[]).0, by_grid);
+        assert_eq!(snapped_on(by_grid, &[], true).0, SlideRect { x: 240.0, y: 600.0, ..by_grid });
         let (frame, guides) = snapped(SlideRect { x: SAFE_EDGE.0 + 9.0, y: 177.0, w: 400.0, h: 300.0 }, &[]);
         assert_eq!((frame.x, guides), (SAFE_EDGE.0, vec![Guide::Down(SAFE_EDGE.0)]));
     }

@@ -107,6 +107,9 @@ ProPresenter.
   and leave with a Dissolve, Fly Out or Zoom on a click. Next sets a slide's click builds going
   in order before it moves on; Previous takes them back.
 - A plus tile after the last slide adds a slide laid out like the one before it.
+- In the Edit view: rulers numbered in the slide's pixels, showing the selected object's
+  extent; Zoom (Fit, 25% to 200%, or pinch) with two-finger scrolling around a zoomed slide; and
+  Grid, which shows a grid that boxes snap to.
 - **Reflow** (Control-R, or Reflow beside a song's title): the song's words as text, to type
   into; the slides are rebuilt from them and keep their looks, labels and notes.
 - **Cmd+N** makes a new song.

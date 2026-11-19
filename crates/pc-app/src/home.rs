@@ -201,6 +201,12 @@ pub struct HomeState {
     pub messages: Vec<crate::messages::Message>,
     pub messages_changed: bool,
     pub message_selected: Option<pc_model::Uuid>,
+    /// How large the Edit view shows the slide: 0 fits it to the window, otherwise how many
+    /// screen pixels each of the slide's pixels takes. How far it has been moved when it is
+    /// larger than the window, and whether the grid shows.
+    pub edit_zoom: f32,
+    pub edit_pan: egui::Vec2,
+    pub edit_grid: bool,
     /// The stage layouts, and true when they have changed and are to be saved.
     pub stage_layouts: Vec<pc_model::ThemeTemplate>,
     pub stage_layouts_changed: bool,
@@ -745,6 +751,9 @@ impl Default for HomeState {
             messages: Vec::new(),
             messages_changed: false,
             message_selected: None,
+            edit_zoom: 0.0,
+            edit_pan: egui::Vec2::ZERO,
+            edit_grid: false,
             stage_layouts: crate::stage::builtin_layouts(),
             stage_layouts_changed: false,
             stage_editor_open: false,
@@ -863,44 +872,6 @@ fn panel_frame(fill: Color32, margin: i8) -> Frame {
 
 pub fn not_built(what: &str) -> String {
     format!("{what} (not built yet)")
-}
-
-/// What a button shows: one of the app's icons, or a short piece of text.
-#[derive(Clone, Copy)]
-enum Face {
-    Icon(Icon),
-    Text(&'static str),
-}
-
-impl From<Icon> for Face {
-    fn from(icon: Icon) -> Face {
-        Face::Icon(icon)
-    }
-}
-
-impl From<&'static str> for Face {
-    fn from(text: &'static str) -> Face {
-        Face::Text(text)
-    }
-}
-
-fn paint_face(ui: &egui::Ui, face: Face, rect: Rect, text_size: f32, color: Color32) {
-    match face {
-        Face::Icon(icon) => icons::paint(ui.painter(), icon, rect, color),
-        Face::Text(text) => {
-            ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(text_size), color);
-        }
-    }
-}
-
-/// A small placeholder button: an icon, dim, that only explains itself.
-fn ghost(ui: &mut egui::Ui, face: impl Into<Face>, what: &str) {
-    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::hover());
-    if response.hovered() {
-        ui.painter().rect_filled(rect, 4.0, Color32::from_gray(48));
-    }
-    paint_face(ui, face.into(), Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), 12.5, DIM);
-    response.on_hover_text(not_built(what));
 }
 
 /// Draws the home window for one frame and returns the commands the operator issued.
@@ -1799,45 +1770,103 @@ fn edit_view(
                     ui.label(egui::RichText::new(text).size(11.5).color(Color32::from_gray(200)));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    ui.label(egui::RichText::new("Fit").size(11.5).color(Color32::from_gray(200)));
-                    ghost(ui, Icon::Search, "Zoom");
-                    ghost(ui, Icon::Grid, "Guides");
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    // How large the slide is shown: fitted to the window, or a size of its own.
+                    let shown = if state.edit_zoom <= 0.0 {
+                        "Fit".to_owned()
+                    } else {
+                        format!("{:.0}%", state.edit_zoom * 100.0)
+                    };
+                    ui.menu_button(egui::RichText::new(shown).size(11.5), |ui| {
+                        if ui.add(egui::Button::selectable(state.edit_zoom <= 0.0, "Fit")).clicked() {
+                            state.edit_zoom = 0.0;
+                            state.edit_pan = egui::Vec2::ZERO;
+                            ui.close();
+                        }
+                        for zoom in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0] {
+                            let on = (state.edit_zoom - zoom).abs() < 0.001;
+                            if ui.add(egui::Button::selectable(on, format!("{:.0}%", zoom * 100.0))).clicked() {
+                                state.edit_zoom = zoom;
+                                state.edit_pan = egui::Vec2::ZERO;
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("How large the slide is shown. Pinch to zoom; scroll to move a zoomed slide.");
+                    if ui
+                        .add(egui::Button::selectable(state.edit_grid, egui::RichText::new("Grid").size(11.5)))
+                        .on_hover_text("Show a grid that boxes snap to")
+                        .clicked()
+                    {
+                        state.edit_grid = !state.edit_grid;
+                    }
                 });
             });
         });
         let area = ui.available_rect_before_wrap();
-        let ruler = 14.0;
-        ui.painter().rect_filled(
-            Rect::from_min_size(area.min, vec2(area.width(), ruler)),
-            0.0,
-            Color32::from_rgb(12, 12, 12),
-        );
-        ui.painter().rect_filled(
-            Rect::from_min_size(area.min, vec2(ruler, area.height())),
-            0.0,
-            Color32::from_rgb(12, 12, 12),
-        );
+        let ruler = 16.0;
         let inner = Rect::from_min_max(area.min + vec2(ruler, ruler), area.max).shrink(28.0);
-        let width = inner.width().min(inner.height() * 16.0 / 9.0).max(1.0);
-        let slide = Rect::from_min_size(
-            pos2(inner.center().x - width / 2.0, inner.min.y + 44.0),
-            vec2(width, width * 9.0 / 16.0),
-        );
+        // Fitted, the slide fills the room under the tools; zoomed, it is its own size, moved by
+        // scrolling. A pinch zooms from wherever it is.
+        let room = Rect::from_min_max(pos2(inner.min.x, inner.min.y + 44.0), inner.max);
+        let fit_width = inner.width().min(room.height() * 16.0 / 9.0).max(1.0);
+        let pixels = ui.ctx().pixels_per_point();
+        let canvas_area = Rect::from_min_max(area.min + vec2(ruler, ruler), area.max);
+        if ui.rect_contains_pointer(canvas_area) {
+            let (scroll, pinch) = ui.input(|input| (input.smooth_scroll_delta, input.zoom_delta()));
+            if (pinch - 1.0).abs() > 0.001 {
+                let now =
+                    if state.edit_zoom > 0.0 { state.edit_zoom } else { fit_width * pixels / pc_model::SLIDE_WIDTH };
+                state.edit_zoom = (now * pinch).clamp(0.1, 4.0);
+            } else if state.edit_zoom > 0.0 && scroll != egui::Vec2::ZERO {
+                state.edit_pan += scroll;
+            }
+        }
+        let width = if state.edit_zoom > 0.0 { pc_model::SLIDE_WIDTH * state.edit_zoom / pixels } else { fit_width };
+        let fitted_centre = pos2(inner.center().x, room.min.y + fit_width * 9.0 / 32.0);
+        if state.edit_zoom <= 0.0 {
+            state.edit_pan = egui::Vec2::ZERO;
+        }
+        // A zoomed slide can be moved only so far that some of it stays in view.
+        let reach = vec2(width / 2.0 + inner.width() / 2.0 - 60.0, width * 9.0 / 32.0 + inner.height() / 2.0 - 60.0)
+            .max(egui::Vec2::ZERO);
+        state.edit_pan = state.edit_pan.clamp(-reach, reach);
+        let slide = Rect::from_center_size(fitted_centre + state.edit_pan, vec2(width, width * 9.0 / 16.0));
+        let scale = slide.width() / pc_model::SLIDE_WIDTH;
+        let selected_frame = state
+            .editing
+            .as_ref()
+            .and_then(|draft| draft.selected_object().map(|object| object_frame(&draft.slide, object, theme)));
+        rulers(ui.painter(), area, ruler, slide, scale, selected_frame);
+        // Everything after this stays inside the canvas, clear of the rulers.
+        ui.set_clip_rect(canvas_area);
         ui.painter().rect_filled(slide.expand(1.0), 0.0, Color32::from_black_alpha(90));
         ui.painter().rect_filled(slide, 0.0, Color32::BLACK);
         if let Some(texture) = canvas {
             egui::Image::from_texture((texture, slide.size())).paint_at(ui, slide);
         }
-        for x in (0..=4).map(|i| slide.min.x + slide.width() * i as f32 / 4.0) {
-            ui.painter().line_segment(
-                [pos2(x, area.min.y + 6.0), pos2(x, area.min.y + ruler)],
-                Stroke::new(1.0, Color32::from_gray(150)),
-            );
+        // The grid, faint over the slide.
+        if state.edit_grid {
+            let line = Stroke::new(1.0, Color32::from_white_alpha(28));
+            let mut x = crate::editor::GRID;
+            while x < pc_model::SLIDE_WIDTH {
+                let at = slide.min.x + x * scale;
+                ui.painter().line_segment([pos2(at, slide.min.y), pos2(at, slide.max.y)], line);
+                x += crate::editor::GRID;
+            }
+            let mut y = crate::editor::GRID;
+            while y < pc_model::SLIDE_HEIGHT {
+                let at = slide.min.y + y * scale;
+                ui.painter().line_segment([pos2(slide.min.x, at), pos2(slide.max.x, at)], line);
+                y += crate::editor::GRID;
+            }
+        }
+        if let Some(draft) = state.editing.as_mut() {
+            draft.grid = state.edit_grid;
         }
 
         // Pointer on the canvas: select, move, resize. Positions are turned into slide units.
-        let scale = slide.width() / pc_model::SLIDE_WIDTH;
         // The safe edge: a faint frame a little inside the slide. Boxes snap to it, so text can
         // be kept an even distance from the edge of the screen.
         let (safe_x, safe_y) = crate::editor::SAFE_EDGE;
@@ -1973,7 +2002,7 @@ fn edit_view(
         if shapes_too {
             // A picture from a file.
             let picture_bar =
-                Rect::from_center_size(pos2(slide.center().x + 104.0, slide.min.y - 22.0), vec2(96.0, 28.0));
+                Rect::from_center_size(pos2(inner.center().x + 104.0, inner.min.y + 22.0), vec2(96.0, 28.0));
             let picture = ui.interact(picture_bar, ui.scope_id().with("add picture"), Sense::click());
             ui.painter().rect_filled(
                 picture_bar,
@@ -1990,7 +2019,7 @@ fn edit_view(
             if picture.on_hover_text("Put a picture from a file on the slide").clicked() {
                 state.picture_request = true;
             }
-            let shapes_bar = Rect::from_center_size(pos2(slide.center().x, slide.min.y - 22.0), vec2(96.0, 28.0));
+            let shapes_bar = Rect::from_center_size(pos2(inner.center().x, inner.min.y + 22.0), vec2(96.0, 28.0));
             let shapes = ui.interact(shapes_bar, ui.scope_id().with("add shape"), Sense::click());
             ui.painter().rect_filled(
                 shapes_bar,
@@ -2015,7 +2044,7 @@ fn edit_view(
                 }
             });
         }
-        let bar = Rect::from_center_size(pos2(slide.center().x + offset, slide.min.y - 22.0), vec2(96.0, 28.0));
+        let bar = Rect::from_center_size(pos2(inner.center().x + offset, inner.min.y + 22.0), vec2(96.0, 28.0));
         let add = ui.interact(bar, ui.scope_id().with("add text"), Sense::click());
         ui.painter().rect_filled(bar, 8.0, if add.hovered() { crate::studio::HOVER } else { crate::studio::CARD });
         ui.painter().text(
@@ -3501,6 +3530,58 @@ fn bible_area(
             }
         }
     });
+}
+
+/// The rulers along the top and left of the Edit view's canvas, in the slide's own pixels: a
+/// mark every 100, numbered as often as there is room for, with the selected object's extent
+/// shown on each.
+fn rulers(painter: &egui::Painter, area: Rect, ruler: f32, slide: Rect, scale: f32, selected: Option<SlideRect>) {
+    let band = Color32::from_rgb(12, 12, 12);
+    let top = Rect::from_min_max(pos2(area.min.x + ruler, area.min.y), pos2(area.max.x, area.min.y + ruler));
+    let left = Rect::from_min_max(pos2(area.min.x, area.min.y + ruler), pos2(area.min.x + ruler, area.max.y));
+    painter.rect_filled(Rect::from_min_size(area.min, vec2(area.width(), ruler)), 0.0, band);
+    painter.rect_filled(Rect::from_min_size(area.min, vec2(ruler, area.height())), 0.0, band);
+    if let Some(frame) = selected {
+        let shade = crate::studio::ACCENT.gamma_multiply(0.45);
+        let across = Rect::from_x_y_ranges(
+            slide.min.x + frame.x * scale..=slide.min.x + (frame.x + frame.w) * scale,
+            top.y_range(),
+        );
+        let down = Rect::from_x_y_ranges(
+            left.x_range(),
+            slide.min.y + frame.y * scale..=slide.min.y + (frame.y + frame.h) * scale,
+        );
+        painter.with_clip_rect(top).rect_filled(across, 0.0, shade);
+        painter.with_clip_rect(left).rect_filled(down, 0.0, shade);
+    }
+    // Numbers every 100, 200, 500 or 1000 pixels, whichever leaves room between them.
+    let every = [100.0, 200.0, 500.0, 1000.0].into_iter().find(|step| step * scale >= 46.0).unwrap_or(1000.0);
+    let ink = Color32::from_gray(150);
+    let font = FontId::proportional(9.5);
+    let marks = |size: f32| (0..=(size / 100.0) as usize).map(|n| n as f32 * 100.0);
+    let top_painter = painter.with_clip_rect(top);
+    for at in marks(pc_model::SLIDE_WIDTH) {
+        let x = slide.min.x + at * scale;
+        let numbered = (at % every).abs() < 0.5;
+        let reach = if numbered { 0.0 } else { ruler * 0.6 };
+        top_painter.line_segment([pos2(x, top.min.y + reach), pos2(x, top.max.y)], Stroke::new(1.0, ink));
+        if numbered {
+            top_painter.text(pos2(x + 3.0, top.min.y + 1.0), Align2::LEFT_TOP, format!("{at:.0}"), font.clone(), ink);
+        }
+    }
+    let left_painter = painter.with_clip_rect(left);
+    for at in marks(pc_model::SLIDE_HEIGHT) {
+        let y = slide.min.y + at * scale;
+        let numbered = (at % every).abs() < 0.5;
+        let reach = if numbered { 0.0 } else { ruler * 0.6 };
+        left_painter.line_segment([pos2(left.min.x + reach, y), pos2(left.max.x, y)], Stroke::new(1.0, ink));
+        if numbered {
+            // Turned on its side, reading upward, as a Mac's rulers number their side.
+            let galley = left_painter.layout_no_wrap(format!("{at:.0}"), font.clone(), ink);
+            let start = pos2(left.min.x + 1.0, y - 3.0);
+            left_painter.add(egui::epaint::TextShape::new(start, galley, ink).with_angle(-std::f32::consts::FRAC_PI_2));
+        }
+    }
 }
 
 /// The Arrangement button beside a song's title: play the song as written or in one of its

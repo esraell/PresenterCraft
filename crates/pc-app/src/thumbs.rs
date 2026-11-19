@@ -143,8 +143,9 @@ impl Thumbs {
         slide: &Slide,
         theme: &Theme,
     ) -> Option<egui::TextureId> {
-        const W: u32 = 1280;
-        const H: u32 = 720;
+        // Large enough to stay sharp when the slide is zoomed in on a Retina screen.
+        const W: u32 = 2560;
+        const H: u32 = 1440;
         let built =
             build_layers(&mut self.fonts, &Layers { media: None, slide: Some(slide), overlay: None }, theme, W, H);
         if self.canvas.is_none() {

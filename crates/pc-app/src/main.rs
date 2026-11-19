@@ -2128,6 +2128,11 @@ impl App {
                     object.build_in = Some(fly);
                     object.build_out = Some(pc_model::Build::of(pc_model::BuildEffect::Dissolve));
                 }
+                // Testing aids: show the grid, and zoom in.
+                running.home_state.edit_grid = std::env::var_os("PRESENTERCRAFT_EDIT_GRID").is_some();
+                if let Some(zoom) = std::env::var("PRESENTERCRAFT_EDIT_ZOOM").ok().and_then(|z| z.parse().ok()) {
+                    running.home_state.edit_zoom = zoom;
+                }
                 // Testing aid: which tab of the inspector to show.
                 running.home_state.inspector.tab = match std::env::var("PRESENTERCRAFT_INSPECTOR_TAB").as_deref() {
                     Ok("shape") => inspector::InspectorTab::Shape,
