@@ -1,6 +1,6 @@
 //! Loading pictures for the media bin.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pc_render::Picture;
 
@@ -9,6 +9,31 @@ use pc_render::Picture;
 pub const MAX_SIDE: u32 = 2560;
 
 const PICTURES: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+
+/// The file endings of pictures, as the file chooser lists them.
+pub const PICTURE_ENDINGS: [&str; 6] = PICTURES;
+
+fn list_file() -> Option<PathBuf> {
+    crate::bible_store::data_dir().map(|dir| dir.join("media.json"))
+}
+
+/// The pictures that were in the media bin when the app last closed, by their files.
+pub fn load_list() -> Vec<PathBuf> {
+    list_file()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Remembers which pictures are in the media bin, for the next start.
+pub fn save_list(paths: &[PathBuf]) -> Result<(), String> {
+    let path = list_file().ok_or_else(|| "Could not find where to keep settings on this computer.".to_owned())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not make the app's folder: {e}"))?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(paths).unwrap_or_default())
+        .map_err(|e| format!("Could not save the media list: {e}"))
+}
 const VIDEOS: [&str; 6] = ["mp4", "mov", "m4v", "mkv", "avi", "webm"];
 
 fn extension(path: &Path) -> String {
@@ -45,7 +70,6 @@ pub fn load_picture(path: &Path) -> Result<Picture, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use super::*;
 

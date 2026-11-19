@@ -26,6 +26,8 @@ egui-wgpu = "=0.37.0"
 egui-winit = "=0.37.0"
 # The time on stage screens, in the computer's own time zone.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The system's own window for choosing files to add.
+rfd = "0.15"
 # Moving a deleted song's file to the Trash rather than erasing it.
 trash = "5"
 # The macOS menu bar.

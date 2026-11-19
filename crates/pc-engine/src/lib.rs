@@ -133,6 +133,21 @@ impl Show {
         self.media.len() - 1
     }
 
+    /// Takes a picture out of the media bin. If it was on screen it is taken off.
+    pub fn remove_media(&mut self, index: usize) -> Changes {
+        if index >= self.media.len() {
+            return Changes::default();
+        }
+        self.media.remove(index);
+        let was = self.live_media;
+        self.live_media = match self.live_media {
+            Some(live) if live == index => None,
+            Some(live) if live > index => Some(live - 1),
+            other => other,
+        };
+        Changes { media: was != self.live_media && self.live_media.is_none(), selection: true, ..Changes::default() }
+    }
+
     /// The first slide of the first group, in the presentation in use, whose name is one of
     /// those given (in lower case). The presentation in use is the one with the slide last on
     /// screen, or the selected one if nothing has been shown.

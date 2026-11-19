@@ -47,7 +47,8 @@ ProPresenter.
 - A Library of songs above a Service list (songs and saved Bible passages, in running order).
   Several services can be kept and switched between; the line between the two lists can be
   dragged.
-- Pictures dropped on the window go into the media bin and can be shown behind the words.
+- Pictures dropped on the window, or added with the media bin's +, go into the media bin, are
+  kept between runs, and can be shown behind the words; right-click one to remove it.
 - A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
   or bridge starts), Label (Blank Slide, Instrumental, Repeat, Spoken Word), Disable, Template.
 - A song's right-click menu: Add to Service, Rename, Duplicate, and Delete (a song made in the

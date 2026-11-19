@@ -832,6 +832,11 @@ pub fn media_strip(
             };
             ui.add_space(6.0);
             ui.label(note);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("+").on_hover_text("Add pictures from a folder").clicked() {
+                    state.media_request = Some(crate::home::MediaRequest::Choose);
+                }
+            });
         });
         if !empty {
             ui.add_space(4.0);
@@ -869,7 +874,12 @@ pub fn media_strip(
                             FontId::proportional(11.5),
                             TEXT_DIM,
                         );
-                        response.on_hover_text(item.name.as_str());
+                        response.on_hover_text(item.name.as_str()).context_menu(|ui| {
+                            if ui.button("Remove").clicked() {
+                                state.media_request = Some(crate::home::MediaRequest::Remove(index));
+                                ui.close();
+                            }
+                        });
                     }
                 });
             });

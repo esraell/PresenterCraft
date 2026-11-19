@@ -692,10 +692,55 @@ impl App {
                 self.show.add_media(MediaItem { id: Uuid::new_v4(), name, path: path.to_owned() });
                 self.pictures.push(picture);
                 running.home_state.notice = None;
+                self.save_media_list();
             }
             Err(message) => running.home_state.notice = Some(message),
         }
-        running.home_window.request_redraw();
+        if let Some(running) = self.running.as_mut() {
+            running.home_window.request_redraw();
+        }
+    }
+
+    /// Remembers which pictures are in the media bin.
+    fn save_media_list(&mut self) {
+        let paths: Vec<PathBuf> = self.show.media().iter().map(|item| item.path.clone()).collect();
+        if let Err(problem) = media::save_list(&paths)
+            && let Some(running) = self.running.as_mut()
+        {
+            running.home_state.notice = Some(problem);
+        }
+    }
+
+    /// Carries out a change to the media bin: choosing pictures to add, or removing one.
+    fn handle_media_request(&mut self) {
+        use home::MediaRequest;
+        let Some(request) = self.running.as_mut().and_then(|r| r.home_state.media_request.take()) else { return };
+        match request {
+            MediaRequest::Choose => {
+                // The system's own window for choosing files, as any Mac app has.
+                let chosen = rfd::FileDialog::new()
+                    .set_title("Add Pictures")
+                    .add_filter("Pictures", &media::PICTURE_ENDINGS)
+                    .pick_files()
+                    .unwrap_or_default();
+                for path in chosen {
+                    self.add_dropped_file(&path);
+                }
+            }
+            MediaRequest::Remove(index) => {
+                let changes = self.show.remove_media(index);
+                if index < self.pictures.len() {
+                    self.pictures.remove(index);
+                }
+                if changes.media {
+                    self.refresh_output();
+                }
+                self.save_media_list();
+                if let Some(running) = self.running.as_mut() {
+                    running.home_window.request_redraw();
+                }
+            }
+        }
     }
 
     /// Puts a slide changed in the Edit view into its song. The song's file is written a
@@ -2096,6 +2141,7 @@ impl ApplicationHandler<String> for App {
                     self.apply_edit(at, slide);
                 }
                 self.handle_slide_request();
+                self.handle_media_request();
                 self.handle_song_request();
                 // A template chosen from a slide's menu: the slide is changed and, if it is on
                 // screen, the screen too.
@@ -2328,7 +2374,14 @@ fn main() -> ExitCode {
         failed: false,
         capture_done: false,
     };
+    // The pictures that were in the media bin last time, then any named on the command line.
+    let mut pictures_to_load = media::load_list();
     for path in &media_paths {
+        if !pictures_to_load.contains(path) {
+            pictures_to_load.push(path.clone());
+        }
+    }
+    for path in &pictures_to_load {
         match media::load_picture(path) {
             Ok(picture) => {
                 let name = path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());

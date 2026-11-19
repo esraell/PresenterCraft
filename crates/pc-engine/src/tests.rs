@@ -297,3 +297,16 @@ fn removing_or_adding_a_slide_before_the_live_one_keeps_it_live() {
     assert!(s.slides_shifted(0, 2, false).slides);
     assert_eq!(s.live(), None);
 }
+
+#[test]
+fn removing_a_picture_keeps_the_one_on_screen_or_takes_it_off() {
+    let mut s = show();
+    for name in ["a", "b", "c"] {
+        s.add_media(pc_model::MediaItem { id: pc_model::Uuid::new_v4(), name: name.to_owned(), path: name.into() });
+    }
+    s.apply(Command::ShowMedia(2));
+    s.remove_media(0);
+    assert_eq!((s.live_media(), s.media().len()), (Some(1), 2));
+    assert!(s.remove_media(1).media);
+    assert_eq!(s.live_media(), None);
+}

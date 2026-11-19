@@ -105,6 +105,8 @@ pub struct HomeState {
     /// A change to a song asked for from its menu, and a song waiting to be confirmed deleted.
     pub song_request: Option<(usize, SongRequest)>,
     pub confirm_delete_song: Option<usize>,
+    /// A change to the media bin asked for.
+    pub media_request: Option<MediaRequest>,
     /// Songs taken out of the library this run, by their place in the show.
     pub removed_songs: Vec<usize>,
     /// A change to the selected objects asked for from the menu bar.
@@ -626,6 +628,7 @@ impl Default for HomeState {
             song_request: None,
             confirm_delete_song: None,
             removed_songs: Vec::new(),
+            media_request: None,
             screens: crate::screens::starting(None),
             screens_changed: false,
             screen_status: Vec::new(),
@@ -1989,6 +1992,13 @@ pub enum SlideRequest {
     PasteAfter(Slide),
     Group(String),
     Label(Option<String>),
+}
+
+/// A change to the media bin asked for: pictures to choose and add, or one to remove.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaRequest {
+    Choose,
+    Remove(usize),
 }
 
 /// A change to a song asked for from its right-click menu in the library.
