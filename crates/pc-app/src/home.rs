@@ -917,10 +917,21 @@ fn edit_view(
                             let mut rename_done: Option<Option<(pc_model::Uuid, String)>> = None;
                             let mut start_rename = None;
                             let extend = ui.input(|input| input.modifiers.shift || input.modifiers.command);
+                            // Rows can be dragged up and down: the order is front to back.
+                            let mut rows: Vec<(pc_model::Uuid, Rect)> = Vec::new();
+                            let mut dragging = None;
+                            let mut dropped = None;
                             for object in draft.slide.objects.iter().rev() {
                                 let selected = draft.is_selected(object.id);
                                 let (row, response) =
-                                    ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
+                                    ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click_and_drag());
+                                rows.push((object.id, row));
+                                if response.dragged() {
+                                    dragging = Some(object.id);
+                                }
+                                if response.drag_stopped() {
+                                    dropped = Some(object.id);
+                                }
                                 if selected {
                                     ui.painter().rect_filled(row, 0.0, EDIT_SELECTED);
                                 } else if response.hovered() {
@@ -1056,6 +1067,24 @@ fn edit_view(
                                         ui.close();
                                     }
                                 });
+                            }
+                            // Where a dragged row would land: a line between the rows, and on
+                            // release the object moves there in the stack.
+                            let pointer_y = ui.input(|input| input.pointer.interact_pos()).map(|at| at.y);
+                            let slot = pointer_y.map(|y| rows.iter().filter(|(_, row)| row.center().y < y).count());
+                            if let (Some(_), Some(slot)) = (dragging, slot) {
+                                let y = rows.get(slot).map_or_else(
+                                    || rows.last().map_or(0.0, |(_, row)| row.max.y),
+                                    |(_, row)| row.min.y,
+                                );
+                                let (left, right) = rows.first().map_or((0.0, 0.0), |(_, row)| (row.min.x, row.max.x));
+                                ui.painter().line_segment(
+                                    [pos2(left + 6.0, y), pos2(right - 6.0, y)],
+                                    Stroke::new(2.0, crate::studio::ACCENT),
+                                );
+                            }
+                            if let (Some(id), Some(slot)) = (dropped, slot) {
+                                draft.move_in_stack(id, slot);
                             }
                             if let Some((id, ask)) = asked {
                                 if matches!(ask, Ask::Delete) {

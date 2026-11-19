@@ -575,6 +575,22 @@ impl EditDraft {
     }
 
     /// Moves the selected object one place up (`true`) or down the stack. Returns true if it moved.
+    /// Moves an object to a place in the Objects list, which runs from the front of the slide to
+    /// the back: `slot` is how many rows of the list will be above it. Returns true if it moved.
+    pub fn move_in_stack(&mut self, id: Uuid, slot: usize) -> bool {
+        let mut list: Vec<Object> = self.slide.objects.iter().rev().cloned().collect();
+        let Some(from) = list.iter().position(|object| object.id == id) else { return false };
+        let to = if slot > from { slot - 1 } else { slot }.min(list.len() - 1);
+        if to == from {
+            return false;
+        }
+        let object = list.remove(from);
+        list.insert(to, object);
+        list.reverse();
+        self.slide.objects = list;
+        true
+    }
+
     pub fn restack(&mut self, forward: bool) -> bool {
         let Some(id) = self.selected else { return false };
         let Some(index) = self.slide.objects.iter().position(|o| o.id == id) else { return false };
@@ -932,6 +948,25 @@ mod tests {
         assert_eq!(other.frame.unwrap().y, other_before.y + 30.0);
         // Its own colour and size were not touched.
         assert_eq!((style.fill, style.size), (None, None));
+    }
+
+    #[test]
+    fn an_object_dragged_in_the_list_moves_in_the_stack() {
+        let mut d = draft();
+        let names = |d: &EditDraft| d.slide.objects.iter().rev().map(|o| o.name.clone()).collect::<Vec<_>>();
+        for (index, object) in d.slide.objects.iter_mut().enumerate() {
+            object.name = format!("o{index}");
+        }
+        // The list runs front to back, so the last object is listed first.
+        assert_eq!(names(&d), ["o1", "o0"]);
+        let back = d.slide.objects[0].id;
+        assert!(d.move_in_stack(back, 0));
+        assert_eq!(names(&d), ["o0", "o1"]);
+        // Dropped where it already is, nothing changes.
+        assert!(!d.move_in_stack(back, 0));
+        assert!(!d.move_in_stack(back, 1));
+        assert!(d.move_in_stack(back, 2));
+        assert_eq!(names(&d), ["o1", "o0"]);
     }
 
     #[test]
