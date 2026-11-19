@@ -4,6 +4,7 @@
 mod format;
 mod song_text;
 mod theme;
+mod transition;
 mod types;
 
 pub use format::{FORMAT_VERSION, from_json, to_json};
@@ -12,6 +13,7 @@ pub use theme::{
     Align, BoxStyle, Caps, LINE_HEIGHT, LineTransform, Scaling, Shadow, SlideRect, TextStyle, Theme, ThemeTemplate,
     VAlign, fonts_used, missing_fonts,
 };
+pub use transition::{Direction, Transition, TransitionKind};
 pub use types::{Group, MediaItem, Object, ObjectKind, Presentation, Rgba, Role, Shape, Slide, StrokeLook};
 pub use uuid::Uuid;
 

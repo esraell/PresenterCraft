@@ -380,3 +380,35 @@ fn a_cross_fade_blends_two_pictures() {
     let half = middle_of(0.5);
     assert!((110..=145).contains(&half), "half-way was {half}");
 }
+
+/// Half-way through a wipe or a push from the left, the left half shows the new picture and the
+/// right half the old one; half-way through a fade through black, the screen is black.
+#[test]
+fn transitions_put_each_picture_where_it_belongs() {
+    use pc_model::{Direction, Rgba, TransitionKind};
+    let (w, h) = (64, 36);
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let black = build_scene(&mut Fonts::new(), Some(&Slide::new(Vec::new())), &Theme::builtin(), w, h).scene;
+    let mut white_theme = Theme::builtin();
+    white_theme.background = Some(Rgba::WHITE);
+    let white = build_scene(&mut Fonts::new(), Some(&Slide::new(Vec::new())), &white_theme, w, h).scene;
+    let mut shade_at = |kind: TransitionKind, amount: f32, x: u32| {
+        let texture = target_texture(device, w, h);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let scene = pc_render::transition(kind, Direction::FromLeft, &black, &white, amount, w, h);
+        painter.paint(device, queue, &scene, &view, w, h).expect("paint");
+        let pixels = read_pixels(device, queue, &texture).expect("read back");
+        pixels[((h / 2 * w + x) * 4) as usize]
+    };
+    for kind in [TransitionKind::Wipe, TransitionKind::Push, TransitionKind::MoveIn] {
+        assert_eq!(shade_at(kind, 0.5, w / 4), 255, "{kind:?}: the left is new");
+        assert_eq!(shade_at(kind, 0.5, w * 3 / 4), 0, "{kind:?}: the right is old");
+    }
+    assert_eq!(shade_at(TransitionKind::FadeBlack, 0.5, w / 2), 0);
+    assert_eq!(shade_at(TransitionKind::FadeWhite, 0.5, w / 2), 255);
+    assert_eq!(shade_at(TransitionKind::Iris, 0.0, w / 2), 0);
+    assert_eq!(shade_at(TransitionKind::Iris, 1.0, 1), 255);
+}

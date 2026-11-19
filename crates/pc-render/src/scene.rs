@@ -176,6 +176,88 @@ pub fn cross_fade(from: &Scene, to: &Scene, amount: f32, target_w: u32, target_h
     scene
 }
 
+/// One picture giving way to another by a transition, `amount` of the way through (0 is all
+/// `from`, 1 is all `to`). Both must have been built for a target of this size.
+pub fn transition(
+    kind: pc_model::TransitionKind,
+    direction: pc_model::Direction,
+    from: &Scene,
+    to: &Scene,
+    amount: f32,
+    target_w: u32,
+    target_h: u32,
+) -> Scene {
+    use pc_model::TransitionKind as K;
+    let a = f64::from(amount.clamp(0.0, 1.0));
+    let (w, h) = (f64::from(target_w), f64::from(target_h));
+    let whole = Rect::new(0.0, 0.0, w, h);
+    let (dx, dy) = direction.travel();
+    // Where the new picture starts, off the screen on the side it comes from.
+    let away = (-dx * w, -dy * h);
+    let mut scene = Scene::new();
+    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::BLACK, None, &whole);
+    match kind {
+        K::Cut => scene.append(to, None),
+        K::Dissolve => return cross_fade(from, to, amount, target_w, target_h),
+        K::FadeBlack | K::FadeWhite => {
+            let through = if kind == K::FadeBlack { Color::BLACK } else { Color::WHITE };
+            if a < 0.5 {
+                scene.append(from, None);
+                scene.push_layer(Fill::NonZero, Mix::Normal, (a * 2.0) as f32, Affine::IDENTITY, &whole);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, through, None, &whole);
+            } else {
+                scene.fill(Fill::NonZero, Affine::IDENTITY, through, None, &whole);
+                scene.push_layer(Fill::NonZero, Mix::Normal, ((a - 0.5) * 2.0) as f32, Affine::IDENTITY, &whole);
+                scene.append(to, None);
+            }
+            scene.pop_layer();
+        }
+        K::Push => {
+            scene.append(from, Some(Affine::translate((dx * w * a, dy * h * a))));
+            scene.append(to, Some(Affine::translate((away.0 * (1.0 - a), away.1 * (1.0 - a)))));
+        }
+        K::MoveIn => {
+            scene.append(from, None);
+            scene.append(to, Some(Affine::translate((away.0 * (1.0 - a), away.1 * (1.0 - a)))));
+        }
+        K::Reveal => {
+            scene.append(to, None);
+            scene.append(from, Some(Affine::translate((dx * w * a, dy * h * a))));
+        }
+        K::Wipe => {
+            scene.append(from, None);
+            // The edge sweeps the way the new picture travels.
+            let uncovered = match direction {
+                pc_model::Direction::FromLeft => Rect::new(0.0, 0.0, w * a, h),
+                pc_model::Direction::FromRight => Rect::new(w * (1.0 - a), 0.0, w, h),
+                pc_model::Direction::FromTop => Rect::new(0.0, 0.0, w, h * a),
+                pc_model::Direction::FromBottom => Rect::new(0.0, h * (1.0 - a), w, h),
+            };
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &uncovered);
+            scene.append(to, None);
+            scene.pop_layer();
+        }
+        K::Iris => {
+            scene.append(from, None);
+            let reach = (w * w + h * h).sqrt() / 2.0;
+            let circle = Ellipse::new((w / 2.0, h / 2.0), (reach * a, reach * a), 0.0);
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &circle);
+            scene.append(to, None);
+            scene.pop_layer();
+        }
+        K::ZoomIn => {
+            scene.append(from, None);
+            let grow = Affine::translate((w / 2.0, h / 2.0))
+                * Affine::scale(0.6 + 0.4 * a)
+                * Affine::translate((-w / 2.0, -h / 2.0));
+            scene.push_layer(Fill::NonZero, Mix::Normal, a as f32, Affine::IDENTITY, &whole);
+            scene.append(to, Some(grow));
+            scene.pop_layer();
+        }
+    }
+    scene
+}
+
 /// Where an object sits on its slide, in slide units: its own place if it has one, otherwise
 /// the theme's place for its role. The editor uses this to find and outline objects.
 pub fn object_frame(slide: &Slide, object: &Object, theme: &Theme) -> SlideRect {
@@ -561,6 +643,21 @@ mod tests {
         star.flip_h = true;
         let slide = Slide::new(vec![star, boxed]);
         assert!(!build_scene(&mut Fonts::new(), Some(&slide), &Theme::builtin(), 1920, 1080).overflow);
+    }
+
+    #[test]
+    fn every_transition_builds_at_every_stage() {
+        let theme = Theme::builtin();
+        let mut fonts = Fonts::new();
+        let from = build_scene(&mut fonts, Some(&slide("Old", None)), &theme, 640, 360).scene;
+        let to = build_scene(&mut fonts, Some(&slide("New", None)), &theme, 640, 360).scene;
+        for kind in pc_model::TransitionKind::ALL {
+            for direction in pc_model::Direction::ALL {
+                for amount in [0.0, 0.3, 0.5, 0.7, 1.0] {
+                    let _ = transition(kind, direction, &from, &to, amount, 640, 360);
+                }
+            }
+        }
     }
 
     #[test]

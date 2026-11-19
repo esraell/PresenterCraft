@@ -941,30 +941,109 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
         }
     }
     ui.add_space(10.0);
-    // How one slide gives way to the next on the output: at once, or fading over a time.
-    if state.dissolve {
-        ui.add(
-            egui::DragValue::new(&mut state.dissolve_time).speed(0.02).range(0.1..=5.0).max_decimals(1).suffix(" s"),
-        )
-        .on_hover_text("How long the fade takes");
+    // How one slide gives way to the next on the screens: Cut, Dissolve, or another chosen
+    // from the picker, which the label beside the buttons names ("Push: 0.6s").
+    use pc_model::TransitionKind as K;
+    let kind = state.transition.kind;
+    if kind != K::Cut {
+        let label = ui
+            .add(
+                egui::Button::new(egui::RichText::new(state.transition.label()).size(12.0).color(TEXT_DIM))
+                    .frame(false),
+            )
+            .on_hover_text("Choose how long it takes, and its direction");
+        egui::Popup::from_toggle_button_response(&label)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| transition_settings(ui, state));
     }
-    // Laid out right to left: Dissolve first puts it at the right of Cut.
-    let (bar, _) = ui.allocate_exact_size(vec2(64.0 + 44.0 + 6.0, 30.0), Sense::hover());
+    // Laid out right to left: the last cell here is the leftmost.
+    let others =
+        if matches!(kind, K::Cut | K::Dissolve) { "More ▾".to_owned() } else { format!("{} ▾", kind.name()) };
+    let (bar, _) = ui.allocate_exact_size(vec2(44.0 + 64.0 + 84.0 + 6.0, 30.0), Sense::hover());
     ui.painter().rect_filled(bar, RADIUS + 1.0, PANEL);
-    for (dissolve, label, width, x, hint) in [
-        (false, "Cut", 44.0, 3.0, "Slides switch at once"),
-        (true, "Dissolve", 64.0, 47.0, "Each slide fades into the next"),
+    let mut more = None;
+    for (index, label, width, x, hint) in [
+        (0, "Cut".to_owned(), 44.0, 3.0, "Slides switch at once"),
+        (1, "Dissolve".to_owned(), 64.0, 47.0, "Each slide fades into the next"),
+        (2, others, 84.0, 111.0, "Choose another transition"),
     ] {
         let cell = Rect::from_min_size(bar.min + vec2(x, 3.0), vec2(width, 24.0));
-        let response = ui.interact(cell, ui.scope_id().with(("transition", dissolve)), Sense::click());
-        let on = state.dissolve == dissolve;
+        let response = ui.interact(cell, ui.scope_id().with(("transition", index)), Sense::click());
+        let on = match index {
+            0 => kind == K::Cut,
+            1 => kind == K::Dissolve,
+            _ => !matches!(kind, K::Cut | K::Dissolve),
+        };
         if on {
             ui.painter().rect_filled(cell, RADIUS - 2.0, CARD);
         }
         let ink = if on || response.hovered() { TEXT } else { TEXT_FAINT };
-        ui.painter().text(cell.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.0), ink);
-        if response.on_hover_text(hint).clicked() {
-            state.dissolve = dissolve;
+        ui.painter().text(cell.center(), Align2::CENTER_CENTER, label.as_str(), FontId::proportional(12.0), ink);
+        let response = response.on_hover_text(hint);
+        match index {
+            0 if response.clicked() => state.transition = pc_model::Transition::of(K::Cut),
+            1 if response.clicked() && kind != K::Dissolve => state.transition = pc_model::Transition::of(K::Dissolve),
+            2 => more = Some(response),
+            _ => {}
         }
+    }
+    if let Some(more) = more {
+        egui::Popup::from_toggle_button_response(&more)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| transition_picker(ui, state));
+    }
+}
+
+/// The transition picker: every transition, grouped as ProPresenter groups them, with the
+/// chosen one's settings under them.
+fn transition_picker(ui: &mut egui::Ui, state: &mut HomeState) {
+    use pc_model::TransitionKind as K;
+    ui.set_width(330.0);
+    for category in ["Dissolves", "Movements", "Wipes", "None"] {
+        caption(ui, &category.to_uppercase());
+        ui.horizontal_wrapped(|ui| {
+            for kind in K::ALL.into_iter().filter(|kind| kind.category() == category) {
+                let on = state.transition.kind == kind;
+                if ui.add(egui::Button::selectable(on, kind.name()).min_size(vec2(100.0, 28.0))).clicked() && !on {
+                    // A newly chosen kind keeps the direction, and takes its usual time.
+                    state.transition = pc_model::Transition {
+                        direction: state.transition.direction,
+                        ..pc_model::Transition::of(kind)
+                    };
+                }
+            }
+        });
+        ui.add_space(4.0);
+    }
+    ui.separator();
+    transition_settings(ui, state);
+}
+
+/// The chosen transition's settings: its direction, if it moves, and how long it takes.
+fn transition_settings(ui: &mut egui::Ui, state: &mut HomeState) {
+    let look = &mut state.transition;
+    if look.kind == pc_model::TransitionKind::Cut {
+        ui.label(egui::RichText::new("Cut switches at once.").color(TEXT_DIM));
+        return;
+    }
+    egui::Grid::new("transition settings").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        if look.kind.has_direction() {
+            ui.label(egui::RichText::new("Direction").color(TEXT_DIM));
+            egui::ComboBox::from_id_salt("transition direction").selected_text(look.direction.name()).show_ui(
+                ui,
+                |ui| {
+                    for direction in pc_model::Direction::ALL {
+                        ui.selectable_value(&mut look.direction, direction, direction.name());
+                    }
+                },
+            );
+            ui.end_row();
+        }
+        ui.label(egui::RichText::new("Duration").color(TEXT_DIM));
+        ui.add(egui::Slider::new(&mut look.seconds, 0.1..=5.0).suffix(" s").max_decimals(1));
+        ui.end_row();
+    });
+    if ui.button("Reset to Default Parameters").clicked() {
+        *look = pc_model::Transition::of(look.kind);
     }
 }

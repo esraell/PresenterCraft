@@ -634,7 +634,7 @@ impl App {
                 slide: slide.clone(),
                 theme: theme.clone(),
                 enabled: self.show.output_enabled(),
-                dissolve: running.home_state.dissolve_seconds(),
+                transition: running.home_state.transition,
                 next,
             };
             if !output.send(OutputMsg::Show(frame)) {

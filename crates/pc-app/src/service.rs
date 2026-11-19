@@ -217,6 +217,9 @@ pub struct Prefs {
     /// Whether one slide fades into the next, and over how many seconds.
     pub dissolve: bool,
     pub dissolve_time: f32,
+    /// How one slide gives way to the next. `None` in a file from before transitions could be
+    /// chosen, which said only whether slides dissolved, and for how long.
+    pub transition: Option<pc_model::Transition>,
     /// How many slides fit across the grid, and the view: `grid`, `easy` or `table`.
     pub columns: usize,
     pub slide_view: String,
@@ -237,6 +240,7 @@ impl Default for Prefs {
         Prefs {
             dissolve: true,
             dissolve_time: 0.4,
+            transition: None,
             columns: 4,
             slide_view: "grid".to_owned(),
             ndi_name: "PresenterCraft Audience".to_owned(),

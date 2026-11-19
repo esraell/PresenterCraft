@@ -45,8 +45,8 @@ pub struct HomeState {
     /// The slide picked out without being shown, by a right-click.
     pub selected_slide: Option<SlideRef>,
     /// Whether one slide fades into the next, and over how many seconds.
-    pub dissolve: bool,
-    pub dissolve_time: f32,
+    /// How one slide gives way to the next on the screens.
+    pub transition: pc_model::Transition,
     /// True on the frame a rename began in the Objects list, so its field takes the keyboard.
     pub rename_started: bool,
     /// Set when a new song is asked for (Command-N). The app makes it and clears this.
@@ -597,8 +597,7 @@ impl Default for HomeState {
             slide_view: SlideView::Grid,
             columns: 4,
             selected_slide: None,
-            dissolve: true,
-            dissolve_time: 0.4,
+            transition: pc_model::Transition::default(),
             rename_started: false,
             new_song: false,
             renaming_song: None,
@@ -677,8 +676,9 @@ impl HomeState {
     /// The small choices kept between runs, as they are now.
     pub fn prefs(&self) -> crate::service::Prefs {
         crate::service::Prefs {
-            dissolve: self.dissolve,
-            dissolve_time: self.dissolve_time,
+            dissolve: self.transition.kind != pc_model::TransitionKind::Cut,
+            dissolve_time: self.transition.seconds,
+            transition: Some(self.transition),
             columns: self.columns,
             slide_view: match self.slide_view {
                 SlideView::Grid => "grid",
@@ -694,8 +694,13 @@ impl HomeState {
 
     /// Sets the small choices as they were saved.
     pub fn apply_prefs(&mut self, prefs: &crate::service::Prefs) {
-        self.dissolve = prefs.dissolve;
-        self.dissolve_time = prefs.dissolve_time.clamp(0.1, 5.0);
+        self.transition = prefs.transition.unwrap_or_else(|| {
+            if prefs.dissolve {
+                pc_model::Transition { seconds: prefs.dissolve_time.clamp(0.1, 5.0), ..pc_model::Transition::default() }
+            } else {
+                pc_model::Transition::of(pc_model::TransitionKind::Cut)
+            }
+        });
         self.columns = prefs.columns.clamp(2, 7);
         self.slide_view = match prefs.slide_view.as_str() {
             "easy" => SlideView::Easy,
@@ -708,7 +713,7 @@ impl HomeState {
 
     /// How long a new picture takes to fade in on the output; zero when slides cut.
     pub fn dissolve_seconds(&self) -> f32 {
-        if self.dissolve { self.dissolve_time.clamp(0.0, 5.0) } else { 0.0 }
+        self.transition.duration()
     }
 }
 
@@ -3147,11 +3152,7 @@ fn slide_area(
                 let slides = presentation.slide_count();
                 let count = if slides == 1 { "1 slide".to_owned() } else { format!("{slides} slides") };
                 ui.label(egui::RichText::new(count).size(12.0).color(crate::studio::TEXT_FAINT));
-                // Add Slide: a slide laid out like the last one, opened in the editor.
                 let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&show.selected()));
-                if !from_bible && ui.small_button("+").on_hover_text("Add Slide").clicked() {
-                    state.add_slide = Some(show.selected());
-                }
                 if !from_bible
                     && ui.small_button("Reflow").on_hover_text("Edit the song's words as text (Control-R)").clicked()
                 {
@@ -3168,6 +3169,18 @@ fn slide_area(
                     ui,
                     &pc_model::missing_fonts(&pc_model::fonts_used(presentation, theme), &state.fonts),
                 );
+            });
+        });
+        // The bar under the slides, as ProPresenter has it: Add Slide on the left; the
+        // transition, the slide view and the slide size on the right.
+        egui::Panel::bottom("slide bar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&show.selected()));
+                if !from_bible
+                    && ui.button("+  Add Slide").on_hover_text("Add a slide laid out like the last one").clicked()
+                {
+                    state.add_slide = Some(show.selected());
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| crate::studio::view_controls(ui, state));
             });
         });

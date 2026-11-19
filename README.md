@@ -42,8 +42,8 @@ ProPresenter.
 - Songs shown as a grid of slides, an Easy view (words only) or a Table view, with a size
   slider. Click a slide, or use the keys below, to put it on the audience screen.
 - Groups (Verse 1, Chorus, Bridge…) with coloured bars and one-key jumps.
-- Cut or Dissolve between slides, with the dissolve time. The Program preview fades with
-  the screen.
+- Transitions between slides: Cut, Dissolve, Fade Black, Fade White, Push, Move In, Reveal,
+  Wipe (each from any side), Iris and Zoom In, with their time, from the bar under the slides.
 - A Library of songs above a Service list (songs and saved Bible passages, in running order).
   Several services can be kept and switched between; the line between the two lists can be
   dragged.
@@ -112,7 +112,7 @@ Among the things PresenterCraft can't do yet:
 
 - Videos, audio, and live video inputs.
 - Stage layouts other than the built-in one; props and macros.
-- Transitions other than Cut and Dissolve.
+- Most of ProPresenter's 37 transitions (ten are built), and transitions per slide.
 - Formatting one word differently from the rest of its box.
 - Importing songs from other presentation apps or from CCLI SongSelect.
 - Tested builds for Windows and Linux.

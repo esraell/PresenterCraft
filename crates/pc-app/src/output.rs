@@ -19,8 +19,8 @@ pub struct Frame {
     pub theme: Arc<Theme>,
     /// When false the output is black whatever the slide is.
     pub enabled: bool,
-    /// How long the picture before fades into this one, in seconds. Zero switches at once.
-    pub dissolve: f32,
+    /// How the picture before gives way to this one.
+    pub transition: pc_model::Transition,
     /// The slide after the one on screen, for stage screens.
     pub next: Option<Arc<Slide>>,
 }
@@ -153,9 +153,9 @@ struct Output {
     fonts: Fonts,
     frame: Frame,
     targets: Vec<Target>,
-    /// When the fade under way began and how long it takes. Every window fades by this one
+    /// When the transition under way began, and which it is. Every window follows this one
     /// clock, so they stay in step.
-    fading: Option<(Instant, f32)>,
+    fading: Option<(Instant, pc_model::Transition)>,
     /// The NDI sources that are switched on, and the texture their picture is drawn into.
     ndi: Vec<(Uuid, NdiOutput)>,
     ndi_target: Option<wgpu::Texture>,
@@ -178,7 +178,14 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
     let mut output = Output {
         painter,
         fonts: Fonts::new(),
-        frame: Frame { media: None, slide: None, theme, enabled: true, dissolve: 0.0, next: None },
+        frame: Frame {
+            media: None,
+            slide: None,
+            theme,
+            enabled: true,
+            transition: pc_model::Transition::of(pc_model::TransitionKind::Cut),
+            next: None,
+        },
         targets: Vec::new(),
         fading: None,
         ndi: Vec::new(),
@@ -413,7 +420,8 @@ impl Output {
         let frame = self.frame.clone();
         self.send_ndi(&frame);
         // How far a fade already under way has got, before the clock is started again.
-        let amount = self.fading.map(|(started, seconds)| fade_amount(started, seconds));
+        let under_way = self.fading;
+        let amount = under_way.map(|(started, look)| fade_amount(started, look.duration()));
         let mut fading = false;
         for index in 0..self.targets.len() {
             let (id, w, h) = {
@@ -424,13 +432,16 @@ impl Output {
             // What is in the window this instant: the last whole picture, or a fade part-way.
             let target = &mut self.targets[index];
             let before = match target.fade.take() {
-                Some((from, to)) => Some(pc_render::cross_fade(&from, &to, amount.unwrap_or(1.0), w, h)),
+                Some((from, to)) => {
+                    let look = under_way.map_or(pc_model::Transition::default(), |(_, look)| look);
+                    Some(pc_render::transition(look.kind, look.direction, &from, &to, amount.unwrap_or(1.0), w, h))
+                }
                 None => target.shown.take(),
             };
             // Stage screens change at once: the people on stage need the words now.
             let stage = self.stage.contains(&id);
             match before {
-                Some(from) if new_picture && frame.dissolve > 0.0 && !stage => {
+                Some(from) if new_picture && frame.transition.duration() > 0.0 && !stage => {
                     target.fade = Some((from, scene));
                     fading = true;
                 }
@@ -440,7 +451,7 @@ impl Output {
                 }
             }
         }
-        self.fading = fading.then(|| (Instant::now(), frame.dissolve));
+        self.fading = fading.then(|| (Instant::now(), frame.transition));
         if fading {
             self.step_fade();
         }
@@ -497,8 +508,8 @@ impl Output {
     /// Draws the next step of the fade under way in every window, and finishes it when its
     /// time is up.
     fn step_fade(&mut self) {
-        let Some((started, seconds)) = self.fading else { return };
-        let amount = fade_amount(started, seconds);
+        let Some((started, look)) = self.fading else { return };
+        let amount = fade_amount(started, look.duration());
         for index in 0..self.targets.len() {
             let Some((from, to)) = self.targets[index].fade.take() else { continue };
             if amount >= 1.0 {
@@ -506,7 +517,7 @@ impl Output {
                 self.targets[index].shown = Some(to);
             } else {
                 let (w, h) = (self.targets[index].config.width, self.targets[index].config.height);
-                let scene = pc_render::cross_fade(&from, &to, amount, w, h);
+                let scene = pc_render::transition(look.kind, look.direction, &from, &to, amount, w, h);
                 self.present(index, &scene);
                 self.targets[index].fade = Some((from, to));
             }
