@@ -36,9 +36,9 @@ use std::time::{Duration, Instant};
 
 use pc_engine::{Command, Show};
 use pc_model::{MediaItem, Slide, Theme, Uuid, parse_song_text};
+use pc_render::Layers;
 use pc_render::vello::util::RenderContext;
 use pc_render::wgpu;
-use pc_render::{Layers, Picture};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -629,8 +629,9 @@ struct App {
     sources: Vec<Option<PathBuf>>,
     /// The presentations kept for Bible passages.
     bible_slots: [usize; 2],
-    /// The decoded picture of each media item, in the show's order.
-    pictures: Vec<Picture>,
+    /// The decoded picture of each media item, in the show's order: full size for the screens,
+    /// and small for the window.
+    pictures: Vec<media::MediaPicture>,
     /// Songs changed in the Edit view and not yet written to their files, and when the last
     /// change was made.
     unsaved: Vec<usize>,
@@ -1032,7 +1033,7 @@ impl App {
                         if let Ok(picture) = media::load_picture(path) {
                             let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                             self.show.add_media(MediaItem::new(name, path.clone()));
-                            self.pictures.push(picture);
+                            self.pictures.push(media::MediaPicture::of(picture));
                             applog::event("media", &format!("{} appeared in a followed folder", path.display()));
                             changed_list = true;
                         }
@@ -1042,7 +1043,7 @@ impl App {
                         if let Ok(picture) = media::load_picture(path)
                             && let Some(slot) = self.pictures.get_mut(index)
                         {
-                            *slot = picture;
+                            *slot = media::MediaPicture::of(picture);
                             applog::event("media", &format!("{} changed in a followed folder", path.display()));
                             if let (Some(running), Some(item)) = (self.running.as_mut(), self.show.media().get(index)) {
                                 running.thumbs.forget(item.id, &mut running.egui_renderer);
@@ -1384,7 +1385,7 @@ impl App {
             let song = self.show.presentations().get(at.presentation)?;
             song.slide(at.slide).map(|(_, slide)| Arc::new(slide.clone()))
         });
-        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).cloned();
+        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).map(|p| p.full.clone());
         // The audience comes first: tell the output before drawing anything for the operator.
         if let Some(output) = &running.output {
             let frame = Frame {
@@ -1434,7 +1435,8 @@ impl App {
         let Some(running) = self.running.as_mut() else {
             return;
         };
-        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).cloned();
+        // The preview is small: it takes the small copy.
+        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).map(|p| p.small.clone());
         let state = &running.home_state;
         // The slide as far as its builds have got, with nothing moving, and its linked text filled in.
         let step = self.show.build_step();
@@ -1554,7 +1556,7 @@ impl App {
                     let name =
                         path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
                     self.show.add_media(MediaItem::new(name, path.to_owned()));
-                    self.pictures.push(picture);
+                    self.pictures.push(media::MediaPicture::of(picture));
                     running.home_state.notice = None;
                     applog::event("media", &format!("added {} in {:?}", path.display(), started.elapsed()));
                 } else {
@@ -2687,7 +2689,7 @@ impl App {
             let media_for = |slide: &Slide| {
                 let id = home::media_of(slide)?;
                 let at = show.media().iter().position(|item| item.id == id)?;
-                Some((pictures.get(at)?, show.media()[at].fit))
+                Some((&pictures.get(at)?.small, show.media()[at].fit))
             };
             let mut thumb = |which: ThumbOf| match which {
                 ThumbOf::Slide(slide) => thumbs.get(gpu, egui_renderer, slide, media_for(slide), songs_theme),
@@ -2700,7 +2702,7 @@ impl App {
                     thumbs.get(gpu, egui_renderer, &kept, None, theme)
                 }
                 ThumbOf::Media(index) => {
-                    let (item, picture) = (show.media().get(index)?, pictures.get(index)?);
+                    let (item, picture) = (show.media().get(index)?, &pictures.get(index)?.small);
                     thumbs.get_media(gpu, egui_renderer, item.id, picture, songs_theme).map(|texture| (texture, false))
                 }
             };
@@ -4132,7 +4134,7 @@ fn main() -> ExitCode {
                     looping: entry.looping,
                     ..MediaItem::new(name, path.clone())
                 });
-                app.pictures.push(picture);
+                app.pictures.push(media::MediaPicture::of(picture));
             }
             Err(message) => eprintln!("{message}"),
         }

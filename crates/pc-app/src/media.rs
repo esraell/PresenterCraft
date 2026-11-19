@@ -8,6 +8,28 @@ use pc_render::Picture;
 /// most a few thousand pixels wide, and a phone photo kept at full size costs tens of megabytes.
 pub const MAX_SIDE: u32 = 2560;
 
+/// A video's still is shown only until its first picture comes (and in thumbnails), so it is
+/// kept smaller.
+const VIDEO_STILL_SIDE: u32 = 1280;
+
+/// How big the copy of a picture used for thumbnails and the Program preview is.
+pub const SMALL_SIDE: u32 = 960;
+
+/// A media item's picture at full size, for the screens, and a small copy, for thumbnails and
+/// the Program preview, so the window doesn't hold full-size pictures it shows small.
+#[derive(Clone)]
+pub struct MediaPicture {
+    pub full: Picture,
+    pub small: Picture,
+}
+
+impl MediaPicture {
+    pub fn of(full: Picture) -> MediaPicture {
+        let small = full.shrunk(SMALL_SIDE);
+        MediaPicture { full, small }
+    }
+}
+
 /// Pictures decoded here.
 const OWN_PICTURES: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
 
@@ -183,7 +205,7 @@ pub fn load_picture(path: &Path) -> Result<Picture, String> {
             .ok_or_else(|| format!("{name}: the picture is empty."))
     };
     if PLAYABLE.contains(&ext.as_str()) {
-        return from_system(pc_video::still(path, MAX_SIDE));
+        return from_system(pc_video::still(path, VIDEO_STILL_SIDE));
     }
     if VIDEOS.contains(&ext.as_str()) {
         return Err(format!("{name}: PresenterCraft plays MP4 and MOV videos. Convert this one to MP4 first."));
