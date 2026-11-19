@@ -124,6 +124,8 @@ pub struct HomeState {
     pub screen_status: Vec<(String, bool)>,
     /// The screen chosen in the Screens window.
     pub screen_selected: usize,
+    /// True while the notes of the slide on screen are shown above the slides.
+    pub show_notes: bool,
     /// The tab open under the Program panel: 0 Timers, 1 Messages, 2 Stage.
     pub live_tab: usize,
     /// The timers, and true when their settings have changed and are to be saved.
@@ -628,6 +630,7 @@ impl Default for HomeState {
             screens_changed: false,
             screen_status: Vec::new(),
             screen_selected: 0,
+            show_notes: false,
             live_tab: 0,
             timers: Vec::new(),
             timers_changed: false,
@@ -3055,6 +3058,13 @@ fn slide_area(
                 if !from_bible && ui.small_button("+").on_hover_text("Add Slide").clicked() {
                     state.add_slide = Some(show.selected());
                 }
+                if ui
+                    .add(egui::Button::selectable(state.show_notes, "Notes"))
+                    .on_hover_text("Show the notes of the slide on screen, for whoever runs the slides")
+                    .clicked()
+                {
+                    state.show_notes = !state.show_notes;
+                }
                 missing_font_notice(
                     ui,
                     &pc_model::missing_fonts(&pc_model::fonts_used(presentation, theme), &state.fonts),
@@ -3062,6 +3072,24 @@ fn slide_area(
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| crate::studio::view_controls(ui, state));
             });
         });
+        // Operator notes: the notes of the slide on screen, or of the one picked out.
+        if state.show_notes {
+            let at = show.live().or(state.selected_slide).or(show.cursor());
+            let notes = at
+                .and_then(|at| show.presentations().get(at.presentation)?.slide(at.slide))
+                .and_then(|(_, slide)| slide.notes.clone());
+            let strip = Frame::new().fill(crate::studio::CARD).inner_margin(egui::Margin::symmetric(20, 8));
+            egui::Panel::top("operator notes").resizable(false).frame(strip).show(ui, |ui| {
+                let (text, ink) = match notes {
+                    Some(notes) => (notes, crate::studio::TEXT),
+                    None => (
+                        "No notes for this slide. Add them in the editor with Slide Notes.".to_owned(),
+                        crate::studio::TEXT_FAINT,
+                    ),
+                };
+                ui.label(egui::RichText::new(text).size(13.0).color(ink));
+            });
+        }
         slide_grid(ui, show, show.selected(), state, thumb, commands);
     });
 }

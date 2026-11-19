@@ -45,6 +45,9 @@ pub enum Action {
     EditView,
     BibleView,
     ThemesView,
+    TimersTab,
+    MessagesTab,
+    StageTab,
     GridView,
     EasyView,
     TableView,
@@ -58,6 +61,8 @@ pub enum Action {
     IdentifyScreens,
     ConfigureScreens,
     Website,
+    ReportIssue,
+    WhatsNew,
 }
 
 /// A keyboard shortcut. Every one has Command or Control in it, so none is ever taken from
@@ -204,6 +209,10 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Check(Action::BibleView, "Bible", ctrl('B')),
             Check(Action::ThemesView, "Themes", ctrl('T')),
             Line,
+            Check(Action::TimersTab, "Timers", ctrl('C')),
+            Check(Action::MessagesTab, "Messages", ctrl('M')),
+            Check(Action::StageTab, "Stage", shift_cmd('S')),
+            Line,
             Check(Action::GridView, "Grid View", None),
             Check(Action::EasyView, "Easy View", None),
             Check(Action::TableView, "Table View", None),
@@ -236,7 +245,15 @@ pub const MENUS: &[(&str, &[Entry])] = &[
         "Window",
         &[Entry::System(System::Minimize), Entry::System(System::Zoom), Line, Entry::System(System::BringAllToFront)],
     ),
-    ("Help", &[Do(Action::Website, "PresenterCraft on GitHub", None)]),
+    (
+        "Help",
+        &[
+            Do(Action::Website, "PresenterCraft Help", None),
+            Do(Action::WhatsNew, "What's New in PresenterCraft", None),
+            Line,
+            Do(Action::ReportIssue, "Report an Issue…", None),
+        ],
+    ),
 ];
 
 /// Every item that does something, with its shortcut.

@@ -46,6 +46,8 @@ pub struct InspectorState {
     pub copied_style: Option<TextStyle>,
     /// Keep the shape of the box when its width or height is typed.
     pub lock_shape: bool,
+    /// True while the slide's notes are open under the inspector.
+    pub notes_open: bool,
     /// Switches for the options that are shown but not built yet, so they can still be ticked.
     pub later: Later,
     /// What has been typed to narrow the list of fonts.
@@ -353,8 +355,14 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
                         ui.spacing_mut().item_spacing.x = 8.0;
                         let for_theme = state.theme_edit.is_some();
                         if !for_theme {
-                            ui.add_enabled(false, egui::Button::new("Slide Notes"))
-                                .on_disabled_hover_text(not_built("Slide Notes"));
+                            let open = state.inspector.notes_open;
+                            if ui
+                                .add(egui::Button::selectable(open, "Slide Notes"))
+                                .on_hover_text("Notes for whoever runs the slides; the audience never sees them")
+                                .clicked()
+                            {
+                                state.inspector.notes_open = !open;
+                            }
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Show").on_hover_text("Go back to the Show view").clicked() {
@@ -369,6 +377,26 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
                     });
                 },
             );
+            // The slide's notes, above the footer while they are open.
+            if state.inspector.notes_open
+                && state.theme_edit.is_none()
+                && let Some(draft) = state.editing.as_mut()
+            {
+                egui::Panel::bottom("slide notes").resizable(false).frame(Frame::new().fill(PANEL).inner_margin(8)).show(
+                    ui,
+                    |ui| {
+                        ui.label(egui::RichText::new("SLIDE NOTES").size(10.5).strong().color(DIM));
+                        let mut notes = draft.slide.notes.clone().unwrap_or_default();
+                        let field = egui::TextEdit::multiline(&mut notes)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Notes for whoever runs the slides");
+                        if ui.add(field).changed() {
+                            draft.slide.notes = (!notes.trim().is_empty()).then_some(notes);
+                        }
+                    },
+                );
+            }
 
             egui::ScrollArea::vertical().id_salt("inspector body").auto_shrink([false, false]).show(ui, |ui| {
                 Frame::new()

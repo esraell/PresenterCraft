@@ -1803,6 +1803,9 @@ impl App {
             A::EditView => state.view_request = Some(1),
             A::BibleView => state.view_request = Some(2),
             A::ThemesView => state.view_request = Some(3),
+            A::TimersTab => state.live_tab = 0,
+            A::MessagesTab => state.live_tab = 1,
+            A::StageTab => state.live_tab = 2,
             A::GridView => state.slide_view = home::SlideView::Grid,
             A::EasyView => state.slide_view = home::SlideView::Easy,
             A::TableView => state.slide_view = home::SlideView::Table,
@@ -1814,10 +1817,13 @@ impl App {
             A::Audience => commands.push(Command::SetOutputEnabled(!self.show.output_enabled())),
             A::Stage => state.stage_on = !state.stage_on,
             A::IdentifyScreens => state.identify = !state.identify,
-            A::Website => {
-                if let Err(e) =
-                    std::process::Command::new("open").arg("https://github.com/esraell/PresenterCraft").spawn()
-                {
+            A::Website | A::WhatsNew | A::ReportIssue => {
+                let page = match action {
+                    A::WhatsNew => "https://github.com/esraell/PresenterCraft/commits/master",
+                    A::ReportIssue => "https://github.com/esraell/PresenterCraft/issues/new",
+                    _ => "https://github.com/esraell/PresenterCraft#readme",
+                };
+                if let Err(e) = std::process::Command::new("open").arg(page).spawn() {
                     state.notice = Some(format!("Could not open the web page: {e}"));
                 }
             }
@@ -1854,6 +1860,9 @@ impl App {
             menu.set_checked(|action| match action {
                 A::Audience => output_on,
                 A::Stage => state.stage_on,
+                A::TimersTab => state.live_tab == 0,
+                A::MessagesTab => state.live_tab == 1,
+                A::StageTab => state.live_tab == 2,
                 A::IdentifyScreens => state.identify,
                 _ => action == view || action == slide_view,
             });
