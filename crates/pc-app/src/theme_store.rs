@@ -69,6 +69,16 @@ fn save_in(folder: &Path, theme: &Theme) -> Result<(), String> {
         .map_err(|e| format!("Could not save the theme: {e}"))
 }
 
+/// Removes a theme's file. A theme that was never saved has none, which is not a failure.
+pub fn delete(theme: &Theme) -> Result<(), String> {
+    let Some(path) = folder().map(|folder| folder.join(format!("{}.pctheme", theme.id))) else { return Ok(()) };
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Could not delete the theme: {e}")),
+    }
+}
+
 /// Remembers which themes songs and Bible slides use, for the next start.
 pub fn remember_in_use(songs: &Theme, bible: &Theme, bible_layout: pc_model::Template) {
     if let Some(file) = in_use_file() {

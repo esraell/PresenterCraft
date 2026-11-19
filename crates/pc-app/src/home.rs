@@ -59,6 +59,8 @@ pub struct HomeState {
     /// as typed; and a name just typed, with the song's and group's places, for the app to take.
     pub renaming_group: Option<(usize, String)>,
     pub pending_group_name: Option<(usize, usize, String)>,
+    /// The theme the operator has asked to delete, while they are being asked to confirm.
+    pub confirm_delete_theme: Option<usize>,
     /// The open theme's name while it is being retyped in the list of themes.
     pub renaming_theme: Option<String>,
     /// Objects copied in the editor, and the words that went to the system clipboard with them.
@@ -491,6 +493,8 @@ pub enum ThemeRequest {
     New,
     /// Open the Theme Editor on the theme at this place in the list.
     Edit(usize),
+    /// Delete the theme at this place in the list, for good.
+    Delete(usize),
 }
 
 /// The picture of the audience screen for the Program panel: what is there now, what was
@@ -528,6 +532,7 @@ impl Default for HomeState {
             pending_title: None,
             renaming_group: None,
             pending_group_name: None,
+            confirm_delete_theme: None,
             renaming_theme: None,
             object_clip: Vec::new(),
             object_clip_text: String::new(),
@@ -666,6 +671,7 @@ pub fn home_ui(
         state.new_song = true;
     }
     settings_window(ui, state);
+    confirm_delete_theme(ui, state);
     if state.editing.is_some() {
         edit_view(ui, show, state, theme, thumb, canvas);
         return commands;
@@ -1619,6 +1625,60 @@ fn missing_font_notice(ui: &mut egui::Ui, missing: &[String]) {
     });
 }
 
+/// Asks before a theme is deleted, since it cannot be brought back.
+fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
+    let Some(index) = state.confirm_delete_theme else { return };
+    let Some(name) = state.theme_names.get(index).cloned() else {
+        state.confirm_delete_theme = None;
+        return;
+    };
+    let in_use = match (state.theme_for_songs == index, state.theme_for_bible == index) {
+        (true, true) => "Songs and Bible slides use it; they will use the built-in theme instead.",
+        (true, false) => "Songs use it; they will use the built-in theme instead.",
+        (false, true) => "Bible slides use it; they will use the built-in theme instead.",
+        (false, false) => "",
+    };
+    let mut decided = None;
+    egui::Window::new("Delete theme")
+        .title_bar(false)
+        .collapsible(false)
+        .resizable(false)
+        .fade_in(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, -40.0])
+        .show(ui.ctx(), |ui| {
+            ui.set_width(340.0);
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(format!("Delete the theme \"{name}\"?")).font(crate::studio::semibold(15.0)));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("It cannot be brought back.").color(DIM));
+            if !in_use.is_empty() {
+                ui.label(egui::RichText::new(in_use).color(DIM));
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let size = vec2(96.0, 30.0);
+                    if crate::studio::block_button(ui, size, "Delete", "", crate::studio::Emphasis::Live).clicked() {
+                        decided = Some(true);
+                    }
+                    if crate::studio::block_button(ui, size, "Cancel", "", crate::studio::Emphasis::Plain).clicked() {
+                        decided = Some(false);
+                    }
+                });
+            });
+            // Return does nothing here on purpose; Escape cancels.
+            if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                decided = Some(false);
+            }
+        });
+    if let Some(delete) = decided {
+        state.confirm_delete_theme = None;
+        if delete {
+            state.theme_request = Some(ThemeRequest::Delete(index));
+        }
+    }
+}
+
 /// The top of the Theme Editor's left column: every theme in a plain list. A click opens a
 /// theme; a click on the open theme's name renames it; a tag shows which kinds of slide use
 /// each one, and a right-click changes that. The plus makes a new theme.
@@ -1723,6 +1783,15 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                                 start_rename = true;
                                 ui.close();
                             }
+                        }
+                        // Deleting asks first. The built-in theme is always kept.
+                        ui.separator();
+                        let delete = ui
+                            .add_enabled(index != 0, egui::Button::new("Delete Theme…"))
+                            .on_disabled_hover_text("The built-in theme is always kept");
+                        if delete.clicked() {
+                            state.confirm_delete_theme = Some(index);
+                            ui.close();
                         }
                     });
                 }

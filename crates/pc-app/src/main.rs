@@ -716,6 +716,33 @@ impl App {
                 self.open_theme_editor(self.themes.len() - 1);
             }
             Some(ThemeRequest::Edit(index)) if index < count => self.open_theme_editor(index),
+            // The built-in theme, at the front of the list, is always kept.
+            Some(ThemeRequest::Delete(index)) if index > 0 && index < count => {
+                // Write what is waiting first, so the places in the list still mean what they did.
+                self.save_unsaved();
+                let gone = self.themes.remove(index);
+                let problem = theme_store::delete(&gone).err();
+                // Whatever used it falls back to the built-in theme; later themes move up one.
+                let moved = |at: usize| match at.cmp(&index) {
+                    std::cmp::Ordering::Less => at,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => at - 1,
+                };
+                self.songs_theme = moved(self.songs_theme);
+                self.bible_theme = moved(self.bible_theme);
+                self.themes_changed();
+                theme_store::remember_in_use(&self.theme, &self.theme_for_bible, self.bible_layout);
+                let was_open =
+                    self.running.as_ref().and_then(|r| r.home_state.theme_edit.as_ref().map(|edit| edit.index));
+                if let Some(open) = was_open {
+                    self.open_theme_editor(moved(open));
+                } else {
+                    self.refresh_output();
+                }
+                if let (Some(problem), Some(running)) = (problem, self.running.as_mut()) {
+                    running.home_state.notice = Some(problem);
+                }
+            }
             _ => {}
         }
         let Some(running) = self.running.as_mut() else {
