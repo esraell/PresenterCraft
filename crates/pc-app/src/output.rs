@@ -132,7 +132,13 @@ type NdiStatuses = Arc<Mutex<Vec<(Uuid, NdiStatus)>>>;
 pub struct LivePreview {
     front: std::sync::atomic::AtomicUsize,
     drawn: std::sync::atomic::AtomicU64,
+    /// True while the window has been woken for a new picture and hasn't shown it yet, so a
+    /// burst of pictures wakes it once.
+    wake_pending: std::sync::atomic::AtomicBool,
 }
+
+/// Wakes the operator's window (from the output thread) to show a new live preview.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 impl LivePreview {
     /// Which texture holds the newest picture, and how many have been drawn.
@@ -143,11 +149,13 @@ impl LivePreview {
 }
 
 /// The size of the live preview, and how often a playing video's pictures are drawn in it at
-/// most: twenty a second (every change of slide or media is drawn at once, and fades as the
-/// screens do). Measured on an M3 Max with a 720p video on two window screens: about 28-30% CPU
-/// for the whole app either way, within the run-to-run noise of windows macOS keeps hidden.
+/// most: about thirty a second, so a 24 or 30 fps video shows every picture and a 60 fps one
+/// every other (every change of slide or media is drawn at once, and fades as the screens do).
+/// Measured in quiet runs (release build, a 30 fps 720p video, two window screens; ten-second
+/// averages, three runs each): about 23% CPU for the whole app at this cap, 21% at a 50 ms cap,
+/// which shows only every other picture of a 30 fps video.
 pub const LIVE_PREVIEW_SIZE: (u32, u32) = (640, 360);
-const LIVE_PREVIEW_EVERY: Duration = Duration::from_millis(50);
+const LIVE_PREVIEW_EVERY: Duration = Duration::from_millis(30);
 
 pub struct OutputHandle {
     tx: Sender<OutputMsg>,
@@ -158,7 +166,12 @@ pub struct OutputHandle {
 
 impl OutputHandle {
     /// Starts the thread. It shows nothing until it is given a window or an NDI name.
-    pub fn spawn(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>) -> Result<OutputHandle, String> {
+    pub fn spawn(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        theme: Arc<Theme>,
+        waker: Option<Waker>,
+    ) -> Result<OutputHandle, String> {
         let (tx, rx) = channel();
         let ndi_status: NdiStatuses = Arc::default();
         let status = ndi_status.clone();
@@ -166,7 +179,7 @@ impl OutputHandle {
         let shared = live_preview.clone();
         let thread = std::thread::Builder::new()
             .name("output".to_owned())
-            .spawn(move || run(device, queue, theme, rx, status, shared))
+            .spawn(move || run(device, queue, theme, rx, status, shared, waker))
             .map_err(|e| format!("could not start the output thread: {e}"))?;
         Ok(OutputHandle { tx, thread: Some(thread), ndi_status, live_preview })
     }
@@ -174,6 +187,11 @@ impl OutputHandle {
     /// Which live preview texture holds the newest picture, and how many have been drawn.
     pub fn live_preview(&self) -> (usize, u64) {
         self.live_preview.newest()
+    }
+
+    /// The window has woken for the newest live preview: the next new one wakes it again.
+    pub fn live_preview_woken(&self) {
+        self.live_preview.wake_pending.store(false, std::sync::atomic::Ordering::Release);
     }
 
     /// Never blocks. Returns false when the thread has ended and the message went nowhere.
@@ -295,6 +313,7 @@ struct Output {
     /// The live preview: what the window is told, the two textures drawn into, and when the
     /// last was drawn.
     live_preview: Arc<LivePreview>,
+    waker: Option<Waker>,
     preview_targets: Vec<wgpu::Texture>,
     previewed_at: Instant,
     /// The live preview's whole picture, and a fade under way in it: from, to.
@@ -309,6 +328,7 @@ fn run(
     rx: Receiver<OutputMsg>,
     ndi_status: NdiStatuses,
     live_preview: Arc<LivePreview>,
+    waker: Option<Waker>,
 ) {
     let painter = match Painter::new(&device) {
         Ok(painter) => painter,
@@ -351,6 +371,7 @@ fn run(
         timing: crate::applog::Timing::new("screen drawings"),
         video_pictures: 0,
         live_preview,
+        waker,
         preview_targets: Vec::new(),
         previewed_at: Instant::now(),
         preview_shown: None,
@@ -821,6 +842,13 @@ impl Output {
         if self.painter.paint(&self.device, &self.queue, scene, &view, w, h).is_ok() {
             self.live_preview.front.store(back, Release);
             self.live_preview.drawn.fetch_add(1, Release);
+            // Whatever moved (a video, a build, scrolling words, a timer), the window is woken
+            // to show it; once, until it has.
+            if !self.live_preview.wake_pending.swap(true, Acquire)
+                && let Some(wake) = &self.waker
+            {
+                wake();
+            }
         }
         self.previewed_at = Instant::now();
     }

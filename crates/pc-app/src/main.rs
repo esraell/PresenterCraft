@@ -330,6 +330,9 @@ impl SongHistory {
     }
 }
 
+/// The user event the output thread sends when it has drawn a new live preview.
+const LIVE_PREVIEW_EVENT: &str = "presentercraft.live-preview";
+
 /// What a theme calls its templates, in order.
 fn template_names(theme: &Theme) -> Vec<String> {
     theme.templates.iter().map(|template| template.name.clone()).collect()
@@ -597,11 +600,9 @@ struct Running {
     egui_renderer: egui_wgpu::Renderer,
     thumbs: Thumbs,
     preview: Option<egui::TextureId>,
-    /// The live preview's two textures, as the window knows them; how many drawings of it the
-    /// window has shown; and until when it is looked at often (a fade just set going).
+    /// The live preview's two textures, as the window knows them.
     live_preview_ids: Vec<egui::TextureId>,
-    live_preview_seen: u64,
-    live_preview_until: Instant,
+
     /// The preview picture before the last change, and when that change was, so the preview
     /// fades as the output does.
     preview_before: Option<egui::TextureId>,
@@ -631,6 +632,8 @@ struct ScreenWindow {
 
 struct App {
     options: Options,
+    /// Wakes the event loop from other threads (the output thread, for a new live preview).
+    waker: Option<winit::event_loop::EventLoopProxy<String>>,
     show: Show,
     /// The file each song came from, in the show's order; `None` for the bundled sample.
     sources: Vec<Option<PathBuf>>,
@@ -764,7 +767,16 @@ impl App {
         gpu.device.on_uncaptured_error(Arc::new(|error| eprintln!("Graphics error: {error}")));
         let home_format = surface_format(&home_surface, handle.adapter())?;
 
-        let output = OutputHandle::spawn(gpu.device.clone(), gpu.queue.clone(), self.theme.clone())?;
+        let waker: Option<output::Waker> = self.waker.clone().map(|proxy| {
+            let proxy = std::sync::Mutex::new(proxy);
+            let wake: output::Waker = Arc::new(move || {
+                if let Ok(proxy) = proxy.lock() {
+                    let _ = proxy.send_event(LIVE_PREVIEW_EVENT.to_owned());
+                }
+            });
+            wake
+        });
+        let output = OutputHandle::spawn(gpu.device.clone(), gpu.queue.clone(), self.theme.clone(), waker)?;
 
         let size = home_window.inner_size();
         let home_config = wgpu::SurfaceConfiguration {
@@ -828,8 +840,7 @@ impl App {
             thumbs,
             preview,
             live_preview_ids,
-            live_preview_seen: 0,
-            live_preview_until: Instant::now(),
+
             preview_before: None,
             preview_changed: Instant::now(),
             preview_shows_stage: false,
@@ -1231,20 +1242,6 @@ impl App {
         }
     }
 
-    /// Draws the window again whenever the output thread has drawn a new live preview, so the
-    /// Program preview shows what the screens show. It is looked at often only while something
-    /// moves: a video playing, or a fade just set going. Says when to look again.
-    fn tick_live_preview(&mut self) -> Option<Instant> {
-        let moving = self.video.is_some() || self.slide_video.is_some();
-        let running = self.running.as_mut()?;
-        let (_, drawn) = running.output.as_ref()?.live_preview();
-        if drawn != running.live_preview_seen {
-            running.live_preview_seen = drawn;
-            running.home_window.request_redraw();
-        }
-        (moving || Instant::now() < running.live_preview_until).then(|| Instant::now() + Duration::from_millis(16))
-    }
-
     /// Keeps the video in a box on the slide going; if the system's player can't play it,
     /// FFmpeg takes over. Says when to look again.
     fn tick_slide_video(&mut self) -> Option<Instant> {
@@ -1546,9 +1543,6 @@ impl App {
                 about,
                 build_step: self.show.build_step(),
             };
-            // The live preview follows the screens: watched closely while their fade runs.
-            let watch = Duration::from_secs_f32(frame.transition.duration().max(frame.media_transition.duration()));
-            running.live_preview_until = Instant::now() + watch + Duration::from_millis(300);
             if !output.send(OutputMsg::Show(frame)) {
                 running.home_state.output_stopped = true;
             }
@@ -1705,7 +1699,7 @@ impl App {
                 }
                 Ok(imported) => {
                     applog::event("editor", &format!("dropped {} on the slide", path.display()));
-                    state.picture_to_add = Some(imported);
+                    state.picture_to_add.push(imported);
                 }
                 Err(problem) => state.notice = Some(problem),
             }
@@ -1834,7 +1828,6 @@ impl App {
         if let Some(running) = self.running.as_mut() {
             if let Some(output) = &running.output {
                 output.send(OutputMsg::Announcement(Some(shown.clone())));
-                running.live_preview_until = Instant::now() + Duration::from_millis(900);
             }
             running.home_state.announcement_live = Some(song);
             running.home_window.request_redraw();
@@ -2048,7 +2041,7 @@ impl App {
             .pick_file();
         let state = &mut running.home_state;
         match chosen.map(|path| images::import(&path)) {
-            Some(Ok(picture)) => state.picture_to_add = Some(picture),
+            Some(Ok(picture)) => state.picture_to_add.push(picture),
             Some(Err(problem)) => state.notice = Some(problem),
             None => {}
         }
@@ -3143,7 +3136,7 @@ impl App {
                 // Testing aid: put a picture from a file on the slide, as Picture… does.
                 if let Some(path) = std::env::var_os("PRESENTERCRAFT_CAPTURE_PICTURE") {
                     match images::import(std::path::Path::new(&path)) {
-                        Ok(picture) => running.home_state.picture_to_add = Some(picture),
+                        Ok(picture) => running.home_state.picture_to_add.push(picture),
                         Err(problem) => eprintln!("{problem}"),
                     }
                 }
@@ -3492,7 +3485,6 @@ impl App {
         });
         if let Some(output) = &running.output {
             output.send(OutputMsg::Overlay(overlay.clone()));
-            running.live_preview_until = Instant::now() + Duration::from_millis(500);
         }
         running.overlay_sent = Some(overlay);
         if message_changed {
@@ -3623,6 +3615,7 @@ impl App {
                     state.confirm_delete_theme = None;
                     state.confirm_delete_songs.clear();
                     state.confirm_delete_media.clear();
+                    state.confirm_delete_slide = None;
                 } else if let Some(screen) =
                     running.screen_windows.iter().find(|have| Some(have.window.id()) == self.focused).map(|w| w.screen)
                     && let Some(closed) = state.screens.iter_mut().find(|have| have.id == screen)
@@ -3873,6 +3866,31 @@ impl ApplicationHandler<String> for App {
     }
 
     fn user_event(&mut self, el: &ActiveEventLoop, id: String) {
+        // The output thread drew a new live preview: the window shows it.
+        if id == LIVE_PREVIEW_EVENT {
+            if let Some(running) = self.running.as_ref()
+                && let Some(output) = running.output.as_ref()
+            {
+                output.live_preview_woken();
+                running.home_window.request_redraw();
+                // Testing aid: say once a second how many new previews the window was woken for.
+                if std::env::var_os("PRESENTERCRAFT_TRACE_PREVIEW").is_some() {
+                    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                    static SINCE: std::sync::OnceLock<std::sync::Mutex<Instant>> = std::sync::OnceLock::new();
+                    let count = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let since = SINCE.get_or_init(|| std::sync::Mutex::new(Instant::now()));
+                    if let Ok(mut since) = since.lock()
+                        && since.elapsed() >= Duration::from_secs(1)
+                    {
+                        let (_, drawn) = output.live_preview();
+                        eprintln!("preview wakes {count} in {:.1}s, {drawn} drawn", since.elapsed().as_secs_f32());
+                        COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+                        *since = Instant::now();
+                    }
+                }
+            }
+            return;
+        }
         if let Some(action) = menubar::action_of(&id) {
             self.menu_action(el, action);
             self.sync_panels(el);
@@ -4160,7 +4178,6 @@ impl ApplicationHandler<String> for App {
         self.sync_overlay();
         let video_at = self.tick_video();
         let box_video_at = self.tick_slide_video();
-        let preview_at = self.tick_live_preview();
         let audio_at = self.tick_audio();
         let announce_at = self.tick_announcements();
         let cycle_at = self.tick_media_cycle();
@@ -4200,7 +4217,6 @@ impl ApplicationHandler<String> for App {
             save_at,
             video_at,
             box_video_at,
-            preview_at,
             audio_at,
             announce_at,
             cycle_at,
@@ -4325,6 +4341,7 @@ fn main() -> ExitCode {
     let (themes, songs_theme, bible_theme, bible_layout) = theme_store::load_all();
     let mut app = App {
         options,
+        waker: Some(event_loop.create_proxy()),
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
         sources,
         bible_slots,

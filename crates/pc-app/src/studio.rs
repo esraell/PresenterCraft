@@ -1219,8 +1219,8 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
         if items.is_empty() {
             ui.label(
                 egui::RichText::new(
-                    "Nothing yet. Drag songs onto this playlist, use + on a song in a library, or Save to \
-                     Playlist on the Bible page.",
+                    "Nothing yet. Drag songs onto this playlist, use + on a song in a library, or Save As… \
+                     › Add to Playlist on the Bible page.",
                 )
                 .size(12.0)
                 .color(TEXT_FAINT),
@@ -1365,6 +1365,9 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
         Some(Ask::Open(index)) => {
             state.services.chosen = Some(index);
             state.picking = crate::home::Picking::Nothing;
+            // The slide area scrolls to it, even if it was the one last scrolled to.
+            state.slides_scrolled_to = None;
+            state.slides_picked_here = false;
             match items.get(index) {
                 Some(Item::Song { key, .. }) => {
                     if let Some(at) = song_at(&state.song_keys, key) {
@@ -2174,5 +2177,136 @@ fn media_item_menu(ui: &mut egui::Ui, state: &mut HomeState, index: usize, item:
         state.confirm_delete_media =
             if state.picked_media.contains(&index) { state.picked_media.clone() } else { vec![index] };
         ui.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use egui::{Event, Modifiers, PointerButton, RawInput, pos2};
+
+    use super::*;
+    use crate::home::{Picking, Sweep};
+
+    fn rows() -> Vec<(usize, Rect)> {
+        (0..3).map(|n| (5 + n, Rect::from_min_size(pos2(0.0, n as f32 * 32.0), vec2(200.0, 30.0)))).collect()
+    }
+
+    /// Runs `body` once in a frame, with nothing pressed.
+    fn in_frame(body: impl FnOnce(&mut egui::Ui)) {
+        let ctx = egui::Context::default();
+        let mut body = Some(body);
+        let output = ctx.run_ui(RawInput::default(), |ui| {
+            if let Some(body) = body.take() {
+                body(ui);
+            }
+        });
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn a_drag_down_the_song_list_picks_the_songs_it_passes_and_carries_them_out_of_it() {
+        let list = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 300.0));
+        let mut state = HomeState {
+            sweep: Some(Sweep {
+                list: Picking::Songs,
+                from: Some(5),
+                start: pos2(10.0, 15.0),
+                keeps: false,
+                carried: false,
+            }),
+            ..HomeState::default()
+        };
+        let mut carried = None;
+        in_frame(|ui| {
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 75.0)), true, |_| {});
+            assert_eq!(state.picked_songs, vec![5, 6, 7], "from the first row to the one under the pointer");
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 40.0)), true, |_| {});
+            assert_eq!(state.picked_songs, vec![5, 6], "moving back up picks fewer");
+            // Out of the list: the songs picked are carried, once.
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 420.0)), true, |picked| {
+                carried = Some(picked);
+            });
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 430.0)), true, |_| {
+                panic!("carried twice")
+            });
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 430.0)), false, |_| {});
+        });
+        assert_eq!(carried, Some(vec![5, 6]));
+        assert!(state.sweep.is_none(), "letting go ends the drag");
+    }
+
+    #[test]
+    fn a_drag_on_one_of_several_picked_songs_carries_them_all_without_repicking() {
+        let list = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 300.0));
+        let mut state = HomeState {
+            picked_songs: vec![5, 7],
+            sweep: Some(Sweep {
+                list: Picking::Songs,
+                from: Some(7),
+                start: pos2(10.0, 80.0),
+                keeps: true,
+                carried: false,
+            }),
+            ..HomeState::default()
+        };
+        let mut carried = None;
+        in_frame(|ui| {
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(10.0, 20.0)), true, |_| {});
+            assert_eq!(state.picked_songs, vec![5, 7]);
+            sweep_rows(ui, &mut state, Picking::Songs, &rows(), list, Some(pos2(-30.0, 20.0)), true, |picked| {
+                carried = Some(picked);
+            });
+        });
+        assert_eq!(carried, Some(vec![5, 7]));
+    }
+
+    /// Draws the media bin alone in a 1280 × 800 window for each frame of pointer events, as the
+    /// app does, keeping `state` between them.
+    fn media_frames(show: &Show, state: &mut HomeState, frames: &[Vec<Event>]) {
+        let ctx = egui::Context::default();
+        for (n, events) in frames.iter().enumerate() {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0))),
+                time: Some(n as f64 * 0.1),
+                events: events.clone(),
+                ..RawInput::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                let mut commands = Vec::new();
+                media_strip(ui, show, state, &mut |_| None, &mut commands);
+            });
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    fn press(at: egui::Pos2, pressed: bool) -> Event {
+        Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
+    }
+
+    #[test]
+    fn a_drag_between_media_items_draws_a_box_that_picks_every_item_it_touches() {
+        let mut show = Show::new(vec![Arc::new(pc_model::parse_song_text("Song", "Words\n"))]);
+        for name in ["a.png", "b.png", "c.png"] {
+            show.add_media(pc_model::MediaItem::new(name.into(), name.into()));
+        }
+        let mut state = HomeState::default();
+        // Pressed in the empty part of the strip, right of the items, then dragged left over
+        // the first two (each is 144 wide, 12 apart, from 16 in).
+        let start = pos2(1000.0, 740.0);
+        let frames = vec![
+            vec![Event::PointerMoved(start)],
+            vec![press(start, true)],
+            vec![Event::PointerMoved(pos2(900.0, 738.0))],
+            vec![Event::PointerMoved(pos2(100.0, 730.0))],
+            vec![Event::PointerMoved(pos2(100.0, 730.0))],
+        ];
+        media_frames(&show, &mut state, &frames);
+        assert_eq!(state.picked_media, vec![0, 1, 2], "the box from x 1000 to x 100 touches all three");
+        assert_eq!(state.picking, Picking::Media, "Delete now deletes from the media bin");
+        let frames = vec![vec![press(pos2(100.0, 730.0), false)], vec![]];
+        media_frames(&show, &mut state, &frames);
+        assert!(state.sweep.is_none(), "letting go ends the box");
     }
 }

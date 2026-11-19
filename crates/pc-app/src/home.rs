@@ -188,6 +188,8 @@ pub struct HomeState {
     pub songs_to_delete: Vec<usize>,
     /// Media bin items waiting for a yes before they are taken out of the bin.
     pub confirm_delete_media: Vec<usize>,
+    /// A slide waiting for a yes before it is deleted.
+    pub confirm_delete_slide: Option<SlideRef>,
     /// The songs and media items picked out (several with Command or Shift, or by dragging
     /// across them), the one a Shift-click counts from in each, and which list Delete deletes
     /// from: the one last clicked.
@@ -220,7 +222,7 @@ pub struct HomeState {
     pub picture_request: bool,
     /// True when a picture is to be chosen for the theme being edited.
     pub theme_picture_request: bool,
-    pub picture_to_add: Option<crate::images::Imported>,
+    pub picture_to_add: Vec<crate::images::Imported>,
     /// A view asked for from the menu bar: 0 Show, 1 Edit, 2 Bible, 3 Themes. The toolbar
     /// takes it as if its tab had been clicked.
     pub view_request: Option<usize>,
@@ -829,7 +831,7 @@ impl Default for HomeState {
             edit_request: None,
             picture_request: false,
             theme_picture_request: false,
-            picture_to_add: None,
+            picture_to_add: Vec::new(),
             slide_clip: None,
             slide_request: None,
             song_request: None,
@@ -846,6 +848,7 @@ impl Default for HomeState {
             confirm_delete_songs: Vec::new(),
             songs_to_delete: Vec::new(),
             confirm_delete_media: Vec::new(),
+            confirm_delete_slide: None,
             picked_songs: Vec::new(),
             song_anchor: None,
             picked_media: Vec::new(),
@@ -940,6 +943,7 @@ impl HomeState {
     pub fn alert_open(&self) -> bool {
         !self.confirm_delete_songs.is_empty()
             || !self.confirm_delete_media.is_empty()
+            || self.confirm_delete_slide.is_some()
             || self.confirm_delete_theme.is_some()
             || self.confirm_delete_template.is_some()
     }
@@ -1073,7 +1077,9 @@ pub fn home_ui(
     confirm_delete_theme(ui, state);
     confirm_delete_song(ui, show, state);
     confirm_delete_media(ui, show, state);
-    // Delete (or Backspace) deletes what is picked out in the list last clicked, after asking.
+    confirm_delete_slide(ui, show, state);
+    // Delete (or Backspace) deletes what is picked out in the list last clicked, after asking;
+    // with neither list last clicked, the slide picked out by a right-click.
     let delete_key = ui.input(|input| input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace));
     if delete_key
         && state.editing.is_none()
@@ -1097,7 +1103,10 @@ pub fn home_ui(
                 state.confirm_delete_media =
                     state.picked_media.iter().copied().filter(|at| *at < show.media().len()).collect();
             }
-            Picking::Nothing => {}
+            Picking::Nothing => {
+                let from_bible = |at: SlideRef| state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation));
+                state.confirm_delete_slide = state.selected_slide.filter(|at| !from_bible(*at));
+            }
         }
     }
     library_search(ui, show, state, &mut commands);
@@ -1236,11 +1245,11 @@ fn edit_view(
         }
     }
     // A picture chosen for the slide, put on it now so the change is saved like any other.
-    if let Some(picture) = state.picture_to_add.take()
-        && !theme_mode
-        && let Some(draft) = state.editing.as_mut()
-    {
-        draft.add_image(&picture);
+    let pictures = std::mem::take(&mut state.picture_to_add);
+    if !theme_mode && let Some(draft) = state.editing.as_mut() {
+        for picture in &pictures {
+            draft.add_image(picture);
+        }
     }
     // A change asked for from the menu bar.
     if let (Some(request), Some(draft)) = (state.edit_request.take(), state.editing.as_mut()) {
@@ -3382,6 +3391,23 @@ fn confirm_delete_song(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
     }
 }
 
+/// Asks before deleting a slide from its song, and deletes it.
+fn confirm_delete_slide(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
+    let Some(at) = state.confirm_delete_slide else { return };
+    let Some(song) = show.presentations().get(at.presentation).filter(|song| at.slide < song.slide_count()) else {
+        state.confirm_delete_slide = None;
+        return;
+    };
+    let question = format!("Delete slide {} of \u{201c}{}\u{201d}?", at.slide + 1, song.title);
+    if let Some(delete) = confirm_delete(ui, &question, "Edit > Undo brings it back.") {
+        state.confirm_delete_slide = None;
+        if delete {
+            state.selected_slide = None;
+            state.slide_request = Some((at, SlideRequest::Delete));
+        }
+    }
+}
+
 /// Asks before taking items out of the media bin, and takes them out.
 fn confirm_delete_media(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
     if state.confirm_delete_media.is_empty() {
@@ -4756,8 +4782,8 @@ fn song_slides(
                         state.slide_request = Some((here, SlideRequest::PasteAfter(clip)));
                         ui.close();
                     }
-                    if ui.button("Delete").clicked() {
-                        state.slide_request = Some((here, SlideRequest::Delete));
+                    if ui.button("Delete…").clicked() {
+                        state.confirm_delete_slide = Some(here);
                         ui.close();
                     }
                     ui.separator();
