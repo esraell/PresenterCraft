@@ -143,6 +143,9 @@ ProPresenter.
 - A screen whose display is unplugged waits for it instead of jumping to another display.
   Identify Screens shows each screen's name on it, and the Screens menu puts a test pattern
   (colour bars, a grid, or white) on the audience screens.
+- Each audience screen has a look: which layers it shows (slides, media, props, messages; a
+  lobby screen might show only the media), its colour where nothing is drawn, and how much of
+  each edge to cover for a screen that cuts them off.
 
 <img src="docs/images/screens.png" alt="The Screens window" width="620">
 

@@ -37,12 +37,23 @@ pub struct Layers<'a> {
     pub overlay: Option<&'a Slide>,
     /// Seconds since the slide went on screen, for text that scrolls; 0 shows it where it starts.
     pub time: f32,
+    /// The colour where nothing is drawn, instead of black.
+    pub backdrop: Option<Rgba>,
+    /// How much of each edge of the slide to cover with the backdrop, in slide units: left, top,
+    /// right, bottom. For screens whose edges are cut off or hidden.
+    pub mask: [f32; 4],
 }
 
 /// Draws a slide for a target of the given pixel size: black, with the slide fitted inside.
 /// `None` draws black only, which is what a cleared layer looks like.
 pub fn build_scene(fonts: &mut Fonts, slide: Option<&Slide>, theme: &Theme, target_w: u32, target_h: u32) -> Built {
-    build_layers(fonts, &Layers { media: None, slide, overlay: None, time: 0.0 }, theme, target_w, target_h)
+    build_layers(
+        fonts,
+        &Layers { media: None, slide, overlay: None, time: 0.0, backdrop: None, mask: [0.0; 4] },
+        theme,
+        target_w,
+        target_h,
+    )
 }
 
 /// Draws every layer for a target of the given pixel size: black, then the media, then the
@@ -50,7 +61,8 @@ pub fn build_scene(fonts: &mut Fonts, slide: Option<&Slide>, theme: &Theme, targ
 pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w: u32, target_h: u32) -> Built {
     let mut scene = Scene::new();
     let whole = Rect::new(0.0, 0.0, f64::from(target_w), f64::from(target_h));
-    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::BLACK, None, &whole);
+    let backdrop = layers.backdrop.map_or(Color::BLACK, color);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, backdrop, None, &whole);
     let (x, y, w, _) = fit_rect(target_w, target_h);
     let to_target = Affine::translate((x, y)) * Affine::scale(w / f64::from(SLIDE_WIDTH));
 
@@ -82,6 +94,19 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
     }
     if let Some(overlay) = layers.overlay {
         draw_objects(&mut scene, fonts, to_target, overlay, theme, layers.time);
+    }
+    // The covered edges, over everything.
+    let [left, top, right, bottom] = layers.mask.map(|edge| f64::from(edge.max(0.0)));
+    let (w, h) = (f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
+    for edge in [
+        Rect::new(0.0, 0.0, left, h),
+        Rect::new(0.0, 0.0, w, top),
+        Rect::new(w - right, 0.0, w, h),
+        Rect::new(0.0, h - bottom, w, h),
+    ] {
+        if edge.area() > 0.0 {
+            scene.fill(Fill::NonZero, to_target, backdrop, None, &edge);
+        }
     }
     Built { scene, overflow }
 }

@@ -2745,6 +2745,7 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
 
     // The chosen screen.
     egui::CentralPanel::default().frame(Frame::new().fill(crate::studio::BG).inner_margin(20)).show(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let index = state.screen_selected;
         let Some(screen) = state.screens.get(index).cloned() else { return };
         let (status, shown) = state.screen_status.get(index).cloned().unwrap_or_default();
@@ -2851,6 +2852,49 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
             Output::Off => "This screen is kept in the list and shows nowhere.",
         };
         ui.label(egui::RichText::new(about).size(11.5).color(TEXT_DIM));
+        // An audience screen's look: which layers it shows, its colour, its covered edges.
+        if screen.kind == Kind::Audience {
+            ui.add_space(14.0);
+            crate::studio::caption(ui, "LOOK");
+            ui.add_space(4.0);
+            let look = &mut state.screens[index].look;
+            let before = *look;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Shows").color(TEXT_DIM));
+                ui.add_space(8.0);
+                ui.checkbox(&mut look.slides, "Slides");
+                ui.checkbox(&mut look.media, "Media");
+                ui.checkbox(&mut look.props, "Props");
+                ui.checkbox(&mut look.messages, "Messages");
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Colour").color(TEXT_DIM))
+                    .on_hover_text("Shown where nothing is drawn: around the slide, and when the screen is clear");
+                ui.add_space(8.0);
+                let mut color = Color32::from_rgba_unmultiplied(look.color.r, look.color.g, look.color.b, 255);
+                if ui.color_edit_button_srgba(&mut color).changed() {
+                    let [r, g, b, _] = color.to_srgba_unmultiplied();
+                    look.color = pc_model::Rgba::rgb(r, g, b);
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Cover edges").color(TEXT_DIM))
+                    .on_hover_text("How much of each edge to cover, in the slide's pixels, for a screen that cuts them off");
+                ui.add_space(8.0);
+                for (at, name) in ["Left", "Top", "Right", "Bottom"].into_iter().enumerate() {
+                    ui.add(egui::DragValue::new(&mut look.mask[at]).range(0.0..=540.0).speed(1.0).prefix(format!("{name} ")));
+                }
+            });
+            if *look != before {
+                changed = true;
+            }
+            if !look.is_default() && ui.small_button("Show Everything").on_hover_text("Back to every layer, black, nothing covered").clicked() {
+                *look = crate::screens::Look::default();
+                changed = true;
+            }
+        }
         if screen.kind == Kind::Stage {
             ui.add_space(6.0);
             ui.label(
@@ -2859,6 +2903,7 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
                     .color(TEXT_DIM),
             );
         }
+        });
     });
     state.screens_changed |= changed;
     commands

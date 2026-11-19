@@ -72,7 +72,7 @@ impl Thumbs {
             gpu,
             egui_renderer,
             slide.id,
-            &Layers { media: None, slide: Some(slide), overlay: None, time: 0.0 },
+            &Layers { media: None, slide: Some(slide), overlay: None, time: 0.0, backdrop: None, mask: [0.0; 4] },
             theme,
         )
     }
@@ -91,7 +91,7 @@ impl Thumbs {
             gpu,
             egui_renderer,
             id,
-            &Layers { media: Some(picture), slide: None, overlay: None, time: 0.0 },
+            &Layers { media: Some(picture), slide: None, overlay: None, time: 0.0, backdrop: None, mask: [0.0; 4] },
             theme,
         )
         .map(|(id, _)| id)
@@ -160,7 +160,7 @@ impl Thumbs {
         const H: u32 = 1440;
         let built = build_layers(
             &mut self.fonts,
-            &Layers { media: None, slide: Some(slide), overlay: None, time: 0.0 },
+            &Layers { media: None, slide: Some(slide), overlay: None, time: 0.0, backdrop: None, mask: [0.0; 4] },
             theme,
             W,
             H,

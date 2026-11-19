@@ -1,7 +1,7 @@
 //! The audience screens: what each one is called and where its picture goes. The list is kept
 //! in `screens.json` in the app's folder.
 
-use pc_model::Uuid;
+use pc_model::{Rgba, Uuid};
 use serde::{Deserialize, Serialize};
 
 use crate::displays::{DisplayInfo, Placement, choose_output};
@@ -33,7 +33,7 @@ pub enum Kind {
     Stage,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Screen {
     pub id: Uuid,
     pub name: String,
@@ -43,6 +43,36 @@ pub struct Screen {
     /// For a stage screen, the stage layout it is drawn with, by its id; `None` uses the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_layout: Option<Uuid>,
+    /// For an audience screen, which layers it shows, its colour, and its covered edges.
+    #[serde(default, skip_serializing_if = "Look::is_default")]
+    pub look: Look,
+}
+
+/// How an audience screen shows the show: which layers (a lobby screen might show only the
+/// media), the colour where nothing is drawn, and how much of each edge to cover, for a screen
+/// whose edges are cut off.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Look {
+    pub slides: bool,
+    pub media: bool,
+    pub props: bool,
+    pub messages: bool,
+    pub color: Rgba,
+    /// Left, top, right, bottom, in slide units.
+    pub mask: [f32; 4],
+}
+
+impl Default for Look {
+    fn default() -> Look {
+        Look { slides: true, media: true, props: true, messages: true, color: Rgba::BLACK, mask: [0.0; 4] }
+    }
+}
+
+impl Look {
+    pub fn is_default(&self) -> bool {
+        *self == Look::default()
+    }
 }
 
 /// Where a screen ends up on this computer as it is now.
@@ -58,7 +88,7 @@ pub enum Placed {
 
 impl Screen {
     pub fn new(name: String, output: Output) -> Screen {
-        Screen { id: Uuid::new_v4(), name, output, kind: Kind::Audience, stage_layout: None }
+        Screen { id: Uuid::new_v4(), name, output, kind: Kind::Audience, stage_layout: None, look: Look::default() }
     }
 
     pub fn stage(name: String, output: Output) -> Screen {
@@ -184,6 +214,21 @@ pub fn save(screens: &[Screen]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_screen_without_a_look_shows_everything_and_a_look_survives_its_file() {
+        let old: Screen =
+            serde_json::from_str(r#"{"id":"6f0e1c52-8d1e-4d39-9f38-1a2b3c4d5e01","name":"Main","output":"off"}"#)
+                .unwrap();
+        assert!(old.look.is_default());
+        let lobby = Screen {
+            look: Look { slides: false, props: false, mask: [10.0, 0.0, 10.0, 0.0], ..Look::default() },
+            ..Screen::new("Lobby".to_owned(), Output::Off)
+        };
+        let back: Screen = serde_json::from_str(&serde_json::to_string(&lobby).unwrap()).unwrap();
+        assert_eq!(back, lobby);
+        assert!(!back.look.slides && back.look.media);
+    }
 
     fn displays(names: &[&str]) -> Vec<DisplayInfo> {
         names

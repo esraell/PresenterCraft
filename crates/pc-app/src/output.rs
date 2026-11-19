@@ -69,6 +69,8 @@ pub enum OutputMsg {
     RemoveSurface(Uuid),
     /// What is shown over the slides.
     Overlay(Overlay),
+    /// How each audience screen that has a look of its own shows the show.
+    Looks(Vec<(Uuid, crate::screens::Look)>),
     /// Which screens are stage screens and the layout each is drawn with, and whether stage
     /// screens are on.
     Stage {
@@ -174,6 +176,8 @@ struct Output {
     /// While screens are being identified: the name each one shows instead of the show.
     identify: Vec<(Uuid, Arc<Slide>)>,
     identify_theme: Arc<Theme>,
+    /// The audience screens with a look of their own.
+    looks: Vec<(Uuid, crate::screens::Look)>,
     /// The stage screens with the layout each is drawn with, and whether they are on.
     stage: Vec<(Uuid, Arc<Theme>)>,
     stage_on: bool,
@@ -211,6 +215,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         identify_theme: Arc::new(Theme::builtin()),
         stage: Vec::new(),
         stage_on: true,
+        looks: Vec::new(),
         slide_on: Instant::now(),
         step_at: Instant::now(),
         overlay: Overlay::default(),
@@ -293,6 +298,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                 OutputMsg::SetNdi { id, name } => output.set_ndi(id, name),
                 OutputMsg::RemoveSurface(id) => output.targets.retain(|target| target.id != id),
                 OutputMsg::Overlay(overlay) => output.overlay = overlay,
+                OutputMsg::Looks(looks) => output.looks = looks,
                 OutputMsg::Stage { screens, on } => {
                     output.stage = screens;
                     output.stage_on = on;
@@ -405,8 +411,10 @@ impl Output {
         if !frame.enabled {
             return (None, None, None, frame.theme.clone());
         }
+        // A screen's look can leave layers out.
+        let look = self.look_of(id);
         // A message shows over whatever is on the audience screens.
-        let message = self.overlay.message.as_ref().map(|(text, look)| {
+        let message = self.overlay.message.as_ref().filter(|_| look.messages).map(|(text, look)| {
             let words =
                 crate::messages::fill_in(text, &self.overlay.timers, Instant::now(), crate::timers::seconds_into_day());
             crate::messages::slide(&words, *look)
@@ -421,16 +429,25 @@ impl Output {
             stage_message: self.overlay.stage_message.as_deref(),
             copyright: self.overlay.copyright.as_deref(),
         };
-        let mut under: Vec<Slide> =
-            self.overlay.props.iter().map(|prop| crate::links::fill(prop, &values).into_owned()).collect();
-        under.extend(copyright);
+        let mut under: Vec<Slide> = if look.props {
+            self.overlay.props.iter().map(|prop| crate::links::fill(prop, &values).into_owned()).collect()
+        } else {
+            Vec::new()
+        };
+        // The copyright line goes with the slide's words.
+        under.extend(copyright.filter(|_| look.slides));
         let over = crate::props::overlay(&under, message.as_ref()).map(Arc::new);
         // The slide as far as its builds have got, with its linked text filled in.
-        let slide = frame.slide.as_ref().map(|slide| {
+        let slide = frame.slide.as_ref().filter(|_| look.slides).map(|slide| {
             let (built, _) = slide.built(&frame.theme, self.build_clock());
             Arc::new(crate::links::fill(&built, &values).into_owned())
         });
-        (frame.media.clone(), slide, over, frame.theme.clone())
+        (frame.media.clone().filter(|_| look.media), slide, over, frame.theme.clone())
+    }
+
+    /// How an audience screen shows the show: its own look, or every layer.
+    fn look_of(&self, id: Uuid) -> crate::screens::Look {
+        self.looks.iter().find(|(have, _)| *have == id).map_or_else(crate::screens::Look::default, |(_, look)| *look)
     }
 
     /// Where the slide on screen is in its builds now.
@@ -460,7 +477,21 @@ impl Output {
         let (media, slide, overlay, theme) = self.content_for(id, frame);
         // Scrolling text moves on from when the slide was fully on screen.
         let time = Instant::now().checked_duration_since(self.slide_on).map_or(0.0, |since| since.as_secs_f32());
-        let layers = Layers { media: media.as_ref(), slide: slide.as_deref(), overlay: overlay.as_deref(), time };
+        // A stage screen, or one being identified, keeps the plain look.
+        let look = if self.is_stage(id) || self.identify.iter().any(|(have, _)| *have == id) {
+            crate::screens::Look::default()
+        } else {
+            self.look_of(id)
+        };
+        let backdrop = (look.color != pc_model::Rgba::BLACK).then_some(look.color);
+        let layers = Layers {
+            media: media.as_ref(),
+            slide: slide.as_deref(),
+            overlay: overlay.as_deref(),
+            time,
+            backdrop,
+            mask: look.mask,
+        };
         build_layers(&mut self.fonts, &layers, &theme, w, h).scene
     }
 
@@ -472,7 +503,9 @@ impl Output {
         // The show is drawn once and sent to all; a screen being identified gets its own picture.
         let mut shared: Option<Vec<u8>> = None;
         for id in ids {
-            let own = self.identify.iter().any(|(have, _)| *have == id) || self.is_stage(id);
+            let own = self.identify.iter().any(|(have, _)| *have == id)
+                || self.is_stage(id)
+                || self.looks.iter().any(|(have, _)| *have == id);
             let pixels = match shared.as_ref().filter(|_| !own) {
                 Some(pixels) => pixels.clone(),
                 None => {

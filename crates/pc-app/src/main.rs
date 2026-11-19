@@ -128,7 +128,8 @@ fn open_panel_window(
         .with_title(kind.title())
         .with_inner_size(match kind {
             Panel::StageLayouts => winit::dpi::LogicalSize::new(1160.0, 620.0),
-            _ => winit::dpi::LogicalSize::new(760.0, 520.0),
+            Panel::Screens => winit::dpi::LogicalSize::new(780.0, 640.0),
+            Panel::Settings => winit::dpi::LogicalSize::new(760.0, 520.0),
         })
         .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 440.0));
     let attrs = if quiet {
@@ -542,6 +543,8 @@ struct Running {
     ndi_sent: Vec<(Uuid, String)>,
     /// The names the screens were last told to show while being identified.
     identify_sent: Option<Vec<(Uuid, String)>>,
+    /// The screen looks last sent to the output.
+    looks_sent: Vec<(Uuid, screens::Look)>,
     /// The stage screens the output was last told of, and whether they were on.
     stage_sent: Option<(Vec<(Uuid, pc_model::ThemeTemplate)>, bool)>,
     /// What the output was last told to show over the slides.
@@ -724,6 +727,7 @@ impl App {
             retired: Vec::new(),
             ndi_sent: Vec::new(),
             identify_sent: None,
+            looks_sent: Vec::new(),
             stage_sent: None,
             overlay_sent: None,
             output: Some(output),
@@ -1030,7 +1034,8 @@ impl App {
                 state.screens.iter().find(|screen| screen.kind == screens::Kind::Stage).and_then(|s| s.stage_layout);
             let template = stage::layout_for(&state.stage_layouts, wanted);
             let picture = stage::slide(slide.as_deref(), next.as_ref(), &overlay, &about, &template);
-            let layers = Layers { media: None, slide: Some(&picture), overlay: None, time: 0.0 };
+            let layers =
+                Layers { media: None, slide: Some(&picture), overlay: None, time: 0.0, backdrop: None, mask: [0.0; 4] };
             let layout = stage::theme_for(&template);
             let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &layout);
             running.preview = now;
@@ -1062,6 +1067,8 @@ impl App {
             slide: slide.as_deref(),
             overlay: over.as_ref().filter(|_| self.show.output_enabled()),
             time: 0.0,
+            backdrop: None,
+            mask: [0.0; 4],
         };
         let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &theme);
         running.preview = now;
@@ -1812,8 +1819,20 @@ impl App {
             running.home_window.focus_window();
         }
         let Some(running) = self.running.as_mut() else { return };
-        let Running { output, ndi_sent, identify_sent, home_state, .. } = running;
+        let Running { output, ndi_sent, identify_sent, home_state, looks_sent, .. } = running;
         let Some(output) = output.as_ref() else { return };
+
+        // Looks: the audience screens that show the show their own way.
+        let looks: Vec<(Uuid, screens::Look)> = list
+            .iter()
+            .filter(|screen| screen.kind == screens::Kind::Audience && !screen.look.is_default())
+            .map(|screen| (screen.id, screen.look))
+            .collect();
+        if looks != *looks_sent {
+            output.send(OutputMsg::Looks(looks.clone()));
+            output.send(OutputMsg::Redraw);
+            *looks_sent = looks;
+        }
 
         // NDI: start, rename and stop sources.
         let wanted: Vec<(Uuid, String)> = list
