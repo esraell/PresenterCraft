@@ -151,6 +151,20 @@ impl Show {
     /// The first slide of the first group, in the presentation in use, whose name is one of
     /// those given (in lower case). The presentation in use is the one with the slide last on
     /// screen, or the selected one if nothing has been shown.
+    /// The slide given this hot key in the presentation the operator is working in, if one has
+    /// it and it is not disabled.
+    pub fn hot_key_slide(&self, key: char) -> Option<SlideRef> {
+        let presentation = self.live.or(self.cursor).map_or(self.selected, |at| at.presentation);
+        let song = self.presentations.get(presentation)?;
+        let key = key.to_ascii_uppercase();
+        let slide = song
+            .groups
+            .iter()
+            .flat_map(|group| &group.slides)
+            .position(|one| one.enabled && one.hot_key == Some(key))?;
+        Some(SlideRef { presentation, slide })
+    }
+
     pub fn group_start(&self, names: &[&str]) -> Option<SlideRef> {
         let presentation = self.live.or(self.cursor).map_or(self.selected, |at| at.presentation);
         let song = self.presentations.get(presentation)?;

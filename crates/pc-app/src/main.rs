@@ -171,8 +171,9 @@ fn template_names(theme: &Theme) -> Vec<String> {
 }
 
 /// The keys that run the show. They are read straight from the window, before the interface
-/// draws, so a key press reaches the output without waiting for the home window. A letter
-/// jumps to the group it stands for (A for the first verse, C for the chorus, and so on).
+/// draws, so a key press reaches the output without waiting for the home window. A slide's own
+/// hot key puts it on screen; otherwise a letter jumps to the group it stands for (A for the
+/// first verse, C for the chorus, and so on).
 fn show_key_command(key: &Key, show: &Show) -> Option<Command> {
     match key {
         Key::Named(NamedKey::ArrowRight | NamedKey::Space) => Some(Command::Next),
@@ -189,7 +190,7 @@ fn show_key_command(key: &Key, show: &Show) -> Option<Command> {
         Key::Character(typed) => {
             let mut letters = typed.chars();
             let (Some(letter), None) = (letters.next(), letters.next()) else { return None };
-            show.group_start(pc_model::groups_for_key(letter)).map(Command::GoTo)
+            show.hot_key_slide(letter).or_else(|| show.group_start(pc_model::groups_for_key(letter))).map(Command::GoTo)
         }
         _ => None,
     }
@@ -2988,5 +2989,14 @@ mod tests {
         // A group the song does not have, and a key that stands for none.
         assert_eq!(key(Key::Character("b".into())), None);
         assert_eq!(key(Key::Character("q".into())), None);
+        // A slide's own hot key comes before a group's letter, and a disabled slide has none.
+        let mut keyed = pc_model::parse_song_text("Song", "[Verse 1]\nOne\n\n[Chorus]\nTwo\n\nThree\n");
+        keyed.groups[1].slides[1].hot_key = Some('A');
+        keyed.groups[0].slides[0].hot_key = Some('7');
+        keyed.groups[0].slides[0].enabled = false;
+        let show = Show::new(vec![Arc::new(keyed)]);
+        let key = |key: Key| show_key_command(&key, &show);
+        assert_eq!(key(Key::Character("a".into())), jump(2));
+        assert_eq!(key(Key::Character("7".into())), None);
     }
 }

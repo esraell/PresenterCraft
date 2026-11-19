@@ -393,6 +393,10 @@ pub struct Slide {
     /// What the slide does when it goes on screen, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<crate::ShowAction>,
+    /// A letter or digit that puts this slide on screen in the Show view, before any group's
+    /// letter. Kept in capitals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hot_key: Option<char>,
 }
 
 impl Slide {
@@ -406,6 +410,7 @@ impl Slide {
             template: None,
             transition: None,
             actions: Vec::new(),
+            hot_key: None,
         }
     }
 

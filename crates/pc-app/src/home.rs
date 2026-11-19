@@ -3778,6 +3778,29 @@ fn slide_grid(
                                     }
                                 });
                             });
+                            // A key that puts this slide on screen in the Show view.
+                            ui.menu_button("Hot Key", |ui| {
+                                if ui.add(egui::Button::selectable(slide.hot_key.is_none(), "None")).clicked() {
+                                    state.pending_edit = Some((here, Slide { hot_key: None, ..slide.clone() }));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                egui::Grid::new("hot keys").spacing(vec2(2.0, 2.0)).show(ui, |ui| {
+                                    for (index, key) in ('A'..='Z').chain('0'..='9').enumerate() {
+                                        let on = slide.hot_key == Some(key);
+                                        let button =
+                                            egui::Button::selectable(on, key.to_string()).min_size(vec2(26.0, 22.0));
+                                        if ui.add(button).clicked() {
+                                            state.pending_edit =
+                                                Some((here, Slide { hot_key: Some(key), ..slide.clone() }));
+                                            ui.close();
+                                        }
+                                        if index % 6 == 5 {
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                            });
                             ui.menu_button("Label", |ui| {
                                 if ui.add(egui::Button::selectable(slide.label.is_none(), "None")).clicked() {
                                     state.slide_request = Some((here, SlideRequest::Label(None)));
@@ -3940,6 +3963,19 @@ fn slide_grid(
                                 }
                             }
                         }
+                    }
+                    // A slide's hot key, in a small badge at its top right.
+                    if let Some(key) = slide.hot_key {
+                        let badge =
+                            Rect::from_center_size(pos2(rect.max.x - 13.0, rect.min.y + 12.0), vec2(18.0, 16.0));
+                        painter.rect_filled(badge, 4.0, Color32::from_black_alpha(200));
+                        painter.text(
+                            badge.center(),
+                            Align2::CENTER_CENTER,
+                            key.to_string(),
+                            FontId::monospace(11.0),
+                            Color32::WHITE,
+                        );
                     }
                     // A slide with actions has a small mark at its top left.
                     if !slide.actions.is_empty() {
