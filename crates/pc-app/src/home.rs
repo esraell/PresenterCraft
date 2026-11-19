@@ -3647,6 +3647,25 @@ fn slide_grid(
                                     }
                                 }
                             });
+                            ui.menu_button("Transition", |ui| {
+                                if ui
+                                    .add(egui::Button::selectable(slide.transition.is_none(), "As All Slides"))
+                                    .clicked()
+                                {
+                                    state.pending_edit = Some((here, Slide { transition: None, ..slide.clone() }));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                for kind in pc_model::TransitionKind::ALL {
+                                    let on = slide.transition.is_some_and(|own| own.kind == kind);
+                                    if ui.add(egui::Button::selectable(on, kind.name())).clicked() {
+                                        let own = pc_model::Transition::of(kind);
+                                        state.pending_edit =
+                                            Some((here, Slide { transition: Some(own), ..slide.clone() }));
+                                        ui.close();
+                                    }
+                                }
+                            });
                             ui.menu_button("Label", |ui| {
                                 if ui.add(egui::Button::selectable(slide.label.is_none(), "None")).clicked() {
                                     state.slide_request = Some((here, SlideRequest::Label(None)));

@@ -726,7 +726,12 @@ impl App {
                 slide: slide.clone(),
                 theme: theme.clone(),
                 enabled: self.show.output_enabled(),
-                transition: running.home_state.transition,
+                // A slide's own transition, if it has one; otherwise the one chosen for all.
+                transition: self
+                    .show
+                    .live_slide()
+                    .and_then(|(_, slide)| slide.transition)
+                    .unwrap_or(running.home_state.transition),
                 next,
             };
             if !output.send(OutputMsg::Show(frame)) {

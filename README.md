@@ -52,7 +52,8 @@ ProPresenter.
 - Pictures dropped on the window, or added with the media bin's +, go into the media bin, are
   kept between runs, and can be shown behind the words; right-click one to remove it.
 - A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
-  or bridge starts), Label (Blank Slide, Instrumental, Repeat, Spoken Word), Disable, Template.
+  or bridge starts), Label (Blank Slide, Instrumental, Repeat, Spoken Word), Transition (its own,
+  or as all slides), Disable, Template.
 - A song's right-click menu: Add to Service, Rename, Duplicate, Theme (a theme of its own, or
   the songs theme), Reflow, and Delete (a song made in the app goes to the Trash).
 - **Timers** (count down, count down to a time of day, or count up), **Messages** shown over
@@ -123,7 +124,7 @@ Among the things PresenterCraft can't do yet:
 
 - Videos, audio, and live video inputs.
 - Stage layouts other than the built-in one; macros.
-- Most of ProPresenter's 37 transitions (ten are built), and transitions per slide.
+- Most of ProPresenter's 37 transitions (ten are built).
 - Formatting one word differently from the rest of its box.
 - Importing songs from other presentation apps or from CCLI SongSelect.
 - Tested builds for Windows and Linux.
