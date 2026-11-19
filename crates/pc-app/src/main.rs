@@ -386,6 +386,8 @@ impl App {
         egui_state.handle_platform_output(home_window, full.platform_output);
 
         let delay = full.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
+        // Testing aid: redraw continuously, to check that memory stays flat under load.
+        let delay = if std::env::var_os("PRESENTERCRAFT_STRESS").is_some() { Duration::ZERO } else { delay };
         running.next_repaint = Instant::now().checked_add(delay);
 
         let jobs = egui_ctx.tessellate(full.shapes, full.pixels_per_point);
@@ -432,6 +434,12 @@ impl App {
             }
             gpu.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
             gpu.queue.present(frame);
+        } else {
+            // No frame to draw into (the window is hidden or covered). The interface's data for
+            // this frame has already been handed to the GPU queue, and it stays in memory until
+            // something is submitted, so submit it anyway. Skipping this leaked memory on every
+            // frame drawn while the window could not be seen.
+            gpu.queue.submit(extra.into_iter().chain(std::iter::once(encoder.finish())));
         }
         for id in &full.textures_delta.free {
             egui_renderer.free_texture(id);
@@ -500,9 +508,10 @@ impl ApplicationHandler for App {
                         output.send(OutputMsg::Resized(size.width, size.height));
                     }
                 }
-                // Uncovered, moved to another display, or asked to redraw: a frame skipped while
-                // the window was hidden must not leave old words on screen.
-                WindowEvent::Occluded(false) | WindowEvent::RedrawRequested => {
+                // Uncovered again: a frame skipped while the window was hidden must not leave old
+                // words on screen. Do not also redraw on RedrawRequested: presenting a frame makes
+                // the system ask for another, which loops without end.
+                WindowEvent::Occluded(false) => {
                     if let Some(output) = &running.output {
                         output.send(OutputMsg::Redraw);
                     }
@@ -529,7 +538,12 @@ impl ApplicationHandler for App {
             self.apply(vec![command]);
             return;
         }
-        if running.egui_state.on_window_event(&running.home_window, &event).repaint {
+        // The interface toolkit answers "repaint" to a redraw request itself. Asking for a redraw
+        // in reply to a redraw never ends: the window then redraws as fast as it can for ever,
+        // which is what filled the computer's memory. A redraw request is not passed to it.
+        if !matches!(event, WindowEvent::RedrawRequested)
+            && running.egui_state.on_window_event(&running.home_window, &event).repaint
+        {
             running.home_window.request_redraw();
         }
         match event {
