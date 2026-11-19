@@ -58,6 +58,7 @@ pub struct Look {
     pub media: bool,
     pub props: bool,
     pub messages: bool,
+    pub announcements: bool,
     pub color: Rgba,
     /// Left, top, right, bottom, in slide units.
     pub mask: [f32; 4],
@@ -65,7 +66,15 @@ pub struct Look {
 
 impl Default for Look {
     fn default() -> Look {
-        Look { slides: true, media: true, props: true, messages: true, color: Rgba::BLACK, mask: [0.0; 4] }
+        Look {
+            slides: true,
+            media: true,
+            props: true,
+            messages: true,
+            announcements: true,
+            color: Rgba::BLACK,
+            mask: [0.0; 4],
+        }
     }
 }
 

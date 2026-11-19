@@ -81,6 +81,7 @@ impl Thumbs {
                 time: 0.0,
                 backdrop: None,
                 mask: [0.0; 4],
+                announcement: None,
             },
             theme,
         )
@@ -108,6 +109,7 @@ impl Thumbs {
                 time: 0.0,
                 backdrop: None,
                 mask: [0.0; 4],
+                announcement: None,
             },
             theme,
         )
@@ -185,6 +187,7 @@ impl Thumbs {
                 time: 0.0,
                 backdrop: None,
                 mask: [0.0; 4],
+                announcement: None,
             },
             theme,
             W,

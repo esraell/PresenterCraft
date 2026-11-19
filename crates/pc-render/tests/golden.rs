@@ -237,6 +237,7 @@ fn render_layers(media: Option<&pc_render::Picture>, slide: Option<&Slide>, w: u
         time: 0.0,
         backdrop: None,
         mask: [0.0; 4],
+        announcement: None,
     };
     let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), w, h);
     let texture = target_texture(device, w, h);
@@ -529,6 +530,7 @@ fn scrolling_text_starts_in_its_box_and_moves_with_time() {
             time,
             backdrop: None,
             mask: [0.0; 4],
+            announcement: None,
         };
         let built = pc_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), 640, 360);
         let texture = target_texture(device, 640, 360);
@@ -566,6 +568,7 @@ fn a_themes_picture_is_behind_its_slides_until_media_shows() {
             time: 0.0,
             backdrop: None,
             mask: [0.0; 4],
+            announcement: None,
         };
         let built = pc_render::build_layers(&mut Fonts::new(), &layers, &theme, 160, 90);
         let texture = target_texture(device, 160, 90);

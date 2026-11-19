@@ -73,6 +73,12 @@ ProPresenter.
   right-click menu sets its Scaling (Scale to Fill, Scale to Fit, Stretch to Fill), whether a
   video loops, and the media playlists it is in; the menu beside MEDIA shows All Media or one
   playlist, and makes, renames and deletes them.
+- **Announcements layer**: a song's right-click menu has Play on Announcements Layer. Its
+  slides go round by themselves (each for its Go to Next time, or 8 seconds) on a layer over
+  the slides and media and under props and messages, dissolving from one to the next. Each
+  screen's Look can show or hide it (a lobby screen can show only announcements); Clear
+  Announcements (under the clear buttons while it plays, or the Clear menu) and Clear All take
+  it off.
 - **Media slides**: drag a media item onto a slide to have that slide show it when it goes on
   screen, or onto the space under the slides (or Add Slide) to add a slide of its own; also
   Add to Song as Slide on the item's right-click menu, and Media on a slide's. The slide's
@@ -201,7 +207,7 @@ Among the things PresenterCraft can't do yet:
 - ProPresenter's other transitions, chiefly the 3D ones (Cube, Page Curl, Swing and the like),
   and transitions for props of their own.
 - In and out points for media and audio.
-- The Announcements layer, Clear Groups, and Show Slide on Stage Screens Only.
+- Clear Groups, and Show Slide on Stage Screens Only.
 - Saved looks to switch between, masks other than covered edges, corner pin, alpha and NDI
   modes, and a theme for each screen.
 - Media and cut-out text as fills, feathering, objects shown only under conditions, and pen,

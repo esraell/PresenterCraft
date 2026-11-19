@@ -121,6 +121,10 @@ pub struct HomeState {
     pub libraries_changed: bool,
     /// A song whose looping is to be turned on or off, from its menu.
     pub song_loop_request: Option<usize>,
+    /// A song asked to play on the Announcements layer (`Some(None)` to stop it), and the one
+    /// playing there.
+    pub announcement_request: Option<Option<usize>>,
+    pub announcement_live: Option<usize>,
     /// A song given a transition of its own (or none, to follow the one for all).
     pub song_transition_request: Option<(usize, Option<pc_model::Transition>)>,
     /// A theme chosen for a song from its menu: the song, and the theme by its place (`None`
@@ -756,6 +760,8 @@ impl Default for HomeState {
             song_theme_request: None,
             song_loop_request: None,
             song_transition_request: None,
+            announcement_request: None,
+            announcement_live: None,
             libraries: Vec::new(),
             library_shown: None,
             libraries_changed: false,
@@ -2975,6 +2981,7 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
                 ui.checkbox(&mut look.media, "Media");
                 ui.checkbox(&mut look.props, "Props");
                 ui.checkbox(&mut look.messages, "Messages");
+                ui.checkbox(&mut look.announcements, "Announcements");
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {

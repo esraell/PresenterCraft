@@ -111,6 +111,17 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
     Ok(Some(options))
 }
 
+/// A song going round on the Announcements layer.
+struct Announcing {
+    song: usize,
+    slide: usize,
+    since: Instant,
+    shown: output::Announcement,
+}
+
+/// How long an announcement slide stays up when it doesn't say.
+const ANNOUNCEMENT_SECONDS: f32 = 8.0;
+
 /// The shortest time between two drawings of a window for an animation: one refresh of a
 /// 60 Hz screen.
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -623,6 +634,9 @@ struct App {
     started: Instant,
     /// The video on screen, by its media item, playing.
     video: Option<(Uuid, pc_video::Player)>,
+    /// The song on the Announcements layer: which, the slide shown, since when, and what was
+    /// sent to the screens.
+    announcing: Option<Announcing>,
     /// The media playlists read at the start, handed to the window's state once it is made.
     media_playlists: Vec<media::Playlist>,
     unsaved_since: Option<Instant>,
@@ -834,6 +848,17 @@ impl App {
             // Clear All, and Clear Audio, stop the audio.
             if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Audio)) {
                 self.player.stop();
+            }
+            // Clear All, and Clear Announcements, take the Announcements layer off.
+            if matches!(command, Command::ClearAll | Command::Clear(pc_engine::Layer::Announcements))
+                && self.announcing.take().is_some()
+            {
+                running.home_state.announcement_live = None;
+                if let Some(output) = &running.output {
+                    output.send(OutputMsg::Announcement(None));
+                }
+                applog::event("announcements", "cleared");
+                output_changed = true;
             }
             if clear_overlays(&mut running.home_state, &command) {
                 output_changed = true;
@@ -1230,6 +1255,7 @@ impl App {
     /// it fade from the last picture as the screens do; a clock's tick doesn't fade.
     fn refresh_preview(&mut self, fade: bool) {
         let media_fit = self.live_media_fit();
+        let announcement = self.announcing.as_ref().map(|a| a.shown.clone());
         let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
         let about = self.stage_about();
         let Some(running) = self.running.as_mut() else {
@@ -1278,6 +1304,7 @@ impl App {
                 time: 0.0,
                 backdrop: None,
                 mask: [0.0; 4],
+                announcement: None,
             };
             let layout = stage::theme_for(&template);
             let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &layout);
@@ -1313,6 +1340,7 @@ impl App {
             time: 0.0,
             backdrop: None,
             mask: [0.0; 4],
+            announcement: announcement.as_ref().map(|(slide, theme)| (&**slide, &**theme)),
         };
         let (now, before) = running.thumbs.preview(&running.gpu, &mut running.egui_renderer, &layers, &theme);
         running.preview = now;
@@ -1424,6 +1452,79 @@ impl App {
     }
 
     /// Turns a song's looping on or off, from its menu.
+    /// Starts a song on the Announcements layer, or stops it.
+    fn handle_announcement(&mut self) {
+        let Some(asked) = self.running.as_mut().and_then(|r| r.home_state.announcement_request.take()) else {
+            return;
+        };
+        match asked {
+            Some(song) => {
+                self.announcing = None;
+                if let Some(first) = self.next_announcement_slide(song, None) {
+                    self.show_announcement(song, first);
+                }
+            }
+            None => self.apply(vec![Command::Clear(pc_engine::Layer::Announcements)]),
+        }
+    }
+
+    /// The slide that follows `after` on the Announcements layer: the next one that is on, round
+    /// to the first after the last. `None` when the song has no slide that is on.
+    fn next_announcement_slide(&self, song: usize, after: Option<usize>) -> Option<usize> {
+        let song = self.show.presentations().get(song)?;
+        let enabled: Vec<usize> =
+            song.slides().enumerate().filter(|(_, (_, slide))| slide.enabled).map(|(at, _)| at).collect();
+        let start = after.map_or(0, |after| after + 1);
+        enabled.iter().copied().find(|at| *at >= start).or_else(|| enabled.first().copied())
+    }
+
+    /// Puts one slide of a song on the Announcements layer.
+    fn show_announcement(&mut self, song: usize, slide: usize) {
+        let Some((_, shown)) = self.show.presentations().get(song).and_then(|s| s.slide(slide)) else {
+            self.announcing = None;
+            return;
+        };
+        let theme = self.theme_of(song).clone();
+        let shown: output::Announcement = (Arc::new(shown.clone()), theme);
+        if let Some(running) = self.running.as_mut() {
+            if let Some(output) = &running.output {
+                output.send(OutputMsg::Announcement(Some(shown.clone())));
+            }
+            running.home_state.announcement_live = Some(song);
+            running.home_window.request_redraw();
+        }
+        if self.announcing.as_ref().is_none_or(|was| was.song != song) {
+            let title = self.show.presentations().get(song).map_or("", |s| s.title.as_str());
+            applog::event("announcements", &format!("playing {title}"));
+        }
+        self.announcing = Some(Announcing { song, slide, since: Instant::now(), shown });
+        self.refresh_preview(false);
+    }
+
+    /// Moves the Announcements layer on when its slide has been up long enough. Says when to
+    /// look again.
+    fn tick_announcements(&mut self) -> Option<Instant> {
+        let (song, slide, since) = self.announcing.as_ref().map(|a| (a.song, a.slide, a.since))?;
+        let seconds = self
+            .show
+            .presentations()
+            .get(song)
+            .and_then(|s| s.slide(slide))
+            .and_then(|(_, s)| s.advance)
+            .filter(|seconds| *seconds > 0.0)
+            .unwrap_or(ANNOUNCEMENT_SECONDS);
+        let due = since + Duration::from_secs_f32(seconds);
+        if Instant::now() < due {
+            return Some(due);
+        }
+        match self.next_announcement_slide(song, Some(slide)) {
+            Some(next) => self.show_announcement(song, next),
+            None => self.apply(vec![Command::Clear(pc_engine::Layer::Announcements)]),
+        }
+        // Looked at again straight away, to work out when the new slide is due.
+        self.announcing.as_ref().map(|_| Instant::now() + Duration::from_millis(50))
+    }
+
     /// Gives a song a transition of its own, or takes it away.
     fn handle_song_transition(&mut self) {
         let Some((index, transition)) = self.running.as_mut().and_then(|r| r.home_state.song_transition_request.take())
@@ -2480,6 +2581,12 @@ impl App {
                 let state = &mut running.home_state;
                 state.library_shown = state.libraries.iter().find(|library| library.name == name).map(|l| l.id);
             }
+            // Testing aid: play a song, by its place, on the Announcements layer.
+            if running.frames == GO_LIVE_AT + 2
+                && let Some(song) = std::env::var("PRESENTERCRAFT_ANNOUNCE").ok().and_then(|s| s.parse().ok())
+            {
+                running.home_state.announcement_request = Some(Some(song));
+            }
             // Testing aid: list the playlist in front in the left column.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("PRESENTERCRAFT_PLAYLIST").is_some() {
                 running.home_state.playlist_open = true;
@@ -3130,6 +3237,7 @@ impl App {
                 }
             }
             A::ClearAudio => commands.push(Command::Clear(pc_engine::Layer::Audio)),
+            A::ClearAnnouncements => commands.push(Command::Clear(pc_engine::Layer::Announcements)),
             A::ClearProps => commands.push(Command::Clear(pc_engine::Layer::Props)),
             A::ClearMessages => commands.push(Command::Clear(pc_engine::Layer::Messages)),
             A::GridView => state.slide_view = home::SlideView::Grid,
@@ -3507,6 +3615,7 @@ impl ApplicationHandler<String> for App {
                 self.handle_song_theme();
                 self.handle_song_loop();
                 self.handle_song_transition();
+                self.handle_announcement();
                 self.handle_arrangement();
                 self.handle_copyright();
                 self.handle_reflow();
@@ -3594,6 +3703,7 @@ impl ApplicationHandler<String> for App {
         self.sync_overlay();
         let video_at = self.tick_video();
         let audio_at = self.tick_audio();
+        let announce_at = self.tick_announcements();
         // Songs changed in the Edit view are written once typing has paused for a second.
         const SAVE_AFTER: Duration = Duration::from_secs(1);
         let save_at = self.unsaved_since.map(|since| since + SAVE_AFTER);
@@ -3618,7 +3728,7 @@ impl ApplicationHandler<String> for App {
             }
             panel_at = [panel_at, panel.next_repaint].into_iter().flatten().min();
         }
-        match [running.next_repaint, panel_at, save_at, video_at, audio_at].into_iter().flatten().min() {
+        match [running.next_repaint, panel_at, save_at, video_at, audio_at, announce_at].into_iter().flatten().min() {
             Some(at) => el.set_control_flow(ControlFlow::WaitUntil(at)),
             None => el.set_control_flow(ControlFlow::Wait),
         }
@@ -3749,6 +3859,7 @@ fn main() -> ExitCode {
         started: Instant::now(),
         video: None,
         media_playlists: Vec::new(),
+        announcing: None,
         unsaved_since: None,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),

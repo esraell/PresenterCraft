@@ -851,6 +851,20 @@ fn song_menu(
         state.song_loop_request = Some(index);
         ui.close();
     }
+    // The Announcements layer: the song's slides go round by themselves over everything else.
+    let announcing = state.announcement_live == Some(index);
+    let (label, hint) = if announcing {
+        ("Stop Announcements", "Take this song off the Announcements layer")
+    } else {
+        (
+            "Play on Announcements Layer",
+            "Its slides go round by themselves over the slides (each for its Go to Next time, or 8 seconds)",
+        )
+    };
+    if ui.button(label).on_hover_text(hint).clicked() {
+        state.announcement_request = Some((!announcing).then_some(index));
+        ui.close();
+    }
     // How its slides give way to each other, unless a slide has its own.
     let own_transition = show.presentations().get(index).and_then(|song| song.transition);
     ui.menu_button("Transition", |ui| {
@@ -1265,6 +1279,14 @@ pub fn program_panel(
                 }
             }
         });
+        // While a song plays on the Announcements layer, a button to take it off.
+        if state.announcement_live.is_some()
+            && block_button(ui, vec2(width, 26.0), "Clear Announcements", "", Emphasis::Plain)
+                .on_hover_text("Take the announcements off the screens")
+                .clicked()
+        {
+            commands.push(Command::Clear(Layer::Announcements));
+        }
         ui.add_space(6.0);
 
         // Stepping through the song, with where we are between the buttons.

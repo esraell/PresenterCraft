@@ -43,6 +43,9 @@ pub struct Layers<'a> {
     /// How much of each edge of the slide to cover with the backdrop, in slide units: left, top,
     /// right, bottom. For screens whose edges are cut off or hidden.
     pub mask: [f32; 4],
+    /// The Announcements layer: a slide of its own, drawn with its own theme over the slide and
+    /// the media, and under the props and the message.
+    pub announcement: Option<(&'a Slide, &'a Theme)>,
 }
 
 /// Draws a slide for a target of the given pixel size: black, with the slide fitted inside.
@@ -58,6 +61,7 @@ pub fn build_scene(fonts: &mut Fonts, slide: Option<&Slide>, theme: &Theme, targ
             time: 0.0,
             backdrop: None,
             mask: [0.0; 4],
+            announcement: None,
         },
         theme,
         target_w,
@@ -114,6 +118,14 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
     let mut overflow = false;
     if let Some(slide) = layers.slide {
         overflow |= draw_objects(&mut scene, fonts, to_target, slide, theme, layers.time);
+    }
+    if let Some((announcement, own_theme)) = layers.announcement {
+        // Its theme's background covers what is under it, as an announcement takes the screen.
+        if let Some(background) = own_theme.background {
+            let slide_area = Rect::new(0.0, 0.0, f64::from(SLIDE_WIDTH), f64::from(SLIDE_HEIGHT));
+            scene.fill(Fill::NonZero, to_target, color(background), None, &slide_area);
+        }
+        draw_objects(&mut scene, fonts, to_target, announcement, own_theme, layers.time);
     }
     if let Some(overlay) = layers.overlay {
         draw_objects(&mut scene, fonts, to_target, overlay, theme, layers.time);

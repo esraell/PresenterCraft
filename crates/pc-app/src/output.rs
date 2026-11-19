@@ -78,6 +78,8 @@ pub enum OutputMsg {
     },
     /// Stop drawing in a screen's window.
     RemoveSurface(Uuid),
+    /// What the Announcements layer shows now, or nothing.
+    Announcement(Option<Announcement>),
     /// What is shown over the slides.
     Overlay(Overlay),
     /// How each audience screen that has a look of its own shows the show.
@@ -155,7 +157,10 @@ impl OutputHandle {
 }
 
 /// What a screen shows: the picture behind, the slide, words over them, and the theme.
-type Content = (Option<Picture>, Option<Arc<Slide>>, Option<Arc<Slide>>, Arc<Theme>);
+type Content = (Option<Picture>, Option<Arc<Slide>>, Option<Arc<Slide>>, Arc<Theme>, Option<Announcement>);
+
+/// What the Announcements layer shows: a slide and the theme it is drawn with.
+pub type Announcement = (Arc<Slide>, Arc<Theme>);
 
 /// A window a screen is drawn in.
 struct Target {
@@ -199,6 +204,8 @@ struct Output {
     overlay: Overlay,
     /// The playing video's latest picture.
     video_picture: Option<Picture>,
+    /// The Announcements layer's slide, if one is on.
+    announcement: Option<Announcement>,
     /// How the next new picture fades in: the slides' transition, or the media's when only the
     /// media changed.
     look: pc_model::Transition,
@@ -242,6 +249,7 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
         step_at: Instant::now(),
         overlay: Overlay::default(),
         video_picture: None,
+        announcement: None,
         look: pc_model::Transition::of(pc_model::TransitionKind::Cut),
         timing: crate::applog::Timing::new("screen drawings"),
         video_pictures: 0,
@@ -372,6 +380,12 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                 OutputMsg::Redraw => {}
                 OutputMsg::SetNdi { id, name } => output.set_ndi(id, name),
                 OutputMsg::RemoveSurface(id) => output.targets.retain(|target| target.id != id),
+                OutputMsg::Announcement(announcement) => {
+                    // A new announcement dissolves in over what is there.
+                    output.announcement = announcement;
+                    output.look = pc_model::Transition::default();
+                    new_picture = true;
+                }
                 OutputMsg::Overlay(overlay) => output.overlay = overlay,
                 OutputMsg::Looks(looks) => output.looks = looks,
                 OutputMsg::Stage { screens, on } => {
@@ -471,20 +485,20 @@ impl Output {
     /// otherwise. Cheap copies: the picture, the slide and the theme are shared.
     fn content_for(&self, id: Uuid, frame: &Frame) -> Content {
         if let Some((_, name)) = self.identify.iter().find(|(have, _)| *have == id) {
-            return (None, Some(name.clone()), None, self.identify_theme.clone());
+            return (None, Some(name.clone()), None, self.identify_theme.clone(), None);
         }
         if let Some((_, layout)) = self.stage.iter().find(|(have, _)| *have == id) {
             let words = self.stage_on.then(|| layout.templates.first()).flatten().map(|template| {
                 let (now, next) = (frame.slide.as_deref(), frame.next.as_deref());
                 Arc::new(crate::stage::slide(now, next, &self.overlay, &frame.about, template))
             });
-            return (None, words, None, layout.clone());
+            return (None, words, None, layout.clone(), None);
         }
         if let Some(pattern) = self.overlay.test_pattern {
-            return (None, Some(Arc::new(pattern.slide())), None, self.identify_theme.clone());
+            return (None, Some(Arc::new(pattern.slide())), None, self.identify_theme.clone(), None);
         }
         if !frame.enabled {
-            return (None, None, None, frame.theme.clone());
+            return (None, None, None, frame.theme.clone(), None);
         }
         // A screen's look can leave layers out.
         let look = self.look_of(id);
@@ -518,7 +532,8 @@ impl Output {
             Arc::new(crate::links::fill(&built, &values).into_owned())
         });
         let media = self.video_picture.clone().or_else(|| frame.media.clone());
-        (media.filter(|_| look.media), slide, over, frame.theme.clone())
+        let announcement = self.announcement.clone().filter(|_| look.announcements);
+        (media.filter(|_| look.media), slide, over, frame.theme.clone(), announcement)
     }
 
     /// How an audience screen shows the show: its own look, or every layer.
@@ -550,7 +565,7 @@ impl Output {
 
     /// Builds what a screen shows now for a target of a size.
     fn scene_for(&mut self, id: Uuid, frame: &Frame, w: u32, h: u32) -> vello::Scene {
-        let (media, slide, overlay, theme) = self.content_for(id, frame);
+        let (media, slide, overlay, theme, announcement) = self.content_for(id, frame);
         // Scrolling text moves on from when the slide was fully on screen.
         let time = Instant::now().checked_duration_since(self.slide_on).map_or(0.0, |since| since.as_secs_f32());
         // A stage screen, or one being identified, keeps the plain look.
@@ -568,6 +583,7 @@ impl Output {
             time,
             backdrop,
             mask: look.mask,
+            announcement: announcement.as_ref().map(|(slide, theme)| (&**slide, &**theme)),
         };
         build_layers(&mut self.fonts, &layers, &theme, w, h).scene
     }
