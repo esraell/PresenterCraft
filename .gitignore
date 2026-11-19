@@ -1,0 +1,6 @@
+# Screenshots show account and network panes and another vendor's UI: keep them local.
+docs/screenshots/
+target/
+.DS_Store
+.superpowers/
+docs/research/

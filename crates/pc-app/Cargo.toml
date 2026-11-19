@@ -1,0 +1,23 @@
+[package]
+name = "pc-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "presentercraft"
+path = "src/main.rs"
+
+[dependencies]
+pc-model.workspace = true
+pc-engine.workspace = true
+pc-render.workspace = true
+winit.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+pollster.workspace = true
+png.workspace = true
+
+[lints]
+workspace = true

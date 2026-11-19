@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+pc-model = { path = "crates/pc-model" }
+pc-engine = { path = "crates/pc-engine" }
+pc-render = { path = "crates/pc-render" }
+# Graphics crates change their APIs between releases: pinned exactly.
+vello = "=0.12.0"
+parley = "=0.13.0"
+winit = "=0.30.13"
+egui = { version = "=0.37.0", features = ["default_fonts"] }
+egui-wgpu = "=0.37.0"
+egui-winit = "=0.37.0"
+uuid = { version = "1", features = ["v4"] }
+pollster = "1"
+png = "0.18"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
