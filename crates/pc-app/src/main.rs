@@ -1136,11 +1136,20 @@ impl App {
         let Some(item) = live else { return };
         let started = Instant::now();
         let loops = self.loops_now(&item);
+        let quiet = self.quiet();
         let Some(running) = self.running.as_mut() else { return };
         match pc_video::Player::open(&item.path) {
             Ok(mut player) => {
-                applog::event("video", &format!("opened {} in {:?}", item.path.display(), started.elapsed()));
+                let engine = if player.uses_ffmpeg() { "FFmpeg" } else { "the system's player" };
+                applog::event(
+                    "video",
+                    &format!("opened {} with {engine} in {:?}", item.path.display(), started.elapsed()),
+                );
                 player.set_looping(loops);
+                // A quiet run (a test) makes no sound: someone may be working at this computer.
+                if quiet {
+                    player.set_volume(0.0);
+                }
                 player.play();
                 running.home_state.video_live = Some(home::VideoLive {
                     name: item.name.clone(),
@@ -1167,6 +1176,34 @@ impl App {
         let running = self.running.as_mut()?;
         if let Some(problem) = player.problem() {
             applog::event("video", &problem);
+            // The system's player couldn't play it (an AV1 video on a Mac without AV1 hardware,
+            // say): FFmpeg plays it instead, from where it was.
+            if !player.uses_ffmpeg()
+                && let Some((id, _)) = self.video.take()
+                && let Some(item) = self.show.media().iter().find(|item| item.id == id).cloned()
+            {
+                let loops = self.loops_now(&item);
+                let quiet = self.quiet();
+                let running = self.running.as_mut()?;
+                match pc_video::Player::open_with_ffmpeg(&item.path) {
+                    Ok(mut fallback) => {
+                        applog::event("video", &format!("playing {} with FFmpeg instead", item.path.display()));
+                        fallback.set_looping(loops);
+                        if quiet {
+                            fallback.set_volume(0.0);
+                        }
+                        fallback.play();
+                        self.video = Some((id, fallback));
+                        // The screens take their pictures from the new player.
+                        self.refresh_output();
+                    }
+                    Err(problem) => {
+                        running.home_state.notice = Some(problem);
+                        running.home_state.video_live = None;
+                    }
+                }
+                return Some(Instant::now() + Duration::from_millis(100));
+            }
             running.home_state.notice = Some(problem);
             running.home_state.video_live = None;
             self.video = None;

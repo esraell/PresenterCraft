@@ -67,8 +67,11 @@ ProPresenter.
 - Pictures and videos dropped on the window, or added with the media bin's +, go into the media
   bin, are kept between runs, and can be shown behind the words; right-click one to remove it.
   Pictures can be PNG, JPEG, WebP, GIF, BMP, and on the Mac also HEIC (iPhone photos), TIFF,
-  Photoshop, AVIF and JPEG 2000. Videos (MP4, MOV and M4V, including HEVC and ProRes) play on
-  the Mac with their sound, through macOS's own player, and loop; under the Program preview
+  Photoshop, AVIF and JPEG 2000. Videos play with their sound and loop: MP4, MOV and M4V
+  (including HEVC and ProRes) through macOS's own player, and everything else (MKV, WebM, AVI,
+  WMV, FLV, MPEG, TS and others, or an MP4 the Mac's player can't decode, such as AV1 on an older
+  Mac) through FFmpeg, played as it is, never converted first. FFmpeg must be installed for
+  those for now; a release will include it; under the Program preview
   they can be paused, started again, moved through, looped or not, and muted. An item's
   right-click menu sets its Scaling (Scale to Fill, Scale to Fit, Stretch to Fill), whether a
   video loops, and the media playlists it is in; the menu beside MEDIA shows All Media or one
@@ -205,8 +208,8 @@ drawn with the Bible's theme.
 
 Among the things PresenterCraft can't do yet:
 
-- Videos on Windows and Linux, video formats macOS doesn't play (such as WebM and MKV), and
-  live video inputs.
+- FFmpeg included in the app (videos beyond MP4 and MOV need it installed for now), videos on
+  Windows and Linux, and live video inputs.
 - Formatting one word differently from the rest of its box.
 - Slide sizes other than 1920 × 1080.
 - A timeline that times slides, media and audio together (a slide can go on by itself after a
@@ -305,6 +308,10 @@ PresenterCraft's own licence is still being chosen and will be added to this rep
   [`docs/licences/bibles.md`](docs/licences/bibles.md) lists each one and the few conditions
   some carry (the King James text's Crown rights in the United Kingdom, for one). The verse
   tables in `crates/pc-bible/data/` come from SIL's libpalaso (MIT).
+- **FFmpeg:** videos beyond MP4 and MOV are played by running FFmpeg as a separate program;
+  none of its code is in or linked with PresenterCraft. See
+  [`docs/licences/ffmpeg.md`](docs/licences/ffmpeg.md), including why a release must bundle an
+  LGPL build and never Homebrew's.
 - **NDI:** nothing from the NDI SDK is in this repository;
   [`docs/licences/ndi.md`](docs/licences/ndi.md) covers what its licence asks of a published
   build. NDI® is a registered trademark of Vizrt NDI AB.
@@ -316,7 +323,7 @@ PresenterCraft's own licence is still being chosen and will be added to this rep
     crates/pc-render   draws slides on the GPU: screens, thumbnails, preview
     crates/pc-bible    Bible files, references, search, verse numbering
     crates/pc-ndi      NDI output
-    crates/pc-video    videos and system picture formats, through macOS's AVFoundation and ImageIO
+    crates/pc-video    videos (macOS's AVFoundation, then FFmpeg) and system picture formats (ImageIO)
     crates/pc-app      the app and its windows
 
 `unsafe` code is forbidden in every crate but `pc-video`, which needs it to call macOS's media

@@ -1,10 +1,11 @@
-//! Videos, and pictures in formats beyond the common few, read with the computer's own media
-//! system: AVFoundation and ImageIO on macOS, which decode in hardware and read what QuickTime
-//! and Preview read (MP4, MOV, HEVC, ProRes; HEIC, TIFF, PSD and others).
+//! Videos, and pictures in formats beyond the common few. macOS's own player (AVFoundation)
+//! plays what it can, decoding in hardware: MP4, MOV, HEVC, ProRes and the like. Everything
+//! else (MKV, WebM, AVI, or a codec this Mac's player lacks) is played by FFmpeg, run as a
+//! separate program, without converting it first. Pictures are read with ImageIO, which reads
+//! what Preview reads (HEIC, TIFF, PSD and others).
 //!
-//! A [`Player`] belongs to the main thread, which starts, stops and loops it. The pictures it
-//! makes are taken from a [`Frames`], which can go to another thread: the one drawing the
-//! screens.
+//! A [`Player`] is made and controlled on the main thread. The pictures it makes are taken from
+//! a [`Frames`], which can go to another thread: the one drawing the screens.
 //!
 //! This is the one crate in PresenterCraft that may use `unsafe` code, for calls into the
 //! system's frameworks; each such call says why it is sound.
@@ -13,14 +14,177 @@
 #[allow(unsafe_code)]
 mod mac;
 
+mod ffmpeg;
+
 #[cfg(target_os = "macos")]
-pub use mac::{Frames, Player, picture, still};
+pub use mac::picture;
 
 #[cfg(not(target_os = "macos"))]
 mod other;
 
 #[cfg(not(target_os = "macos"))]
-pub use other::{Frames, Player, picture, still};
+pub use other::picture;
+
+use std::path::Path;
+use std::time::Duration;
+
+/// Videos the system's player is asked to play first; anything else goes to FFmpeg.
+const SYSTEM_VIDEOS: [&str; 4] = ["mp4", "mov", "m4v", "3gp"];
+
+fn system_first(path: &Path) -> bool {
+    cfg!(target_os = "macos")
+        && path.extension().is_some_and(|ext| SYSTEM_VIDEOS.contains(&ext.to_string_lossy().to_lowercase().as_str()))
+}
+
+/// True when FFmpeg is on this computer, for the videos the system's player can't play.
+pub fn ffmpeg_found() -> bool {
+    ffmpeg::tool("ffmpeg").is_some()
+}
+
+/// A still from a video, about half a second in, no larger than `max_side` on its longer side:
+/// from the system's player if it can read the video, otherwise from FFmpeg.
+pub fn still(path: &Path, max_side: u32) -> Result<Frame, String> {
+    #[cfg(target_os = "macos")]
+    let system = mac::still(path, max_side);
+    #[cfg(not(target_os = "macos"))]
+    let system: Result<Frame, String> = Err(String::new());
+    match system {
+        Ok(frame) => Ok(frame),
+        Err(system_error) => ffmpeg::still(path, max_side).map_err(|ffmpeg_error| {
+            // A video the system read fine but FFmpeg can't is still the system's problem to report.
+            if system_first(path) && !system_error.is_empty() { system_error } else { ffmpeg_error }
+        }),
+    }
+}
+
+/// A video playing, with its sound: through the system's player, or through FFmpeg.
+pub enum Player {
+    #[cfg(target_os = "macos")]
+    System(mac::Player),
+    Ffmpeg(Box<ffmpeg::Player>),
+}
+
+/// Where a playing video's pictures are taken from. It can be sent to another thread.
+#[derive(Clone)]
+pub enum Frames {
+    #[cfg(target_os = "macos")]
+    System(mac::Frames),
+    Ffmpeg(ffmpeg::Frames),
+}
+
+impl Frames {
+    /// True when both take pictures from the same video.
+    pub fn same(&self, other: &Frames) -> bool {
+        match (self, other) {
+            #[cfg(target_os = "macos")]
+            (Frames::System(a), Frames::System(b)) => a.same(b),
+            (Frames::Ffmpeg(a), Frames::Ffmpeg(b)) => a.same(b),
+            #[allow(unreachable_patterns)]
+            _ => false,
+        }
+    }
+
+    /// The picture to show now, if there is a new one since the last was taken.
+    pub fn next(&self) -> Option<Frame> {
+        match self {
+            #[cfg(target_os = "macos")]
+            Frames::System(frames) => frames.next(),
+            Frames::Ffmpeg(frames) => frames.next(),
+        }
+    }
+}
+
+/// Runs the same call on whichever player it is.
+macro_rules! either {
+    ($self:expr, $player:ident => $call:expr) => {
+        match $self {
+            #[cfg(target_os = "macos")]
+            Player::System($player) => $call,
+            Player::Ffmpeg($player) => $call,
+        }
+    };
+}
+
+impl Player {
+    /// Opens a video, paused at its start: with the system's player for an MP4 or MOV (on the
+    /// main thread), otherwise with FFmpeg. The error is a sentence for the operator.
+    pub fn open(path: &Path) -> Result<Player, String> {
+        #[cfg(target_os = "macos")]
+        if system_first(path) {
+            return mac::Player::open(path).map(Player::System);
+        }
+        ffmpeg::Player::open(path).map(|player| Player::Ffmpeg(Box::new(player)))
+    }
+
+    /// Opens a video with FFmpeg, for when the system's player has failed on it (an AV1 video
+    /// on a Mac without AV1 hardware, say).
+    pub fn open_with_ffmpeg(path: &Path) -> Result<Player, String> {
+        ffmpeg::Player::open(path).map(|player| Player::Ffmpeg(Box::new(player)))
+    }
+
+    pub fn uses_ffmpeg(&self) -> bool {
+        matches!(self, Player::Ffmpeg(_))
+    }
+
+    pub fn frames(&self) -> Frames {
+        match self {
+            #[cfg(target_os = "macos")]
+            Player::System(player) => Frames::System(player.frames()),
+            Player::Ffmpeg(player) => Frames::Ffmpeg(player.frames()),
+        }
+    }
+
+    pub fn play(&mut self) {
+        either!(self, player => player.play())
+    }
+
+    pub fn pause(&mut self) {
+        either!(self, player => player.pause())
+    }
+
+    pub fn playing(&self) -> bool {
+        either!(self, player => player.playing())
+    }
+
+    /// Goes to a time, in seconds from the start.
+    pub fn seek(&mut self, to: f64) {
+        either!(self, player => player.seek(to))
+    }
+
+    /// How far in it is, in seconds.
+    pub fn position(&self) -> f64 {
+        either!(self, player => player.position())
+    }
+
+    /// How long it is, once that is known.
+    pub fn duration(&self) -> Option<f64> {
+        either!(self, player => player.duration())
+    }
+
+    pub fn set_looping(&mut self, looping: bool) {
+        either!(self, player => player.set_looping(looping))
+    }
+
+    /// From 0 (silent) to 1.
+    pub fn set_volume(&mut self, volume: f32) {
+        either!(self, player => player.set_volume(volume))
+    }
+
+    /// True once a video that doesn't loop has played to its end.
+    pub fn ended(&self) -> bool {
+        either!(self, player => player.ended())
+    }
+
+    /// Why the video can't play, once the player has tried and failed.
+    pub fn problem(&self) -> Option<String> {
+        either!(self, player => player.problem())
+    }
+
+    /// Keeps it going (a looping video starts again at its end). Says how soon to call again.
+    pub fn tick(&mut self) -> Duration {
+        either!(self, player => player.tick())
+    }
+}
 
 /// A decoded picture: tightly packed RGBA rows, straight (not premultiplied) alpha.
 #[derive(Clone, PartialEq, Eq)]
@@ -35,9 +199,6 @@ impl std::fmt::Debug for Frame {
         write!(f, "Frame({}x{})", self.width, self.height)
     }
 }
-
-/// True when this build can play videos.
-pub const AVAILABLE: bool = cfg!(target_os = "macos");
 
 /// Turns premultiplied RGBA into straight RGBA, in place.
 fn unpremultiply(rgba: &mut [u8]) {

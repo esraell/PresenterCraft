@@ -40,13 +40,10 @@ const SYSTEM_PICTURES: [&str; 7] = ["heic", "heif", "tif", "tiff", "psd", "avif"
 pub const PICTURES: [&str; 13] =
     ["png", "jpg", "jpeg", "webp", "bmp", "gif", "heic", "heif", "tif", "tiff", "psd", "avif", "jp2"];
 
-/// Videos the system plays.
-const PLAYABLE: [&str; 3] = ["mp4", "mov", "m4v"];
-
 /// The file endings of everything the media bin takes, as the file chooser lists them.
-pub const PICTURE_ENDINGS: [&str; 16] = [
+pub const PICTURE_ENDINGS: [&str; 30] = [
     "png", "jpg", "jpeg", "webp", "bmp", "gif", "heic", "heif", "tif", "tiff", "psd", "avif", "jp2", "mp4", "mov",
-    "m4v",
+    "m4v", "mkv", "webm", "avi", "wmv", "flv", "mpg", "mpeg", "m2ts", "mts", "ts", "ogv", "3gp", "vob", "divx",
 ];
 
 fn list_file() -> Option<PathBuf> {
@@ -175,8 +172,12 @@ pub fn save_list(list: &List) -> Result<(), String> {
         .and_then(|()| std::fs::rename(&partial, &path))
         .map_err(|e| format!("Could not save the media list: {e}"))
 }
-/// Videos by their names: the ones the system plays, and others it doesn't.
-const VIDEOS: [&str; 6] = ["mp4", "mov", "m4v", "mkv", "avi", "webm"];
+/// Videos by their names. macOS's own player plays MP4 and MOV; FFmpeg plays the rest (and any
+/// MP4 or MOV the system's player can't).
+const VIDEOS: [&str; 17] = [
+    "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "flv", "mpg", "mpeg", "m2ts", "mts", "ts", "ogv", "3gp", "vob",
+    "divx",
+];
 
 fn extension(path: &Path) -> String {
     path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
@@ -204,11 +205,8 @@ pub fn load_picture(path: &Path) -> Result<Picture, String> {
         Picture::from_rgba(frame.width, frame.height, frame.rgba)
             .ok_or_else(|| format!("{name}: the picture is empty."))
     };
-    if PLAYABLE.contains(&ext.as_str()) {
-        return from_system(pc_video::still(path, VIDEO_STILL_SIDE));
-    }
     if VIDEOS.contains(&ext.as_str()) {
-        return Err(format!("{name}: PresenterCraft plays MP4 and MOV videos. Convert this one to MP4 first."));
+        return from_system(pc_video::still(path, VIDEO_STILL_SIDE));
     }
     if SYSTEM_PICTURES.contains(&ext.as_str()) {
         return from_system(pc_video::picture(path, MAX_SIDE));
@@ -305,7 +303,7 @@ mod tests {
 
     #[test]
     fn other_files_are_refused_in_plain_words() {
-        assert!(load_picture(Path::new("/x/clip.webm")).unwrap_err().contains("Convert this one to MP4"));
+        assert!(is_video(Path::new("/x/clip.WEBM")) && is_video(Path::new("/x/clip.mkv")));
         assert!(load_picture(Path::new("/x/notes.txt")).unwrap_err().contains("not a picture"));
         assert!(load_picture(Path::new("/x/no-extension")).unwrap_err().contains("not a picture"));
         assert!(is_video(Path::new("a/Clip.MOV")) && !is_video(Path::new("a/photo.heic")));

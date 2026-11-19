@@ -14,7 +14,7 @@ static RUN_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
 fn main() {
     for arg in std::env::args().skip(1) {
         let path = Path::new(&arg);
-        let video = ["mp4", "mov", "m4v"].iter().any(|ext| arg.to_lowercase().ends_with(ext));
+        let video = ["mp4", "mov", "m4v", "mkv", "webm", "avi"].iter().any(|ext| arg.to_lowercase().ends_with(ext));
         if !video {
             let started = Instant::now();
             match pc_video::picture(path, 2560) {
@@ -65,7 +65,8 @@ fn main() {
         }
         let (count, size) = counter.join().unwrap_or((0, None));
         println!(
-            "{arg}: {count} pictures of {size:?}, at {:.2} s of {:?} s, playing {}, problem {:?}",
+            "{arg}: {} {count} pictures of {size:?}, at {:.2} s of {:?} s, playing {}, problem {:?}",
+            if player.uses_ffmpeg() { "FFmpeg" } else { "system" },
             player.position(),
             player.duration(),
             player.playing(),
