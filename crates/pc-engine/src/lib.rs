@@ -207,6 +207,39 @@ impl Show {
         }
     }
 
+    /// Puts a whole new version of a presentation in place, keeping what is live and the cursor
+    /// on the same slides (found by their ids) wherever they now are. A live slide the new
+    /// version doesn't have is taken off the screen. Reports a slide change when the
+    /// presentation was the live one.
+    pub fn replace_presentation_following(&mut self, index: usize, presentation: Arc<Presentation>) -> Changes {
+        let Some(old) = self.presentations.get(index).cloned() else { return Changes::default() };
+        let id_at = |place: Option<SlideRef>| {
+            place
+                .filter(|here| here.presentation == index)
+                .and_then(|here| old.slide(here.slide))
+                .map(|(_, slide)| slide.id)
+        };
+        let (live_id, cursor_id) = (id_at(self.live), id_at(self.cursor));
+        let place_of = |id: pc_model::Uuid| {
+            presentation.groups.iter().flat_map(|group| &group.slides).position(|slide| slide.id == id)
+        };
+        let (live_at, cursor_at) = (live_id.map(place_of), cursor_id.map(place_of));
+        let changes = self.replace_presentation(index, presentation);
+        if let (Some(found), Some(live)) = (live_at, self.live.as_mut().filter(|live| live.presentation == index)) {
+            match found {
+                Some(slide) => live.slide = slide,
+                None => self.live = None,
+            }
+        }
+        if let (Some(found), Some(cursor)) = (cursor_at, self.cursor.as_mut().filter(|c| c.presentation == index)) {
+            match found {
+                Some(slide) => cursor.slide = slide,
+                None => self.cursor = None,
+            }
+        }
+        changes
+    }
+
     /// Keeps what is live and the cursor on the same slides after a slide was removed from, or
     /// added to, a song: `at` is where, `added` says which. A removed slide that was live is
     /// taken off the screen.

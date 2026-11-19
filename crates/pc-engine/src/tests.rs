@@ -310,3 +310,22 @@ fn removing_a_picture_keeps_the_one_on_screen_or_takes_it_off() {
     assert!(s.remove_media(1).media);
     assert_eq!(s.live_media(), None);
 }
+
+#[test]
+fn a_replaced_presentation_keeps_the_live_slide_by_its_id() {
+    let mut s = show();
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 1 }));
+    let before = s.presentations()[0].clone();
+    // The first slide is removed, then put back: B stays live through both.
+    let shorter = Arc::new(before.without_slide(0).unwrap());
+    assert!(s.replace_presentation_following(0, shorter).slides);
+    assert_eq!(s.live(), at(0, 0));
+    assert_eq!(s.live_slide().unwrap().1.objects[0].as_text(), Some("B"));
+    s.replace_presentation_following(0, before.clone());
+    assert_eq!(s.live(), at(0, 1));
+    assert_eq!(s.live_slide().unwrap().1.objects[0].as_text(), Some("B"));
+    // A version without the live slide takes it off the screen.
+    let without_b = Arc::new(before.without_slide(1).unwrap());
+    s.replace_presentation_following(0, without_b);
+    assert_eq!(s.live(), None);
+}

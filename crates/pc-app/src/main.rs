@@ -463,6 +463,10 @@ struct App {
     /// Songs changed in the Edit view and not yet written to their files, and when the last
     /// change was made.
     unsaved: Vec<usize>,
+    /// Songs as they were before each change made in the Show view, to undo; and changes
+    /// undone, to redo. Each is the song's place and the song.
+    show_undo: Vec<(usize, Arc<pc_model::Presentation>)>,
+    show_redo: Vec<(usize, Arc<pc_model::Presentation>)>,
     unsaved_since: Option<Instant>,
     /// The theme songs are drawn with, and the one Bible slides are drawn with: copies of
     /// the themes at `songs_theme` and `bible_theme` in `themes`.
@@ -987,6 +991,38 @@ impl App {
         }
     }
 
+    /// Keeps a song as it is now, so the change about to be made to it can be undone.
+    fn remember_for_undo(&mut self, index: usize) {
+        if let Some(song) = self.show.presentations().get(index).cloned() {
+            self.show_undo.push((index, song));
+            if self.show_undo.len() > 100 {
+                self.show_undo.remove(0);
+            }
+            self.show_redo.clear();
+        }
+    }
+
+    /// Undoes the last change made to a song in the Show view, or redoes the last one undone.
+    fn undo_show(&mut self, redo: bool) {
+        let (from, to) =
+            if redo { (&mut self.show_redo, &mut self.show_undo) } else { (&mut self.show_undo, &mut self.show_redo) };
+        let Some((index, song)) = from.pop() else { return };
+        let Some(current) = self.show.presentations().get(index).cloned() else { return };
+        to.push((index, current));
+        let changes = self.show.replace_presentation_following(index, song);
+        if !self.unsaved.contains(&index) {
+            self.unsaved.push(index);
+        }
+        self.save_unsaved();
+        if let Some(running) = self.running.as_mut() {
+            running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
+            running.home_window.request_redraw();
+        }
+        if changes.slides {
+            self.refresh_output();
+        }
+    }
+
     /// Gives a song a theme of its own, or puts it back on the songs theme.
     fn handle_song_theme(&mut self) {
         let Some((index, theme)) = self.running.as_mut().and_then(|r| r.home_state.song_theme_request.take()) else {
@@ -998,6 +1034,7 @@ impl App {
             return;
         }
         let changed = pc_model::Presentation { theme: id, ..(*song).clone() };
+        self.remember_for_undo(index);
         self.show.replace_presentation(index, Arc::new(changed));
         if !self.unsaved.contains(&index) {
             self.unsaved.push(index);
@@ -1109,6 +1146,10 @@ impl App {
         let Some(edited) = song.with_slide(at.slide, slide) else {
             return;
         };
+        // A change made in the Show view can be undone there; the Edit view keeps its own steps.
+        if self.running.as_ref().is_some_and(|r| r.home_state.editing.is_none()) {
+            self.remember_for_undo(at.presentation);
+        }
         let changes = self.show.replace_presentation(at.presentation, Arc::new(edited));
         if !self.unsaved.contains(&at.presentation) {
             self.unsaved.push(at.presentation);
@@ -2003,6 +2044,7 @@ impl App {
             }
         };
         let Some(changed) = changed else { return };
+        self.remember_for_undo(at.presentation);
         let mut changes = self.show.replace_presentation(at.presentation, Arc::new(changed));
         match shift {
             Some(false) => changes.slides |= self.show.slides_shifted(at.presentation, at.slide, false).slides,
@@ -2209,6 +2251,18 @@ impl App {
         use menubar::Action as A;
         if action == A::Quit {
             return self.quit(el);
+        }
+        // In the Show view, with nothing being typed, Undo and Redo step through the changes
+        // made to songs there.
+        let in_show = self.running.as_ref().is_some_and(|r| {
+            let state = &r.home_state;
+            state.editing.is_none()
+                && state.theme_edit.is_none()
+                && !state.bible_open
+                && !r.egui_ctx.text_edit_focused()
+        });
+        if in_show && matches!(action, A::Undo | A::Redo) {
+            return self.undo_show(action == A::Redo);
         }
         let Some(running) = self.running.as_mut() else {
             return;
@@ -2893,6 +2947,8 @@ fn main() -> ExitCode {
         bible_slots,
         pictures: Vec::new(),
         unsaved: Vec::new(),
+        show_undo: Vec::new(),
+        show_redo: Vec::new(),
         unsaved_since: None,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),
