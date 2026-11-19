@@ -3,6 +3,7 @@ name = "pc-video"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 # The sound of videos played through FFmpeg, and what ffprobe says of a video.

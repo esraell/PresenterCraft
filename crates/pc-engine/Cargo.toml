@@ -3,6 +3,7 @@ name = "pc-engine"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 pc-model.workspace = true

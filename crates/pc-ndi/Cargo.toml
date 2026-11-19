@@ -3,6 +3,7 @@ name = "pc-ndi"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [features]
 # Only for the two examples that look for and receive NDI sources (to check PresenterCraft's

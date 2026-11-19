@@ -388,7 +388,12 @@ a few preferences. Changes are written as they are made; there is no Save button
 
 ## Licences
 
-PresenterCraft's own licence is still being chosen and will be added to this repository.
+PresenterCraft is free software under the GNU General Public License, version 3 or (at your
+option) any later version ([`LICENSE`](LICENSE)), with an additional permission for the NDI and
+DeckLink libraries that people install themselves
+([`ADDITIONAL-PERMISSION.md`](ADDITIONAL-PERMISSION.md)). Anyone may use it, change it and pass
+it on; a version passed on stays under the same licence. [`NOTICE.md`](NOTICE.md) lists the
+parts that are not PresenterCraft's own.
 
 - **Bibles:** a Bible is offered only if its terms let anyone pass it on.
   [`docs/licences/bibles.md`](docs/licences/bibles.md) lists each one and the few conditions
@@ -417,8 +422,9 @@ safely. [docs/cli.md](docs/cli.md) is the command line's reference.
     crates/pc-video    videos (macOS's AVFoundation, then FFmpeg) and system picture formats (ImageIO)
     crates/pc-app      the app and its windows
 
-`unsafe` code is forbidden in every crate but `pc-video`, which needs it to call macOS's media
-frameworks; there it is allowed only in the macOS module, and each block says why it is sound.
+`unsafe` code is forbidden everywhere but two places: `pc-video`'s macOS module, which calls
+macOS's media frameworks, and `pc-ndi`'s `runtime` module, which calls the NDI runtime. Each
+block says why it is sound.
 
 Before sending a change:
 
