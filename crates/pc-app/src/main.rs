@@ -172,6 +172,10 @@ fn open_panel_window(
     Ok(PanelWindow { kind, window, surface, config, ctx, state, renderer, next_repaint: None, frames: 0 })
 }
 
+/// Where the show is, for timing a slide that goes on by itself: the slide on screen, how many
+/// of its click builds are done, and its place in the play order.
+type AdvanceAt = (pc_engine::SlideRef, usize, Option<(usize, usize)>);
+
 /// How many slides in a row can set each other going through their actions.
 const MAX_ACTION_CHAIN: u8 = 3;
 
@@ -602,9 +606,9 @@ struct App {
     history: SongHistory,
     /// While actions are being done, how far along a chain of slides' actions they are.
     action_depth: Option<u8>,
-    /// The slide on screen and when it went on, for a slide that goes on to the next by itself;
-    /// and true once it has.
-    live_since: Option<(pc_engine::SlideRef, Instant)>,
+    /// Where the show is (the slide on screen, its builds, its place in the play order) and
+    /// since when, for a slide that goes on to the next by itself; and true once it has.
+    live_since: Option<(AdvanceAt, Instant)>,
     advanced: bool,
     unsaved_since: Option<Instant>,
     /// The theme songs are drawn with, and the one Bible slides are drawn with: copies of
@@ -835,9 +839,11 @@ impl App {
 
     /// Goes on to the next slide when the one on screen has been there as long as it asks.
     fn tick_advance(&mut self) {
-        let live = self.show.live();
-        if live != self.live_since.map(|(at, _)| at) {
-            self.live_since = live.map(|at| (at, Instant::now()));
+        // Any step counts: a new slide, a click build, or the same slide at another place in
+        // the play order (a group an arrangement plays twice in a row).
+        let here = self.show.live().map(|at| (at, self.show.build_step(), self.show.position()));
+        if here != self.live_since.map(|(at, _)| at) {
+            self.live_since = here.map(|at| (at, Instant::now()));
             self.advanced = false;
         }
         let Some((_, since)) = self.live_since else { return };
@@ -2073,6 +2079,11 @@ impl App {
         if let Some(path) = &self.options.capture_home {
             const GO_LIVE_AT: u32 = 3;
             const CAPTURE_AT: u32 = 30;
+            // A smoke run stays up this many seconds before its picture is taken and it quits.
+            static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+            let started = *STARTED.get_or_init(Instant::now);
+            let wait = std::env::var("PRESENTERCRAFT_CAPTURE_AFTER").ok().and_then(|s| s.parse::<f32>().ok());
+            let waited = wait.is_none_or(|seconds| started.elapsed().as_secs_f32() >= seconds);
             if running.frames == GO_LIVE_AT {
                 commands.push(Command::GoTo(pc_engine::SlideRef { presentation: 0, slide: 2 }));
                 commands.push(Command::ShowMedia(0));
@@ -2253,7 +2264,7 @@ impl App {
                     _ => inspector::InspectorTab::Text,
                 };
             }
-            if running.frames == CAPTURE_AT {
+            if running.frames >= CAPTURE_AT && waited && !self.capture_done {
                 match capture(gpu, egui_renderer, &jobs, &screen, home_config.format, path) {
                     Ok(()) => println!("saved {}", path.display()),
                     Err(e) => {
@@ -3428,6 +3439,32 @@ mod tests {
         history.step(false, a.clone());
         history.remember(0, a);
         assert_eq!(history.peek(true), None);
+    }
+
+    /// Writes a song that uses every moving part of the output: a build with the slide, a click
+    /// build, a scrolling box, a clock, a slide that goes on by itself, and looping. For smoke
+    /// runs: `SMOKE_SONG=/tmp/smoke.pcpres cargo test -p pc-app write_smoke_song -- --ignored`.
+    #[test]
+    #[ignore = "writes a file, for smoke runs"]
+    fn write_smoke_song() {
+        let Ok(path) = std::env::var("SMOKE_SONG") else { return };
+        let mut song = pc_model::parse_song_text("Smoke", "[Verse 1]\nOne\n\nTwo\n\nThree\n\n[Chorus]\nFour\n");
+        song.loops = true;
+        let slides: Vec<&mut Slide> = song.groups.iter_mut().flat_map(|group| group.slides.iter_mut()).collect();
+        let [first, second, third, fourth] = <[&mut Slide; 4]>::try_from(slides).ok().unwrap();
+        first.objects[0].build_in = Some(pc_model::Build::of(pc_model::BuildEffect::Fly));
+        first.advance = Some(3.0);
+        second.objects[0].build_in =
+            Some(pc_model::Build { on_click: true, ..pc_model::Build::of(pc_model::BuildEffect::Zoom) });
+        second.advance = Some(2.0);
+        if let pc_model::ObjectKind::Text { style, .. } = &mut third.objects[0].kind {
+            style.scroll = Some(pc_model::Scroll::Left);
+        }
+        let mut clock = pc_model::Object::text(pc_model::Role("clock".to_owned()), "[Clock]");
+        clock.link = Some(pc_model::TextLink::Clock);
+        clock.frame = Some(pc_model::SlideRect { x: 60.0, y: 40.0, w: 600.0, h: 120.0 });
+        fourth.objects.push(clock);
+        load::save_song(std::path::Path::new(&path), &song).unwrap();
     }
 
     #[test]

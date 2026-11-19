@@ -225,6 +225,12 @@ mod tests {
         assert_eq!(hidden(1), [false, true]);
         assert_eq!(hidden(2), [false, false]);
         assert_eq!(hidden(3), [true, false], "the first one has gone out");
+        // A build set going just now is at its start; one long done stays still. (Stepping back
+        // to a step must not count as setting its build going again.)
+        let fresh = slide.built(&theme, BuildClock { step: 1, since_on: Some(9.0), since_step: 0.0 }).0;
+        assert!(fresh.objects[0].hidden);
+        let still = slide.built(&theme, BuildClock { step: 1, since_on: Some(9.0), since_step: 3600.0 }).0;
+        assert!(!still.objects[0].hidden && still.objects[0].frame == shape_with(None, None).frame);
         // Flying in from the left, part-way: it is to the left of its place.
         let (flying, moving) = slide.built(&theme, BuildClock { step: 1, since_on: Some(9.0), since_step: 0.3 });
         assert!(moving);

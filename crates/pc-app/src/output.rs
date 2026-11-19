@@ -284,9 +284,13 @@ fn run(device: wgpu::Device, queue: wgpu::Queue, theme: Arc<Theme>, rx: Receiver
                         output.slide_on = now + Duration::from_secs_f32(frame.transition.duration());
                         output.step_at = now;
                         new_picture = true;
-                    } else if output.frame.build_step != frame.build_step {
+                    } else if frame.build_step > output.frame.build_step {
                         // A click build is drawn moving on the slide already there, not faded to.
                         output.step_at = now;
+                    } else if frame.build_step < output.frame.build_step {
+                        // Stepping back shows the builds still done as they were, without moving
+                        // them again.
+                        output.step_at = now.checked_sub(Duration::from_secs(3600)).unwrap_or(now);
                     } else {
                         new_picture = true;
                     }
