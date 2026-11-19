@@ -2816,6 +2816,11 @@ fn slide_area(
                 let slides = presentation.slide_count();
                 let count = if slides == 1 { "1 slide".to_owned() } else { format!("{slides} slides") };
                 ui.label(egui::RichText::new(count).size(12.0).color(crate::studio::TEXT_FAINT));
+                // Add Slide: a slide laid out like the last one, opened in the editor.
+                let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&show.selected()));
+                if !from_bible && ui.small_button("+").on_hover_text("Add Slide").clicked() {
+                    state.add_slide = Some(show.selected());
+                }
                 missing_font_notice(
                     ui,
                     &pc_model::missing_fonts(&pc_model::fonts_used(presentation, theme), &state.fonts),
