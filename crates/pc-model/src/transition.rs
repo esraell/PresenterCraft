@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The kinds of transition.
+/// The kinds of transition, by ProPresenter's names. These are the ones of its 37 that can be
+/// drawn without a shader of their own; the rest (Cube, Ripple, Mosaic and the like) are not
+/// built. Kinds saved by an earlier PresenterCraft that ProPresenter doesn't have are read as
+/// the nearest one it does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionKind {
@@ -11,135 +14,153 @@ pub enum TransitionKind {
     /// The new picture fades in over the old.
     #[default]
     Dissolve,
+    /// The old picture fades out as the new one fades in, darker in the middle.
+    Fade,
     /// The old picture fades to black, then the new one fades up.
     FadeBlack,
     /// The same through white.
     FadeWhite,
+    /// The same through grey.
+    FadeGray,
+    /// A dissolve that brightens in the middle.
+    FadeBright,
+    /// A dissolve that darkens in the middle.
+    FadeDark,
     /// The new picture pushes the old one off.
     Push,
     /// The new picture slides in over the old one.
     MoveIn,
     /// The old picture slides away, showing the new one under it.
     Reveal,
-    /// The new picture is uncovered by an edge sweeping across.
-    Wipe,
-    /// The new picture is uncovered by a circle growing from the middle.
-    Iris,
-    /// The new picture grows from the middle as it fades in.
+    /// The new picture flies in from a side, growing as it comes.
+    FlyIn,
+    /// The new picture grows from a side (or the middle) as it fades in.
+    #[serde(alias = "zoom_out")]
     ZoomIn,
-    /// The old picture shrinks away and fades, showing the new one under it.
-    ZoomOut,
-    /// The new picture is uncovered by a hand sweeping round like a clock's.
-    Clock,
-    /// The new picture is uncovered in strips, like blinds opening.
-    Blinds,
-    /// Bars come in from both sides in turn, uncovering the new picture.
-    Bars,
-    /// The new picture is uncovered square by square, in two passes.
-    Checkerboard,
-    /// The new picture opens out from a line through the middle.
-    Split,
-    /// The new picture is uncovered by a diamond growing from the middle.
-    Diamond,
     /// The old picture parts in the middle like two doors, showing the new one behind it.
-    Doors,
+    #[serde(alias = "doors")]
+    Door,
+    /// The new picture opens out from a line through the middle, like doors opening on it.
+    #[serde(alias = "split")]
+    DoorWipe,
     /// The old picture turns edge-on and the new one turns to face the room.
     Flip,
+    /// The old picture steps back and away as the new one comes forward from a side.
+    Swap,
+    /// The new picture is uncovered by an edge sweeping across.
+    #[serde(alias = "blinds", alias = "bars")]
+    Wipe,
+    /// The new picture is uncovered by a square growing from a side.
+    SquareWipe,
+    /// The new picture is uncovered by a circle growing from the middle.
+    #[serde(alias = "clock", alias = "diamond")]
+    Iris,
+    /// The new picture is uncovered square by square, in no order.
+    #[serde(alias = "checkerboard")]
+    RandomSquares,
+    /// The same with small squares, like pixels.
+    RandomPixels,
 }
 
 impl TransitionKind {
-    pub const ALL: [TransitionKind; 19] = [
+    pub const ALL: [TransitionKind; 22] = [
         TransitionKind::Cut,
         TransitionKind::Dissolve,
+        TransitionKind::Fade,
         TransitionKind::FadeBlack,
+        TransitionKind::FadeBright,
+        TransitionKind::FadeDark,
+        TransitionKind::FadeGray,
         TransitionKind::FadeWhite,
         TransitionKind::Push,
         TransitionKind::MoveIn,
         TransitionKind::Reveal,
+        TransitionKind::FlyIn,
         TransitionKind::ZoomIn,
-        TransitionKind::ZoomOut,
-        TransitionKind::Doors,
+        TransitionKind::Door,
         TransitionKind::Flip,
+        TransitionKind::Swap,
         TransitionKind::Wipe,
+        TransitionKind::DoorWipe,
+        TransitionKind::SquareWipe,
         TransitionKind::Iris,
-        TransitionKind::Clock,
-        TransitionKind::Blinds,
-        TransitionKind::Bars,
-        TransitionKind::Checkerboard,
-        TransitionKind::Split,
-        TransitionKind::Diamond,
+        TransitionKind::RandomSquares,
+        TransitionKind::RandomPixels,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
             TransitionKind::Cut => "Cut",
             TransitionKind::Dissolve => "Dissolve",
+            TransitionKind::Fade => "Fade",
             TransitionKind::FadeBlack => "Fade Black",
             TransitionKind::FadeWhite => "Fade White",
+            TransitionKind::FadeGray => "Fade Gray",
+            TransitionKind::FadeBright => "Fade Bright",
+            TransitionKind::FadeDark => "Fade Dark",
             TransitionKind::Push => "Push",
             TransitionKind::MoveIn => "Move In",
             TransitionKind::Reveal => "Reveal",
-            TransitionKind::Wipe => "Wipe",
-            TransitionKind::Iris => "Iris",
+            TransitionKind::FlyIn => "Fly In",
             TransitionKind::ZoomIn => "Zoom In",
-            TransitionKind::ZoomOut => "Zoom Out",
-            TransitionKind::Clock => "Clock",
-            TransitionKind::Blinds => "Blinds",
-            TransitionKind::Bars => "Bars",
-            TransitionKind::Checkerboard => "Checkerboard",
-            TransitionKind::Split => "Split",
-            TransitionKind::Diamond => "Diamond",
-            TransitionKind::Doors => "Doors",
+            TransitionKind::Door => "Door",
+            TransitionKind::DoorWipe => "Door Wipe",
             TransitionKind::Flip => "Flip",
+            TransitionKind::Swap => "Swap",
+            TransitionKind::Wipe => "Wipe",
+            TransitionKind::SquareWipe => "Square Wipe",
+            TransitionKind::Iris => "Iris",
+            TransitionKind::RandomSquares => "Random Squares",
+            TransitionKind::RandomPixels => "Random Pixels",
         }
     }
 
-    /// The group it is listed under, as ProPresenter groups its transitions.
+    /// The group it is listed under in the picker.
     pub fn category(self) -> &'static str {
         match self {
             TransitionKind::Cut => "None",
-            TransitionKind::Dissolve | TransitionKind::FadeBlack | TransitionKind::FadeWhite => "Dissolves",
+            TransitionKind::Dissolve
+            | TransitionKind::Fade
+            | TransitionKind::FadeBlack
+            | TransitionKind::FadeWhite
+            | TransitionKind::FadeGray
+            | TransitionKind::FadeBright
+            | TransitionKind::FadeDark => "Dissolves",
             TransitionKind::Push
             | TransitionKind::MoveIn
             | TransitionKind::Reveal
-            | TransitionKind::ZoomIn
-            | TransitionKind::ZoomOut
-            | TransitionKind::Doors
-            | TransitionKind::Flip => "Movements",
+            | TransitionKind::FlyIn
+            | TransitionKind::ZoomIn => "Movements",
+            TransitionKind::Door | TransitionKind::Flip | TransitionKind::Swap => "Objects",
             TransitionKind::Wipe
+            | TransitionKind::DoorWipe
+            | TransitionKind::SquareWipe
             | TransitionKind::Iris
-            | TransitionKind::Clock
-            | TransitionKind::Blinds
-            | TransitionKind::Bars
-            | TransitionKind::Checkerboard
-            | TransitionKind::Split
-            | TransitionKind::Diamond => "Wipes",
+            | TransitionKind::RandomSquares
+            | TransitionKind::RandomPixels => "Wipes",
         }
     }
 
-    /// True for the kinds that move in a direction.
+    /// True for the kinds that move in a direction, as ProPresenter offers them.
     pub fn has_direction(self) -> bool {
         matches!(
             self,
             TransitionKind::Push
                 | TransitionKind::MoveIn
                 | TransitionKind::Reveal
+                | TransitionKind::FlyIn
+                | TransitionKind::ZoomIn
                 | TransitionKind::Wipe
-                | TransitionKind::Blinds
-                | TransitionKind::Bars
-                | TransitionKind::Checkerboard
-                | TransitionKind::Split
-                | TransitionKind::Doors
-                | TransitionKind::Flip
+                | TransitionKind::SquareWipe
+                | TransitionKind::Swap
         )
     }
 
-    /// How long it takes unless it is given another time, in seconds.
+    /// How long it takes unless it is given another time, in seconds: ProPresenter's defaults.
     pub fn usual_seconds(self) -> f32 {
         match self {
             TransitionKind::Cut => 0.0,
             TransitionKind::Dissolve => 0.4,
-            TransitionKind::FadeBlack | TransitionKind::FadeWhite => 1.0,
             _ => 0.6,
         }
     }

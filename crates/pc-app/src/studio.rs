@@ -1505,8 +1505,9 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
             .show(|ui| transition_settings(ui, &mut state.transition, "slides"));
     }
     // Laid out right to left: the last cell here is the leftmost.
+    // ProPresenter's third button is Advanced; once one is chosen, it names it.
     let others =
-        if matches!(kind, K::Cut | K::Dissolve) { "More ▾".to_owned() } else { format!("{} ▾", kind.name()) };
+        if matches!(kind, K::Cut | K::Dissolve) { "Advanced ▾".to_owned() } else { format!("{} ▾", kind.name()) };
     let (bar, _) = ui.allocate_exact_size(vec2(44.0 + 64.0 + 84.0 + 6.0, 30.0), Sense::hover());
     ui.painter().rect_filled(bar, RADIUS + 1.0, PANEL);
     let mut more = None;
@@ -1547,7 +1548,7 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
 pub fn transition_picker(ui: &mut egui::Ui, look: &mut pc_model::Transition, id: &str) {
     use pc_model::TransitionKind as K;
     ui.set_width(330.0);
-    for category in ["Dissolves", "Movements", "Wipes", "None"] {
+    for category in ["Dissolves", "Movements", "Objects", "Wipes", "None"] {
         caption(ui, &category.to_uppercase());
         ui.horizontal_wrapped(|ui| {
             for kind in K::ALL.into_iter().filter(|kind| kind.category() == category) {
@@ -1584,7 +1585,7 @@ fn transition_settings(ui: &mut egui::Ui, look: &mut pc_model::Transition, id: &
             ui.end_row();
         }
         ui.label(egui::RichText::new("Duration").color(TEXT_DIM));
-        ui.add(egui::Slider::new(&mut look.seconds, 0.1..=5.0).suffix(" s").max_decimals(1));
+        ui.add(egui::Slider::new(&mut look.seconds, 0.0..=5.0).suffix(" s").max_decimals(1));
         ui.end_row();
     });
     if ui.button("Reset to Default Parameters").clicked() {

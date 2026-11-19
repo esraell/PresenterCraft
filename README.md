@@ -47,9 +47,10 @@ ProPresenter.
   once, the stage screens show what comes next in it, and a row of its
   groups shows the one on screen; click one to go to it, right-click to move, repeat or
   remove it, + to add a group.
-- Nineteen transitions: Cut, Dissolve, Fade Black, Fade White, Push, Move In, Reveal, Zoom In,
-  Zoom Out, Doors, Flip, Wipe, Iris, Clock, Blinds, Bars, Checkerboard, Split and Diamond, with
-  their direction and time. One is chosen for all slides from the bar under the slides; a song
+- Twenty-two of ProPresenter's 37 transitions, by its names: Cut, Dissolve, Fade, Fade Black,
+  Fade Bright, Fade Dark, Fade Gray, Fade White, Push, Move In, Reveal, Fly In, Zoom In, Door,
+  Flip, Swap, Wipe, Door Wipe, Square Wipe, Iris, Random Squares and Random Pixels, with their
+  direction and time (0 to 5 seconds), from Cut, Dissolve or Advanced. One is chosen for all slides from the bar under the slides; a song
   (its right-click menu) and a slide can each have their own, and the media bin has its own for
   changing from one picture or video to the next.
 - New Song (Command-N, or + over the song list) asks for the song's title and theme, and takes
@@ -214,8 +215,10 @@ Among the things PresenterCraft can't do yet:
 - Slide sizes other than 1920 × 1080.
 - A timeline that times slides, media and audio together (a slide can go on by itself after a
   time, and a song can loop).
-- ProPresenter's other transitions, chiefly the 3D ones (Cube, Page Curl, Swing and the like),
-  and transitions for props of their own.
+- ProPresenter's other 15 transitions, which need effects of their own (Amoeba, Color Burn,
+  Color Push, Color Warp, Cross Hatch, Cube, Dispersion Blur, Film Burn, Kaleidoscope Wipe,
+  Mosaic, Noisy Zoom, Random Squares Flicker, Ripple, Warp Fade, Wave Dissolve), and transitions
+  for props of their own.
 - In and out points for media and audio.
 - Clear Groups, and Show Slide on Stage Screens Only.
 - Saved looks to switch between, masks other than covered edges, corner pin, alpha and NDI
