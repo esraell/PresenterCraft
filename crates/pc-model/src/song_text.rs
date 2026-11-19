@@ -37,7 +37,13 @@ pub fn parse_song_text(title: &str, text: &str) -> Presentation {
     draft.finish_into(&mut current);
     push_group(&mut groups, current);
 
-    Presentation { id: Uuid::new_v4(), title: title.to_owned(), groups, copyright: crate::Copyright::default() }
+    Presentation {
+        id: Uuid::new_v4(),
+        title: title.to_owned(),
+        groups,
+        copyright: crate::Copyright::default(),
+        theme: None,
+    }
 }
 
 /// The keys that jump to a group, and the group names each one means. Pressing a key shows

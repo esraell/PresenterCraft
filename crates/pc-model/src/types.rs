@@ -379,6 +379,9 @@ pub struct Presentation {
     /// Who wrote the song and who holds its rights, for the copyright line.
     #[serde(default, skip_serializing_if = "Copyright::is_empty")]
     pub copyright: Copyright,
+    /// The theme the song is drawn with, by its id; `None` uses the theme songs use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<Uuid>,
 }
 
 /// A song's copyright details, as a CCLI report asks for them.
@@ -485,7 +488,13 @@ impl Presentation {
                 index += 1;
             }
         }
-        Presentation { id: self.id, title: self.title.clone(), groups, copyright: self.copyright.clone() }
+        Presentation {
+            id: self.id,
+            title: self.title.clone(),
+            groups,
+            copyright: self.copyright.clone(),
+            theme: self.theme,
+        }
     }
 
     /// A copy with one slide replaced by an edited version of it. Returns `None` if there is no
@@ -705,6 +714,7 @@ mod tests {
             title: "Empty".to_owned(),
             groups: Vec::new(),
             copyright: Copyright::default(),
+            theme: None,
         };
         let (first, at) = empty.with_slide_added();
         assert_eq!((first.slide_count(), at), (1, 0));

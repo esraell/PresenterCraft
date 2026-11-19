@@ -102,6 +102,11 @@ pub struct HomeState {
     pub slide_clip: Option<Slide>,
     /// A change to a slide asked for from its menu.
     pub slide_request: Option<(SlideRef, SlideRequest)>,
+    /// A theme chosen for a song from its menu: the song, and the theme by its place (`None`
+    /// puts it back on the songs theme).
+    pub song_theme_request: Option<(usize, Option<usize>)>,
+    /// The id of each theme, in the order of `theme_names`.
+    pub theme_ids: Vec<pc_model::Uuid>,
     /// A change to a song asked for from its menu, and a song waiting to be confirmed deleted.
     pub song_request: Option<(usize, SongRequest)>,
     pub confirm_delete_song: Option<usize>,
@@ -663,6 +668,8 @@ impl Default for HomeState {
             slide_clip: None,
             slide_request: None,
             song_request: None,
+            song_theme_request: None,
+            theme_ids: Vec::new(),
             confirm_delete_song: None,
             removed_songs: Vec::new(),
             media_request: None,

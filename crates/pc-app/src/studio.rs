@@ -759,6 +759,22 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                         state.song_request = Some((index, crate::home::SongRequest::Duplicate));
                         ui.close();
                     }
+                    // The theme this song is drawn with.
+                    let own = show.presentations().get(index).and_then(|song| song.theme);
+                    ui.menu_button("Theme", |ui| {
+                        if ui.add(egui::Button::selectable(own.is_none(), "Songs Theme")).on_hover_text("The theme songs use").clicked() {
+                            state.song_theme_request = Some((index, None));
+                            ui.close();
+                        }
+                        ui.separator();
+                        for (at, name) in state.theme_names.iter().enumerate() {
+                            let on = own.is_some() && state.theme_ids.get(at).copied() == own;
+                            if ui.add(egui::Button::selectable(on, name.as_str())).clicked() {
+                                state.song_theme_request = Some((index, Some(at)));
+                                ui.close();
+                            }
+                        }
+                    });
                     if ui.button("Reflow").clicked()
                         && let Some(song) = show.presentations().get(index)
                     {

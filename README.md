@@ -53,8 +53,8 @@ ProPresenter.
   kept between runs, and can be shown behind the words; right-click one to remove it.
 - A slide's right-click menu: Edit, Cut, Copy, Paste, Delete, Group (mark where a verse, chorus
   or bridge starts), Label (Blank Slide, Instrumental, Repeat, Spoken Word), Disable, Template.
-- A song's right-click menu: Add to Service, Rename, Duplicate, and Delete (a song made in the
-  app goes to the Trash).
+- A song's right-click menu: Add to Service, Rename, Duplicate, Theme (a theme of its own, or
+  the songs theme), Reflow, and Delete (a song made in the app goes to the Trash).
 - **Timers** (count down, count down to a time of day, or count up), **Messages** shown over
   the slides (with the time or a timer in them, and an optional time to leave by themselves),
   **Props** (things that stay over the slides until taken off, made in the editor, with an

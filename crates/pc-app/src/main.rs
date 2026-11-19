@@ -461,6 +461,8 @@ struct App {
     theme: Arc<Theme>,
     theme_for_bible: Arc<Theme>,
     themes: Vec<Theme>,
+    /// The themes again, shared, for a song that names its own theme.
+    theme_arcs: Vec<Arc<Theme>>,
     songs_theme: usize,
     bible_theme: usize,
     /// Which template of its theme Bible slides use, by its place among them.
@@ -592,6 +594,7 @@ impl App {
             home_state: HomeState {
                 fonts: Arc::new(pc_render::Fonts::new().family_names()),
                 theme_names: self.themes.iter().map(|theme| theme.name.clone()).collect(),
+                theme_ids: self.themes.iter().map(|theme| theme.id).collect(),
                 theme_for_songs: self.songs_theme,
                 theme_layouts: self.theme_layouts(),
                 template_names: self.themes.iter().map(template_names).collect(),
@@ -807,6 +810,32 @@ impl App {
         }
     }
 
+    /// Gives a song a theme of its own, or puts it back on the songs theme.
+    fn handle_song_theme(&mut self) {
+        let Some((index, theme)) = self.running.as_mut().and_then(|r| r.home_state.song_theme_request.take()) else {
+            return;
+        };
+        let Some(song) = self.show.presentations().get(index).cloned() else { return };
+        let id = theme.and_then(|at| self.themes.get(at)).map(|theme| theme.id);
+        if song.theme == id {
+            return;
+        }
+        let changed = pc_model::Presentation { theme: id, ..(*song).clone() };
+        self.show.replace_presentation(index, Arc::new(changed));
+        if !self.unsaved.contains(&index) {
+            self.unsaved.push(index);
+        }
+        self.save_unsaved();
+        if let Some(running) = self.running.as_mut() {
+            running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
+            running.canvas_for = None;
+            running.home_window.request_redraw();
+        }
+        if self.show.live().is_some_and(|live| live.presentation == index) {
+            self.refresh_output();
+        }
+    }
+
     /// Gives a song the copyright details typed in its Info pop-over.
     fn handle_copyright(&mut self) {
         let Some((index, details)) = self.running.as_mut().and_then(|r| r.home_state.copyright_request.take()) else {
@@ -1012,6 +1041,7 @@ impl App {
             title: title.clone(),
             groups: vec![verse],
             copyright: pc_model::Copyright::default(),
+            theme: None,
         };
         // New songs live in the app's Songs folder, each in a file named by its id, so two
         // songs with one title never collide.
@@ -1040,9 +1070,13 @@ impl App {
     }
 
     /// The theme a presentation's slides are drawn with: the Bible theme for a Bible passage,
-    /// the songs theme for everything else.
+    /// the song's own theme if it names one, otherwise the songs theme.
     fn theme_of(&self, presentation: usize) -> &Arc<Theme> {
-        if self.bible_slots.contains(&presentation) { &self.theme_for_bible } else { &self.theme }
+        if self.bible_slots.contains(&presentation) {
+            return &self.theme_for_bible;
+        }
+        let own = self.show.presentations().get(presentation).and_then(|song| song.theme);
+        own.and_then(|id| self.theme_arcs.iter().find(|theme| theme.id == id)).unwrap_or(&self.theme)
     }
 
     /// Each theme's templates as boxes, for the pictures in the theme picker.
@@ -1064,6 +1098,7 @@ impl App {
         self.bible_theme = self.bible_theme.min(self.themes.len().saturating_sub(1));
         self.theme = Arc::new(self.themes[self.songs_theme].clone());
         self.theme_for_bible = Arc::new(self.themes[self.bible_theme].clone());
+        self.theme_arcs = self.themes.iter().cloned().map(Arc::new).collect();
         self.bible_layout = self.bible_layout.min(self.theme_for_bible.templates.len().saturating_sub(1));
         let (layouts, pinned) = (self.theme_layouts(), self.bible_template());
         if let Some(running) = self.running.as_mut() {
@@ -1071,6 +1106,7 @@ impl App {
             running.canvas_for = None;
             let state = &mut running.home_state;
             state.theme_names = self.themes.iter().map(|theme| theme.name.clone()).collect();
+            state.theme_ids = self.themes.iter().map(|theme| theme.id).collect();
             state.theme_for_songs = self.songs_theme;
             state.theme_for_bible = self.bible_theme;
             state.theme_layouts = layouts;
@@ -1434,6 +1470,9 @@ impl App {
 
     /// Redraws the Edit view's picture of the slide when the slide being edited changes.
     fn update_canvas(&mut self) {
+        // The theme of the song being edited, worked out before the window's state is borrowed.
+        let editing_song = self.running.as_ref().and_then(|r| r.home_state.editing.as_ref()).map(|d| d.at.presentation);
+        let song_theme = editing_song.map(|song| self.theme_of(song).clone());
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -1441,12 +1480,11 @@ impl App {
         if editing == running.canvas_for {
             return;
         }
-        if let Some((at, slide)) = &editing {
+        if let Some((_, slide)) = &editing {
             // A theme's layout is drawn with that theme; a slide with its presentation's.
             let theme = match &running.home_state.theme_edit {
                 Some(edit) => self.themes.get(edit.index).unwrap_or(&self.theme),
-                None if self.bible_slots.contains(&at.presentation) => &self.theme_for_bible,
-                None => &self.theme,
+                None => song_theme.as_deref().unwrap_or(&self.theme),
             };
             running.canvas = running.thumbs.canvas(&running.gpu, &mut running.egui_renderer, slide, theme);
         }
@@ -1456,6 +1494,13 @@ impl App {
 
     /// Draws one frame of the home window and returns what the operator asked for.
     fn draw_home(&mut self) -> Vec<Command> {
+        // The song in front (being edited, or chosen) may have a theme of its own.
+        let in_front = self
+            .running
+            .as_ref()
+            .and_then(|r| r.home_state.editing.as_ref())
+            .map_or(self.show.selected(), |draft| draft.at.presentation);
+        let front_theme = self.theme_of(in_front).clone();
         let Some(running) = self.running.as_mut() else {
             return Vec::new();
         };
@@ -1478,7 +1523,8 @@ impl App {
         };
         let preview = home::Preview { now: running.preview, before: running.preview_before, amount };
         let (show, pictures) = (&self.show, &self.pictures);
-        let (songs_theme, bible_theme): (&Theme, &Theme) = (&self.theme, &self.theme_for_bible);
+        let (songs_theme, bible_theme): (&Theme, &Theme) = (&front_theme, &self.theme_for_bible);
+        running.home_state.song_templates = song_templates(songs_theme);
         // The theme the part of the window in front works with: the one being edited, the
         // Bible's on the Bible page or when a Bible slide is being edited, otherwise the songs'.
         let state = &running.home_state;
@@ -2375,6 +2421,7 @@ impl ApplicationHandler<String> for App {
                     self.apply_edit(at, slide);
                 }
                 self.handle_slide_request();
+                self.handle_song_theme();
                 self.handle_copyright();
                 self.handle_reflow();
                 self.handle_media_request();
@@ -2549,6 +2596,7 @@ fn main() -> ExitCode {
             title: "Bible".to_owned(),
             groups: Vec::new(),
             copyright: pc_model::Copyright::default(),
+            theme: None,
         });
         sources.push(None);
     }
@@ -2594,6 +2642,7 @@ fn main() -> ExitCode {
         unsaved_since: None,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),
+        theme_arcs: themes.iter().cloned().map(Arc::new).collect(),
         themes,
         songs_theme,
         bible_theme,

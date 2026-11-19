@@ -268,6 +268,7 @@ pub fn build_passage(
         title: lead.bible.label(first, last),
         groups,
         copyright: pc_model::Copyright::default(),
+        theme: None,
     })
 }
 
