@@ -5,11 +5,12 @@ on:
     branches: [master]
   pull_request:
 
-# A newer push cancels the run still going for an older one on the same branch or pull request,
-# so runs don't queue for the few free Mac machines.
+# On a pull request, a newer push cancels the run still going for an older one. On master every
+# run finishes, one after another: pushes there come faster than a run takes, and cancelling
+# them would leave master with no result at all.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
