@@ -288,7 +288,11 @@ PresenterCraft's own licence is still being chosen and will be added to this rep
     crates/pc-render   draws slides on the GPU: screens, thumbnails, preview
     crates/pc-bible    Bible files, references, search, verse numbering
     crates/pc-ndi      NDI output
+    crates/pc-video    videos and system picture formats, through macOS's AVFoundation and ImageIO
     crates/pc-app      the app and its windows
+
+`unsafe` code is forbidden in every crate but `pc-video`, which needs it to call macOS's media
+frameworks; there it is allowed only in the macOS module, and each block says why it is sound.
 
 Before sending a change:
 
