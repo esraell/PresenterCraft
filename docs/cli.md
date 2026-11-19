@@ -9,16 +9,17 @@ Command names are a first version and may still change before the first release.
 ## Using it
 
 Install the command once: choose **SoftPresenter > Install Command Line Tool…** (or run the app's
-program with `install-cli`). It puts `softpresenter` in `~/.local/bin` (or Homebrew's `bin`
-folder), as a link to the app; no administrator password is needed. Then:
+program with `install-cli`). It puts `sp`, and its full name `softpresenter`, in
+`~/.local/bin` (or Homebrew's `bin` folder), as links to the app; no administrator password is
+needed. Then:
 
-    softpresenter status
-    softpresenter go "Amazing Grace" 3
-    softpresenter next
-    softpresenter clear all
-    softpresenter status --json
+    sp status
+    sp go "Amazing Grace" 3
+    sp next
+    sp clear all
+    sp status --json
 
-`softpresenter` on its own opens the app, and `softpresenter ctl COMMAND` works too. From the source, `cargo run --release -- COMMAND`.
+`sp` on its own opens the app; `sp ctl COMMAND` and `softpresenter COMMAND` work too. From the source, `cargo run --release -- COMMAND`.
 
 - **Names** can be typed in full or in part, in any case: `go amazing` finds "Amazing Grace".
   A name that fits several things is never guessed: the reply lists them, and nothing changes.

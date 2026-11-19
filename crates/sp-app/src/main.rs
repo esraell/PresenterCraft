@@ -3657,7 +3657,7 @@ impl App {
             A::InstallCommandLine => {
                 state.notice = Some(match control::install_command() {
                     Ok(link) => format!(
-                        "Installed the softpresenter command at {}. In Terminal, try: softpresenter status",
+                        "Installed the sp command at {} (and softpresenter beside it). In Terminal, try: sp status",
                         link.display()
                     ),
                     Err(problem) => problem,
@@ -4324,7 +4324,7 @@ fn main() -> ExitCode {
         Some("install-cli") => {
             return match control::install_command() {
                 Ok(link) => {
-                    println!("Installed {}. Try: softpresenter status", link.display());
+                    println!("Installed {} (and softpresenter beside it). Try: sp status", link.display());
                     ExitCode::SUCCESS
                 }
                 Err(problem) => {

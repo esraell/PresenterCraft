@@ -247,10 +247,10 @@ pub fn is_command(word: &str) -> bool {
     COMMANDS.contains(&word.to_lowercase().as_str())
 }
 
-/// The names the command is installed as.
-pub const COMMAND_NAMES: [&str; 1] = ["softpresenter"];
+/// The names the command is installed as: the short one to type, and the full one.
+pub const COMMAND_NAMES: [&str; 2] = ["sp", "softpresenter"];
 
-/// Puts the `softpresenter` command on the PATH: a link to this program in the
+/// Puts the `sp` (and `softpresenter`) command on the PATH: links to this program in the
 /// first of these folders that is there and can be written to without an administrator:
 /// `~/.local/bin`, then `/opt/homebrew/bin`, then `/usr/local/bin`; failing those,
 /// `~/.local/bin` is made. A link already there is replaced; a file of that name that is not a
@@ -330,7 +330,7 @@ pub fn bundle_opened_through_link() -> Option<PathBuf> {
 
 /// What `ctl help` says.
 pub const HELP: &str = "\
-softpresenter COMMAND …   (add --json for the reply as JSON)
+sp COMMAND …   (the same as softpresenter COMMAND …; add --json for the reply as JSON)
 
 What is going on
   status                       what is on screen, what is next, what is playing
