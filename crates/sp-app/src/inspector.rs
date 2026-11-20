@@ -425,7 +425,7 @@ pub fn inspector(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) -> boo
                             }
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Show").on_hover_text("Go back to the Show view").clicked() {
+                            if ui.button("Done").on_hover_text("Go back to the Show view").clicked() {
                                 leave = true;
                             }
                             if !for_theme {
@@ -782,10 +782,10 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         if ui.add_enabled(draft.can_redo(), small("Redo")).on_hover_text("Redo (Shift+Cmd+Z)").clicked() {
             draft.redo();
         }
-        if ui.add(small("Forward")).on_hover_text("Move in front of the next object").clicked() {
+        if ui.add(small("Bring Forward")).on_hover_text("Move in front of the next object").clicked() {
             draft.restack(true);
         }
-        if ui.add(small("Back")).on_hover_text("Move behind the previous object").clicked() {
+        if ui.add(small("Send Back")).on_hover_text("Move behind the previous object").clicked() {
             draft.restack(false);
         }
         if ui.add(small("Delete")).on_hover_text("Remove this object from the slide (Delete)").clicked() {

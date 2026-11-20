@@ -2855,7 +2855,6 @@ fn edit_view(
     }
 }
 
-/// The panes of the Settings window, in order.
 /// What an output is called in the Screens window's menus.
 fn output_label(output: &Output, displays: &[DisplayInfo]) -> String {
     match output {
@@ -3370,7 +3369,7 @@ pub fn settings_ui(ui: &mut egui::Ui, state: &mut HomeState) {
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.label("CCLI License Number");
+                    ui.label("CCLI Licence Number");
                     ui.add(egui::TextEdit::singleline(&mut state.ccli_licence).desired_width(160.0));
                 });
                 ui.add_space(4.0);
@@ -3446,8 +3445,6 @@ pub fn settings_ui(ui: &mut egui::Ui, state: &mut HomeState) {
     });
 }
 
-/// A switch drawn the way the Mac draws one: a capsule, green with the knob at the right when
-/// on. Returns true when it was clicked.
 /// What starts playing by itself when the app opens: nothing, a media playlist, or a song on
 /// the Announcements layer.
 fn start_with_ui(ui: &mut egui::Ui, state: &mut HomeState) {
@@ -3661,6 +3658,7 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
             Output::Ndi(name) => format!("NDI  ·  {name}"),
             Output::Off => "Off".to_owned(),
         };
+        let repeats = status.trim() == target.trim();
         ui.painter().text(
             frame_rect.center() - vec2(0.0, 10.0),
             Align2::CENTER_CENTER,
@@ -3668,13 +3666,16 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
             crate::studio::semibold(16.0),
             if shown { TEXT } else { TEXT_DIM },
         );
-        ui.painter().text(
-            frame_rect.center() + vec2(0.0, 14.0),
-            Align2::CENTER_CENTER,
-            status.as_str(),
-            FontId::proportional(12.0),
-            if shown { ON } else { TEXT_DIM },
-        );
+        // What the screen is doing, under where it goes, unless that says it already ("Off").
+        if !repeats {
+            ui.painter().text(
+                frame_rect.center() + vec2(0.0, 14.0),
+                Align2::CENTER_CENTER,
+                status.as_str(),
+                FontId::proportional(12.0),
+                if shown { ON } else { TEXT_DIM },
+            );
+        }
         ui.add_space(16.0);
 
         // The settings, as rows in a rounded box, labels on the left.
@@ -3908,9 +3909,9 @@ fn new_song_sheet(ui: &mut egui::Ui, state: &mut HomeState) {
                 }
                 ui.end_row();
                 ui.label(egui::RichText::new("Theme").color(DIM));
-                let shown = sheet.theme.and_then(|at| state.theme_names.get(at)).map_or("Songs Theme", String::as_str);
+                let shown = sheet.theme.and_then(|at| state.theme_names.get(at)).map_or("Main Theme", String::as_str);
                 egui::ComboBox::from_id_salt("new song theme").selected_text(shown).width(340.0).show_ui(ui, |ui| {
-                    if ui.add(egui::Button::selectable(sheet.theme.is_none(), "Songs Theme")).clicked() {
+                    if ui.add(egui::Button::selectable(sheet.theme.is_none(), "Main Theme")).clicked() {
                         sheet.theme = None;
                     }
                     for (at, name) in state.theme_names.iter().enumerate() {
@@ -6213,11 +6214,13 @@ fn song_slides(
                     if view == SlideView::Easy {
                         // Only the words, plain, on black: quick to read at any size.
                         painter.rect_filled(image, 0.0, Color32::BLACK);
-                        painter.with_clip_rect(image).text(
+                        // The lines wrap at the tile's width, so every word shows.
+                        let font = FontId::proportional((width / 15.0).clamp(10.0, 18.0));
+                        let galley =
+                            painter.layout(words(), font, Color32::from_gray(235), (image.width() - 16.0).max(20.0));
+                        painter.with_clip_rect(image).galley(
                             image.min + vec2(8.0, 6.0),
-                            Align2::LEFT_TOP,
-                            words(),
-                            FontId::proportional((width / 15.0).clamp(10.0, 18.0)),
+                            galley,
                             Color32::from_gray(235),
                         );
                     } else {

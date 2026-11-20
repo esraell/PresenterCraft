@@ -1335,7 +1335,10 @@ fn song_menu(
     // The theme this song is drawn with.
     let own = show.presentations().get(index).and_then(|song| song.theme);
     ui.menu_button("Theme", |ui| {
-        if ui.add(egui::Button::selectable(own.is_none(), "Songs Theme")).on_hover_text("The theme songs use").clicked()
+        if ui
+            .add(egui::Button::selectable(own.is_none(), "Main Theme"))
+            .on_hover_text("The theme songs use unless they set their own")
+            .clicked()
         {
             state.song_theme_request = Some((index, None));
             ui.close();
@@ -1398,7 +1401,8 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
     ui.horizontal(|ui| {
         let count = items.iter().filter(|item| !matches!(item, Item::Header { .. })).count();
         let noun = if count == 1 { "ITEM" } else { "ITEMS" };
-        caption(ui, &format!("{count} {noun}"));
+        // The playlist's name, so it is plain which one the items are of.
+        caption(ui, &format!("{} \u{b7} {count} {noun}", state.services.front().name.to_uppercase()));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // + adds a header, a heading that groups the items under it.
             let (plus, response) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
@@ -2234,18 +2238,37 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
     let kind = state.transition.kind;
     // Without room beside what is to their left (a narrow window), the transition buttons are
     // left out rather than drawn over it. They need 216 points, and the label more.
-    let needed = if kind == K::Cut { 216.0 } else { 300.0 };
+    let needed = if kind == K::Cut { 216.0 } else { 260.0 };
     if ui.available_width() < needed {
+        // A narrow window: one button naming the transition, which opens the picker, rather
+        // than the transition being left out.
+        if ui.available_width() >= 110.0 {
+            ui.add_space(6.0);
+            let words = if kind == K::Cut {
+                "Cut ▾".to_owned()
+            } else {
+                format!("{} {:.1}s ▾", kind.name(), state.transition.seconds)
+            };
+            let button = ui
+                .add(egui::Button::new(egui::RichText::new(words).size(12.0).color(TEXT_DIM)))
+                .on_hover_text("How one slide gives way to the next");
+            egui::Popup::from_toggle_button_response(&button)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| transition_picker(ui, &mut state.transition, "slides"));
+        }
         return;
     }
     ui.add_space(10.0);
     if kind != K::Cut {
+        // The time only: the transition's name is the button chosen beside it.
         let label = ui
             .add(
-                egui::Button::new(egui::RichText::new(state.transition.label()).size(12.0).color(TEXT_DIM))
-                    .frame(false),
+                egui::Button::new(
+                    egui::RichText::new(format!("{:.1}s ▾", state.transition.seconds)).size(12.0).color(TEXT_DIM),
+                )
+                .frame(false),
             )
-            .on_hover_text("Choose how long it takes, and its direction");
+            .on_hover_text("How long it takes, and its direction");
         egui::Popup::from_toggle_button_response(&label)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| transition_settings(ui, &mut state.transition, "slides"));
