@@ -125,6 +125,8 @@ rather than a feature, but no church on Windows can use the app without them.
 - **The reference straight after the verse.** The reference follows the last word, on the same line. (started: the reference can go on a line of its own in the same box) · S · Low
 - **Red-letter text.** Needs the data for each Bible. · M · Low
 - **More than four translations at once.** (started: four rows) · S · Low
+- **A long passage split by what fits.** As many verses on each slide as its box holds, then
+  the next slide. (started: one verse a slide, or the whole passage on one) · M · Medium
 
 ## Themes and screen setups
 

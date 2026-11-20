@@ -158,7 +158,7 @@ feature changes, this page changes in the same commit.
   hundred, and Clear History empties it.
 - Up to four translations on one slide, lined up by verse using the standard versification
   tables; each row picks its Bible (or None) and the boxes its verse and reference go in.
-- Options opens a panel: what each slide shows (one verse, or as many as fit), verse numbers,
+- Options opens a panel: what each slide shows (one verse, or the whole passage), verse numbers,
   the translation's name, where the reference goes (on every slide, the whole passage on every
   slide or the last, or none) and the theme, beside a preview of the first and last slides that
   changes as they are clicked (the passage showing, or two sample verses). Manage Bibles… opens
@@ -175,7 +175,7 @@ feature changes, this page changes in the same commit.
 - One click keeps a passage: Add to "Sunday Morning" puts it in the playlist in front (the ▾
   beside it picks another), to be brought back with the same settings.
 
-![The Bible view: John 3:16-18 in the King James Version beside the Russian Synodal](images/bible.png)
+![The Bible page: John 3:16-18 in the Russian Synodal and the King James Version, beside the book, chapter and verse lists](images/bible.png)
 
 ## Editing
 - An editor for a song's slides: move, resize and restyle text boxes, with alignment guides

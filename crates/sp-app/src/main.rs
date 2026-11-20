@@ -350,6 +350,18 @@ fn template_names(theme: &Theme) -> Vec<String> {
     theme.templates.iter().map(|template| template.name.clone()).collect()
 }
 
+/// Whether Escape has something in the window to close (a pop-up, the Settings window, the
+/// Bible page's Options or Bibles window, the setup), which it closes instead of clearing the
+/// screens.
+fn escape_closes_something(state: &home::HomeState, ctx: &egui::Context) -> bool {
+    state.settings_open
+        || state.bible.options.open
+        || state.bible.options.manage_open
+        || state.setup.is_some()
+        || state.library_search.is_some()
+        || egui::Popup::is_any_open(ctx)
+}
+
 /// The keys that run the show. They are read straight from the window, before the interface
 /// draws, so a key press reaches the output without waiting for the home window. A slide's own
 /// hot key puts it on screen; otherwise a letter jumps to the group it stands for (A for the
@@ -4690,13 +4702,8 @@ impl ApplicationHandler<AppEvent> for App {
             && !self.held.control_key()
             && let Some(command) = show_key_command(&key.logical_key, &self.show)
         {
-            // Escape clears the screen only when there is nothing else for it to close: a
-            // pop-up or the Settings window takes it first.
-            let state = &running.home_state;
-            let something_open = state.settings_open
-                || state.bible.options.open
-                || state.library_search.is_some()
-                || egui::Popup::is_any_open(&running.egui_ctx);
+            // Escape clears the screen only when there is nothing else for it to close.
+            let something_open = escape_closes_something(&running.home_state, &running.egui_ctx);
             let escape = matches!(key.logical_key, Key::Named(NamedKey::Escape));
             if !(escape && something_open) {
                 self.apply(vec![command]);
@@ -5322,6 +5329,15 @@ mod tests {
         assert_eq!(key(Key::Named(NamedKey::End)), Some(Command::Last));
         assert_eq!(key(Key::Named(NamedKey::F1)), Some(Command::ClearAll));
         assert_eq!(key(Key::Named(NamedKey::Escape)), Some(Command::ClearAll));
+        // Unless the Bibles window or the setup is open: then Escape closes it.
+        let ctx = egui::Context::default();
+        let mut state = home::HomeState::default();
+        assert!(!escape_closes_something(&state, &ctx));
+        state.bible.options.manage_open = true;
+        assert!(escape_closes_something(&state, &ctx));
+        state.bible.options.manage_open = false;
+        state.setup = Some(setup::Setup::new());
+        assert!(escape_closes_something(&state, &ctx));
         assert_eq!(key(Key::Named(NamedKey::Tab)), None);
         // Letters jump to the group they stand for, in either case.
         assert_eq!(key(Key::Character("a".into())), jump(0));

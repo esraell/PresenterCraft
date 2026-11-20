@@ -608,7 +608,8 @@ fn choices(
     widgets.hovered.bg_fill = Color32::from_gray(84);
     heading(ui, "EACH SLIDE SHOWS");
     ui.radio_value(&mut options.break_on_new_verse, true, "One verse");
-    ui.radio_value(&mut options.break_on_new_verse, false, "As many verses as fit");
+    ui.radio_value(&mut options.break_on_new_verse, false, "The whole passage")
+        .on_hover_text("All its verses on one slide");
     ui.add_space(6.0);
     ui.checkbox(&mut options.show_verse_numbers, "Verse numbers")
         .on_hover_text("Put each verse's number before its words");
