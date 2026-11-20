@@ -7137,6 +7137,25 @@ mod tests {
     }
 
     #[test]
+    fn up_and_down_in_the_show_view_go_through_the_song_list() {
+        let songs = ["Alpha", "Beta", "Gamma"].map(|title| Arc::new(parse_song_text(title, "Words\n")));
+        let show = Show::new(songs.to_vec());
+        let (commands, _) = frame(&egui::Context::default(), &show, Some(Key::ArrowDown));
+        assert!(commands.contains(&Command::Select(1)), "{commands:?}");
+        let (commands, _) = frame(&egui::Context::default(), &show, Some(Key::ArrowUp));
+        assert!(!commands.iter().any(|c| matches!(c, Command::Select(_))), "already at the top: {commands:?}");
+        // On the Bible page the list is left alone.
+        let ctx = egui::Context::default();
+        let mut state = HomeState { bible_open: true, ..HomeState::default() };
+        let mut asked = Vec::new();
+        let output = ctx.run_ui(input(Some(Key::ArrowDown)), |ui| {
+            asked = home_ui(ui, &show, &mut state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+        });
+        output.drop_without_applying_deltas();
+        assert!(!asked.iter().any(|c| matches!(c, Command::Select(_))));
+    }
+
+    #[test]
     fn up_and_down_in_the_editor_open_the_slide_before_and_after() {
         let show = show(3);
         let ctx = egui::Context::default();

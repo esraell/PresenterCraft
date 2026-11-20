@@ -798,9 +798,62 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
     state.picked_songs.retain(|at| shown.contains(at));
     let spacing = ui.spacing().item_spacing.y;
     ui.spacing_mut().item_spacing.y = 2.0;
+    // ↑ and ↓ open the song above or below in the list, as a click on it does; with Shift they
+    // pick out the songs on the way, as the Finder does. Not while typing, with the song search
+    // open, editing, or on the Bible page.
+    const ROW: f32 = 30.0;
+    let mut scroll_to = None;
+    if !ui.ctx().text_edit_focused()
+        && state.library_search.is_none()
+        && state.editing.is_none()
+        && state.theme_edit.is_none()
+        && !state.bible_open
+        && !shown.is_empty()
+    {
+        let (up, down, shift) = ui.input(|input| {
+            (input.key_pressed(egui::Key::ArrowUp), input.key_pressed(egui::Key::ArrowDown), input.modifiers.shift)
+        });
+        let last = shown.len() - 1;
+        let current = shown.iter().position(|at| *at == show.selected());
+        let next = match current {
+            Some(at) if up && at > 0 => Some(at - 1),
+            Some(at) if down && at < last => Some(at + 1),
+            None if up => Some(last),
+            None if down => Some(0),
+            _ => None,
+        };
+        if let Some(next) = next {
+            let song = shown[next];
+            if shift {
+                let mods = egui::Modifiers::SHIFT;
+                if state.song_anchor.is_none() {
+                    state.song_anchor = Some(show.selected());
+                }
+                crate::home::pick(&mut state.picked_songs, &mut state.song_anchor, &shown, song, mods);
+            } else {
+                state.picked_songs = vec![song];
+                state.song_anchor = Some(song);
+            }
+            state.picking = crate::home::Picking::Songs;
+            commands.push(Command::Select(song));
+            state.services.chosen = None;
+            scroll_to = Some(next);
+        }
+    }
     // Only the rows in view are laid out, so thousands of songs cost no more to draw than a few.
-    let scroll = egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]);
-    scroll.show_rows(ui, 30.0, shown.len(), |ui, in_view| {
+    let mut scroll = egui::ScrollArea::vertical().id_salt("song list").auto_shrink([false, false]);
+    // The song gone to by ↑ or ↓ is kept in sight.
+    if let Some(row) = scroll_to {
+        let id = ui.make_persistent_id("song list");
+        let offset = egui::scroll_area::State::load(ui.ctx(), id).map_or(0.0, |state| state.clamped_offset().y);
+        let (top, height) = (row as f32 * (ROW + 2.0), list.height());
+        if top < offset {
+            scroll = scroll.vertical_scroll_offset(top);
+        } else if top + ROW > offset + height {
+            scroll = scroll.vertical_scroll_offset(top + ROW - height);
+        }
+    }
+    scroll.show_rows(ui, ROW, shown.len(), |ui, in_view| {
         let several = state.picked_songs.len() > 1;
         let mut rows: Vec<(usize, Rect)> = Vec::new();
         for index in shown[in_view].iter().copied() {

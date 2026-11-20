@@ -11,6 +11,8 @@ feature changes, this page changes in the same commit.
 ## Running a service
 - Songs shown as a grid of slides, an Easy view (words only) or a Table view, with a size
   slider. Click a slide, or use the [keys](../README.md#keys), to put it on the audience screen.
+- In the Show view, ↑ and ↓ open the song above or below in the song list (with Shift, picking
+  out the songs on the way); ← → and Space go on moving the slides.
 - Groups (Verse 1, Chorus, Bridge…) with coloured bars and one-key jumps.
 - **Arrangements**: a song's groups in the order to sing them (Verse 1, Chorus, Verse 2, Chorus…),
   from the Arrangement icon at the right of its header. Next and Previous follow it, a group can come more than
