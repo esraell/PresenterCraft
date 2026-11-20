@@ -96,12 +96,33 @@ pub fn get() -> Result<&'static Runtime, String> {
 }
 
 /// Where the runtime is on this computer, if it is: only looks, opens nothing.
+/// The runtime inside each of NDI's own apps in a folder of applications, in name order.
+fn ndi_tools_runtimes(applications: &std::path::Path, name: &str) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(applications)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|app| {
+                    app.file_name().is_some_and(|n| {
+                        n.to_string_lossy().starts_with("NDI ") && n.to_string_lossy().ends_with(".app")
+                    })
+                })
+                .map(|app| app.join("Contents/Frameworks").join(name))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
 pub fn locate() -> Option<PathBuf> {
     places().into_iter().find(|path| path.is_file())
 }
 
 /// Where the runtime may be, in the order to try: the folder NDI's own variable names, a copy
-/// inside the app, where NDI Tools installs it, and the SDK's copy.
+/// inside the app, where NDI's runtime installer puts it, the SDK's copy, and on a Mac with NDI
+/// Tools but not the runtime installer, the copy inside one of NDI's own apps.
 fn places() -> Vec<PathBuf> {
     let name = if cfg!(target_os = "macos") {
         "libndi.dylib"
@@ -125,6 +146,10 @@ fn places() -> Vec<PathBuf> {
     if cfg!(target_os = "macos") {
         places.push(PathBuf::from("/usr/local/lib").join(name));
         places.push(PathBuf::from("/Library/NDI SDK for Apple/lib/macOS").join(name));
+        // NDI Tools for Mac (NDI Virtual Input, NDI Scan Converter…) carry the runtime inside
+        // each app and install nothing in /usr/local/lib, so a Mac with NDI Tools would
+        // otherwise count as having no NDI. Only NDI's own apps are looked in.
+        places.extend(ndi_tools_runtimes(std::path::Path::new("/Applications"), name));
     } else if !cfg!(windows) {
         places.push(PathBuf::from("/usr/lib").join(name));
         places.push(PathBuf::from("/usr/local/lib").join(name));
@@ -225,6 +250,23 @@ impl Drop for Source {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_runtime_inside_ndis_own_apps_is_found_and_other_apps_are_left_alone() {
+        let folder = std::env::temp_dir().join(format!("softpresenter-ndi-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        for app in ["NDI Virtual Input.app", "NDI Scan Converter.app", "Other Show.app"] {
+            std::fs::create_dir_all(folder.join(app).join("Contents/Frameworks")).unwrap();
+        }
+        let found = ndi_tools_runtimes(&folder, "libndi.dylib");
+        let apps: Vec<String> = found
+            .iter()
+            .map(|p| p.components().rev().nth(3).unwrap().as_os_str().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(apps, ["NDI Scan Converter.app", "NDI Virtual Input.app"]);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
     use super::*;
 
     #[test]

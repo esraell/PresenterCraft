@@ -71,7 +71,9 @@ publishing or selling anything that includes NDI.
 - The app is not linked with the NDI runtime. When an NDI screen is turned on, it looks for
   the runtime that NDI Tools (or the SDK) installed, the way the SDK's own "dynamic loading"
   header describes (the folder `NDI_RUNTIME_DIR_V6` names, then `/usr/local/lib`, then the
-  SDK's copy), and opens it on that screen's own thread. Without it, the screen says NDI
+  SDK's copy), and on a Mac with NDI Tools but not NDI's runtime installer, the copy NDI ships
+  inside its own apps (NDI Virtual Input, NDI Scan Converter; never another company's app),
+  and opens it on that screen's own thread. Without it, the screen says NDI
   isn't installed and links to https://ndi.video/, and the rest of the app is unaffected.
   Nothing from NDI is copied into the app.
 - The two examples in `crates/sp-ndi/examples` (which look for and receive NDI sources, to
