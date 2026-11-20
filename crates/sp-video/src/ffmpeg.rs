@@ -116,8 +116,15 @@ pub fn still(path: &Path, max_side: u32, at: f64) -> Result<Frame, String> {
     let ffmpeg = tool("ffmpeg").ok_or_else(|| missing(path))?;
     let (w, h) = fitted(&info, max_side, max_side);
     let at = info.duration.map_or(0.0, |length| at.min(length * 0.5));
-    let out = Command::new(ffmpeg)
-        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", &format!("{at:.3}"), "-i"])
+    let mut command = Command::new(ffmpeg);
+    command.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
+    // As for playing: the Mac's video hardware where the codec allows (and FFmpeg's own decoder
+    // where it doesn't). AV1, which FFmpeg alone decodes only through the hardware, needs it.
+    if cfg!(target_os = "macos") {
+        command.args(["-hwaccel", "videotoolbox"]);
+    }
+    let out = command
+        .args(["-ss", &format!("{at:.3}"), "-i"])
         .arg(path)
         .args(["-frames:v", "1", "-an", "-sn", "-vf", &format!("scale={w}:{h},setsar=1")])
         .args(["-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1"])

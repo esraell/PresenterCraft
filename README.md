@@ -159,16 +159,19 @@ For a proper `SoftPresenter.app`, named correctly in the menu bar and the Dock:
     scripts/macos-app.sh
     open target/release/SoftPresenter.app
 
+The first build also downloads FFmpeg's source from ffmpeg.org (12 MB, checked against its
+SHA-256) and builds the LGPL FFmpeg that plays MKV, WebM, AVI and other videos
+(`scripts/build-ffmpeg.sh`, about a minute); later builds reuse it. Without it the app still
+builds, and uses an FFmpeg installed on the computer.
+
 The first start opens a short setup: the screens, bringing songs in, which Bibles to show, and
 what macOS will ask permission for and why. SoftPresenter › Set Up SoftPresenter… opens it
 again.
 
-Three things are optional:
+Two things are optional:
 
 - **NDI Tools** (free, from [ndi.video](https://ndi.video)) to send a screen over NDI. Without
   it, NDI screens say NDI isn't installed and everything else works.
-- **FFmpeg** for videos beyond MP4 and MOV (MKV, WebM, AVI and others). A release will include
-  it.
 - **Keynote** (free from Apple), PowerPoint or LibreOffice, to bring presentation files in as
   slides; a Keynote file needs Keynote. PDFs and pictures need none of them.
 
@@ -236,8 +239,7 @@ kept beside it as "SoftPresenter (moved to Documents)".
 SoftPresenter aims to be the presentation app a church never has to pay for and never outgrows:
 complete enough for a large Sunday service, simple enough for a volunteer, light enough for an
 old laptop, and open to scripts and AI. First on the list: bringing playlists and media across
-from a church's existing software, FFmpeg inside the app, media and placeholder items in
-playlists, and fixing a slide's words from the Show view. After that come a network API with a
+from a church's existing software, media and placeholder items in playlists, and fixing a slide's words from the Show view. After that come a network API with a
 phone remote, the whole app in a browser, an MCP server for AI assistants, and tested Windows and
 Linux builds.
 
@@ -287,8 +289,8 @@ DeckLink libraries that people install themselves
 it on; a version passed on stays under the same licence. [`NOTICE.md`](NOTICE.md) lists the
 parts that are not SoftPresenter's own.
 
-The Bibles keep their own terms ([docs/licences/bibles.md](docs/licences/bibles.md)); FFmpeg runs
-as a separate program and NDI's runtime is opened at run time, never linked
+The Bibles keep their own terms ([docs/licences/bibles.md](docs/licences/bibles.md)); FFmpeg (an
+LGPL build inside the app) runs as a separate program and NDI's runtime is opened at run time, never linked
 ([docs/licences/ffmpeg.md](docs/licences/ffmpeg.md), [docs/licences/ndi.md](docs/licences/ndi.md)).
 NDI® is a registered trademark of Vizrt NDI AB.
 

@@ -14,6 +14,20 @@ app=target/release/SoftPresenter.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/softpresenter "$app/Contents/MacOS/softpresenter"
+# FFmpeg, which plays the videos macOS's own player can't (MKV, WebM, AVI and others): an LGPL
+# build, made once by scripts/build-ffmpeg.sh, beside the app's program with its licence and a
+# note of its source. Without it (a computer that can't download it, say) the app still builds,
+# and uses an FFmpeg installed on the computer, if there is one.
+if scripts/build-ffmpeg.sh >/dev/null; then
+    cp target/ffmpeg/bin/ffmpeg target/ffmpeg/bin/ffprobe "$app/Contents/MacOS/"
+    mkdir -p "$app/Contents/Resources/FFmpeg"
+    cp target/ffmpeg/COPYING.LGPLv2.1 target/ffmpeg/LICENSE.md target/ffmpeg/SOURCE.txt "$app/Contents/Resources/FFmpeg/"
+    for program in ffmpeg ffprobe; do
+        codesign --force --sign - "$app/Contents/MacOS/$program" >/dev/null 2>&1 || true
+    done
+else
+    echo "note: FFmpeg isn't in this build (scripts/build-ffmpeg.sh failed); MP4 and MOV still play"
+fi
 # NSAppSleepDisabled: macOS must not slow the app down (App Nap) while its windows are hidden;
 # timed slides and timers run by the clock during a service.
 # NSAppleEventsUsageDescription: why macOS asks to let SoftPresenter use Keynote or PowerPoint,

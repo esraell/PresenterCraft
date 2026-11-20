@@ -128,9 +128,10 @@ feature changes, this page changes in the same commit.
   Pictures can be PNG, JPEG, WebP, GIF, BMP, and on the Mac also HEIC (iPhone photos), TIFF,
   Photoshop, AVIF and JPEG 2000. Videos play with their sound and loop: MP4, MOV and M4V
   (including HEVC and ProRes) through macOS's own player, and everything else (MKV, WebM, AVI,
-  WMV, FLV, MPEG, TS and others, or an MP4 the Mac's player can't decode, such as AV1 on an older
-  Mac) through FFmpeg, played as it is, never converted first. FFmpeg must be installed for
-  those for now; a release will include it. Under the Program preview, a video on screen is shown as a
+  WMV, FLV, MPEG, TS and others, or an MP4 the Mac's player can't decode) through FFmpeg,
+  played as it is, never converted first. FFmpeg comes inside the app (an LGPL build of FFmpeg
+  9.0.2, with its licence and source in the app's Resources), so nothing needs installing; AV1
+  plays on Macs whose video hardware decodes it (M3 and later). Under the Program preview, a video on screen is shown as a
   media player shows it: its name, a slim bar to click or drag through (the time a click goes to
   shows over it), the time gone and the time left, and one group of controls about a round Play
   or Pause: Loop (green, with a dot, while on), Start Over, Forward 10 seconds and Sound (a
