@@ -4552,12 +4552,14 @@ fn bible_area(
             // Done to fold it again). Whether it is open is kept between starts.
             let mut fold = false;
             if state.bible.rows_open {
+                // The headings' row is as tall as a button, so Done at its end is a whole one.
                 ui.horizontal(|ui| {
+                    ui.set_min_height(28.0);
                     ui.spacing_mut().item_spacing.x = gap;
                     for (heading, width) in
                         [("TRANSLATION", bible_width), ("VERSE GOES IN", menu_width), ("REFERENCE GOES IN", menu_width)]
                     {
-                        let (place, _) = ui.allocate_exact_size(vec2(width, 14.0), Sense::hover());
+                        let (place, _) = ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
                         ui.painter().with_clip_rect(place).text(
                             place.left_center() + vec2(2.0, 0.0),
                             Align2::LEFT_CENTER,
@@ -4567,7 +4569,7 @@ fn bible_area(
                         );
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.small_button("Done").on_hover_text("Fold the translations away into one line").clicked() {
+                        if ui.button("Done").on_hover_text("Fold the translations away into one line").clicked() {
                             fold = true;
                         }
                     });

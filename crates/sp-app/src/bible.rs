@@ -769,7 +769,7 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
         // Along the top, a way to put the lists away for those who would rather type; Books
         // brings them back, and the choice is kept.
         let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), LISTS_BAR), Sense::hover());
-        // Each column has its heading over it, in its own shade.
+        // Each column has its heading over it.
         let mut left = bar.min.x;
         for (width, fill, heading) in LIST_COLUMNS {
             let column = Rect::from_min_size(pos2(left, bar.min.y), vec2(width, bar.height()));
@@ -904,7 +904,7 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
         let mut x = ui.min_rect().min.x;
         for (width, _, _) in &LIST_COLUMNS[..2] {
             x += width;
-            ui.painter().vline(x, columns_top - LISTS_BAR..=columns_top + height, Stroke::new(1.5, LIST_LINE));
+            ui.painter().vline(x, columns_top - LISTS_BAR..=columns_top + height, Stroke::new(1.0, LIST_LINE));
         }
     });
     if let Some(reference) = chosen {
@@ -915,15 +915,17 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
     }
 }
 
-/// The book, chapter and verse columns: each one's width, its shade, and its heading.
-const LIST_COLUMNS: [(f32, Color32, &str); 3] = [
-    (176.0, Color32::from_rgb(32, 33, 37), "BOOK"),
-    (58.0, Color32::from_rgb(38, 40, 46), "CHAPTER"),
-    (66.0, Color32::from_rgb(44, 47, 55), "VERSE"),
-];
+/// The book, chapter and verse columns: each one's width, its shade, and its heading. One
+/// neutral shade for all three: a coloured column read as a list that was selected, when only
+/// the rows chosen in it are.
+const LIST_COLUMNS: [(f32, Color32, &str); 3] =
+    [(176.0, LIST_SHADE, "BOOK"), (58.0, LIST_SHADE, "CHAPTER"), (66.0, LIST_SHADE, "VERSE")];
 
-/// The colour of the lines between the columns.
-const LIST_LINE: Color32 = Color32::from_rgb(74, 112, 178);
+/// The lists' shade.
+const LIST_SHADE: Color32 = Color32::from_rgb(32, 33, 37);
+
+/// The colour of the lines between the columns: plain, not the colour of a choice.
+const LIST_LINE: Color32 = Color32::from_rgb(58, 59, 64);
 
 /// One of the lists: a column of its width and shade, scrolling on its own.
 fn list_column(ui: &mut egui::Ui, id: &str, width: f32, height: f32, fill: Color32, add: impl FnOnce(&mut egui::Ui)) {
