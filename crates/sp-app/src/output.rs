@@ -1030,8 +1030,7 @@ impl Output {
         self.send_ndi(&frame);
         self.capture(&frame);
         // How far a fade already under way has got, before the clock is started again.
-        let under_way = self.fading;
-        let amount = under_way.map(|(started, look)| fade_amount(started, look.duration()));
+        let amount = self.fading.map(|(started, look)| fade_amount(started, look.duration()));
         let mut fading = false;
         for index in 0..self.targets.len() {
             let (id, w, h) = {
@@ -1040,13 +1039,11 @@ impl Output {
             };
             let scene = self.scene_for(id, &frame, w, h);
             let stage = self.is_stage(id);
-            // What is in the window this instant: the last whole picture, or a fade part-way.
+            // What the next fade starts from: the last whole picture, or for a fade cut short,
+            // the whole picture nearer to what the window shows.
             let target = &mut self.targets[index];
             let before = match target.fade.take() {
-                Some((from, to)) => {
-                    let look = under_way.map_or(sp_model::Transition::default(), |(_, look)| look);
-                    Some(sp_render::transition(look.kind, look.direction, &from, &to, amount.unwrap_or(1.0), w, h))
-                }
+                Some((from, to)) => Some(fade_from(from, to, amount.unwrap_or(1.0))),
                 None => target.shown.take(),
             };
             // Stage screens change at once: the people on stage need the words now.
@@ -1272,6 +1269,15 @@ impl Output {
     }
 }
 
+/// What a fade cut short by a new picture is followed from: the whole picture nearer to what the
+/// screen shows (the old one before half-way, the new one after), never the part-way mix itself.
+/// A mix would hold both pictures, and the next one cut short would hold that mix and another,
+/// so an operator clicking on faster than fades finish would pile slide on slide into every
+/// frame, each slower to draw than the last, and keep the memory for all of them.
+fn fade_from<T>(from: T, to: T, amount: f32) -> T {
+    if amount < 0.5 { from } else { to }
+}
+
 /// How a screen being identified is marked: three quick breaths of its colour, from a tenth to a
 /// fifth of the way over the picture and back, about 0.7 s each; then a steady tenth.
 const IDENTIFY_BREATHS: f32 = 3.0;
@@ -1328,5 +1334,37 @@ mod tests {
         let themes = vec![(stream, lower.clone())];
         assert_eq!(screen_theme(&themes, stream, &main).name, "Lower third");
         assert_eq!(screen_theme(&themes, audience, &main).name, "Built-in");
+    }
+
+    #[test]
+    fn slides_clicked_through_faster_than_fades_never_pile_up_in_a_frame() {
+        use vello::kurbo::{Affine, Rect};
+        use vello::peniko::{Color, Fill};
+        let slide = |shade: u8| {
+            let mut scene = vello::Scene::new();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::from_rgb8(shade, 0, 0),
+                None,
+                &Rect::new(0.0, 0.0, 10.0, 10.0),
+            );
+            scene
+        };
+        let size = |scene: &vello::Scene| scene.encoding().draw_tags.len();
+        let kind = sp_model::TransitionKind::Dissolve;
+        let one = size(&sp_render::transition(kind, sp_model::Direction::default(), &slide(0), &slide(1), 0.3, 10, 10));
+        // A hundred fades, each cut short by the next picture, some before half-way, some after.
+        let mut from = slide(0);
+        let mut frame = vello::Scene::new();
+        for n in 1..=100u8 {
+            let to = slide(n);
+            let amount = if n % 2 == 0 { 0.3 } else { 0.7 };
+            frame = sp_render::transition(kind, sp_model::Direction::default(), &from, &to, amount, 10, 10);
+            from = fade_from(from, to, amount);
+        }
+        assert_eq!(size(&frame), one, "each frame holds two slides, however many fades were cut short");
+        assert_eq!(fade_from(1, 2, 0.49), 1);
+        assert_eq!(fade_from(1, 2, 0.5), 2);
     }
 }
