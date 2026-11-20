@@ -1608,7 +1608,18 @@ impl crate::App {
                 // "VoxLive" names the VoxLive item, which isn't among the songs, once it has screens.
                 let voxlive = song_words.trim().eq_ignore_ascii_case("voxlive")
                     && self.show.presentations().get(self.voxlive_slot).is_some_and(|item| item.slide_count() > 0);
-                let song = if voxlive { self.voxlive_slot } else { self.find_song(&song_words)? };
+                let song = match (voxlive, self.find_song(&song_words)) {
+                    (true, _) => self.voxlive_slot,
+                    (false, Ok(song)) => song,
+                    // Not a song: VoxLive's item, before VoxLive has screens, says how to get them.
+                    (false, Err(_)) if song_words.trim().eq_ignore_ascii_case("voxlive") => {
+                        return Err(
+                            "VoxLive isn't connected yet, or has no screens: echo \"$KEY\" | sp voxlive connect"
+                                .to_owned(),
+                        );
+                    }
+                    (false, Err(problem)) => return Err(problem),
+                };
                 let list = list_words.map(|typed| find("playlist", &names, &typed)).transpose()?;
                 let running = self.running.as_mut().ok_or("The app isn't ready.")?;
                 let state = &mut running.home_state;
