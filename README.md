@@ -36,8 +36,8 @@ SoftPresenter is built to be:
 
 ## Who it's for
 
-- **A Sunday service** of songs, readings, notices and pictures, run by one volunteer with the
-  keyboard.
+- **A Sunday service** of songs, readings, sermon slides, notices and pictures, run by one
+  volunteer with the keyboard.
 - **Congregations in two languages:** both languages on every song slide, and up to four Bible
   translations on one slide, lined up verse by verse.
 - **Worship teams and livestreams:** stage screens with the words now, the next slide, the clock
@@ -50,15 +50,16 @@ SoftPresenter is built to be:
 - **Songs and slides.** Songs as slides in groups (Verse, Chorus, Bridge), arrangements, one-key
   jumps, nineteen transitions, libraries of your own, and playlists with headers, shown as one
   scroll from song to song. Songs import from text, ChordPro, rich-text, Word and lyric-service
-  files, in any common encoding. Undo and redo.
+  files, in any common encoding. PowerPoint, Keynote and PDF files, and folders of pictures,
+  come in as slides. Undo and redo.
 - **Bible.** Look up `John 3:16-18` or `Пс 22:1-3`, search by word, up to four translations on
-  one slide; four Bibles come with the app and fifteen more download from inside it.
+  one slide; four Bibles come with the app and sixteen more download from inside it.
 - **Media.** Pictures and videos behind the words or on their own, media playlists, folders the
   app watches, and an announcements layer that loops by itself. Videos play as they are, never
   converted.
-- **Screens.** Any number of audience screens on displays, in windows or over NDI; stage screens
-  with layouts you design; a look for each screen (a lobby can show only the media); test
-  patterns and Identify Screens.
+- **Screens.** Any number of audience screens on displays (never the one the operator works
+  on), in windows or over NDI; stage screens with layouts you design; a look for each screen (a
+  lobby can show only the media); test patterns and Identify Screens.
 - **Live tools.** Timers, messages over the slides, props such as a logo, macros that do several
   things in one click, walk-in music with crossfades, and a message for the stage.
 - **Editing and themes.** A slide editor with text, shapes, pictures, videos, gradients and
@@ -93,16 +94,22 @@ The full list, area by area, is in [docs/features.md](docs/features.md).
 
 ## A service from start to finish
 
-1. **Set up the screens.** Open the Screens window (Option-Command-1). Put an audience screen on
-   the projector or TV, and a stage screen on a second display or over NDI. Identify Screens
-   shows each screen's name on it, so you can check which is which.
+1. **Set up the screens.** The first start opens a short setup: choose the display the
+   congregation sees (the projector or TV, by the name macOS gives it) and a stage display if
+   there is one. The Mac's main display, where you work, is never filled; on a Mac with one
+   display, the screen opens in a window. Later, the Screens window (Option-Command-1) changes
+   them and adds more, including screens sent over NDI. Identify Screens shows each screen's
+   name on it, so you can check which is which.
 2. **Bring in the songs.** New Song (Command-N) asks for a title and a theme and takes the words
    pasted in: a line in square brackets starts a group, a blank line starts a new slide, and a
    line with only `--` separates the main language from the translation. Songs you already have
    come in with File › Import Songs…, or by dropping their files on the window: text (see
    [the format](#song-text-files)), ChordPro, rich text, Word and lyric-service files.
 3. **Build the running order.** Make a playlist with the + beside PLAYLISTS (say "Sunday
-   Morning"), drag songs into it in order, and add headers to group them.
+   Morning"), drag songs into it in order, and add headers to group them. Sermon and notice
+   slides that arrive as PowerPoint, Keynote or PDF files come in with File › Import Slides…,
+   or by dropping them on the window: each page becomes a slide, ready to drag into the
+   playlist.
 4. **Add the readings.** In the Bible view (Control-B), type a reference such as `John 3:16-18`,
    pick a second translation for the next row, and add the passage to the playlist with one
    click.
@@ -141,12 +148,18 @@ For a proper `SoftPresenter.app`, named correctly in the menu bar and the Dock:
     scripts/macos-app.sh
     open target/release/SoftPresenter.app
 
-Two things are optional:
+The first start opens a short setup: the screens, bringing songs in, which Bibles to show, and
+what macOS will ask permission for and why. SoftPresenter › Set Up SoftPresenter… opens it
+again.
+
+Three things are optional:
 
 - **NDI Tools** (free, from [ndi.video](https://ndi.video)) to send a screen over NDI. Without
   it, NDI screens say NDI isn't installed and everything else works.
 - **FFmpeg** for videos beyond MP4 and MOV (MKV, WebM, AVI and others). A release will include
   it.
+- **Keynote** (free from Apple), PowerPoint or LibreOffice, to bring presentation files in as
+  slides; a Keynote file needs Keynote. PDFs and pictures need none of them.
 
 Song text files can be opened from the command line, such as the sample:
 `cargo run --release -- samples/sample-song.txt`. Other options: `--list-displays`,
@@ -209,9 +222,9 @@ preferences. The log is in `~/Library/Logs/SoftPresenter/`.
 SoftPresenter aims to be the presentation app a church never has to pay for and never outgrows:
 complete enough for a large Sunday service, simple enough for a volunteer, light enough for an
 old laptop, and open to scripts and AI. First on the list: bringing playlists and media across
-from a church's existing software, PowerPoint import, FFmpeg inside the app, media and
-placeholder items in playlists, and fixing a slide's words from the Show view. After that come a network API with a phone remote and an MCP
-server for AI assistants, and tested Windows and Linux builds.
+from a church's existing software, FFmpeg inside the app, media and placeholder items in
+playlists, and fixing a slide's words from the Show view. After that come a network API with a
+phone remote and an MCP server for AI assistants, and tested Windows and Linux builds.
 
 The full plan, about 170 features with their size and how much each matters on a Sunday, is in
 [docs/roadmap.md](docs/roadmap.md). Nothing in it is promised by a date.
