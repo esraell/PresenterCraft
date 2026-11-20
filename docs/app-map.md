@@ -44,6 +44,7 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 | LIBRARY rows | All Songs, and libraries of your own; + makes one; right-click to rename or delete | `songs`, `libraries`, `library open NAME` (or `all`) |
 | PLAYLISTS rows | Playlists; + makes one; drop songs on a row to add them | `playlists`, `playlist open NAME` |
 | Song list (a library chosen) | Click opens a song; Command/Shift-click and dragging pick several; drag picked songs onto a playlist or library; Delete asks, then deletes; right-click for Duplicate, Theme, Transition, Reflow, Play on Announcements Layer, Delete… | `select SONG`, `song delete SONG --yes`, `announce SONG` |
+| VoxLive row (under LIBRARY, once VoxLive is connected) | The VoxLive item: the church's VoxLive screens, a slide each; right-click to add it to the playlist in front | `voxlive screens`, `voxlive show N\|NAME` |
 | Playlist items (a playlist chosen) | Songs, Bible passages, pictures and videos, media playlists, placeholders and headers in running order; drag to reorder; + adds a header or a placeholder; a picture or video dragged from the bin goes in where the line shows, or fills a placeholder; a placeholder's right-click Fill with Song | `playlist [NAME]`, `playlist add SONG to PLAYLIST`, `playlist media\|media-playlist\|placeholder NAME`, `playlist fill PLACEHOLDER with SONG` |
 | Search | Filters the list; Command-F searches titles and words | |
 
@@ -71,6 +72,7 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 | Tabs: Macros | Lists of actions done in turn | `macros`, `macro run NAME` |
 | Tabs: Stage | Each stage screen's layout, and the stage message | `stage on\|off` |
 | Tabs: Audio | Audio playlists: play, pause, skip, volume, shuffle, crossfade | `audio`, `audio play\|pause\|stop`, `audio volume N` |
+| Tabs: VoxLive (once VoxLive is connected) | The church's VoxLive screens as buttons: a click puts that screen's captions on the screens in place of a verse | `voxlive show N\|NAME` |
 
 ### Keys in the Show view
 

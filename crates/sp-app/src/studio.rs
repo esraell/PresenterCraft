@@ -525,6 +525,49 @@ struct SongDrag(Vec<usize>);
 
 /// A row in the list of libraries and playlists: an icon and a name, renamed in place.
 /// Shows when a dragged song would be dropped on it.
+/// The VoxLive item's row under LIBRARY, once VoxLive is connected and has screens: its mark
+/// in VoxLive's colour; a click opens its slides (one a screen), and its right-click menu puts
+/// it in the playlist in front.
+fn voxlive_row(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
+    let Some(slot) = state.voxlive_slot else { return };
+    let screens = show.presentations().get(slot).map_or(0, |item| item.slide_count());
+    if screens == 0 {
+        return;
+    }
+    let chosen = show.selected() == slot && !state.playlist_open;
+    let response =
+        list_row(ui, Icon::Live, "VoxLive", chosen, show.live().is_some_and(|at| at.presentation == slot), false);
+    // The mark over the row's icon, in VoxLive's colour, so it reads as VoxLive's, not a song.
+    let mark = Rect::from_center_size(response.rect.left_center() + vec2(15.0, 0.0), vec2(16.0, 16.0));
+    ui.painter().rect_filled(mark, 4.0, crate::integrations::VOXLIVE);
+    ui.painter().text(mark.center(), Align2::CENTER_CENTER, "V", semibold(10.0), Color32::WHITE);
+    let count = if screens == 1 { "1 screen".to_owned() } else { format!("{screens} screens") };
+    ui.painter().text(
+        response.rect.right_center() - vec2(8.0, 0.0),
+        Align2::RIGHT_CENTER,
+        count,
+        FontId::proportional(11.0),
+        crate::integrations::VOXLIVE_LIGHT,
+    );
+    let front = state.services.front().name.clone();
+    let response =
+        response.on_hover_text("Your VoxLive screens, a slide each: click one to put its captions on the screens");
+    if response.clicked() {
+        state.playlist_open = false;
+        state.bible_open = false;
+        commands.push(Command::Select(slot));
+    }
+    response.context_menu(|ui| {
+        if ui.button(format!("Add to Playlist \u{201c}{front}\u{201d}")).clicked() {
+            state.services.add(crate::service::Item::Song {
+                key: crate::voxlive::ITEM_KEY.to_owned(),
+                title: "VoxLive".to_owned(),
+            });
+            ui.close();
+        }
+    });
+}
+
 fn source_row(ui: &mut egui::Ui, icon: Icon, name: &str, chosen: bool) -> egui::Response {
     let response = list_row(ui, icon, name, chosen, false, false);
     if response.dnd_hover_payload::<SongDrag>().is_some() {
@@ -579,7 +622,7 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
         let shown = sources.show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("sources").auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
-                source_rows(ui, show, state);
+                source_rows(ui, show, state, commands);
             });
         });
         state.service_height = Some(shown.response.rect.height());
@@ -608,7 +651,7 @@ pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
 
 /// The LIBRARY rows (All Songs and each library) and the PLAYLISTS rows. A song dragged from
 /// the list below and dropped on one goes into it.
-fn source_rows(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
+fn source_rows(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     use crate::service::Item;
     let song_item = |state: &HomeState, index: usize| {
         let key = state.song_keys.get(index)?;
@@ -630,6 +673,7 @@ fn source_rows(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
             state.library_shown = None;
             state.playlist_open = false;
         }
+        voxlive_row(ui, show, state, commands);
         let mut delete = None;
         let ids: Vec<(sp_model::Uuid, String)> =
             state.libraries.iter().map(|library| (library.id, library.name.clone())).collect();
@@ -799,7 +843,7 @@ fn library_of<'a>(state: &'a HomeState, key: &str) -> Option<&'a str> {
 /// front; a song can also be dragged onto a playlist or a library above.
 fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     use crate::service::Item;
-    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+    let hidden = state.hidden_slots();
     let removed = state.removed_songs.clone();
     let listed = |index: usize| !hidden.contains(&index) && !removed.contains(&index);
     let library = state.library_shown.and_then(|id| state.libraries.iter().find(|library| library.id == id)).cloned();
@@ -1409,7 +1453,7 @@ pub fn song_picker(ui: &mut egui::Ui, show: &Show, state: &HomeState) -> Option<
     }
     let wanted = typed.trim().to_lowercase();
     ui.data_mut(|data| data.insert_temp(id, typed));
-    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+    let hidden = state.hidden_slots();
     let mut picked = None;
     egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
         let mut shown = 0;

@@ -14,7 +14,7 @@ pub use picture::Picture;
 pub use pictures::{forget_picture, set_picture_loader, show_picture, web_key};
 pub use scene::{
     Built, Layers, build_layers, build_overlay, build_scene, cross_fade, fit_rect, layout_objects, object_frame,
-    scrolls, show_placeholders, transition,
+    scrolls, set_web_stand_in, show_placeholders, transition,
 };
 pub use vello;
 pub use vello::wgpu;

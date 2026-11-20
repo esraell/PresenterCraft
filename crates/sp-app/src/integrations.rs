@@ -125,7 +125,9 @@ fn voxlive_page(ui: &mut egui::Ui, view: &mut View) {
     ui.label(
         egui::RichText::new(
             "VoxLive translates the sermon as it is preached, and shows it as captions on its screens. Connected, \
-             SoftPresenter finds your church's VoxLive screens, and keeps the list up to date.",
+             SoftPresenter shows your church's VoxLive screens as the slides of a VoxLive item (under LIBRARY, and \
+             in playlists) and in the VoxLive tab beside the screens: one click puts the captions on screen in place \
+             of a verse, and a click on the verse brings it back.",
         )
         .color(TEXT_DIM),
     );
@@ -216,7 +218,10 @@ fn screens(ui: &mut egui::Ui, view: &View) {
             FontId::proportional(13.0),
             TEXT,
         );
-        let kind = if screen.mode == "reference" { "Scripture" } else { "Captions" };
+        let kind = match screen.kind() {
+            "captions" => "Captions",
+            other => other,
+        };
         ui.painter().text(
             row.right_center() - vec2(4.0, 0.0),
             Align2::RIGHT_CENTER,

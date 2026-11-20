@@ -589,6 +589,7 @@ VoxLive screens.
 | `voxlive` | Whether VoxLive is connected (the key's first characters, VoxLive's handle for it) and how many screens it has |
 | `voxlive screens` | The church's VoxLive screens: name, language, captions or Scripture (JSON: `id`, `name`, `language`, `mode`) |
 | `voxlive connect` | Connects with a key read from the standard input, never from an argument (an argument would stay in the shell's history): pipe it in or paste it. The key is checked in the background; `voxlive` then says how it went |
+| `voxlive show N\|NAME` | Puts that VoxLive screen's captions on the screens, in place of what is there, as a click in the VoxLive tab does (`go` and `next` then move on as usual) |
 | `voxlive refresh` | Finds the screens again now (they are also found every 30 seconds) |
 | `voxlive disconnect --yes` | Forgets the key on this computer (it stays in VoxLive until revoked there) |
 
@@ -599,6 +600,12 @@ VoxLive screens.
     $ sp voxlive screens
       1. Spanish captions · ES (captions)
       2. Scripture · RU (Scripture)
+    $ sp voxlive show spanish
+    On screen: VoxLive, Spanish captions · ES.
+
+The screens also show as the slides of the VoxLive item, under LIBRARY in the window; it isn't
+in `sp songs`. A mode VoxLive adds later shows by its own name in place of captions or
+Scripture.
 
 The key is kept in the Mac's Keychain, and never appears in the log, a reply or a file. A key
 VoxLive refuses stops the asking until another is given: VoxLive pauses an address that keeps

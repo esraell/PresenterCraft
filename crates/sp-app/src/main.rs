@@ -440,6 +440,18 @@ struct WebBox {
     asked: Option<Instant>,
     /// How many of its pictures went to the operator's window (for SOFTPRESENTER_TRACE_WEB).
     pictures: u32,
+    /// A page that costs, once off the screens, is kept running until then.
+    warm_until: Option<Instant>,
+}
+
+/// How long a page that costs (a VoxLive screen's live display) keeps running after it leaves
+/// the screens, so going back to it is at once.
+const WEB_WARM_FOR: Duration = Duration::from_secs(15 * 60);
+
+/// The free page that stands in for one that costs to open: a VoxLive screen's test pattern for
+/// its live display.
+fn web_stand_in(url: &str) -> Option<String> {
+    web_costs(url).then(|| format!("{url}{}demo=1", if url.contains('?') { '&' } else { '?' }))
 }
 
 /// The host part of a web address, for the log (the rest may hold a key or a name).
@@ -453,10 +465,11 @@ fn web_host(url: &str) -> &str {
 fn web_costs(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     let host = web_host(&lower);
-    (host == "voxlive.app" || host.ends_with(".voxlive.app"))
-        && lower.contains("/screen/")
-        && !lower.contains("demo=1")
-        && !lower.contains("preview=1")
+    // VoxLive's own displays, or (for tests) the stand-in's.
+    let voxlive = host == "voxlive.app"
+        || host.ends_with(".voxlive.app")
+        || lower.starts_with(&voxlive::display_prefix(&voxlive::api_base()));
+    voxlive && lower.contains("/screen/") && !lower.contains("demo=1") && !lower.contains("preview=1")
 }
 
 /// Media bin items a pack brings in, as they come: the id each had where the pack was made, and
@@ -882,6 +895,8 @@ struct App {
     sources: Vec<Option<PathBuf>>,
     /// The presentations kept for Bible passages.
     bible_slots: [usize; 2],
+    /// Where the VoxLive item is among the presentations (see `voxlive::item`).
+    voxlive_slot: usize,
     /// PDFs and folders of pictures being made into slides, each on a thread of its own.
     decks: deck::Decks,
     /// The decoded picture of each media item, in the show's order: full size for the screens,
@@ -1144,8 +1159,16 @@ impl App {
                     .sources
                     .iter()
                     .zip(self.show.presentations())
-                    .map(|(source, song)| song_ids::key_for(source.as_deref(), song.id, &song.title))
+                    .enumerate()
+                    .map(|(at, (source, song))| {
+                        if at == self.voxlive_slot {
+                            voxlive::ITEM_KEY.to_owned()
+                        } else {
+                            song_ids::key_for(source.as_deref(), song.id, &song.title)
+                        }
+                    })
                     .collect(),
+                voxlive_slot: Some(self.voxlive_slot),
                 theme_for_bible: self.bible_theme,
                 bible: home::BiblePage {
                     slots: Some(self.bible_slots),
@@ -1568,9 +1591,13 @@ impl App {
         fn boxes_in(objects: &[sp_model::Object], live: bool, into: &mut Vec<(String, String, u32, u32, bool)>) {
             for object in objects.iter().filter(|object| !object.hidden) {
                 let sp_model::ObjectKind::Web { url } = &object.kind else { continue };
-                if !sp_video::web::allowed(url) || (!live && web_costs(url)) {
+                if !sp_video::web::allowed(url) {
                     continue;
                 }
+                // A page that costs to open is opened only on screen; ahead of that, its free
+                // stand-in is, for the operator's window.
+                let stand_in = (!live).then(|| web_stand_in(url)).flatten();
+                let url = stand_in.as_ref().unwrap_or(url);
                 let place = object.frame.unwrap_or(sp_model::SlideRect {
                     x: 0.0,
                     y: 0.0,
@@ -1599,6 +1626,23 @@ impl App {
         if let Some(draft) = self.running.as_ref().and_then(|running| running.home_state.editing.as_ref()) {
             boxes_in(&draft.slide.objects, false, &mut wanted);
         }
+        // A page that costs, once shown, is kept running a while after it leaves the screens,
+        // so going back to it (a verse, then the captions again) is at once: it is running for
+        // the service anyway.
+        let now = Instant::now();
+        for web in &mut self.web_pages {
+            // One that costs and has just left the screens starts its while.
+            if web.live
+                && web_costs(web.page.address())
+                && !wanted.iter().any(|(key, .., live)| *live && *key == web.key)
+            {
+                web.warm_until = Some(now + WEB_WARM_FOR);
+            }
+            if web.warm_until.is_some_and(|until| until > now) && !wanted.iter().any(|(key, ..)| *key == web.key) {
+                let (width, height) = web.page.size();
+                wanted.push((web.key.clone(), web.page.address().to_owned(), width, height, false));
+            }
+        }
         // Those on screen first, then as many loaded ahead as there is room for.
         wanted.sort_by_key(|(.., live)| !*live);
         wanted.truncate(MOST_WEB_PAGES);
@@ -1611,6 +1655,11 @@ impl App {
         for (key, url, width, height, live) in wanted {
             if let Some(at) = kept.iter().position(|web| web.key == key) {
                 let mut web = kept.remove(at);
+                if web.live && !live && web_costs(web.page.address()) {
+                    web.warm_until = Some(now + WEB_WARM_FOR);
+                } else if live {
+                    web.warm_until = None;
+                }
                 web.live = live;
                 self.web_pages.push(web);
                 continue;
@@ -1621,7 +1670,7 @@ impl App {
             match sp_video::WebPage::open(&url, width, height) {
                 Ok(page) => {
                     applog::event("web", &format!("opened a web page box ({})", web_host(&url)));
-                    self.web_pages.push(WebBox { key, page, live, asked: None, pictures: 0 });
+                    self.web_pages.push(WebBox { key, page, live, asked: None, pictures: 0, warm_until: None });
                 }
                 Err(problem) => {
                     applog::problem("web", &problem);
@@ -1722,6 +1771,22 @@ impl App {
             }
         }
         let at = self.voxlive.tick();
+        // The VoxLive item follows the screens VoxLive lists.
+        let item = Arc::new(voxlive::item(&self.voxlive.screens));
+        if self.show.presentations().get(self.voxlive_slot).is_some_and(|have| **have != *item) {
+            self.show.replace_presentation(self.voxlive_slot, item);
+            if let Some(running) = self.running.as_mut() {
+                running.thumbs.forget(voxlive::ITEM_ID, &mut running.egui_renderer);
+            }
+            self.refresh_output();
+        }
+        // A screen chosen in the VoxLive tab goes on screen, in place of what was there.
+        let chosen = self.running.as_mut().and_then(|running| running.home_state.voxlive_go.take());
+        if let Some(slide) = chosen
+            && self.show.presentations().get(self.voxlive_slot).is_some_and(|item| slide < item.slide_count())
+        {
+            self.apply(vec![Command::GoTo(sp_engine::SlideRef { presentation: self.voxlive_slot, slide })]);
+        }
         if let Some(running) = self.running.as_mut() {
             let view = &mut running.home_state.voxlive;
             let hint = self.voxlive.key_hint();
@@ -2710,7 +2775,7 @@ impl App {
                 let Some(item) = self.show.media().get(index).cloned() else { return };
                 let song = self.show.selected();
                 let Some(count) = self.show.presentations().get(song).map(|song| song.slide_count()) else { return };
-                if count == 0 || self.bible_slots.contains(&song) {
+                if count == 0 || self.app_made(song) {
                     return;
                 }
                 // After the slide picked out in the song shown, or at its end.
@@ -2812,7 +2877,7 @@ impl App {
         for index in std::mem::take(&mut self.unsaved) {
             // A song with no file yet (the sample) is given one in the app's Songs folder, so
             // a change to it is kept like any other. Bible passages are never saved as songs.
-            if !self.bible_slots.contains(&index)
+            if !self.app_made(index)
                 && let (Some(None), Some(song)) = (self.sources.get(index), self.show.presentations().get(index))
                 && let Some(folder) = bible_store::data_dir().map(|dir| dir.join("Songs"))
             {
@@ -2905,7 +2970,7 @@ impl App {
     /// True when the song was read again.
     fn freshen(&mut self, index: usize, opening_editor: bool) -> bool {
         let removed = self.running.as_ref().is_some_and(|r| r.home_state.removed_songs.contains(&index));
-        if self.bible_slots.contains(&index) || removed {
+        if self.app_made(index) || removed {
             return false;
         }
         let Some(Some(path)) = self.sources.get(index) else { return false };
@@ -3107,7 +3172,7 @@ impl App {
         let removed = self.running.as_ref().map(|r| r.home_state.removed_songs.clone()).unwrap_or_default();
         for index in 0..self.show.presentations().len() {
             // A song deleted in the app, or a Bible page, is not looked at.
-            if removed.contains(&index) || self.bible_slots.contains(&index) {
+            if removed.contains(&index) || self.app_made(index) {
                 continue;
             }
             let Some(Some(path)) = self.sources.get(index) else { continue };
@@ -3231,7 +3296,7 @@ impl App {
         };
         let songs: Vec<sp_model::Presentation> = indices
             .iter()
-            .filter(|index| !self.bible_slots.contains(index) && !state.removed_songs.contains(index))
+            .filter(|index| !self.app_made(**index) && !state.removed_songs.contains(index))
             .filter_map(|index| self.show.presentations().get(*index).map(|song| (**song).clone()))
             .collect();
         if songs.is_empty() && playlist_file.is_none() {
@@ -3973,7 +4038,7 @@ impl App {
             .presentations()
             .iter()
             .enumerate()
-            .filter(|(at, _)| !removed.contains(at) && !self.bible_slots.contains(at))
+            .filter(|(at, _)| !removed.contains(at) && !self.app_made(*at))
             .map(|(at, s)| ((s.title.trim().to_lowercase(), sp_model::to_song_text(s)), at))
             .collect();
         let mut libraries_used: Vec<String> = Vec::new();
@@ -4278,6 +4343,12 @@ impl App {
             running.home_state.song_keys.push(key.clone());
         }
         (index, key)
+    }
+
+    /// True for a presentation the app makes itself (a Bible passage, the VoxLive item): shown,
+    /// never saved, edited, read again or put in a pack.
+    pub(crate) fn app_made(&self, presentation: usize) -> bool {
+        self.bible_slots.contains(&presentation) || presentation == self.voxlive_slot
     }
 
     /// The theme a presentation's slides are drawn with: the Bible theme for a Bible passage,
@@ -4938,7 +5009,9 @@ impl App {
             .presentations()
             .iter()
             .enumerate()
-            .filter(|(index, _)| !self.bible_slots.contains(index) && !removed.contains(index))
+            .filter(|(index, _)| {
+                !self.bible_slots.contains(index) && *index != self.voxlive_slot && !removed.contains(index)
+            })
             .filter_map(|(index, song)| Some((running.home_state.song_keys.get(index)?.clone(), song.title.clone())))
             .collect();
         // The theme the part of the window in front works with: the one being edited, the
@@ -5145,6 +5218,7 @@ impl App {
                     "macros" => 3,
                     "stage" => 4,
                     "audio" => 5,
+                    "voxlive" => 6,
                     _ => 0,
                 };
                 if let Some(first) = state.messages.first() {
@@ -5582,8 +5656,8 @@ impl App {
                     }
                     // Another song is shown in its place.
                     let removed = self.running.as_ref().map(|r| r.home_state.removed_songs.clone()).unwrap_or_default();
-                    let next = (0..self.show.presentations().len())
-                        .find(|at| !removed.contains(at) && !self.bible_slots.contains(at));
+                    let next =
+                        (0..self.show.presentations().len()).find(|at| !removed.contains(at) && !self.app_made(*at));
                     if self.show.selected() == index
                         && let Some(next) = next
                     {
@@ -5609,7 +5683,7 @@ impl App {
         let copyright_line = self.running.as_ref().and_then(|running| {
             let state = &running.home_state;
             let at = self.show.live()?;
-            if self.bible_slots.contains(&at.presentation) {
+            if self.app_made(at.presentation) {
                 return None;
             }
             let song = self.show.presentations().get(at.presentation)?;
@@ -5887,7 +5961,10 @@ impl App {
                     (Some(draft), None) => draft.at.presentation,
                     _ => self.show.selected(),
                 };
-                if !self.bible_slots.contains(&song) && song < self.show.presentations().len() {
+                if !self.bible_slots.contains(&song)
+                    && song != self.voxlive_slot
+                    && song < self.show.presentations().len()
+                {
                     state.add_slide = Some(song);
                 }
             }
@@ -5936,6 +6013,7 @@ impl App {
             A::ReflowView => {
                 let song = self.show.selected();
                 if !self.bible_slots.contains(&song)
+                    && song != self.voxlive_slot
                     && let Some(presentation) = self.show.presentations().get(song)
                 {
                     state.editing = None;
@@ -6688,6 +6766,9 @@ fn main() -> ExitCode {
     // The operator's window draws a placeholder for a web page box with no picture yet; the
     // screens, on their own threads, never do.
     sp_render::show_placeholders(true);
+    // A web page box whose page costs to open (a VoxLive screen's live display) shows its free
+    // test pattern in the operator's window instead.
+    sp_render::set_web_stand_in(web_stand_in);
 
     let (media_paths, song_paths): (Vec<PathBuf>, Vec<PathBuf>) =
         options.paths.iter().cloned().partition(|path| media::is_media(path));
@@ -6751,6 +6832,11 @@ fn main() -> ExitCode {
         });
         sources.push(None);
     }
+    // One more after them holds the VoxLive item: the church's VoxLive screens, a slide each,
+    // made from what VoxLive says and kept in step with it. It has no file.
+    let voxlive_slot = songs.len();
+    songs.push(voxlive::item(&[]));
+    sources.push(None);
 
     // Menu bar choices arrive as user events carrying the item's id.
     let mut builder = EventLoop::<AppEvent>::with_user_event();
@@ -6833,6 +6919,7 @@ fn main() -> ExitCode {
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
         sources,
         bible_slots,
+        voxlive_slot,
         decks: deck::Decks::default(),
         pictures: Vec::new(),
         unsaved: Vec::new(),

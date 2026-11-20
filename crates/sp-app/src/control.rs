@@ -632,6 +632,7 @@ Layers and controls
   voxlive screens              the church's VoxLive screens
   voxlive connect              connect with an API key read from the standard input
                                (paste it, or pipe it in; never as an argument)
+  voxlive show N|NAME          that VoxLive screen's captions on screen, in place of a verse
   voxlive refresh | voxlive disconnect --yes      find the screens again | forget the key
   bible REFERENCE [--show]     look a passage up (and put its first verse on screen)
   bible REFERENCE --add [to PLAYLIST]
@@ -937,7 +938,7 @@ impl crate::App {
             .presentations()
             .iter()
             .enumerate()
-            .filter(|(at, _)| !self.bible_slots.contains(at) && !removed.contains(at))
+            .filter(|(at, _)| !self.app_made(*at) && !removed.contains(at))
             .map(|(at, song)| (at, song.title.clone()))
             .collect()
     }
@@ -1703,10 +1704,7 @@ impl crate::App {
                     .voxlive
                     .screens
                     .iter()
-                    .map(|screen| {
-                        let kind = if screen.mode == "reference" { "Scripture" } else { "captions" };
-                        format!("{} ({kind})", screen.label())
-                    })
+                    .map(|screen| format!("{} ({})", screen.label(), screen.kind()))
                     .collect();
                 let data: Vec<serde_json::Value> = self
                     .voxlive
@@ -1722,6 +1720,18 @@ impl crate::App {
                 self.voxlive.connect(key)?;
                 crate::applog::event("voxlive", "a key was given; checking it");
                 Ok(Reply::done("Checking the key with VoxLive; sp voxlive says how it went."))
+            }
+            // `voxlive show N|NAME`: that screen's captions on the screens, in place of what is
+            // there, as a click in the VoxLive tab does.
+            Some("show") => {
+                let item = self.show.presentations().get(self.voxlive_slot).cloned().ok_or("No VoxLive item.")?;
+                let names: Vec<String> = item.groups.iter().map(|group| group.name.clone()).collect();
+                if names.is_empty() {
+                    return Err("VoxLive has no screens to show (sp voxlive screens).".to_owned());
+                }
+                let at = find("VoxLive screen", &names, &rest(args, 2))?;
+                self.apply(vec![Command::GoTo(SlideRef { presentation: self.voxlive_slot, slide: at })]);
+                Ok(Reply::done(format!("On screen: VoxLive, {}.", names[at])))
             }
             Some("refresh") => {
                 if !self.voxlive.has_key() {

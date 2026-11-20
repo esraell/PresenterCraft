@@ -274,6 +274,11 @@ pub struct HomeState {
     pub preferences_pane: usize,
     /// Settings › Integrations: VoxLive's state, and what is asked of it.
     pub voxlive: crate::voxlive::View,
+    /// Where the VoxLive item is among the presentations.
+    pub voxlive_slot: Option<usize>,
+    /// A VoxLive screen chosen in the VoxLive tab, by its slide in the VoxLive item, to put on
+    /// screen.
+    pub voxlive_go: Option<usize>,
     /// When a song's copyright line is shown, and the church's CCLI licence number.
     pub copyright_show: crate::service::CopyrightShow,
     pub ccli_licence: String,
@@ -997,6 +1002,8 @@ impl Default for HomeState {
             preferences_open: false,
             preferences_pane: 0,
             voxlive: Default::default(),
+            voxlive_slot: None,
+            voxlive_go: None,
             copyright_show: crate::service::CopyrightShow::Never,
             ccli_licence: String::new(),
             start_audience_off: false,
@@ -1132,6 +1139,19 @@ impl Default for HomeState {
 }
 
 impl HomeState {
+    /// True for a presentation the app makes itself (a Bible passage, the VoxLive item): shown,
+    /// never edited, moved or deleted.
+    pub fn app_made(&self, presentation: usize) -> bool {
+        self.bible.slots.is_some_and(|slots| slots.contains(&presentation)) || self.voxlive_slot == Some(presentation)
+    }
+
+    /// The presentations kept out of the song lists: the Bible page's two and the VoxLive item
+    /// (which has its own row under LIBRARY).
+    pub fn hidden_slots(&self) -> [usize; 3] {
+        let [first, second] = self.bible.slots.unwrap_or([usize::MAX; 2]);
+        [first, second, self.voxlive_slot.unwrap_or(usize::MAX)]
+    }
+
     /// True while a question asking whether to delete something is open: then no key reaches
     /// the show (Space, the arrows and Escape answer it or wait).
     pub fn alert_open(&self) -> bool {
@@ -1304,7 +1324,7 @@ pub fn home_ui(
             Picking::Songs => {
                 let picked: Vec<usize> =
                     if state.picked_songs.is_empty() { vec![show.selected()] } else { state.picked_songs.clone() };
-                let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+                let hidden = state.hidden_slots();
                 state.confirm_delete_songs = picked
                     .into_iter()
                     .filter(|at| {
@@ -1317,13 +1337,12 @@ pub fn home_ui(
                     state.picked_media.iter().copied().filter(|at| *at < show.media().len()).collect();
             }
             Picking::Slides => {
-                let from_bible =
-                    |at: &SlideRef| state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation));
+                let from_bible = |at: &SlideRef| state.app_made(at.presentation);
                 state.confirm_delete_slides =
                     state.picked_slides.iter().copied().filter(|at| !from_bible(at)).collect();
             }
             Picking::Nothing => {
-                let from_bible = |at: SlideRef| state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation));
+                let from_bible = |at: SlideRef| state.app_made(at.presentation);
                 state.confirm_delete_slides = state.selected_slide.filter(|at| !from_bible(*at)).into_iter().collect();
             }
             // Themes are deleted in the Theme Editor, where the list is.
@@ -2172,7 +2191,7 @@ fn edit_view(
                     let image_size = vec2(width - 16.0, (width - 16.0) * 9.0 / 16.0);
                     let mut index = 0;
                     let groups = presentation.map(|p| p.groups.as_slice()).unwrap_or_default();
-                    let movable = !state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation));
+                    let movable = !state.app_made(at.presentation);
                     let moving = egui::DragAndDrop::payload::<SlideDrag>(ui.ctx())
                         .filter(|drag| movable && drag.presentation == at.presentation);
                     scroll_while_dragging(ui);
@@ -3238,8 +3257,8 @@ fn search_songs(show: &Show, listed: impl Fn(usize) -> bool, query: &str) -> Vec
 
 /// The library search pop-up: a field, the songs it finds, and what Return does.
 fn library_search(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
+    let hidden = state.hidden_slots();
     let Some((query, picked)) = state.library_search.as_mut() else { return };
-    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
     let removed = state.removed_songs.clone();
     let found = search_songs(show, |index| !hidden.contains(&index) && !removed.contains(&index), query);
     *picked = (*picked).min(found.len().saturating_sub(1));
@@ -5338,7 +5357,7 @@ fn slide_area(
                 let slides = presentation.slide_count();
                 let count = if slides == 1 { "1 slide".to_owned() } else { format!("{slides} slides") };
                 ui.label(egui::RichText::new(count).size(12.0).color(crate::studio::TEXT_FAINT));
-                let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&show.selected()));
+                let from_bible = state.app_made(show.selected());
                 missing_font_notice(
                     ui,
                     &sp_model::missing_fonts(&sp_model::fonts_used(presentation, theme), &state.fonts),
@@ -5429,7 +5448,7 @@ fn slide_area(
         // transition, the slide view and the slide size on the right.
         egui::Panel::bottom("slide bar").resizable(false).frame(panel_frame(BAR, 6)).show(ui, |ui| {
             ui.horizontal(|ui| {
-                let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&show.selected()));
+                let from_bible = state.app_made(show.selected());
                 if !from_bible {
                     let add = ui.button("+  Add Slide").on_hover_text("Add a slide laid out like the last one");
                     if add.clicked() {
@@ -5549,6 +5568,8 @@ fn slide_grid(
     // A song opened from a playlist is shown with the playlist's other songs above and below
     // it, in the playlist's order, so scrolling down goes on into the next song.
     let sections = if from_bible { Vec::new() } else { playlist_sections(show, state, which) };
+    // Slides the app makes (a Bible passage, the VoxLive item) are shown, never changed.
+    let from_bible = from_bible || state.app_made(which);
     let view = state.slide_view;
     let gap = 10.0;
     let bar_height = 22.0;
@@ -6141,6 +6162,8 @@ fn song_slides(
 ) {
     let Some(presentation) = show.presentations().get(which) else { return };
     let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&which));
+    // Slides the app makes (a Bible passage, the VoxLive item) are shown, never changed.
+    let made = state.app_made(which);
     let Cells { view, gap, bar_height, width, image_size, cell } = *sizes;
     // Slides of this song being dragged to another place in it.
     let moving = egui::DragAndDrop::payload::<SlideDrag>(ui.ctx()).filter(|drag| drag.presentation == which);
@@ -6158,7 +6181,7 @@ fn song_slides(
             if moving.as_ref().is_some_and(|drag| drag.slides.contains(&index)) {
                 moving_rects.push(rect);
             }
-            if from_bible {
+            if made {
                 // A Bible passage's slides stay in the order they are made: a drag on one draws a
                 // box that picks out the slides it touches, as a drag between slides does.
                 start_slide_box(ui, state, &response);
@@ -6205,7 +6228,7 @@ fn song_slides(
                 }
             }
             // A media item dragged from the bin onto a slide becomes what the slide shows.
-            if !from_bible {
+            if !made {
                 if response.dnd_hover_payload::<MediaDrag>().is_some() {
                     ui.painter().rect_stroke(rect, 6.0, Stroke::new(2.0, crate::studio::ACCENT), StrokeKind::Outside);
                 }
@@ -6225,7 +6248,7 @@ fn song_slides(
                     state.editing = EditDraft::of(show, here);
                     ui.close();
                 }
-                if !from_bible {
+                if !made {
                     ui.separator();
                     // Cut and Copy take the slides picked out with this one, or this one.
                     let mut these: Vec<usize> = state
@@ -6398,7 +6421,7 @@ fn song_slides(
                     });
                 }
                 // A disabled slide stays in the song but is stepped over and never shown.
-                if !from_bible {
+                if !made {
                     let label = if slide.enabled { "Disable Slide" } else { "Enable Slide" };
                     if ui.button(label).clicked() {
                         state.pending_edit = Some((here, Slide { enabled: !slide.enabled, ..slide.clone() }));
@@ -6407,7 +6430,7 @@ fn song_slides(
                 }
                 // Which of the theme's templates the slide is drawn with. Automatic
                 // lets the theme pick the one that suits what is on the slide.
-                if !from_bible && !state.song_templates.is_empty() {
+                if !made && !state.song_templates.is_empty() {
                     ui.menu_button("Template", |ui| {
                         let current = slide.template.filter(|id| state.song_templates.iter().any(|(t, _)| t == id));
                         if ui.add(egui::Button::selectable(current.is_none(), "Automatic")).clicked() {

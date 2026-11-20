@@ -67,6 +67,15 @@ pub struct Screen {
 }
 
 impl Screen {
+    /// Captions or Scripture, in words; another mode as VoxLive names it.
+    pub fn kind(&self) -> &str {
+        match self.mode.as_str() {
+            "reference" => "Scripture",
+            "captions" | "" => "captions",
+            other => other,
+        }
+    }
+
     /// What it is called, with its language.
     pub fn label(&self) -> String {
         let name = if self.name.trim().is_empty() { "VoxLive screen" } else { self.name.trim() };
@@ -90,7 +99,7 @@ impl Screen {
 }
 
 /// Where VoxLive's caption displays are: `https://voxlive.app/listen/`, or the test stand-in's.
-fn display_prefix(base: &str) -> String {
+pub(crate) fn display_prefix(base: &str) -> String {
     match base.strip_suffix("/api/v1") {
         Some(site) if site.starts_with("http://") => format!("{site}/listen/"),
         _ => "https://voxlive.app/listen/".to_owned(),
@@ -110,6 +119,63 @@ pub struct View {
     /// Why the key given wasn't taken.
     pub problem: Option<String>,
     pub request: Option<crate::integrations::Request>,
+}
+
+/// How a playlist names the VoxLive item.
+pub const ITEM_KEY: &str = "voxlive";
+
+/// The VoxLive item's id: always the same, so a playlist, a thumbnail or a slide on screen
+/// keeps finding it as its screens change.
+pub const ITEM_ID: sp_model::Uuid = sp_model::Uuid::from_u128(0x5f1d_0c0e_7a1b_4c55_9e3d_7f0a_b0c1_d2e3);
+
+/// VoxLive's colour, for the item's groups.
+pub const COLOUR: sp_model::Rgba = sp_model::Rgba { r: 44, g: 93, b: 124, a: 255 };
+
+/// The VoxLive item: the church's VoxLive screens, a group of one slide each, named after the
+/// screen. Each slide is a web page box filling the slide with the screen's live display, which
+/// the screens open when the slide is shown (thumbnails show its free test pattern instead).
+pub fn item(screens: &[Screen]) -> sp_model::Presentation {
+    let full = sp_model::SlideRect { x: 0.0, y: 0.0, w: sp_model::SLIDE_WIDTH, h: sp_model::SLIDE_HEIGHT };
+    let groups = screens
+        .iter()
+        .filter(|screen| !screen.url.is_empty())
+        .map(|screen| {
+            let mut web = sp_model::Object::web(screen.url.clone());
+            web.id = stable_id("object", &screen.id);
+            web.name = screen.label();
+            web.frame = Some(full);
+            let mut slide = sp_model::Slide::new(vec![web]);
+            slide.id = stable_id("slide", &screen.id);
+            sp_model::Group {
+                id: stable_id("group", &screen.id),
+                name: screen.label(),
+                color: COLOUR,
+                slides: vec![slide],
+            }
+        })
+        .collect();
+    sp_model::Presentation {
+        id: ITEM_ID,
+        title: "VoxLive".to_owned(),
+        groups,
+        copyright: sp_model::Copyright::default(),
+        theme: None,
+        arrangements: Vec::new(),
+        arrangement: None,
+        loops: false,
+        transition: None,
+    }
+}
+
+/// An id made from a screen's id, the same each time, so the item's slides keep their ids.
+fn stable_id(part: &str, screen: &str) -> sp_model::Uuid {
+    // FNV-1a, 128 bits: not for secrecy, only to be the same every time.
+    let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    for byte in part.bytes().chain([0]).chain(screen.bytes()) {
+        hash ^= u128::from(byte);
+        hash = hash.wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013B);
+    }
+    sp_model::Uuid::from_u128(hash)
 }
 
 /// How the connection stands.
@@ -421,6 +487,28 @@ mod tests {
         }
         .cleaned("http://127.0.0.1:9100/api/v1");
         assert_eq!(test.url, "http://127.0.0.1:9100/listen/t/screen/x", "the test stand-in's own display");
+    }
+
+    #[test]
+    fn the_item_has_a_slide_for_each_screen_and_keeps_its_ids() {
+        let screens = vec![
+            Screen {
+                id: "abc2345".to_owned(),
+                name: "Spanish".to_owned(),
+                language: "es".to_owned(),
+                url: "https://voxlive.app/listen/g/screen/abc2345".to_owned(),
+                ..Screen::default()
+            },
+            Screen { id: "nourl00".to_owned(), name: "No display".to_owned(), ..Screen::default() },
+        ];
+        let first = item(&screens);
+        let again = item(&screens);
+        assert_eq!(first.id, ITEM_ID);
+        assert_eq!(first.groups.len(), 1, "a screen with no display address has no slide");
+        assert_eq!(first.groups[0].name, "Spanish · ES");
+        assert_eq!(first, again, "the same screens make the same item, ids and all");
+        let object = &first.groups[0].slides[0].objects[0];
+        assert!(matches!(&object.kind, sp_model::ObjectKind::Web { url } if url.ends_with("/screen/abc2345")));
     }
 
     #[test]

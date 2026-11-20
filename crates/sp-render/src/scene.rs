@@ -259,7 +259,7 @@ fn draw_objects(
             draw_picture(scene, placed, file, *fit, rect, &outline);
         }
         if let ObjectKind::Web { .. } = &object.kind {
-            draw_web(scene, placed, &crate::web_key(object_web_url(object), rect.w, rect.h), rect, &outline);
+            draw_web(scene, placed, object_web_url(object), rect, &outline);
         }
         if let ObjectKind::Text { text, style } = &object.kind {
             // The theme's style for the object's role, with the object's own settings over it.
@@ -285,6 +285,16 @@ pub fn show_placeholders(on: bool) {
     PLACEHOLDERS.with(|placeholders| placeholders.set(on));
 }
 
+/// What a web page box shows in the operator's window in place of its page, when the app says
+/// it has a stand-in (a VoxLive screen's free test pattern for its live display, which costs).
+static WEB_STAND_IN: std::sync::OnceLock<fn(&str) -> Option<String>> = std::sync::OnceLock::new();
+
+/// Says which address stands in for a web page box's own in the operator's window (thumbnails,
+/// the editor); the screens and the Program preview always show the box's own page. Set once.
+pub fn set_web_stand_in(stand_in: fn(&str) -> Option<String>) {
+    let _ = WEB_STAND_IN.set(stand_in);
+}
+
 fn object_web_url(object: &sp_model::Object) -> &str {
     match &object.kind {
         ObjectKind::Web { url } => url,
@@ -295,12 +305,17 @@ fn object_web_url(object: &sp_model::Object) -> &str {
 /// A web page box: the page's newest picture, laid out at the box's size so it fills it; before
 /// there is one, nothing on the screens and a placeholder (a see-through panel with a globe, so
 /// what is under the box still shows) in the operator's window.
-fn draw_web(scene: &mut Scene, placed: Affine, key: &str, rect: SlideRect, outline: &BezPath) {
-    if let Some(picture) = crate::pictures::shown(key) {
-        paint_picture(scene, placed, &picture, ImageFit::Stretch, rect, outline);
-        return;
+fn draw_web(scene: &mut Scene, placed: Affine, url: &str, rect: SlideRect, outline: &BezPath) {
+    let operator = PLACEHOLDERS.with(std::cell::Cell::get);
+    // In the operator's window, a stand-in's picture first (its own may cost to open).
+    let stand_in = operator.then(|| WEB_STAND_IN.get().and_then(|stand_in| stand_in(url))).flatten();
+    for address in stand_in.iter().map(String::as_str).chain([url]) {
+        if let Some(picture) = crate::pictures::shown(&crate::web_key(address, rect.w, rect.h)) {
+            paint_picture(scene, placed, &picture, ImageFit::Stretch, rect, outline);
+            return;
+        }
     }
-    if !PLACEHOLDERS.with(std::cell::Cell::get) {
+    if !operator {
         return;
     }
     let (x, y, w, h) = (f64::from(rect.x), f64::from(rect.y), f64::from(rect.w), f64::from(rect.h));

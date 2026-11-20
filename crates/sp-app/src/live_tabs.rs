@@ -14,13 +14,19 @@ use crate::timers::{self, Timer};
 pub fn live_tabs(ui: &mut egui::Ui, show: &sp_engine::Show, state: &mut HomeState) {
     ui.add_space(4.0);
     let width = ui.available_width();
-    let picked = segmented(
-        ui,
-        "live tabs",
-        vec2((width - 8.0) / 6.0, 26.0),
-        &["Timers", "Messages", "Props", "Macros", "Stage", "Audio"],
-        Some(state.live_tab),
-    );
+    // VoxLive's tab, once it is connected and has screens.
+    let voxlive =
+        state.voxlive_slot.and_then(|slot| show.presentations().get(slot)).is_some_and(|item| item.slide_count() > 0);
+    let names: &[&str] = if voxlive {
+        &["Timers", "Messages", "Props", "Macros", "Stage", "Audio", "VoxLive"]
+    } else {
+        &["Timers", "Messages", "Props", "Macros", "Stage", "Audio"]
+    };
+    if !voxlive && state.live_tab >= names.len() {
+        state.live_tab = 0;
+    }
+    let picked =
+        segmented(ui, "live tabs", vec2((width - 8.0) / names.len() as f32, 26.0), names, Some(state.live_tab));
     if let Some(tab) = picked {
         state.live_tab = tab;
     }
@@ -33,7 +39,8 @@ pub fn live_tabs(ui: &mut egui::Ui, show: &sp_engine::Show, state: &mut HomeStat
             2 => props_tab(ui, state),
             3 => macros_tab(ui, show, state),
             4 => stage_tab(ui, state),
-            _ => audio_tab(ui, state),
+            5 => audio_tab(ui, state),
+            _ => voxlive_tab(ui, show, state),
         }
     });
     // When the tab goes on below what shows, its foot fades out, so it reads as going on (scroll
@@ -1141,4 +1148,53 @@ fn stage_tab(ui: &mut egui::Ui, state: &mut HomeState) {
     if ui.add_enabled(has_words || showing, button).clicked() {
         state.stage_message_live = !showing;
     }
+}
+
+/// The VoxLive tab: the church's VoxLive screens, a button each. A click puts that screen's
+/// captions on the screens in place of what is there (a verse, a song); a click on a verse
+/// brings the verse back. On the Bible page too, where this column stays.
+fn voxlive_tab(ui: &mut egui::Ui, show: &sp_engine::Show, state: &mut HomeState) {
+    let Some(slot) = state.voxlive_slot else { return };
+    let Some(item) = show.presentations().get(slot) else { return };
+    caption(ui, "VOXLIVE");
+    ui.add_space(2.0);
+    let live = show.live().filter(|at| at.presentation == slot).map(|at| at.slide);
+    let width = ui.available_width();
+    for (index, (group, _)) in item.slides().enumerate() {
+        let on = live == Some(index);
+        let (row, response) = ui.allocate_exact_size(vec2(width, 38.0), Sense::click());
+        let fill = if on {
+            crate::integrations::VOXLIVE
+        } else if response.hovered() {
+            Color32::from_white_alpha(18)
+        } else {
+            CARD
+        };
+        ui.painter().rect_filled(row, 8.0, fill);
+        ui.painter().text(
+            row.left_center() + vec2(12.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            group.name.as_str(),
+            crate::studio::semibold(13.0),
+            TEXT,
+        );
+        if on {
+            ui.painter().circle_filled(row.right_center() - vec2(14.0, 0.0), 4.0, TALLY);
+        }
+        let response = response.on_hover_text(if on {
+            "On the screens now"
+        } else {
+            "Put these captions on the screens, in place of what is there"
+        });
+        if response.clicked() {
+            state.voxlive_go = Some(index);
+        }
+        ui.add_space(4.0);
+    }
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("A verse clicked after brings the verse back; this brings the captions back.")
+            .size(11.5)
+            .color(TEXT_FAINT),
+    );
 }

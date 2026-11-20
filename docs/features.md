@@ -394,6 +394,17 @@ feature changes, this page changes in the same commit.
   key VoxLive refuses stops the asking until another is given, so the church's other devices
   aren't locked out, and a "wait" answer is waited out. Disconnect forgets the key on this
   computer.
+- **The VoxLive item**: once VoxLive is connected and has screens, a VoxLive row under LIBRARY
+  (in VoxLive's colour, with how many screens) opens the church's VoxLive screens as slides, one
+  a screen, named after it; it follows VoxLive's list as screens are made, renamed or deleted
+  there, and is never edited, saved, deleted or put in a song pack. Its right-click menu puts it
+  in the playlist in front. Clicking one of its slides puts that screen's live captions on the
+  screens in place of what was there (a verse, a song); clicking the verse brings it back. The
+  **VoxLive tab** beside Timers, Messages and the rest (in the right column, so on the Bible page
+  too) has the same screens as buttons. A screen's live display, which can start a paid
+  translation, is opened only on the real screens; thumbnails and the editor show its free test
+  pattern. Once shown, it keeps running for 15 minutes after it leaves the screens, so going back
+  to the captions from a verse is at once, with no reload.
 
 ## From the command line
 - Preparing a service from the command line, as the window does it: `playlist new|rename|delete|
