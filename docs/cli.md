@@ -42,7 +42,8 @@ needed. Then:
 | `libraries` | The libraries, with how many songs each has |
 | `playlist [NAME]` | A playlist's items (the one in front if none is named) |
 | `media` | The media bin's items |
-| `themes`, `screens`, `timers`, `messages`, `props`, `macros` | Each list, numbered |
+| `themes`, `timers`, `messages`, `props`, `macros` | Each list, numbered |
+| `screens` | Each screen and what it is doing ("Filling \"3DTV\"…", "In a window", "Switched off"…); the data gives `name`, `doing` and `shown` |
 | `audio` | Every audio track |
 | `menu` | Every menu bar item: its id and the words on it |
 
@@ -54,8 +55,8 @@ needed. Then:
 | `go SONG [SLIDE]` | Puts a slide on screen (the song's first slide if SLIDE is left out) |
 | `select SONG` | Shows a song's slides in the window without putting anything on screen |
 | `clear [all\|slide\|media\|props\|messages\|audio\|announcements]` | Clears a layer, or everything (the default) |
-| `audience on\|off` | The audience screens |
-| `stage on\|off` | The stage screens |
+| `audience on\|off` | The audience screens (off closes their windows; NDI sends black) |
+| `stage on\|off` | The stage screens (off closes their windows) |
 | `identify on\|off` | Identify Screens |
 | `view show\|edit\|bible\|themes` | Switches the window's view |
 

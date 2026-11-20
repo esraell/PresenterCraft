@@ -217,6 +217,9 @@ feature changes, this page changes in the same commit.
 - A screen set to Automatic fills a display the operator doesn't work on: never the one with
   the main window or the menu bar. With one display, or before it is known which display is
   the operator's, it opens in a window, so an output never covers the operator's screen.
+- Switching the audience (or stage) screens off closes their windows, so the display shows
+  what is behind them, not black; NDI goes on sending black, so a stream keeps its source. A
+  screen in a window opens on a display the operator doesn't work on when there is one.
 - A screen whose display is unplugged waits for it instead of jumping to another display.
   Identify Screens marks each screen with its name, a border and a wash of its own colour that
   breathes a few times to catch the eye (the Screens window shows each screen's colour beside

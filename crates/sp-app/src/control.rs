@@ -459,7 +459,7 @@ impl crate::App {
             "media" => self.ctl_media(args),
             "media-playlist" => self.ctl_media_playlist(args),
             "themes" => Ok(self.ctl_named_list("themes", |s| s.theme_names.clone())),
-            "screens" => Ok(self.ctl_named_list("screens", |s| s.screens.iter().map(|x| x.name.clone()).collect())),
+            "screens" => Ok(self.ctl_screens()),
             "timers" => Ok(self.ctl_named_list("timers", |s| s.timers.iter().map(|x| x.name.clone()).collect())),
             "messages" => Ok(self.ctl_named_list("messages", |s| s.messages.iter().map(|x| x.name.clone()).collect())),
             "props" => Ok(self.ctl_named_list("props", |s| s.props.iter().map(|x| x.name.clone()).collect())),
@@ -700,6 +700,33 @@ impl crate::App {
         };
         self.with_state(|state| state.view_request = Some(at));
         Ok(Reply::done(format!("Switching to the {which} view.")))
+    }
+
+    /// Each screen, and what it is doing: filling a display, in a window, sending over NDI, or
+    /// off and why.
+    fn ctl_screens(&self) -> Reply {
+        let Some(state) = self.running.as_ref().map(|r| &r.home_state) else {
+            return Reply::with("", serde_json::json!([]));
+        };
+        let lines: Vec<String> = state
+            .screens
+            .iter()
+            .enumerate()
+            .map(|(at, screen)| match state.screen_status.get(at) {
+                Some((doing, _)) => format!("{}: {doing}", screen.name),
+                None => screen.name.clone(),
+            })
+            .collect();
+        let data: Vec<serde_json::Value> = state
+            .screens
+            .iter()
+            .enumerate()
+            .map(|(at, screen)| {
+                let (doing, shown) = state.screen_status.get(at).cloned().unwrap_or_default();
+                serde_json::json!({"name": screen.name, "doing": doing, "shown": shown})
+            })
+            .collect();
+        Reply::with(numbered(&lines), serde_json::json!(data))
     }
 
     fn ctl_libraries(&self) -> Reply {

@@ -601,6 +601,11 @@ struct Running {
     home_window: Arc<Window>,
     home_surface: wgpu::Surface<'static>,
     home_config: wgpu::SurfaceConfiguration,
+    /// A new size for the home window while its edge is being dragged, and when it last changed.
+    /// Setting a window's drawing surface to a new size waits for everything the GPU is doing,
+    /// the screens' pictures included, so it is done once the size has settled, never on each
+    /// step of a drag: the audience must not see the operator resizing a window.
+    home_resize: Option<(winit::dpi::PhysicalSize<u32>, Instant)>,
     /// The windows audience screens are drawn in, one per screen that has one.
     screen_windows: Vec<ScreenWindow>,
     /// Windows of screens that were moved elsewhere or switched off, hidden, and dropped a
@@ -854,6 +859,7 @@ impl App {
             home_window,
             home_surface,
             home_config,
+            home_resize: None,
             screen_windows: Vec::new(),
             retired: Vec::new(),
             ndi_sent: Vec::new(),
@@ -2897,6 +2903,7 @@ impl App {
     /// frame and notices a display being plugged in or out.
     fn sync_screens(&mut self, el: &ActiveEventLoop) {
         let quiet = self.quiet();
+        let audience_on = self.show.output_enabled();
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -2929,6 +2936,17 @@ impl App {
                     Placed::Ndi(_) if !ndi_aid => *place = Placed::Nothing("Not sent during a capture.".to_owned()),
                     _ => {}
                 }
+            }
+        }
+        // A kind of screen switched off closes its windows, so the display shows what is behind
+        // them rather than black. NDI goes on sending (black), so a stream keeps its source.
+        for (screen, place) in list.iter().zip(placed.iter_mut()) {
+            let on = match screen.kind {
+                screens::Kind::Audience => audience_on,
+                screens::Kind::Stage => running.home_state.stage_on,
+            };
+            if !on && matches!(place, Placed::Fullscreen(_) | Placed::Window) {
+                *place = Placed::Nothing("Switched off".to_owned());
             }
         }
         running.retired.retain(|(_, since)| since.elapsed() < Duration::from_secs(2));
@@ -2966,7 +2984,22 @@ impl App {
                 Placed::Fullscreen(index) => {
                     attrs.with_fullscreen(Some(Fullscreen::Borderless(monitors.get(*index).cloned())))
                 }
-                _ => attrs.with_inner_size(winit::dpi::LogicalSize::new(960.0, 540.0)),
+                // A screen in a window opens on a display the operator doesn't work on when there
+                // is one, so it never lands on top of the operator's own screen.
+                _ => {
+                    let attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(960.0, 540.0));
+                    let away = monitors.iter().enumerate().find(|(index, _)| !operator.contains(index));
+                    match away {
+                        Some((_, monitor)) => {
+                            let (at, size, scale) = (monitor.position(), monitor.size(), monitor.scale_factor());
+                            let (w, h) = ((960.0 * scale) as i32, (540.0 * scale) as i32);
+                            let x = at.x + (size.width as i32 - w).max(0) / 2;
+                            let y = at.y + (size.height as i32 - h).max(0) / 2;
+                            attrs.with_position(winit::dpi::PhysicalPosition::new(x, y))
+                        }
+                        None => attrs,
+                    }
+                }
             };
             let attrs = if quiet {
                 attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom)
@@ -3154,9 +3187,34 @@ impl App {
             return Vec::new();
         };
         let Running {
-            home_window, home_surface, home_config, gpu, egui_ctx, egui_state, egui_renderer, thumbs, ..
+            home_window,
+            home_surface,
+            home_config,
+            home_resize,
+            gpu,
+            egui_ctx,
+            egui_state,
+            egui_renderer,
+            thumbs,
+            ..
         } = running;
-        let raw_input = egui_state.take_egui_input(home_window);
+        let mut raw_input = egui_state.take_egui_input(home_window);
+        // A new size is taken on once it has stopped changing for a moment. Until then the
+        // window is drawn at the size it had, which macOS stretches to fit.
+        const SETTLE: Duration = Duration::from_millis(120);
+        if let Some((size, changed)) = *home_resize {
+            if changed.elapsed() >= SETTLE {
+                home_config.width = size.width;
+                home_config.height = size.height;
+                output::configure(&gpu.device, home_surface, home_config);
+                *home_resize = None;
+            } else {
+                let points = home_window.scale_factor() as f32;
+                let (w, h) = (home_config.width as f32 / points, home_config.height as f32 / points);
+                raw_input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h)));
+                home_window.request_redraw();
+            }
+        }
         thumbs.begin_frame();
         if running.output.as_ref().is_none_or(OutputHandle::is_finished) {
             running.home_state.output_stopped = true;
@@ -4453,9 +4511,7 @@ impl ApplicationHandler<AppEvent> for App {
             WindowEvent::CloseRequested => self.quit(el),
             WindowEvent::Resized(size) => {
                 if size.width > 0 && size.height > 0 {
-                    running.home_config.width = size.width;
-                    running.home_config.height = size.height;
-                    output::configure(&running.gpu.device, &running.home_surface, &running.home_config);
+                    running.home_resize = Some((size, Instant::now()));
                 }
                 running.home_window.request_redraw();
             }
