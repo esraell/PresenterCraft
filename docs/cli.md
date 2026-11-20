@@ -427,6 +427,19 @@ it in an editor that has it open, and shows at once on a slide that is on screen
     Blessed Assurance: moved slide 2 to 5; it is now in Verse 2.
     $ sp slide delete "Blessed Assurance" 5
     This deletes slide 5 of Blessed Assurance. Add --yes to do it (Undo brings it back).
+    $ sp slide web "Blessed Assurance" 1 http://127.0.0.1:8765/
+    Blessed Assurance: slide 1 shows the web page http://127.0.0.1:8765/.
+    $ sp slide web "Blessed Assurance" 2 http://example.com
+    http://example.com isn't an address SoftPresenter shows: it must start with https://.
+    $ sp slide "Blessed Assurance" 1
+    Blessed Assurance, slide 1 of 7 (Verse 1)
+     1. Web page: http://127.0.0.1:8765/
+        at x=0 y=0 w=1920 h=1080 (its own)
+     2. Main: "Blessed assurance, Jesus is mine / Oh, what a foretaste of glory divine"
+        at x=120 y=240 w=1680 h=600 (the theme's)
+        font Helvetica Neue, size 96, weight 700, italic off, colour #ffffff, align Center, scaling TextDown
+    $ sp slide web "Blessed Assurance" 1 off
+    Blessed Assurance: slide 1 has no web page.
 
 The settings `slide style keys` lists (`theme box` takes the same):
 
