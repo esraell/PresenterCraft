@@ -294,9 +294,10 @@ enum Problem {
 
 /// What a finished request found.
 enum Answer {
-    Screens(Result<Vec<Screen>, Problem>),
+    /// The screens, for the connection numbered so (an answer for an earlier key is let go).
+    Screens(u64, Result<Vec<Screen>, Problem>),
     /// The style schema: every look setting, as VoxLive describes it.
-    Schema(Result<Vec<(String, serde_json::Value)>, Problem>),
+    Schema(u64, Result<Vec<(String, serde_json::Value)>, Problem>),
     /// A look saved (the screen as VoxLive stored it), or why not.
     Saved(String, Result<Screen, Saving>),
 }
@@ -348,7 +349,12 @@ pub struct Client {
     busy: bool,
     /// Every look setting, as VoxLive describes it (asked for once, when first connected).
     pub schema: Vec<(String, serde_json::Value)>,
-    schema_asked: bool,
+    /// A request for the look settings under way, and when to ask (again) once connected.
+    schema_asking: bool,
+    schema_next: Option<Instant>,
+    /// Counts connections (each key given or forgotten), so an answer that comes back after
+    /// its key was replaced or forgotten is let go.
+    generation: u64,
     /// A look being saved, by its screen.
     pub saving: Option<String>,
     /// The last look saved or refused: its screen, and how it went.
@@ -372,7 +378,9 @@ impl Client {
             next,
             busy: false,
             schema: Vec::new(),
-            schema_asked: false,
+            schema_asking: false,
+            schema_next: Some(Instant::now()),
+            generation: 0,
             saving: None,
             saved: None,
             tx,
@@ -405,6 +413,7 @@ impl Client {
         self.screens.clear();
         self.found_at = None;
         self.next = Some(Instant::now());
+        self.new_connection();
         Ok(())
     }
 
@@ -416,6 +425,15 @@ impl Client {
         self.screens.clear();
         self.found_at = None;
         self.next = None;
+        self.new_connection();
+    }
+
+    /// Starts afresh: requests still under way for the key before are let go when they answer.
+    fn new_connection(&mut self) {
+        self.generation += 1;
+        self.busy = false;
+        self.schema_asking = false;
+        self.schema_next = self.schema.is_empty().then(Instant::now);
     }
 
     /// Asks for the screens now (unless a key was refused, or a request is under way).
@@ -455,14 +473,23 @@ impl Client {
     /// Takes in finished requests and starts those due. Says when to look again.
     pub fn tick(&mut self) -> Option<Instant> {
         while let Ok(answer) = self.rx.try_recv() {
+            // An answer for a key since replaced or forgotten changes nothing.
+            if let Answer::Screens(generation, _) | Answer::Schema(generation, _) = &answer
+                && *generation != self.generation
+            {
+                continue;
+            }
             match answer {
-                Answer::Schema(Ok(schema)) => {
+                Answer::Schema(_, Ok(schema)) => {
                     self.schema = schema;
+                    self.schema_asking = false;
+                    self.schema_next = None;
                     continue;
                 }
-                Answer::Schema(Err(_)) => {
-                    // Asked again on the next connection; the editor waits for it meanwhile.
-                    self.schema_asked = false;
+                Answer::Schema(_, Err(_)) => {
+                    // Asked again after a while, as the screens are; the editor waits meanwhile.
+                    self.schema_asking = false;
+                    self.schema_next = Some(Instant::now() + POLL_EVERY);
                     continue;
                 }
                 Answer::Saved(screen, outcome) => {
@@ -487,41 +514,43 @@ impl Client {
                     self.saved = Some((screen, outcome));
                     continue;
                 }
-                Answer::Screens(_) => self.busy = false,
+                Answer::Screens(..) => self.busy = false,
             }
             match answer {
-                Answer::Screens(Ok(screens)) => {
+                Answer::Screens(_, Ok(screens)) => {
                     self.screens = screens;
                     self.found_at = Some(Instant::now());
                     self.status = Status::Connected;
                     self.next = Some(Instant::now() + POLL_EVERY);
                 }
-                Answer::Screens(Err(Problem::Refused(why))) => {
+                Answer::Screens(_, Err(Problem::Refused(why))) => {
                     crate::applog::problem("voxlive", &why);
                     self.status = Status::Refused(why);
                     self.next = None;
                 }
-                Answer::Screens(Err(Problem::Wait(wait, why))) => {
+                Answer::Screens(_, Err(Problem::Wait(wait, why))) => {
                     self.status = Status::Trouble(why);
                     self.next = Some(Instant::now() + wait);
                 }
-                Answer::Screens(Err(Problem::Other(why))) => {
+                Answer::Screens(_, Err(Problem::Other(why))) => {
                     crate::applog::problem("voxlive", &why);
                     self.status = Status::Trouble(why);
                     self.next = Some(Instant::now() + POLL_EVERY);
                 }
-                Answer::Schema(_) | Answer::Saved(..) => {}
+                Answer::Schema(..) | Answer::Saved(..) => {}
             }
         }
         // The look settings, once connected.
         if self.status == Status::Connected
-            && !self.schema_asked
+            && !self.schema_asking
+            && self.schema_next.is_some_and(|at| at <= Instant::now())
             && let Some(key) = self.key.clone()
         {
-            self.schema_asked = true;
-            let (tx, base) = (self.tx.clone(), api_base());
+            self.schema_asking = true;
+            self.schema_next = None;
+            let (tx, base, generation) = (self.tx.clone(), api_base(), self.generation);
             std::thread::spawn(move || {
-                let _ = tx.send(Answer::Schema(get_schema(&base, &key)));
+                let _ = tx.send(Answer::Schema(generation, get_schema(&base, &key)));
             });
         }
         let due = self.next.is_some_and(|at| at <= Instant::now());
@@ -531,16 +560,18 @@ impl Client {
         {
             self.busy = true;
             self.next = None;
-            let tx = self.tx.clone();
-            let base = api_base();
+            let (tx, base, generation) = (self.tx.clone(), api_base(), self.generation);
             std::thread::spawn(move || {
-                let _ = tx.send(Answer::Screens(get_screens(&base, &key)));
+                let _ = tx.send(Answer::Screens(generation, get_screens(&base, &key)));
             });
         }
-        if self.busy || self.saving.is_some() || (self.schema_asked && self.schema.is_empty()) {
+        if self.busy || self.saving.is_some() || self.schema_asking {
             Some(Instant::now() + Duration::from_millis(250))
         } else {
-            self.next
+            let schema = self.schema_next.filter(|_| self.status == Status::Connected);
+            // With no key, nothing is asked, so nothing is due (a time left over would be past).
+            let next = self.next.filter(|_| self.key.is_some());
+            [next, schema].into_iter().flatten().min()
         }
     }
 }

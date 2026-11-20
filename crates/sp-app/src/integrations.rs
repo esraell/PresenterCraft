@@ -303,7 +303,7 @@ fn look_page(ui: &mut egui::Ui, view: &mut View) {
                 FontId::proportional(12.0),
                 TEXT_FAINT,
             );
-            ui.ctx().request_repaint();
+            // The window is drawn again when the preview's first picture comes.
         }
     }
     ui.painter().rect_stroke(place, 6.0, Stroke::new(1.0, LINE), egui::StrokeKind::Outside);
