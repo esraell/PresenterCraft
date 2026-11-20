@@ -765,6 +765,16 @@ impl Presentation {
         Some(copy)
     }
 
+    /// A copy with slides put, in order, just after the one at `index`, in the same group, each
+    /// given new ids so it is a slide of its own. `None` if there is no slide there.
+    pub fn with_slides_after(&self, index: usize, slides: &[Slide]) -> Option<Presentation> {
+        let mut copy = self.clone();
+        for (at, slide) in slides.iter().enumerate() {
+            copy = copy.with_slide_after(index + at, slide)?;
+        }
+        Some(copy)
+    }
+
     /// A copy where a group with this name starts at the slide at `index`: the slide and the
     /// rest of its group become a group of that name, in its colour. A slide that already
     /// starts its group renames the group. `None` if there is no slide there.
@@ -864,6 +874,17 @@ impl MediaItem {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn several_slides_paste_in_order_after_one_as_slides_of_their_own() {
+        let song = crate::parse_song_text("Song", "One\n\nTwo\n\nThree\n");
+        let copies: Vec<Slide> = song.slides().take(2).map(|(_, slide)| slide.clone()).collect();
+        let pasted = song.with_slides_after(2, &copies).unwrap();
+        let words: Vec<&str> = pasted.slides().map(|(_, s)| s.text_for(&Role::primary()).unwrap_or("")).collect();
+        assert_eq!(words, ["One", "Two", "Three", "One", "Two"]);
+        assert_ne!(pasted.slide(3).unwrap().1.id, song.slide(0).unwrap().1.id, "new ids");
+        assert!(song.with_slides_after(9, &copies).is_none());
+    }
 
     #[test]
     fn slides_move_into_the_group_of_the_slide_they_are_dropped_by() {

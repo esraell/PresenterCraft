@@ -285,9 +285,18 @@ pub enum Drag {
     },
 }
 
+/// A number for each draft made, so a change of draft can be told from the same one.
+fn next_draft_serial() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The slide being edited: a working copy, what is selected, and the changes that can be undone.
 #[derive(Clone, Debug)]
 pub struct EditDraft {
+    /// Different for every draft made: opening another slide, or the same one again, makes a
+    /// new one.
+    pub serial: u64,
     pub at: SlideRef,
     pub slide: Slide,
     pub selected: Option<Uuid>,
@@ -341,6 +350,7 @@ impl EditDraft {
             typing_started: false,
             drag: None,
             undo: Vec::new(),
+            serial: next_draft_serial(),
             redo: Vec::new(),
             last_recorded: f64::NEG_INFINITY,
             stepped: false,
@@ -366,6 +376,7 @@ impl EditDraft {
             typing_started: false,
             drag: None,
             undo: Vec::new(),
+            serial: next_draft_serial(),
             redo: Vec::new(),
             last_recorded: f64::NEG_INFINITY,
             stepped: false,
@@ -406,6 +417,11 @@ impl EditDraft {
             self.record_slide(before);
         }
         self.last_recorded = now;
+    }
+
+    /// How many steps the draft can undo.
+    pub fn undo_depth(&self) -> usize {
+        self.undo.len()
     }
 
     pub fn can_undo(&self) -> bool {

@@ -158,7 +158,22 @@ pub struct HomeState {
     /// True while the Bible page is showing in place of the slide grid.
     pub bible_open: bool,
     /// A slide cut or copied from its menu, for Paste.
-    pub slide_clip: Option<Slide>,
+    /// Slides copied (or cut), in order, and the words put on the system clipboard with them:
+    /// a paste is of these slides only while the clipboard still holds those words.
+    pub slide_clip: Vec<Slide>,
+    pub slide_clip_text: String,
+    /// The Edit view's undo order, newest last: each step a change to the slide being edited
+    /// (undone by the draft) or to the song's slides (moved, pasted, deleted; undone by the
+    /// app); and the steps undone, to redo. The draft the slide's steps belong to.
+    pub edit_steps: Vec<EditStep>,
+    pub edit_redo: Vec<EditStep>,
+    pub edit_steps_draft: u64,
+    /// Asked of the app: undo (false) or redo (true) the song's last change of its slides.
+    pub song_undo: Option<bool>,
+    /// Asked of the app: this song's changes can no longer be undone safely; drop them.
+    pub forget_song_history: Option<usize>,
+    /// Asked of the app: drop what the song's history could redo, as a change was made.
+    pub clear_song_redo: bool,
     /// A change to a slide asked for from its menu.
     pub slide_request: Option<(SlideRef, SlideRequest)>,
     /// A song's arrangements changed in the Show view: the song, its arrangements, and the one
@@ -959,7 +974,14 @@ impl Default for HomeState {
             picture_request: false,
             theme_picture_request: false,
             picture_to_add: Vec::new(),
-            slide_clip: None,
+            slide_clip: Vec::new(),
+            slide_clip_text: String::new(),
+            edit_steps: Vec::new(),
+            edit_redo: Vec::new(),
+            edit_steps_draft: 0,
+            song_undo: None,
+            forget_song_history: None,
+            clear_song_redo: false,
             slide_request: None,
             song_request: None,
             song_theme_request: None,
@@ -1316,6 +1338,17 @@ fn edit_view(
         state.editing = None;
         return;
     }
+    // Another slide opened (or the same one again): the old draft's own steps went with it.
+    if let Some(draft) = state.editing.as_ref()
+        && draft.serial != state.edit_steps_draft
+    {
+        if drop_slide_steps(&mut state.edit_steps) {
+            state.forget_song_history = Some(draft.at.presentation);
+        }
+        state.edit_redo.clear();
+        state.edit_steps_draft = draft.serial;
+    }
+    let depth_before = state.editing.as_ref().map(EditDraft::undo_depth);
     let before = state.editing.as_ref().map(|draft| draft.slide.clone());
     let now = ui.input(|input| input.time);
     let typing = ui.ctx().text_edit_focused();
@@ -1373,13 +1406,25 @@ fn edit_view(
                         draft.delete_selected();
                     }
                 }
-            } else if let Some(text) = pasted
+            } else if let Some(text) = pasted.as_ref()
                 && !state.object_clip.is_empty()
-                && text == state.object_clip_text
+                && *text == state.object_clip_text
             {
                 draft.paste(&state.object_clip);
                 // Pasting again lands further on, not on top of the last copy.
                 state.object_clip = draft.copied(theme);
+            } else if copy && draft.selected.is_none() && !theme_mode && !prop_mode {
+                // With no object selected, Copy takes the slide itself, as it now is.
+                let slide = draft.slide.clone();
+                copy_these_slides(ui.ctx(), state, vec![slide]);
+            } else if let Some(text) = pasted.as_ref()
+                && !state.slide_clip.is_empty()
+                && *text == state.slide_clip_text
+                && !theme_mode
+                && !prop_mode
+            {
+                // Slides copied go just after the one being edited.
+                state.slide_request = Some((draft.at, SlideRequest::PasteAfter(state.slide_clip.clone())));
             } else if all {
                 draft.select_all();
             }
@@ -1513,10 +1558,30 @@ fn edit_view(
         state.confirm_delete_theme = Some(open);
     }
     if let Some(draft) = state.editing.as_mut() {
+        // Undo and Redo take the newest step, whichever it is: a change to this slide (its
+        // draft's own) or to the song's slides (moved, pasted, deleted: the app's).
         if undo && !typing {
-            draft.undo();
+            if state.edit_steps.last() == Some(&EditStep::Song) {
+                state.edit_steps.pop();
+                state.edit_redo.push(EditStep::Song);
+                state.song_undo = Some(false);
+            } else if draft.undo() {
+                if state.edit_steps.last() == Some(&EditStep::Slide) {
+                    state.edit_steps.pop();
+                }
+                state.edit_redo.push(EditStep::Slide);
+            }
         } else if redo && !typing {
-            draft.redo();
+            if state.edit_redo.last() == Some(&EditStep::Song) {
+                state.edit_redo.pop();
+                state.edit_steps.push(EditStep::Song);
+                state.song_undo = Some(true);
+            } else if draft.redo() {
+                if state.edit_redo.last() == Some(&EditStep::Slide) {
+                    state.edit_redo.pop();
+                }
+                state.edit_steps.push(EditStep::Slide);
+            }
         } else if delete && !delete_theme {
             draft.delete_selected();
         } else if nudge != (0.0, 0.0) && draft.selected.is_some() {
@@ -2657,6 +2722,17 @@ fn edit_view(
             None => state.pending_edit = Some((draft.at, draft.slide.clone())),
         }
     }
+    // A new step of this slide's own goes in the undo order; what could be redone goes.
+    if !(undo || redo)
+        && let (Some(draft), Some(before)) = (state.editing.as_ref(), depth_before)
+        && draft.undo_depth() > before
+    {
+        for _ in before..draft.undo_depth() {
+            state.edit_steps.push(EditStep::Slide);
+        }
+        state.edit_redo.clear();
+        state.clear_song_redo = true;
+    }
     if let Some(draft) = state.editing.as_mut() {
         draft.stepped = false;
     }
@@ -2757,6 +2833,32 @@ fn capitalize(text: &str) -> String {
     out
 }
 
+/// One step of the Edit view's undo order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditStep {
+    /// A change to the slide being edited, which its draft undoes.
+    Slide,
+    /// A change to the song's slides (moved, pasted, deleted), which the app undoes.
+    Song,
+}
+
+/// When the slide being edited is left (another opened, or the editor closed), its own steps
+/// go with it. The song's steps stay, unless the slide was changed after one of them: undoing
+/// that step would bring the song back as it was before, losing the change, so they go too.
+/// True when they did, and the app should drop them.
+pub fn drop_slide_steps(steps: &mut Vec<EditStep>) -> bool {
+    let changed_after = steps
+        .iter()
+        .rposition(|step| *step == EditStep::Song)
+        .is_some_and(|last| steps[last + 1..].contains(&EditStep::Slide));
+    if changed_after {
+        steps.clear();
+    } else {
+        steps.retain(|step| *step == EditStep::Song);
+    }
+    changed_after
+}
+
 /// A change to one slide asked for from its right-click menu. The app makes it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SlideRequest {
@@ -2767,10 +2869,10 @@ pub enum SlideRequest {
         to: usize,
         after: bool,
     },
-    Delete,
     /// Delete these slides of the song at once (one step for Undo).
     DeleteMany(Vec<usize>),
-    PasteAfter(Slide),
+    /// Put these slides, in order, just after this one.
+    PasteAfter(Vec<Slide>),
     Group(String),
     Label(Option<String>),
 }
@@ -5296,6 +5398,9 @@ fn slide_grid(
         }
         start_slide_box(ui, state, &background);
         scroll_while_dragging(ui);
+        if !from_bible {
+            slide_clipboard_keys(ui, show, which, state);
+        }
         state.slide_rects.clear();
         ui.add_space(10.0);
         Frame::new().inner_margin(egui::Margin::symmetric(20, 0)).show(ui, |ui| {
@@ -5687,19 +5792,28 @@ fn song_slides(
                 }
                 if !from_bible {
                     ui.separator();
+                    // Cut and Copy take the slides picked out with this one, or this one.
+                    let mut these: Vec<usize> = state
+                        .picked_slides
+                        .iter()
+                        .filter(|p| p.presentation == which && state.picked_slides.contains(&here))
+                        .map(|p| p.slide)
+                        .collect();
+                    these.sort_unstable();
+                    if these.is_empty() {
+                        these.push(index);
+                    }
                     if ui.button("Cut").clicked() {
-                        state.slide_clip = Some(slide.clone());
-                        state.slide_request = Some((here, SlideRequest::Delete));
+                        copy_slides(ui.ctx(), state, presentation, &these);
+                        state.slide_request = Some((here, SlideRequest::DeleteMany(these.clone())));
                         ui.close();
                     }
                     if ui.button("Copy").clicked() {
-                        state.slide_clip = Some(slide.clone());
+                        copy_slides(ui.ctx(), state, presentation, &these);
                         ui.close();
                     }
                     let clip = state.slide_clip.clone();
-                    if ui.add_enabled(clip.is_some(), egui::Button::new("Paste")).clicked()
-                        && let Some(clip) = clip
-                    {
+                    if ui.add_enabled(!clip.is_empty(), egui::Button::new("Paste")).clicked() {
                         state.slide_request = Some((here, SlideRequest::PasteAfter(clip)));
                         ui.close();
                     }
@@ -6089,6 +6203,75 @@ fn song_slides(
         let texture =
             first.and_then(|slide| thumb(if from_bible { ThumbOf::BibleSlide(slide) } else { ThumbOf::Slide(slide) }));
         paint_drag_ghost(ui, texture.map(|(texture, _)| texture), drag.slides.len());
+    }
+}
+
+/// Puts slides of a song (by their places) where Paste finds them, and their words on the
+/// system clipboard, so a paste can tell they are still what was copied last.
+pub fn copy_slides(ctx: &egui::Context, state: &mut HomeState, song: &sp_model::Presentation, places: &[usize]) {
+    let slides: Vec<Slide> = places.iter().filter_map(|at| song.slide(*at)).map(|(_, slide)| slide.clone()).collect();
+    copy_these_slides(ctx, state, slides);
+}
+
+/// Puts these slides where Paste finds them, and their words on the system clipboard.
+fn copy_these_slides(ctx: &egui::Context, state: &mut HomeState, slides: Vec<Slide>) {
+    if slides.is_empty() {
+        return;
+    }
+    let words: Vec<String> = slides
+        .iter()
+        .map(|slide| slide.texts().into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n"))
+        .collect();
+    let mut text = words.join("\n\n");
+    // Something for the clipboard even when the slides have no words, so Paste comes back.
+    if text.trim().is_empty() {
+        text = if slides.len() == 1 { "Slide".to_owned() } else { format!("{} slides", slides.len()) };
+    }
+    state.slide_clip = slides;
+    state.slide_clip_text = text.clone();
+    ctx.copy_text(text);
+}
+
+/// In the Show view, with nothing being typed: Copy (and Cut) take the slides picked out in the
+/// song shown, or the one selected; Paste puts slides copied last just after the last slide
+/// picked out (or the one selected, or the one on screen, or at the end).
+fn slide_clipboard_keys(ui: &egui::Ui, show: &Show, which: usize, state: &mut HomeState) {
+    if ui.ctx().text_edit_focused() || state.editing.is_some() {
+        return;
+    }
+    let Some(song) = show.presentations().get(which) else { return };
+    let (copy, cut, pasted) = ui.input(|input| {
+        let has = |wanted: fn(&egui::Event) -> bool| input.events.iter().any(wanted);
+        let pasted = input.events.iter().find_map(|event| match event {
+            egui::Event::Paste(text) => Some(text.clone()),
+            _ => None,
+        });
+        (has(|e| matches!(e, egui::Event::Copy)), has(|e| matches!(e, egui::Event::Cut)), pasted)
+    });
+    let mut picked: Vec<usize> =
+        state.picked_slides.iter().filter(|p| p.presentation == which).map(|p| p.slide).collect();
+    picked.sort_unstable();
+    if picked.is_empty()
+        && let Some(selected) = state.selected_slide.filter(|s| s.presentation == which)
+    {
+        picked.push(selected.slide);
+    }
+    if (copy || cut) && !picked.is_empty() {
+        copy_slides(ui.ctx(), state, song, &picked);
+        if cut {
+            state.slide_request =
+                Some((SlideRef { presentation: which, slide: picked[0] }, SlideRequest::DeleteMany(picked.clone())));
+        }
+    }
+    if let Some(text) = pasted
+        && !state.slide_clip.is_empty()
+        && text == state.slide_clip_text
+        && song.slide_count() > 0
+    {
+        let on_screen = show.live().filter(|at| at.presentation == which).map(|at| at.slide);
+        let after = picked.last().copied().or(on_screen).unwrap_or(song.slide_count() - 1);
+        state.slide_request =
+            Some((SlideRef { presentation: which, slide: after }, SlideRequest::PasteAfter(state.slide_clip.clone())));
     }
 }
 
@@ -6515,6 +6698,73 @@ mod tests {
         drag_in_grid(&mut picked, &show, rect(1).center(), fourth.center() - vec2(fourth.width() / 4.0, 0.0));
         let asked = picked.slide_request.take().map(|(_, request)| request);
         assert_eq!(asked, Some(SlideRequest::Move { slides: vec![0, 1], to: 3, after: false }));
+    }
+
+    #[test]
+    fn leaving_a_slide_drops_the_songs_steps_only_when_the_slide_changed_after_them() {
+        use EditStep::{Slide as S, Song as G};
+        // Moved, then the slide edited: undoing the move would lose the edit, so all go.
+        let mut steps = vec![S, G, S];
+        assert!(drop_slide_steps(&mut steps));
+        assert!(steps.is_empty());
+        // Edited, then moved: the move's copy of the song has the edit; it stays.
+        let mut steps = vec![S, G];
+        assert!(!drop_slide_steps(&mut steps));
+        assert_eq!(steps, [G]);
+    }
+
+    #[test]
+    fn copied_slides_paste_after_the_slide_picked_out() {
+        let show = show(4);
+        let ctx = egui::Context::default();
+        let mut state = HomeState {
+            picked_slides: vec![SlideRef { presentation: 0, slide: 1 }, SlideRef { presentation: 0, slide: 0 }],
+            ..HomeState::default()
+        };
+        let run = |state: &mut HomeState, events: Vec<Event>| {
+            let raw = RawInput { focused: true, events, ..input(None) };
+            let output = ctx.run_ui(raw, |ui| {
+                home_ui(ui, &show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            output.drop_without_applying_deltas();
+        };
+        run(&mut state, vec![Event::Copy]);
+        assert_eq!(state.slide_clip.len(), 2, "the two picked out, in order");
+        assert_eq!(state.slide_clip_text, "Slide 0\n\nSlide 1");
+        state.picked_slides = vec![SlideRef { presentation: 0, slide: 3 }];
+        let text = state.slide_clip_text.clone();
+        run(&mut state, vec![Event::Paste(text)]);
+        let (at, request) = state.slide_request.take().expect("a paste asked for");
+        assert_eq!(at.slide, 3);
+        assert!(matches!(request, SlideRequest::PasteAfter(slides) if slides.len() == 2));
+        // Something else copied since: Paste is not of the slides.
+        run(&mut state, vec![Event::Paste("other words".to_owned())]);
+        assert!(state.slide_request.is_none());
+    }
+
+    #[test]
+    fn undo_in_the_editor_takes_back_a_move_when_it_was_the_last_change() {
+        let show = show(3);
+        let ctx = egui::Context::default();
+        let mut state =
+            HomeState { editing: EditDraft::of(&show, SlideRef { presentation: 0, slide: 0 }), ..HomeState::default() };
+        let run = |state: &mut HomeState, events: Vec<Event>| {
+            let raw = RawInput { focused: true, events, ..input(None) };
+            let output = ctx.run_ui(raw, |ui| {
+                home_ui(ui, &show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            output.drop_without_applying_deltas();
+        };
+        run(&mut state, Vec::new());
+        // A move, as the app notes it.
+        state.edit_steps.push(EditStep::Song);
+        let z = |modifiers| Event::Key { key: Key::Z, physical_key: None, pressed: true, repeat: false, modifiers };
+        run(&mut state, vec![z(Modifiers::COMMAND)]);
+        assert_eq!(state.song_undo, Some(false), "the app is asked to undo the move");
+        assert_eq!(state.edit_redo, [EditStep::Song]);
+        state.song_undo = None;
+        run(&mut state, vec![z(Modifiers::COMMAND | Modifiers::SHIFT)]);
+        assert_eq!(state.song_undo, Some(true), "and to redo it");
     }
 
     #[test]

@@ -297,14 +297,17 @@ fn do_state_action(state: &mut home::HomeState, action: &sp_model::ShowAction, n
 /// was. Undo puts the song back and keeps how it is now, to redo.
 #[derive(Default)]
 struct SongHistory {
-    undo: Vec<(usize, Arc<sp_model::Presentation>)>,
-    redo: Vec<(usize, Arc<sp_model::Presentation>)>,
+    /// Each step: the song's place, the song as it was, and when the step was taken (a count).
+    undo: Vec<(usize, Arc<sp_model::Presentation>, u64)>,
+    redo: Vec<(usize, Arc<sp_model::Presentation>, u64)>,
+    next: u64,
 }
 
 impl SongHistory {
     /// Keeps a song as it is before a change, and drops what could be redone.
     fn remember(&mut self, index: usize, song: Arc<sp_model::Presentation>) {
-        self.undo.push((index, song));
+        self.undo.push((index, song, self.next));
+        self.next += 1;
         if self.undo.len() > 100 {
             self.undo.remove(0);
         }
@@ -313,13 +316,28 @@ impl SongHistory {
 
     /// Drops every step for a song, after it was changed in a way that isn't kept here.
     fn forget(&mut self, index: usize) {
-        self.undo.retain(|(at, _)| *at != index);
-        self.redo.retain(|(at, _)| *at != index);
+        self.forget_before(index, u64::MAX);
+    }
+
+    /// Drops a song's steps taken before `mark` (see [`mark`](Self::mark)), keeping later ones.
+    fn forget_before(&mut self, index: usize, mark: u64) {
+        self.undo.retain(|(at, _, when)| *at != index || *when >= mark);
+        self.redo.retain(|(at, _, when)| *at != index || *when >= mark);
+    }
+
+    /// Where the history is now, for [`forget_before`](Self::forget_before).
+    fn mark(&self) -> u64 {
+        self.next
+    }
+
+    /// Drops what could be redone, after a change the history doesn't keep.
+    fn clear_redo(&mut self) {
+        self.redo.clear();
     }
 
     /// The song the next undo (or redo) would change.
     fn peek(&self, redo: bool) -> Option<usize> {
-        if redo { self.redo.last() } else { self.undo.last() }.map(|(index, _)| *index)
+        if redo { self.redo.last() } else { self.undo.last() }.map(|(index, _, _)| *index)
     }
 
     /// Takes the next undo (or redo) step, keeping the song as it is now to step back to.
@@ -329,8 +347,8 @@ impl SongHistory {
         current: Arc<sp_model::Presentation>,
     ) -> Option<(usize, Arc<sp_model::Presentation>)> {
         let (from, to) = if redo { (&mut self.redo, &mut self.undo) } else { (&mut self.undo, &mut self.redo) };
-        let (index, song) = from.pop()?;
-        to.push((index, current));
+        let (index, song, when) = from.pop()?;
+        to.push((index, current, when));
         Some((index, song))
     }
 }
@@ -748,6 +766,10 @@ struct App {
     unsaved: Vec<usize>,
     /// The changes made to songs in the Show view, to undo and redo.
     history: SongHistory,
+    /// The song open in the Edit view, if any, and where the song history was when it opened:
+    /// steps from before then are dropped once the editor changes the song.
+    edit_song: Option<usize>,
+    edit_mark: u64,
     /// While actions are being done, how far along a chain of slides' actions they are.
     action_depth: Option<u8>,
     /// Where the show is (the slide on screen, its builds, its place in the play order) and
@@ -1940,6 +1962,70 @@ impl App {
     }
 
     /// Undoes the last change made to a song in the Show view, or redoes the last one undone.
+    /// Keeps the Edit view's undo order and the song history in step: drops what can no longer
+    /// be undone safely, notes when the editor opens and closes, and undoes or redoes a change of
+    /// the song's slides asked for from the editor, the slide being edited following it.
+    fn edit_undo_bookkeeping(&mut self) {
+        let Some(running) = self.running.as_mut() else { return };
+        let state = &mut running.home_state;
+        if let Some(index) = state.forget_song_history.take() {
+            self.history.forget(index);
+        }
+        if std::mem::take(&mut state.clear_song_redo) {
+            self.history.clear_redo();
+        }
+        let editing = state
+            .editing
+            .as_ref()
+            .filter(|_| state.theme_edit.is_none())
+            .map(|draft| draft.at.presentation)
+            .filter(|at| *at != props::PROP_SLOT);
+        if editing != self.edit_song {
+            // The editor closed, or moved to another song: the slide's own steps went; the
+            // song's go too if undoing them would lose a later change of the slide.
+            if let Some(old) = self.edit_song
+                && home::drop_slide_steps(&mut state.edit_steps)
+            {
+                self.history.forget(old);
+            }
+            state.edit_steps.clear();
+            state.edit_redo.clear();
+            state.edit_steps_draft = 0;
+            self.edit_mark = self.history.mark();
+            self.edit_song = editing;
+        }
+        let Some(redo) = state.song_undo.take() else { return };
+        let followed = state.editing.as_ref().map(|draft| (draft.at, draft.slide.id));
+        self.undo_show(redo);
+        // The slide being edited is found again where the change left it.
+        let Some((at, id)) = followed else { return };
+        let Some(running) = self.running.as_mut() else { return };
+        let song = self.show.presentations().get(at.presentation);
+        let found = song.and_then(|song| song.slides().position(|(_, slide)| slide.id == id));
+        match found {
+            Some(slide) => {
+                if let Some(draft) = running.home_state.editing.as_mut() {
+                    draft.at.slide = slide;
+                }
+            }
+            None => {
+                let count = song.map_or(0, |song| song.slide_count());
+                let slide = at.slide.min(count.saturating_sub(1));
+                running.home_state.editing = EditDraft::of(&self.show, sp_engine::SlideRef { slide, ..at });
+            }
+        }
+    }
+
+    /// A change of a song's slides made from the Edit view goes in its undo order.
+    fn note_song_step(&mut self) {
+        if let Some(running) = self.running.as_mut()
+            && running.home_state.editing.is_some()
+        {
+            running.home_state.edit_steps.push(home::EditStep::Song);
+            running.home_state.edit_redo.clear();
+        }
+    }
+
     fn undo_show(&mut self, redo: bool) {
         let Some(current) = self.history.peek(redo).and_then(|index| self.show.presentations().get(index).cloned())
         else {
@@ -2275,7 +2361,7 @@ impl App {
                 if let Some(running) = self.running.as_mut() {
                     running.home_state.slide_request = Some((
                         sp_engine::SlideRef { presentation: song, slide: after },
-                        home::SlideRequest::PasteAfter(slide),
+                        home::SlideRequest::PasteAfter(vec![slide]),
                     ));
                     running.home_window.request_redraw();
                 }
@@ -2327,12 +2413,13 @@ impl App {
         let Some(edited) = song.with_slide(at.slide, slide) else {
             return;
         };
-        // A change made in the Show view can be undone there. The Edit view keeps its own steps,
-        // and the Show view's steps for the song are dropped, so they can't undo its edits.
+        // A change made in the Show view can be undone there. The Edit view keeps its own steps;
+        // the Show view's steps for the song from before it opened are dropped, so they can't
+        // undo its edits. Its own changes of the song's slides (moves, pastes) are kept.
         if self.running.as_ref().is_some_and(|r| r.home_state.editing.is_none()) {
             self.remember_for_undo(at.presentation);
         } else {
-            self.history.forget(at.presentation);
+            self.history.forget_before(at.presentation, self.edit_mark);
         }
         let changes = self.show.replace_presentation(at.presentation, Arc::new(edited));
         if !self.unsaved.contains(&at.presentation) {
@@ -3907,6 +3994,7 @@ impl App {
         if let SlideRequest::Move { slides, to, after } = &request {
             let Some((moved, new_of_old)) = song.with_slides_moved(slides, *to, *after) else { return };
             self.remember_for_undo(at.presentation);
+            self.note_song_step();
             self.show.replace_presentation(at.presentation, Arc::new(moved));
             self.show.slides_reordered(at.presentation, &new_of_old);
             if !self.unsaved.contains(&at.presentation) {
@@ -3951,6 +4039,7 @@ impl App {
                 return;
             }
             self.remember_for_undo(at.presentation);
+            self.note_song_step();
             let mut changes = self.show.replace_presentation(at.presentation, Arc::new(changed));
             for slide in slides.iter().rev() {
                 changes.slides |= self.show.slides_shifted(at.presentation, *slide, false).slides;
@@ -3970,8 +4059,7 @@ impl App {
         }
         let (changed, shift) = match &request {
             SlideRequest::DeleteMany(_) | SlideRequest::Move { .. } => (None, None),
-            SlideRequest::Delete => (song.without_slide(at.slide), Some(false)),
-            SlideRequest::PasteAfter(slide) => (song.with_slide_after(at.slide, slide), Some(true)),
+            SlideRequest::PasteAfter(slides) => (song.with_slides_after(at.slide, slides), Some(true)),
             SlideRequest::Group(name) => (song.with_group_starting(at.slide, name), None),
             SlideRequest::Label(label) => {
                 let slide = song.slide(at.slide).map(|(_, slide)| Slide { label: label.clone(), ..slide.clone() });
@@ -3980,10 +4068,17 @@ impl App {
         };
         let Some(changed) = changed else { return };
         self.remember_for_undo(at.presentation);
+        self.note_song_step();
         let mut changes = self.show.replace_presentation(at.presentation, Arc::new(changed));
+        // As many places taken as slides were pasted.
+        let added = if let SlideRequest::PasteAfter(slides) = &request { slides.len() } else { 1 };
         match shift {
             Some(false) => changes.slides |= self.show.slides_shifted(at.presentation, at.slide, false).slides,
-            Some(true) => changes.slides |= self.show.slides_shifted(at.presentation, at.slide + 1, true).slides,
+            Some(true) => {
+                for _ in 0..added {
+                    changes.slides |= self.show.slides_shifted(at.presentation, at.slide + 1, true).slides;
+                }
+            }
             None => {}
         }
         if !self.unsaved.contains(&at.presentation) {
@@ -4888,6 +4983,7 @@ impl ApplicationHandler<AppEvent> for App {
                         running.home_window.request_redraw();
                     }
                 }
+                self.edit_undo_bookkeeping();
                 self.handle_themes();
                 self.handle_songs();
                 self.handle_decks();
@@ -5197,6 +5293,8 @@ fn main() -> ExitCode {
         pictures: Vec::new(),
         unsaved: Vec::new(),
         history: SongHistory::default(),
+        edit_song: None,
+        edit_mark: 0,
         action_depth: None,
         live_since: None,
         advanced: false,
@@ -5349,6 +5447,19 @@ mod tests {
         assert_eq!(action_commands(&show, &state, &media), Some(vec![Command::ShowMedia(at)]));
         let missing = sp_model::ShowAction::Media { id: Uuid::new_v4() };
         assert_eq!(action_commands(&show, &state, &missing), Some(Vec::new()));
+    }
+
+    #[test]
+    fn the_editor_drops_only_a_songs_steps_from_before_it_opened() {
+        let song = Arc::new(sp_model::parse_song_text("A", "One\n"));
+        let mut history = SongHistory::default();
+        history.remember(0, song.clone());
+        let opened = history.mark();
+        history.remember(0, song.clone());
+        history.forget_before(0, opened);
+        assert_eq!(history.undo.len(), 1, "the step taken in the editor stays");
+        history.forget(0);
+        assert!(history.undo.is_empty());
     }
 
     #[test]
