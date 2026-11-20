@@ -5,3 +5,5 @@ target/
 .superpowers/
 docs/research/
 dist/
+# Agents' git worktrees: local working copies, never part of the repo.
+.claude/worktrees/
