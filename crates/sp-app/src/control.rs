@@ -193,6 +193,43 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     if reply.ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::from(1) }
 }
 
+/// `sp` with nothing after it: what is on screen, when the app is running; otherwise it starts
+/// the app (`bundle`), saying so. Either way it says where the commands are listed. A test
+/// setup (its own SOFTPRESENTER_CONTROL_SOCKET) is never made to start the app.
+#[cfg(target_os = "macos")]
+pub fn bare(bundle: &Path) -> std::process::ExitCode {
+    const MORE: &str = "sp help lists the commands.";
+    let answers = socket_path().is_some_and(|path| std::os::unix::net::UnixStream::connect(path).is_ok());
+    if answers {
+        return match send(&["status".to_owned()]) {
+            Ok(reply) if reply.ok => {
+                println!("{}\n\n{MORE}", reply.text);
+                std::process::ExitCode::SUCCESS
+            }
+            Ok(reply) => {
+                eprintln!("{}", reply.text);
+                std::process::ExitCode::from(1)
+            }
+            Err(problem) => {
+                eprintln!("{problem}");
+                std::process::ExitCode::from(1)
+            }
+        };
+    }
+    if let Some(own) = std::env::var_os("SOFTPRESENTER_CONTROL_SOCKET").filter(|p| !p.is_empty()) {
+        eprintln!("Nothing answers at {} (SOFTPRESENTER_CONTROL_SOCKET). {MORE}", Path::new(&own).display());
+        return std::process::ExitCode::from(1);
+    }
+    println!("SoftPresenter isn't running; starting it. {MORE}");
+    match std::process::Command::new("/usr/bin/open").arg(bundle).status() {
+        Ok(status) if status.success() => std::process::ExitCode::SUCCESS,
+        _ => {
+            eprintln!("Could not start {}.", bundle.display());
+            std::process::ExitCode::from(1)
+        }
+    }
+}
+
 /// The app doesn't share the terminal's folder, so a file or folder named in `song import` or
 /// `song new` is sent as a full path. Only those commands: elsewhere a word that happens to match a file
 /// in the folder (a song called "notes") is meant as words.
@@ -376,6 +413,7 @@ pub fn bundle_opened_through_link() -> Option<PathBuf> {
 /// What `ctl help` says.
 pub const HELP: &str = "\
 sp COMMAND …   (the same as softpresenter COMMAND …; add --json for the reply as JSON)
+sp             what is on screen; starts SoftPresenter first if it isn't running
 
 What is going on
   status                       what is on screen, what is next, what is playing

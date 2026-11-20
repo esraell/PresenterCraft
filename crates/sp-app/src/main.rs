@@ -5166,6 +5166,10 @@ fn main() -> ExitCode {
     // Mac app is, so it is named and placed properly; anything typed after it goes along.
     #[cfg(target_os = "macos")]
     if let Some(bundle) = control::bundle_opened_through_link() {
+        // `sp` alone: what is on screen, or the app started if it isn't running.
+        if args.is_empty() {
+            return control::bare(&bundle);
+        }
         let mut open = std::process::Command::new("/usr/bin/open");
         open.arg(&bundle);
         if !args.is_empty() {
