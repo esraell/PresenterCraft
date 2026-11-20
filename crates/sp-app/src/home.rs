@@ -4280,7 +4280,7 @@ fn bible_area(
                 // easier to pick than type.
                 let mut chosen = None;
                 if ui
-                    .add(egui::Button::selectable(state.bible.lists_open, "Books"))
+                    .add(egui::Button::new("Books").selected(state.bible.lists_open))
                     .on_hover_text("Show or hide the book, chapter and verse lists")
                     .clicked()
                 {
@@ -4382,7 +4382,7 @@ fn bible_area(
                     ui.painter().layout_no_wrap(words.to_owned(), font, Color32::WHITE).size().x
                 };
                 let gap = ui.spacing().item_spacing.x;
-                let picker = (text(ui, &chosen) + 40.0).max(bible_width);
+                let picker = bible_width;
                 let needed = picker
                     + 8.0
                     + text(ui, "Verse")
@@ -4415,9 +4415,12 @@ fn bible_area(
                     });
                 };
                 ui.horizontal(|ui| {
+                    // On two lines, the Bible's picker takes the width beside License and + or −.
+                    let width = if two_lines { (ui.available_width() - 110.0).max(bible_width) } else { bible_width };
                     egui::ComboBox::from_id_salt(("bible translation", index))
                         .selected_text(&chosen)
-                        .width(bible_width)
+                        .width(width)
+                        .truncate()
                         .show_ui(ui, |ui| {
                             // None frees the row's Bible for another row: to swap two, set one
                             // row to None, give its Bible to the other, then pick again.
@@ -4443,29 +4446,47 @@ fn bible_area(
                                 }
                             }
                         });
-                    ui.add_space(8.0);
-                    ui.label("Verse");
-                    target_menu(
-                        ui,
-                        ("bible verse", index),
-                        &mut row.verse,
-                        &boxes,
-                        &labels,
-                        &taken(true),
-                        None,
-                        menu_width,
-                    );
-                    if !two_lines {
+                    if two_lines {
+                        extras(ui, shelved);
+                    } else {
+                        ui.add_space(8.0);
+                        ui.label("Verse");
+                        target_menu(
+                            ui,
+                            ("bible verse", index),
+                            &mut row.verse,
+                            &boxes,
+                            &labels,
+                            &taken(true),
+                            None,
+                            menu_width,
+                        );
                         ui.add_space(8.0);
                         reference(ui, row);
                         extras(ui, shelved);
                     }
                 });
+                // Too narrow for one line: where its words and reference go, together, under it.
                 if two_lines {
                     ui.horizontal(|ui| {
+                        ui.add_space(12.0);
+                        ui.label("Verse");
+                        target_menu(
+                            ui,
+                            ("bible verse", index),
+                            &mut row.verse,
+                            &boxes,
+                            &labels,
+                            &taken(true),
+                            None,
+                            menu_width,
+                        );
+                        ui.add_space(8.0);
                         reference(ui, row);
-                        extras(ui, shelved);
                     });
+                    if index + 1 < count {
+                        ui.add_space(6.0);
+                    }
                 }
             }
             if add {
@@ -4596,13 +4617,18 @@ fn bible_results(
     match slot.filter(|slot| show.presentations().get(*slot).is_some_and(|p| p.slide_count() > 0)) {
         Some(slot) => slide_grid(ui, show, slot, state, thumb, commands),
         None => {
-            ui.centered_and_justified(|ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "Type a reference such as John 3:16-18 in Scripture Lookup (Control-B goes there).\nIts verses appear here as slides as you type; click one to show it.",
-                    )
-                    .color(DIM),
-                );
+            // Centred, in lines no wider than reads well, with room either side.
+            let room = ui.available_size();
+            ui.add_space((room.y * 0.38).max(20.0));
+            ui.vertical_centered(|ui| {
+                ui.set_max_width((room.x - 48.0).clamp(160.0, 440.0));
+                for line in [
+                    "Type a reference such as John 3:16-18 in Scripture Lookup.",
+                    "Its verses appear here as slides as you type; click one to show it.",
+                    "Control-B goes to Scripture Lookup from anywhere.",
+                ] {
+                    ui.add(egui::Label::new(egui::RichText::new(line).color(DIM)).wrap().halign(Align::Center));
+                }
             });
         }
     }
@@ -4699,16 +4725,7 @@ fn bible_actions(
     // button; the arrow beside it picks another), or a presentation of its own.
     let saved = state.bible.saved();
     let front = state.services.front().name.clone();
-    let add = ui
-        .add_enabled(saved.is_some(), egui::Button::new(format!("Add to \u{201c}{front}\u{201d}")))
-        .on_hover_text("Put this passage in the playlist, to open again with these settings")
-        .on_disabled_hover_text("Look a passage up first");
-    if add.clicked()
-        && let Some(saved) = saved.clone()
-    {
-        state.notice = Some(format!("Added {} to {front}.", saved.lookup));
-        state.services.add(crate::service::Item::Passage(saved));
-    }
+    // Laid out right to left: the arrow, to pick another playlist, sits after Add to.
     if state.services.list.len() > 1 {
         let other = ui.add_enabled(saved.is_some(), egui::Button::new("▾")).on_hover_text("Add to another playlist");
         egui::Popup::from_toggle_button_response(&other)
@@ -4724,6 +4741,16 @@ fn bible_actions(
                     }
                 }
             });
+    }
+    let add = ui
+        .add_enabled(saved.is_some(), egui::Button::new(format!("Add to \u{201c}{front}\u{201d}")))
+        .on_hover_text("Put this passage in the playlist, to open again with these settings")
+        .on_disabled_hover_text("Look a passage up first");
+    if add.clicked()
+        && let Some(saved) = saved.clone()
+    {
+        state.notice = Some(format!("Added {} to {front}.", saved.lookup));
+        state.services.add(crate::service::Item::Passage(saved));
     }
 }
 
