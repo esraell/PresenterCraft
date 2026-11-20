@@ -13,6 +13,9 @@ use crate::control::Reply;
 impl crate::App {
     /// `slide SONG N`, `slide text …`, `slide style …`, `slide frame …`.
     pub(crate) fn ctl_slide(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_slide_change(args) {
+            return result;
+        }
         match args.get(1).map(|w| w.to_lowercase()).as_deref() {
             Some("text") => self.ctl_slide_text(&args[2..]),
             Some("style") => self.ctl_slide_style(&args[2..]),
@@ -134,30 +137,42 @@ impl crate::App {
         Ok(Reply::done(format!("{}, {place}: {}.", presentation.title, said.join(", "))))
     }
 
-    /// `slide frame SONG N OBJECT x=… y=… w=… h=…`: where an object sits, in the slide's pixels.
+    /// `slide frame SONG N|all OBJECT x=… y=… w=… h=…`: where an object sits, in the slide's
+    /// pixels; with `all`, on every slide that has that object.
     fn ctl_slide_frame(&mut self, args: &[String]) -> Result<Reply, String> {
-        let usage = "slide frame SONG N OBJECT x=… y=… w=… h=…   (or reset, back to the theme's place)";
+        let usage = "slide frame SONG N|all OBJECT x=… y=… w=… h=…   (or reset, back to the theme's place)";
         let [song, number, object, settings @ ..] = args else { return Err(usage.to_owned()) };
         if settings.is_empty() {
             return Err(usage.to_owned());
         }
         let at = self.find_song(song)?;
         let presentation = self.show.presentations().get(at).cloned().ok_or("That song is gone.")?;
-        let index = slide_number(number, presentation.slide_count())?;
-        let (_, slide) = presentation.slide(index).ok_or("No such slide.")?;
-        let which = find_object(slide, Some(object))?;
-        let theme = self.theme_of(at).clone();
-        let mut changed = slide.clone();
-        let placed = theme.place_on(slide, slide.objects[which].role.as_ref());
-        let target = &mut changed.objects[which];
-        if settings.iter().any(|w| w.eq_ignore_ascii_case("reset")) {
-            target.frame = None;
+        let every = number.eq_ignore_ascii_case("all");
+        let slides: Vec<usize> = if every {
+            (0..presentation.slide_count()).collect()
         } else {
-            target.frame = Some(set_frame(target.frame.unwrap_or(placed), settings)?);
+            vec![slide_number(number, presentation.slide_count())?]
+        };
+        let theme = self.theme_of(at).clone();
+        let reset = settings.iter().any(|w| w.eq_ignore_ascii_case("reset"));
+        let mut song = presentation.as_ref().clone();
+        let mut last = None;
+        for index in &slides {
+            let (_, slide) = song.slide(*index).ok_or("No such slide.")?;
+            let which = match find_object(slide, Some(object)) {
+                Ok(which) => which,
+                // With all the slides, one without that object is passed over.
+                Err(_) if every => continue,
+                Err(problem) => return Err(problem),
+            };
+            let mut changed = slide.clone();
+            let placed = theme.place_on(slide, slide.objects[which].role.as_ref());
+            let target = &mut changed.objects[which];
+            target.frame = if reset { None } else { Some(set_frame(target.frame.unwrap_or(placed), settings)?) };
+            last = Some((object_name(target), target.frame.unwrap_or(placed), *index));
+            song = song.with_slide(*index, changed).ok_or("No such slide.")?;
         }
-        let name = object_name(target);
-        let frame = target.frame.unwrap_or(placed);
-        let song = presentation.with_slide(index, changed).ok_or("No such slide.")?;
+        let Some((name, frame, index)) = last else { return Err("No slide has that object.".to_owned()) };
         self.change_song(at, song);
         // Said, though not refused: a box partly or wholly off the slide.
         let (slide_w, slide_h) = (sp_model::SLIDE_WIDTH, sp_model::SLIDE_HEIGHT);
@@ -170,14 +185,10 @@ impl crate::App {
         } else {
             String::new()
         };
+        let place = if every { "every slide".to_owned() } else { format!("slide {}", index + 1) };
         Ok(Reply::done(format!(
-            "{}, slide {}: {name} at x={:.0} y={:.0} w={:.0} h={:.0}.{warning}",
-            presentation.title,
-            index + 1,
-            frame.x,
-            frame.y,
-            frame.w,
-            frame.h
+            "{}, {place}: {name} at x={:.0} y={:.0} w={:.0} h={:.0}.{warning}",
+            presentation.title, frame.x, frame.y, frame.w, frame.h
         )))
     }
 
@@ -210,7 +221,7 @@ impl crate::App {
     /// Puts a song changed from the command line in its place, as a change in the window is
     /// put: it can be undone (from the Show view, or the Edit view's undo), it is saved, its
     /// pictures are drawn again, an editor open on it shows it, and the screens show it at once.
-    fn change_song(&mut self, at: usize, song: Presentation) {
+    pub(crate) fn change_song(&mut self, at: usize, song: Presentation) {
         let ids: Vec<sp_model::Uuid> = song.slides().map(|(_, slide)| slide.id).collect();
         self.remember_for_undo(at);
         self.note_song_step();

@@ -29,6 +29,7 @@ mod props;
 mod renamed;
 mod screens;
 mod service;
+mod service_cli;
 mod setup;
 mod slide_cli;
 mod song_ids;
@@ -3846,7 +3847,7 @@ impl App {
 
     /// The theme a presentation's slides are drawn with: the Bible theme for a Bible passage,
     /// the song's own theme if it names one, otherwise the songs theme.
-    fn theme_of(&self, presentation: usize) -> &Arc<Theme> {
+    pub(crate) fn theme_of(&self, presentation: usize) -> &Arc<Theme> {
         if self.bible_slots.contains(&presentation) {
             return &self.theme_for_bible;
         }

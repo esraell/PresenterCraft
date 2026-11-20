@@ -353,6 +353,12 @@ feature changes, this page changes in the same commit.
 - A Settings window (Cmd+,) with General, Screens, Groups and Key Mappings panes.
 
 ## From the command line
+- Preparing a service from the command line, as the window does it: `playlist new|rename|delete|
+  remove|move|header`, `bible REF --add [to PLAYLIST]`, `library new|rename|delete|add|remove`,
+  `song rename|duplicate|theme|transition|info`, `slide add|delete|duplicate|move|group|label|
+  notes|enable|disable|hotkey|transition|template|media`, `slide frame SONG all …`, and `search
+  WORDS`. Song and slide changes can be undone (`sp undo`) and are saved; each reply says what
+  changed, and something that wasn't done exits 1.
 - `sp …` (full name `softpresenter`), installed from SoftPresenter › Install Command Line Tool…,
   controls the running app from a terminal, a script or an AI agent (`sp status`, `sp next`):
   what is on screen, the lists, going to slides, clearing, media, messages, props, timers,

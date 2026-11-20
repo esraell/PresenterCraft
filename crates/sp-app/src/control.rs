@@ -361,6 +361,7 @@ const COMMANDS: &[&str] = &[
     "undo",
     "redo",
     "job",
+    "search",
     "menu",
 ];
 
@@ -478,6 +479,9 @@ Layers and controls
   announce SONG | announce stop
   audio play TRACK | audio pause | audio stop | audio volume 0-100
   bible REFERENCE [--show]     look a passage up (and put its first verse on screen)
+  bible REFERENCE --add [to PLAYLIST]
+                               look it up and put it in a playlist, with the page's rows
+                               and options, as Add to does
 
 Songs, libraries and playlists
   song new TITLE [FILE.txt]    a new song, its words from a song text file
@@ -489,6 +493,16 @@ Songs, libraries and playlists
   song delete SONG --yes
   playlist open NAME
   playlist add SONG [to PLAYLIST]
+  playlist new NAME | playlist rename OLD to NEW | playlist delete NAME --yes
+  playlist remove ITEM [from PLAYLIST]          (ITEM by number or title)
+  playlist move ITEM to N [in PLAYLIST]
+  playlist header TEXT [at N] [in PLAYLIST]
+  library new NAME | library rename OLD to NEW | library delete NAME --yes (songs stay)
+  library add SONG… to LIBRARY | library remove SONG… from LIBRARY
+  song rename SONG to TITLE | song duplicate SONG [as TITLE]
+  song theme SONG THEME|main | song transition SONG KIND [SECONDS] | none
+  song info SONG [artist=… author=… publisher=… year=… ccli=…]
+  search WORDS                 songs with those words in their title or slides
   song text SONG [FILE]        the song as song text, or its words replaced from a file (its
                                slides keep their looks, labels and notes)
   song reload [SONG [--now]]   read songs again from their files, if changed outside the app
@@ -512,8 +526,15 @@ Changing a slide (each change is saved, can be undone, and shows on screen at on
                                an object's look: size=90 font=… weight=bold italic=on
                                color=#ffffff align=center …; key=reset, or reset alone, for the
                                theme's look; `slide style keys` lists them all
-  slide frame SONG N OBJECT x= y= w= h=
+  slide frame SONG N|all OBJECT x= y= w= h=
                                where an object sits, in the slide's pixels (reset: the theme's)
+  slide add SONG [after N] [group NAME] WORDS   a new slide (at the end unless after N)
+  slide delete SONG N --yes | slide duplicate SONG N | slide move SONG N to M
+  slide group SONG N NAME      slide N starts a group of that name (or renames its group)
+  slide label SONG N LABEL|none | slide notes SONG N TEXT|none
+  slide enable SONG N | slide disable SONG N     (a disabled slide is passed over)
+  slide hotkey SONG N KEY|none | slide transition SONG N KIND [SECONDS] | none
+  slide template SONG N TEMPLATE|auto | slide media SONG N MEDIA-ITEM|none
 
   Put a song name with spaces in quotes: slide style \"Blessed Assurance\" all size=90
 
@@ -530,7 +551,7 @@ things lists them instead of guessing. Numbers are as the lists show them, from 
 ";
 
 /// A thing found by what was typed: its place in the list.
-fn find(kind: &str, names: &[String], typed: &str) -> Result<usize, String> {
+pub(crate) fn find(kind: &str, names: &[String], typed: &str) -> Result<usize, String> {
     let wanted = typed.trim().to_lowercase();
     if wanted.is_empty() {
         return Err(format!("Which {kind}?"));
@@ -581,7 +602,7 @@ fn changed_slides(before: &sp_model::Presentation, after: &sp_model::Presentatio
 }
 
 /// Lists names, numbered from 1, one to a line.
-fn numbered(names: &[String]) -> String {
+pub(crate) fn numbered(names: &[String]) -> String {
     if names.is_empty() {
         return "(none)".to_owned();
     }
@@ -661,6 +682,7 @@ impl crate::App {
             "bible" => self.ctl_bible(args),
             "song" => self.ctl_song(args),
             "job" => self.ctl_job(args),
+            "search" => self.ctl_search(&rest(args, 1)),
             "undo" => self.ctl_undo(el, false),
             "redo" => self.ctl_undo(el, true),
             "menu" => self.ctl_menu(el, args),
@@ -693,7 +715,7 @@ impl crate::App {
         reply
     }
 
-    fn with_state(&mut self, change: impl FnOnce(&mut crate::home::HomeState)) {
+    pub(crate) fn with_state(&mut self, change: impl FnOnce(&mut crate::home::HomeState)) {
         if let Some(running) = self.running.as_mut() {
             change(&mut running.home_state);
         }
@@ -701,7 +723,7 @@ impl crate::App {
 
     /// The songs as `ctl songs` lists them (Bible pages and deleted songs left out): each one's
     /// place in the show, and its title.
-    fn listed_songs(&self) -> Vec<(usize, String)> {
+    pub(crate) fn listed_songs(&self) -> Vec<(usize, String)> {
         let removed = self.running.as_ref().map(|r| r.home_state.removed_songs.clone()).unwrap_or_default();
         self.show
             .presentations()
@@ -1071,6 +1093,9 @@ impl crate::App {
     }
 
     fn ctl_library(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_library_change(args) {
+            return result;
+        }
         let names: Vec<String> = self
             .running
             .as_ref()
@@ -1119,6 +1144,9 @@ impl crate::App {
     }
 
     fn ctl_playlist(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_playlist_change(args) {
+            return result;
+        }
         let names: Vec<String> = self
             .running
             .as_ref()
@@ -1433,6 +1461,23 @@ impl crate::App {
 
     fn ctl_bible(&mut self, args: &[String]) -> Result<Reply, String> {
         let show_it = args.iter().any(|w| w == "--show");
+        // `--add [to PLAYLIST]`: the passage goes into a playlist, as Add to puts it there.
+        let (args, add_to) = match args.iter().position(|w| w == "--add") {
+            Some(at) => {
+                let tail = &args[at + 1..];
+                let into = match tail.first() {
+                    Some(word) if word.eq_ignore_ascii_case("to") => Some(Some(tail[1..].join(" "))),
+                    _ => Some(None),
+                };
+                let mut kept = args[..at].to_vec();
+                if !matches!(into, Some(Some(_))) {
+                    kept.extend(tail.iter().cloned());
+                }
+                (kept, into)
+            }
+            None => (args.to_vec(), None),
+        };
+        let args = args.as_slice();
         let reference: String = args[1..].iter().filter(|w| *w != "--show").cloned().collect::<Vec<_>>().join(" ");
         if reference.trim().is_empty() {
             return Err("Which passage? For example: bible John 3:16-18".to_owned());
@@ -1470,6 +1515,17 @@ impl crate::App {
         };
         let title = passage.title.clone();
         self.show.replace_presentation(slot, std::sync::Arc::new(passage));
+        if let Some(into) = add_to {
+            let list = self.playlist_at_for_cli(into.as_deref())?;
+            let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+            let saved = state.bible.saved().ok_or("The passage could not be kept for a playlist.")?;
+            let name = state.services.list[list].name.clone();
+            state.services.add_to(list, crate::service::Item::Passage(saved));
+            if show_it {
+                self.apply(vec![Command::Select(slot), Command::GoTo(SlideRef { presentation: slot, slide: 0 })]);
+            }
+            return Ok(Reply::done(format!("Added {title} to {name}.")));
+        }
         if show_it {
             self.apply(vec![Command::Select(slot), Command::GoTo(SlideRef { presentation: slot, slide: 0 })]);
             return Ok(Reply::done(format!("{title}: {}", self.live_words())));
@@ -1478,6 +1534,11 @@ impl crate::App {
     }
 
     fn ctl_song(&mut self, args: &[String]) -> Result<Reply, String> {
+        if !args.iter().any(|w| w == "--library")
+            && let Some(result) = self.ctl_song_change(args)
+        {
+            return result;
+        }
         // `--library NAME` (or `--library none`): the library new and imported songs go into,
         // instead of the one shown in the window.
         if let Some(at) = args.iter().position(|w| w == "--library") {

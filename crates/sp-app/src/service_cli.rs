@@ -1,0 +1,807 @@
+//! Command-line commands for preparing a service: playlists, libraries, songs and slides, and
+//! searching the library. Each does what the window's own control does, through the same
+//! requests (so a song change can be undone and is saved), and says what changed.
+
+use sp_model::{ObjectKind, Presentation, ShowAction, Transition, TransitionKind};
+
+use crate::control::{Reply, find, numbered};
+use crate::service::Item;
+
+/// Splits `words … KEYWORD more words` at the last KEYWORD: the words before it and after.
+fn split_at_word<'a>(words: &'a [String], keyword: &str) -> (&'a [String], Option<String>) {
+    match words.iter().rposition(|w| w.eq_ignore_ascii_case(keyword)) {
+        Some(at) if at + 1 < words.len() => (&words[..at], Some(words[at + 1..].join(" "))),
+        _ => (words, None),
+    }
+}
+
+/// A transition as typed: a kind's name ("dissolve", "fade black", "push") and seconds, or
+/// "none" for the theme's (or the show's) own.
+pub fn parse_transition(words: &[String]) -> Result<Option<Transition>, String> {
+    let seconds = words.last().and_then(|w| w.trim_end_matches('s').parse::<f32>().ok());
+    let name_words = if seconds.is_some() { &words[..words.len() - 1] } else { words };
+    let typed: String = name_words.join("").to_lowercase().replace(['_', '-', ' '], "");
+    if typed == "none" || typed == "off" {
+        return Ok(None);
+    }
+    let kinds = TransitionKind::ALL;
+    let kind =
+        kinds.iter().find(|kind| kind.name().to_lowercase().replace(' ', "") == typed).copied().ok_or_else(|| {
+            format!(
+                "{} isn't a transition. They are: {}, or none.",
+                name_words.join(" "),
+                kinds.iter().map(|kind| kind.name()).collect::<Vec<_>>().join(", ")
+            )
+        })?;
+    let seconds = seconds.unwrap_or(if kind == TransitionKind::Cut { 0.0 } else { 0.4 });
+    if !(0.0..=5.0).contains(&seconds) {
+        return Err(format!("A transition takes 0 to 5 seconds, not {seconds}."));
+    }
+    Ok(Some(Transition { kind, seconds, ..Transition::default() }))
+}
+
+fn transition_words(transition: Option<&Transition>) -> String {
+    transition.map_or_else(|| "none (the theme's)".to_owned(), |t| format!("{} {:.1}s", t.kind.name(), t.seconds))
+}
+
+impl crate::App {
+    /// The playlist a name stands for, or the one in front (for other command modules).
+    pub(crate) fn playlist_at_for_cli(&self, typed: Option<&str>) -> Result<usize, String> {
+        self.playlist_at(typed)
+    }
+
+    /// The playlist a name stands for, or the one in front.
+    fn playlist_at(&self, typed: Option<&str>) -> Result<usize, String> {
+        let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+        match typed {
+            Some(typed) => {
+                let names: Vec<String> = state.services.list.iter().map(|p| p.name.clone()).collect();
+                find("playlist", &names, typed)
+            }
+            None => Ok(state.services.list.iter().position(|p| p.name == state.services.front().name).unwrap_or(0)),
+        }
+    }
+
+    /// An item of a playlist, by its number or its title.
+    fn playlist_item(&self, list: usize, typed: &str) -> Result<usize, String> {
+        let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+        let items: Vec<String> = state.services.list[list].items.iter().map(|item| item.title().to_owned()).collect();
+        find("item", &items, typed)
+    }
+
+    /// `playlist new|rename|delete|remove|move|header …`; `None` for a word that isn't one of them.
+    pub(crate) fn ctl_playlist_change(&mut self, args: &[String]) -> Option<Result<Reply, String>> {
+        let word = args.get(1)?.to_lowercase();
+        let words = &args[2..];
+        let result = match word.as_str() {
+            "new" => self.playlist_new(&words.join(" ")),
+            "rename" => {
+                let (old, new) = split_at_word(words, "to");
+                match new {
+                    Some(new) => self.playlist_rename(&old.join(" "), &new),
+                    None => Err("playlist rename OLD to NEW".to_owned()),
+                }
+            }
+            "delete" => self.playlist_delete(words),
+            "remove" => {
+                let (item, list) = split_at_word(words, "from");
+                self.playlist_remove(&item.join(" "), list.as_deref())
+            }
+            "move" => {
+                let (head, list) = split_at_word(words, "in");
+                let (item, to) = split_at_word(head, "to");
+                match to.and_then(|to| to.parse::<usize>().ok()) {
+                    Some(to) => self.playlist_move(&item.join(" "), to, list.as_deref()),
+                    None => Err("playlist move ITEM to N [in PLAYLIST]".to_owned()),
+                }
+            }
+            "header" => {
+                let (head, list) = split_at_word(words, "in");
+                let (text, at) = split_at_word(head, "at");
+                match at.map(|at| at.parse::<usize>()) {
+                    Some(Err(_)) => Err("playlist header TEXT [at N] [in PLAYLIST]".to_owned()),
+                    at => self.playlist_header(&text.join(" "), at.and_then(Result::ok), list.as_deref()),
+                }
+            }
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    fn playlist_new(&mut self, name: &str) -> Result<Reply, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("playlist new NAME".to_owned());
+        }
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        if state.services.list.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
+            return Err(format!("There is a playlist called {name} already."));
+        }
+        state.services.list.push(crate::service::Service { name: name.to_owned(), items: Vec::new() });
+        state.services.changed = true;
+        Ok(Reply::done(format!("Made the playlist {name}.")))
+    }
+
+    fn playlist_rename(&mut self, old: &str, new: &str) -> Result<Reply, String> {
+        let at = self.playlist_at(Some(old))?;
+        let new = new.trim();
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        if new.is_empty() {
+            return Err("playlist rename OLD to NEW".to_owned());
+        }
+        if state.services.list.iter().enumerate().any(|(i, p)| i != at && p.name.eq_ignore_ascii_case(new)) {
+            return Err(format!("There is a playlist called {new} already."));
+        }
+        let was = std::mem::replace(&mut state.services.list[at].name, new.to_owned());
+        state.services.changed = true;
+        Ok(Reply::done(format!("Renamed the playlist {was} to {new}.")))
+    }
+
+    fn playlist_delete(&mut self, words: &[String]) -> Result<Reply, String> {
+        let yes = words.iter().any(|w| w == "--yes");
+        let name: Vec<String> = words.iter().filter(|w| *w != "--yes").cloned().collect();
+        let at = self.playlist_at(Some(&name.join(" ")))?;
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let title = state.services.list[at].name.clone();
+        if state.services.list.len() < 2 {
+            return Err(format!("{title} is the only playlist; there is always one."));
+        }
+        if !yes {
+            return Err(format!(
+                "This deletes the playlist {title} (its songs stay in the library). Add --yes to do it."
+            ));
+        }
+        state.services.show(at);
+        state.services.remove_service();
+        Ok(Reply::done(format!("Deleted the playlist {title}.")))
+    }
+
+    fn playlist_remove(&mut self, item: &str, list: Option<&str>) -> Result<Reply, String> {
+        let at = self.playlist_at(list)?;
+        let which = self.playlist_item(at, item)?;
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let playlist = &mut state.services.list[at];
+        let gone = playlist.items.remove(which);
+        let name = playlist.name.clone();
+        state.services.chosen = None;
+        state.services.changed = true;
+        Ok(Reply::done(format!("Took {} out of {name}.", gone.title())))
+    }
+
+    fn playlist_move(&mut self, item: &str, to: usize, list: Option<&str>) -> Result<Reply, String> {
+        let at = self.playlist_at(list)?;
+        let which = self.playlist_item(at, item)?;
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let playlist = &mut state.services.list[at];
+        if !(1..=playlist.items.len()).contains(&to) {
+            return Err(format!("{} has {} items; there is no place {to}.", playlist.name, playlist.items.len()));
+        }
+        let moving = playlist.items.remove(which);
+        let title = moving.title().to_owned();
+        playlist.items.insert(to - 1, moving);
+        let name = playlist.name.clone();
+        state.services.chosen = None;
+        state.services.changed = true;
+        Ok(Reply::done(format!("Moved {title} to place {to} in {name}.")))
+    }
+
+    fn playlist_header(&mut self, text: &str, at: Option<usize>, list: Option<&str>) -> Result<Reply, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("playlist header TEXT [at N] [in PLAYLIST]".to_owned());
+        }
+        let list = self.playlist_at(list)?;
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let playlist = &mut state.services.list[list];
+        let place = at.unwrap_or(playlist.items.len() + 1);
+        if !(1..=playlist.items.len() + 1).contains(&place) {
+            return Err(format!(
+                "{} has {} items; a header can go at 1 to {}.",
+                playlist.name,
+                playlist.items.len(),
+                playlist.items.len() + 1
+            ));
+        }
+        playlist.items.insert(place - 1, Item::Header { name: text.to_owned() });
+        let name = playlist.name.clone();
+        state.services.changed = true;
+        Ok(Reply::done(format!("Put the header {text} at place {place} in {name}.")))
+    }
+
+    /// `library new|rename|delete|add|remove …`; `None` for a word that isn't one of them.
+    pub(crate) fn ctl_library_change(&mut self, args: &[String]) -> Option<Result<Reply, String>> {
+        let word = args.get(1)?.to_lowercase();
+        let words = &args[2..];
+        let result = match word.as_str() {
+            "new" => self.library_new(&words.join(" ")),
+            "rename" => match split_at_word(words, "to") {
+                (old, Some(new)) => self.library_rename(&old.join(" "), &new),
+                _ => Err("library rename OLD to NEW".to_owned()),
+            },
+            "delete" => self.library_delete(words),
+            "add" => match split_at_word(words, "to") {
+                (songs, Some(library)) if !songs.is_empty() => self.library_add(songs, &library),
+                _ => Err("library add SONG… to LIBRARY   (put a name with spaces in quotes)".to_owned()),
+            },
+            "remove" => match split_at_word(words, "from") {
+                (songs, Some(library)) if !songs.is_empty() => self.library_remove(songs, &library),
+                _ => Err("library remove SONG… from LIBRARY".to_owned()),
+            },
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    fn library_index(&self, typed: &str) -> Result<usize, String> {
+        let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+        let names: Vec<String> = state.libraries.iter().map(|l| l.name.clone()).collect();
+        find("library", &names, typed)
+    }
+
+    fn library_new(&mut self, name: &str) -> Result<Reply, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("library new NAME".to_owned());
+        }
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        if state.libraries.iter().any(|l| l.name.eq_ignore_ascii_case(name)) {
+            return Err(format!("There is a library called {name} already."));
+        }
+        state.libraries.push(crate::libraries::Library::new(name.to_owned()));
+        state.libraries_changed = true;
+        Ok(Reply::done(format!("Made the library {name}.")))
+    }
+
+    fn library_rename(&mut self, old: &str, new: &str) -> Result<Reply, String> {
+        let at = self.library_index(old)?;
+        let new = new.trim();
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        if new.is_empty()
+            || state.libraries.iter().enumerate().any(|(i, l)| i != at && l.name.eq_ignore_ascii_case(new))
+        {
+            return Err(format!("There is a library called {new} already (or no new name was given)."));
+        }
+        let was = std::mem::replace(&mut state.libraries[at].name, new.to_owned());
+        state.libraries_changed = true;
+        Ok(Reply::done(format!("Renamed the library {was} to {new}.")))
+    }
+
+    fn library_delete(&mut self, words: &[String]) -> Result<Reply, String> {
+        let yes = words.iter().any(|w| w == "--yes");
+        let name: Vec<String> = words.iter().filter(|w| *w != "--yes").cloned().collect();
+        let at = self.library_index(&name.join(" "))?;
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let title = state.libraries[at].name.clone();
+        if !yes {
+            return Err(format!("This deletes the library {title} (its songs stay in All Songs). Add --yes to do it."));
+        }
+        let gone = state.libraries.remove(at);
+        if state.library_shown == Some(gone.id) {
+            state.library_shown = None;
+        }
+        state.libraries_changed = true;
+        Ok(Reply::done(format!("Deleted the library {title}; its songs stay in All Songs.")))
+    }
+
+    fn library_add(&mut self, songs: &[String], library: &str) -> Result<Reply, String> {
+        let at = self.library_index(library)?;
+        let mut keys = Vec::new();
+        for typed in songs {
+            let index = self.find_song_as_is(typed)?;
+            let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+            let key = state.song_keys.get(index).cloned().ok_or("That song can't go in a library.")?;
+            keys.push((key, self.show.presentations()[index].title.clone()));
+        }
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let into = &mut state.libraries[at];
+        let (mut added, mut there) = (Vec::new(), Vec::new());
+        for (key, title) in keys {
+            if into.has(&key) {
+                there.push(title);
+            } else {
+                into.songs.push(key);
+                added.push(title);
+            }
+        }
+        let name = into.name.clone();
+        state.libraries_changed |= !added.is_empty();
+        let mut text = match added.as_slice() {
+            [] => format!("Nothing added to {name}."),
+            many => format!("Added to {name}: {}.", many.join(", ")),
+        };
+        if !there.is_empty() {
+            text.push_str(&format!(" In it already: {}.", there.join(", ")));
+        }
+        if added.is_empty() { Err(text) } else { Ok(Reply::done(text)) }
+    }
+
+    fn library_remove(&mut self, songs: &[String], library: &str) -> Result<Reply, String> {
+        let at = self.library_index(library)?;
+        let mut removed = Vec::new();
+        for typed in songs {
+            let index = self.find_song_as_is(typed)?;
+            let title = self.show.presentations()[index].title.clone();
+            let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+            let key = state.song_keys.get(index).cloned().unwrap_or_default();
+            let from = &mut state.libraries[at];
+            if from.has(&key) {
+                from.songs.retain(|have| *have != key);
+                removed.push(title);
+            } else {
+                return Err(format!("{title} isn't in {}.", from.name));
+            }
+        }
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        state.libraries_changed = true;
+        Ok(Reply::done(format!("Took out of {}: {}.", state.libraries[at].name, removed.join(", "))))
+    }
+
+    /// `song rename|duplicate|theme|transition|info …`; `None` for a word that isn't one of them.
+    pub(crate) fn ctl_song_change(&mut self, args: &[String]) -> Option<Result<Reply, String>> {
+        let word = args.get(1)?.to_lowercase();
+        let words = &args[2..];
+        let result = match word.as_str() {
+            "rename" => match split_at_word(words, "to") {
+                (song, Some(title)) => self.song_rename(&song.join(" "), &title),
+                _ => Err("song rename SONG to TITLE".to_owned()),
+            },
+            "duplicate" => {
+                let (song, title) = split_at_word(words, "as");
+                self.song_duplicate(&song.join(" "), title.as_deref())
+            }
+            "theme" => match words {
+                [song, theme @ ..] if !theme.is_empty() => self.song_theme(song, &theme.join(" ")),
+                _ => Err("song theme SONG THEME|main".to_owned()),
+            },
+            "transition" => match words {
+                [song, kind @ ..] if !kind.is_empty() => self.song_transition(song, kind),
+                _ => Err("song transition SONG KIND [SECONDS] | none".to_owned()),
+            },
+            "info" => match words {
+                [song, settings @ ..] => self.song_info(song, settings),
+                [] => Err("song info SONG [artist=… author=… publisher=… year=… ccli=…]".to_owned()),
+            },
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    fn song_rename(&mut self, song: &str, title: &str) -> Result<Reply, String> {
+        let at = self.find_song(song)?;
+        let title = title.trim().to_owned();
+        if title.is_empty() {
+            return Err("song rename SONG to TITLE".to_owned());
+        }
+        let was = self.show.presentations()[at].title.clone();
+        self.with_state(|state| state.pending_title = Some((at, title.clone())));
+        self.handle_songs();
+        self.save_unsaved();
+        Ok(Reply::done(format!("Renamed {was} to {title}.")))
+    }
+
+    fn song_duplicate(&mut self, song: &str, title: Option<&str>) -> Result<Reply, String> {
+        let at = self.find_song(song)?;
+        let was = self.show.presentations()[at].title.clone();
+        let before = self.show.presentations().len();
+        self.with_state(|state| state.song_request = Some((at, crate::home::SongRequest::Duplicate)));
+        self.handle_song_request();
+        let copy = (before < self.show.presentations().len()).then_some(self.show.presentations().len() - 1);
+        let copy = copy.ok_or_else(|| format!("{was} could not be copied."))?;
+        if let Some(title) = title.map(str::trim).filter(|t| !t.is_empty()) {
+            self.with_state(|state| state.pending_title = Some((copy, title.to_owned())));
+            self.handle_songs();
+            self.save_unsaved();
+        }
+        let named = self.show.presentations()[copy].title.clone();
+        Ok(Reply::done(format!("Copied {was} as {named}.")))
+    }
+
+    fn song_theme(&mut self, song: &str, theme: &str) -> Result<Reply, String> {
+        let at = self.find_song(song)?;
+        let (index, said) = if theme.eq_ignore_ascii_case("main") || theme.eq_ignore_ascii_case("none") {
+            (None, "the main theme".to_owned())
+        } else {
+            let names: Vec<String> = self.themes.iter().map(|t| t.name.clone()).collect();
+            let index = find("theme", &names, theme)?;
+            (Some(index), format!("the theme {}", names[index]))
+        };
+        let title = self.show.presentations()[at].title.clone();
+        self.with_state(|state| state.song_theme_request = Some((at, index)));
+        self.handle_song_theme();
+        Ok(Reply::done(format!("{title} now uses {said}.")))
+    }
+
+    fn song_transition(&mut self, song: &str, kind: &[String]) -> Result<Reply, String> {
+        let at = self.find_song(song)?;
+        let transition = parse_transition(kind)?;
+        let title = self.show.presentations()[at].title.clone();
+        self.with_state(|state| state.song_transition_request = Some((at, transition)));
+        self.handle_song_transition();
+        self.save_unsaved();
+        Ok(Reply::done(format!("{title}'s transition: {}.", transition_words(transition.as_ref()))))
+    }
+
+    fn song_info(&mut self, song: &str, settings: &[String]) -> Result<Reply, String> {
+        let at = self.find_song(song)?;
+        let presentation = self.show.presentations()[at].clone();
+        if settings.is_empty() {
+            let theme = presentation
+                .theme
+                .and_then(|id| self.themes.iter().find(|t| t.id == id))
+                .map_or_else(|| "the main theme".to_owned(), |t| t.name.clone());
+            let c = &presentation.copyright;
+            let lines = [
+                presentation.title.clone(),
+                format!("  slides: {}   groups: {}", presentation.slide_count(), presentation.groups.len()),
+                format!("  theme: {theme}   transition: {}", transition_words(presentation.transition.as_ref())),
+                format!("  artist: {}", c.artist),
+                format!("  author: {}", c.author),
+                format!("  publisher: {}", c.publisher),
+                format!("  year: {}", c.year),
+                format!("  ccli: {}", c.ccli_song),
+                format!("  loops to the first slide: {}", if presentation.loops { "yes" } else { "no" }),
+            ];
+            let data = serde_json::json!({
+                "title": presentation.title, "id": presentation.id, "slides": presentation.slide_count(),
+                "theme": theme, "transition": presentation.transition, "loops": presentation.loops,
+                "artist": c.artist, "author": c.author, "publisher": c.publisher, "year": c.year, "ccli": c.ccli_song,
+            });
+            return Ok(Reply::with(lines.join("\n"), data));
+        }
+        let mut details = presentation.copyright.clone();
+        let mut said = Vec::new();
+        for setting in settings {
+            let (key, value) = setting.split_once('=').ok_or_else(|| format!("{setting} isn't key=value."))?;
+            let field = match key.to_lowercase().as_str() {
+                "artist" => &mut details.artist,
+                "author" | "writer" | "writers" => &mut details.author,
+                "publisher" | "copyright" => &mut details.publisher,
+                "year" => &mut details.year,
+                "ccli" | "ccli_song" => &mut details.ccli_song,
+                other => return Err(format!("{other} isn't a song detail: artist, author, publisher, year, ccli.")),
+            };
+            *field = value.trim().to_owned();
+            said.push(format!("{key} \u{201c}{}\u{201d}", value.trim()));
+        }
+        self.with_state(|state| state.copyright_request = Some((at, details)));
+        self.handle_copyright();
+        self.save_unsaved();
+        Ok(Reply::done(format!("{}: {}.", presentation.title, said.join(", "))))
+    }
+
+    /// `slide add|delete|move|duplicate|group|label|enable|disable|notes|hotkey|transition|
+    /// template|media …`; `None` for a word that isn't one of them.
+    pub(crate) fn ctl_slide_change(&mut self, args: &[String]) -> Option<Result<Reply, String>> {
+        let word = args.get(1)?.to_lowercase();
+        let words = &args[2..];
+        let result = match word.as_str() {
+            "add" => self.slide_add(words),
+            "delete" => self.slide_edit(words, true, |song, index, _| {
+                song.without_slide(index).map(|song| (song, format!("deleted slide {}", index + 1)))
+            }),
+            "duplicate" => self.slide_edit(words, false, |song, index, _| {
+                let (_, slide) = song.slide(index)?;
+                let copy = slide.clone();
+                song.with_slides_after(index, &[copy])
+                    .map(|song| (song, format!("copied slide {} after it", index + 1)))
+            }),
+            "move" => match words {
+                [song, number, to, place] if to.eq_ignore_ascii_case("to") => {
+                    let place = place.clone();
+                    self.slide_edit(&[song.clone(), number.clone()], false, move |song, index, _| {
+                        let to = place.parse::<usize>().ok().filter(|to| (1..=song.slide_count()).contains(to))? - 1;
+                        if to == index {
+                            return Some((song.clone(), format!("slide {} is there already", index + 1)));
+                        }
+                        let (moved, _) = song.with_slides_moved(&[index], to, to > index)?;
+                        Some((moved, format!("moved slide {} to {}", index + 1, to + 1)))
+                    })
+                }
+                _ => Err("slide move SONG N to M".to_owned()),
+            },
+            "group" => self.slide_set(words, "slide group SONG N NAME", |song, index, value| {
+                song.with_group_starting(index, value)
+                    .map(|song| (song, format!("slide {} starts the group {value}", index + 1)))
+            }),
+            "label" => self.slide_change_one(words, "slide label SONG N LABEL|none", |slide, value| {
+                slide.label = (!value.eq_ignore_ascii_case("none")).then(|| value.to_owned());
+                Ok(format!("label {}", slide.label.as_deref().unwrap_or("none")))
+            }),
+            "notes" => self.slide_change_one(words, "slide notes SONG N TEXT|none", |slide, value| {
+                slide.notes = (!value.eq_ignore_ascii_case("none")).then(|| value.replace("\\n", "\n"));
+                Ok(if slide.notes.is_some() { "notes set".to_owned() } else { "no notes".to_owned() })
+            }),
+            "enable" | "disable" => {
+                let on = word == "enable";
+                self.slide_edit(words, false, move |song, index, _| {
+                    let (_, slide) = song.slide(index)?;
+                    let mut changed = slide.clone();
+                    changed.enabled = on;
+                    song.with_slide(index, changed).map(|song| {
+                        (song, format!("slide {} {}", index + 1, if on { "on (shown)" } else { "off (passed over)" }))
+                    })
+                })
+            }
+            "hotkey" => self.slide_change_one(words, "slide hotkey SONG N KEY|none", |slide, value| {
+                slide.hot_key = match value {
+                    none if none.eq_ignore_ascii_case("none") => None,
+                    key if key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_alphanumeric()) => {
+                        key.chars().next().map(|c| c.to_ascii_uppercase())
+                    }
+                    other => return Err(format!("A hot key is one letter or digit, not {other}.")),
+                };
+                Ok(format!("hot key {}", slide.hot_key.map_or("none".to_owned(), |c| c.to_string())))
+            }),
+            "transition" => match words {
+                [song, number, kind @ ..] if !kind.is_empty() => match parse_transition(kind) {
+                    Ok(transition) => self.slide_edit(&[song.clone(), number.clone()], false, move |song, index, _| {
+                        let (_, slide) = song.slide(index)?;
+                        let mut changed = slide.clone();
+                        changed.transition = transition;
+                        song.with_slide(index, changed).map(|song| {
+                            (
+                                song,
+                                format!("slide {}'s transition: {}", index + 1, transition_words(transition.as_ref())),
+                            )
+                        })
+                    }),
+                    Err(problem) => Err(problem),
+                },
+                _ => Err("slide transition SONG N KIND [SECONDS] | none".to_owned()),
+            },
+            "template" => self.slide_template(words),
+            "media" => self.slide_media(words),
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    /// Finds the song and slide named by `words[0]` and `words[1]`, makes a changed copy of the
+    /// song with `change` (given the song, the slide's index and the rest of the words), and puts
+    /// it in place, undoably. With `asks`, it must be confirmed with --yes.
+    fn slide_edit(
+        &mut self,
+        words: &[String],
+        asks: bool,
+        change: impl FnOnce(&Presentation, usize, &str) -> Option<(Presentation, String)>,
+    ) -> Result<Reply, String> {
+        let yes = words.iter().any(|w| w == "--yes");
+        let words: Vec<String> = words.iter().filter(|w| *w != "--yes").cloned().collect();
+        let [song, number, rest @ ..] = words.as_slice() else {
+            return Err("Which song and slide? (SONG N)".to_owned());
+        };
+        let at = self.find_song(song)?;
+        let presentation = self.show.presentations().get(at).cloned().ok_or("That song is gone.")?;
+        let count = presentation.slide_count();
+        let index = number
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=count).contains(n))
+            .ok_or_else(|| format!("{} has {count} slides; there is no slide {number}.", presentation.title))?
+            - 1;
+        if asks && !yes {
+            return Err(format!(
+                "This deletes slide {} of {}. Add --yes to do it (Undo brings it back).",
+                index + 1,
+                presentation.title
+            ));
+        }
+        let (song, said) = change(&presentation, index, &rest.join(" ")).ok_or("That can't be done to that slide.")?;
+        self.change_song(at, song);
+        Ok(Reply::done(format!("{}: {said}.", presentation.title)))
+    }
+
+    /// The same, for a change that needs the rest of the words.
+    fn slide_set(
+        &mut self,
+        words: &[String],
+        usage: &str,
+        change: impl FnOnce(&Presentation, usize, &str) -> Option<(Presentation, String)>,
+    ) -> Result<Reply, String> {
+        if words.len() < 3 {
+            return Err(usage.to_owned());
+        }
+        self.slide_edit(words, false, change)
+    }
+
+    /// The same, for a change made to the slide itself, which may refuse the value.
+    fn slide_change_one(
+        &mut self,
+        words: &[String],
+        usage: &str,
+        change: impl FnOnce(&mut sp_model::Slide, &str) -> Result<String, String>,
+    ) -> Result<Reply, String> {
+        if words.len() < 3 {
+            return Err(usage.to_owned());
+        }
+        let mut refused = None;
+        let reply = self.slide_edit(words, false, |song, index, value| {
+            let (_, slide) = song.slide(index)?;
+            let mut changed = slide.clone();
+            match change(&mut changed, value) {
+                Ok(said) => song.with_slide(index, changed).map(|song| (song, format!("slide {}: {said}", index + 1))),
+                Err(problem) => {
+                    refused = Some(problem);
+                    None
+                }
+            }
+        });
+        match refused {
+            Some(problem) => Err(problem),
+            None => reply,
+        }
+    }
+
+    /// `slide add SONG [after N] [group NAME] WORDS`.
+    fn slide_add(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "slide add SONG [after N] [group NAME] WORDS   (\\n starts a new line)";
+        let [song, rest @ ..] = words else { return Err(usage.to_owned()) };
+        let mut rest: Vec<String> = rest.to_vec();
+        let mut after = None;
+        let mut group = None;
+        loop {
+            match rest.first().map(|w| w.to_lowercase()).as_deref() {
+                Some("after") if rest.len() > 1 => {
+                    after = Some(rest[1].parse::<usize>().map_err(|_| usage.to_owned())?);
+                    rest.drain(..2);
+                }
+                Some("group") if rest.len() > 1 => {
+                    group = Some(rest[1].clone());
+                    rest.drain(..2);
+                }
+                _ => break,
+            }
+        }
+        let text = rest.join(" ").replace("\\n", "\n");
+        if text.trim().is_empty() {
+            return Err(usage.to_owned());
+        }
+        let at = self.find_song(song)?;
+        let presentation = self.show.presentations().get(at).cloned().ok_or("That song is gone.")?;
+        let count = presentation.slide_count();
+        if let Some(after) = after
+            && !(1..=count).contains(&after)
+        {
+            return Err(format!("{} has {count} slides; there is no slide {after}.", presentation.title));
+        }
+        // A new slide at the end, laid out like the one before it, with the words in it; then
+        // moved after the slide named, and starting a group if one was named.
+        let (mut song, new) = presentation.with_slide_added();
+        song = song.with_slide_text(new, &text, "").ok_or("The slide could not be made.")?;
+        let mut place = new;
+        if let Some(after) = after
+            && after < count
+        {
+            let (moved, _) = song.with_slides_moved(&[new], after - 1, true).ok_or("The slide could not be moved.")?;
+            song = moved;
+            place = after;
+        }
+        if let Some(group) = &group {
+            song = song.with_group_starting(place, group).ok_or("The group could not be made.")?;
+        }
+        self.change_song(at, song);
+        Ok(Reply::done(format!("{}: added slide {}.", presentation.title, place + 1)))
+    }
+
+    /// `slide template SONG N NAME|auto`: the song theme's template the slide is drawn with.
+    fn slide_template(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "slide template SONG N TEMPLATE|auto";
+        let [song, number, name @ ..] = words else { return Err(usage.to_owned()) };
+        if name.is_empty() {
+            return Err(usage.to_owned());
+        }
+        let at = self.find_song(song)?;
+        let theme = self.theme_of(at).clone();
+        let wanted = name.join(" ");
+        let template = if wanted.eq_ignore_ascii_case("auto") {
+            None
+        } else {
+            let names: Vec<String> = theme.templates.iter().map(|t| t.name.clone()).collect();
+            let at = find("template", &names, &wanted)
+                .map_err(|problem| format!("{problem} The theme {} has: {}, or auto.", theme.name, names.join(", ")))?;
+            Some(theme.templates[at].clone())
+        };
+        let id = template.as_ref().map(|t| t.id);
+        let said =
+            template.map_or_else(|| "the template that suits it".to_owned(), |t| format!("the template {}", t.name));
+        self.slide_edit(&[song.clone(), number.clone()], false, move |song, index, _| {
+            let (_, slide) = song.slide(index)?;
+            let mut changed = slide.clone();
+            changed.template = id;
+            song.with_slide(index, changed).map(|song| (song, format!("slide {} uses {said}", index + 1)))
+        })
+    }
+
+    /// `slide media SONG N ITEM|none`: the picture or video from the media bin put behind the
+    /// words when the slide goes on screen.
+    fn slide_media(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "slide media SONG N MEDIA-ITEM|none";
+        let [song, number, name @ ..] = words else { return Err(usage.to_owned()) };
+        if name.is_empty() {
+            return Err(usage.to_owned());
+        }
+        let wanted = name.join(" ");
+        let item = if wanted.eq_ignore_ascii_case("none") {
+            None
+        } else {
+            let names: Vec<String> = self.show.media().iter().map(|m| m.name.clone()).collect();
+            let at = find("media item", &names, &wanted)?;
+            Some((self.show.media()[at].id, names[at].clone()))
+        };
+        self.slide_edit(&[song.clone(), number.clone()], false, move |song, index, _| {
+            let (_, slide) = song.slide(index)?;
+            let mut changed = slide.clone();
+            changed.actions.retain(|action| !matches!(action, ShowAction::Media { .. }));
+            if let Some((id, _)) = &item {
+                changed.actions.push(ShowAction::Media { id: *id });
+            }
+            let said =
+                item.as_ref().map_or_else(|| "no media".to_owned(), |(_, name)| format!("shows {name} behind it"));
+            song.with_slide(index, changed).map(|song| (song, format!("slide {} {said}", index + 1)))
+        })
+    }
+
+    /// `search WORDS`: songs whose title or words have them, as Command-F finds them.
+    pub(crate) fn ctl_search(&self, typed: &str) -> Result<Reply, String> {
+        let wanted = typed.trim().to_lowercase();
+        if wanted.is_empty() {
+            return Err("search WORDS".to_owned());
+        }
+        let mut lines = Vec::new();
+        let mut data = Vec::new();
+        for (number, (at, title)) in self.listed_songs().into_iter().enumerate() {
+            let Some(song) = self.show.presentations().get(at) else { continue };
+            let in_title = title.to_lowercase().contains(&wanted);
+            let slides: Vec<usize> = song
+                .slides()
+                .enumerate()
+                .filter(|(_, (_, slide))| {
+                    slide.objects.iter().any(|object| match &object.kind {
+                        ObjectKind::Text { text, .. } => text.to_lowercase().contains(&wanted),
+                        _ => false,
+                    })
+                })
+                .map(|(index, _)| index + 1)
+                .collect();
+            if !in_title && slides.is_empty() {
+                continue;
+            }
+            let where_ = match slides.as_slice() {
+                [] => "the title".to_owned(),
+                [one] => format!("slide {one}"),
+                many => format!("slides {}", many.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")),
+            };
+            lines.push(format!("{} ({where_})", title));
+            data.push(serde_json::json!({"song": title, "number": number + 1, "title": in_title, "slides": slides}));
+        }
+        if lines.is_empty() {
+            return Err(format!("No song has \u{201c}{}\u{201d} in its title or words.", typed.trim()));
+        }
+        Ok(Reply::with(numbered(&lines), serde_json::json!(data)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transitions_are_read_by_name_and_seconds() {
+        let words = |text: &str| text.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        let fade = parse_transition(&words("fade black 1.5")).unwrap().unwrap();
+        assert_eq!((fade.kind, fade.seconds), (TransitionKind::FadeBlack, 1.5));
+        assert_eq!(parse_transition(&words("Dissolve")).unwrap().unwrap().kind, TransitionKind::Dissolve);
+        assert_eq!(parse_transition(&words("cut")).unwrap().unwrap().seconds, 0.0);
+        assert_eq!(parse_transition(&words("none")).unwrap(), None);
+        assert!(parse_transition(&words("sparkle")).unwrap_err().contains("Dissolve"));
+        assert!(parse_transition(&words("push 9")).is_err());
+    }
+
+    #[test]
+    fn words_split_at_the_last_keyword() {
+        let words: Vec<String> = ["River", "Song", "to", "Sunday", "Morning"].iter().map(|w| w.to_string()).collect();
+        let (head, tail) = split_at_word(&words, "to");
+        assert_eq!((head.join(" "), tail.as_deref()), ("River Song".to_owned(), Some("Sunday Morning")));
+        assert_eq!(split_at_word(&words, "from").1, None);
+    }
+}
