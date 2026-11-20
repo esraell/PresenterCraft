@@ -748,6 +748,13 @@ fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Lay
         // The box is fitted to the text before it gets here.
         Scaling::ContainerUpOrDown => (false, false),
     };
+    // Fitted before (the same slide drawn again): laid out once, at the size it came to.
+    let box_size = (rect.w, rect.h);
+    if let Some(size) = fonts.fitted_size(text, style, box_size) {
+        let layout = lay_out(fonts, text, style, size, rect.w);
+        let overflow = too_big(&layout, size);
+        return (layout, overflow, size);
+    }
     let floor = style.min_size.min(style.size).max(1.0);
     let mut size = style.size.max(floor);
     let mut layout = lay_out(fonts, text, style, size, rect.w);
@@ -782,6 +789,7 @@ fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Lay
         }
     }
     let overflow = too_big(&layout, size);
+    fonts.remember_fit(text, style, box_size, size);
     (layout, overflow, size)
 }
 
@@ -1147,6 +1155,22 @@ mod tests {
         let (layout, _, size) = fit(&mut fonts, paragraph, &style, rect);
         assert!(layout.len() > 1);
         assert_eq!(size, style.size);
+    }
+
+    #[test]
+    fn text_fitted_again_comes_out_the_same_from_memory() {
+        let mut fonts = Fonts::new();
+        let style = Theme::builtin().templates[0].boxes[0].clone();
+        let rect = SlideRect { x: 0.0, y: 0.0, w: 900.0, h: 300.0 };
+        let text = "A long line of words that has to be made smaller to fit inside a small box on the slide";
+        let (first, first_over, first_size) = fit(&mut fonts, text, &style, rect);
+        assert!(first_size < style.size, "the test needs text that is shrunk");
+        assert_eq!(fonts.fitted_size(text, &style, (rect.w, rect.h)), Some(first_size));
+        let (again, again_over, again_size) = fit(&mut fonts, text, &style, rect);
+        assert_eq!((again_size, again_over, again.len()), (first_size, first_over, first.len()));
+        // Another box size, or other words, is fitted afresh.
+        assert_eq!(fonts.fitted_size(text, &style, (rect.w, rect.h + 1.0)), None);
+        assert_eq!(fonts.fitted_size("Other words", &style, (rect.w, rect.h)), None);
     }
 
     #[test]
