@@ -459,17 +459,19 @@ fn web_host(url: &str) -> &str {
     url.split_once("://").map_or("", |(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
 }
 
-/// True for a web address that costs money when it is open: a VoxLive screen's live display,
-/// which joins the captions and can start a translation. Its test pattern (`demo=1`) and
-/// preview (`preview=1`) cost nothing.
+/// True for a web address that costs money when it is open: any of VoxLive's own pages for
+/// listening (`/listen/…`: a screen's live display joins the captions and can start a
+/// translation). A screen's test pattern (`demo=1`) and preview (`preview=1`) cost nothing.
 fn web_costs(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     let host = web_host(&lower);
-    // VoxLive's own displays, or (for tests) the stand-in's.
-    let voxlive = host == "voxlive.app"
-        || host.ends_with(".voxlive.app")
+    // VoxLive's own pages for listening, or (for tests) the stand-in's. Not only a screen's
+    // usual address: any page there, so a change in how VoxLive lays its addresses out can't
+    // make a costly page look free (and be loaded ahead).
+    let path = lower.split_once("://").and_then(|(_, rest)| rest.find('/').map(|at| &rest[at..])).unwrap_or("");
+    let voxlive = ((host == "voxlive.app" || host.ends_with(".voxlive.app")) && path.starts_with("/listen/"))
         || lower.starts_with(&voxlive::display_prefix(&voxlive::api_base()));
-    voxlive && lower.contains("/screen/") && !lower.contains("demo=1") && !lower.contains("preview=1")
+    voxlive && !lower.contains("demo=1") && !lower.contains("preview=1")
 }
 
 /// Media bin items a pack brings in, as they come: the id each had where the pack was made, and
@@ -7020,6 +7022,8 @@ mod tests {
         assert!(!super::web_costs("https://voxlive.app/listen/grace/screen/abc2345?preview=1&host=app"));
         assert!(!super::web_costs("https://example.com/listen/grace/screen/abc2345"));
         assert!(!super::web_costs("https://voxlive.app/pricing"));
+        assert!(super::web_costs("https://voxlive.app/listen/grace/scr1"), "any page for listening, however laid out");
+        assert!(!super::web_costs("https://voxlive.app.example.com/listen/grace/screen/abc"));
         assert_eq!(super::web_host("https://example.com:8443/a?b#c"), "example.com:8443");
     }
 
