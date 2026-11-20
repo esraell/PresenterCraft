@@ -16,6 +16,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/softpresenter "$app/Contents/MacOS/softpresenter"
 # NSAppSleepDisabled: macOS must not slow the app down (App Nap) while its windows are hidden;
 # timed slides and timers run by the clock during a service.
+# NSAppleEventsUsageDescription: why macOS asks to let SoftPresenter use Keynote or PowerPoint,
+# which turn a presentation file into slides on import.
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -43,6 +45,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <true/>
     <key>NSAppSleepDisabled</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>SoftPresenter asks Keynote or PowerPoint to turn a presentation into slides when you import one.</string>
 </dict>
 </plist>
 PLIST

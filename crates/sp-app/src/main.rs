@@ -5,6 +5,7 @@ mod audio;
 mod bible;
 mod bible_store;
 mod control;
+mod convert;
 mod deck;
 mod displays;
 mod editor;
@@ -339,6 +340,8 @@ enum AppEvent {
     Menu(String),
     LivePreview,
     Control(control::Incoming),
+    /// A deck of slides finished on its own thread.
+    DeckDone,
 }
 
 /// What a theme calls its templates, in order.
@@ -1729,7 +1732,7 @@ impl App {
         // as a song; a folder of them as a library.
         // A PDF or a folder of pictures becomes slides.
         let deck = deck::is_pdf(path)
-            || deck::is_unexported_deck(path)
+            || deck::is_presentation_file(path)
             || (path.is_dir() && deck::pictures_in(path).is_some());
         if deck
             || load::is_importable(path)
@@ -2377,13 +2380,20 @@ impl App {
         let mut imported = Vec::new();
         let mut problems = Vec::new();
         let mut first = None;
-        // PDFs and folders of pictures become slides, made on threads of their own; a
-        // presentation program's own file is answered with how to export it.
+        // PDFs, presentation files and folders of pictures become slides, made on threads of
+        // their own. A presentation file needs a program on this Mac that opens it.
         let mut decks = Vec::new();
         let mut songs = Vec::new();
         for path in paths {
-            if deck::is_unexported_deck(path) {
-                problems.push(deck::unexported_message(path));
+            if deck::is_presentation_file(path) {
+                match convert::program_for(path) {
+                    Some(program) => {
+                        let source = deck::Source::File(path.clone());
+                        decks.push(format!("{} (with {})", source.name(), program.name()));
+                        self.start_deck(source);
+                    }
+                    None => problems.push(convert::none_installed(path)),
+                }
             } else if deck::is_pdf(path) || (path.is_dir() && deck::pictures_in(path).is_some()) {
                 let source = deck::Source::File(path.clone());
                 decks.push(source.name());
@@ -2534,8 +2544,16 @@ impl App {
             }
             return;
         };
+        // The event loop is woken directly: a repaint request alone doesn't reach a window that is
+        // hidden or behind others, and the deck would wait for the next time it is drawn.
         let ctx = running.egui_ctx.clone();
-        self.decks.start(source, move || ctx.request_repaint());
+        let waker = self.waker.clone();
+        self.decks.start(source, move || match waker {
+            Some(waker) => {
+                let _ = waker.send_event(AppEvent::DeckDone);
+            }
+            None => ctx.request_repaint(),
+        });
     }
 
     /// Adds the decks made since the last look, and says how each went.
@@ -2561,19 +2579,23 @@ impl App {
         }
     }
 
-    /// Asks for a PDF, or pictures, to make slides of: each PDF becomes a presentation, and the
-    /// pictures chosen together become one.
+    /// Asks for presentations, PDFs or pictures to make slides of: each presentation file or
+    /// PDF becomes a presentation, and the pictures chosen together become one.
     fn choose_slides_to_import(&mut self) {
-        let mut endings = vec![deck::PDF_ENDING];
+        let mut endings = deck::DECK_ENDINGS.to_vec();
+        endings.push(deck::PDF_ENDING);
         endings.extend(media::PICTURES);
-        let Some(chosen) =
-            rfd::FileDialog::new().set_title("Import Slides").add_filter("PDFs and pictures", &endings).pick_files()
+        let Some(chosen) = rfd::FileDialog::new()
+            .set_title("Import Slides")
+            .add_filter("Presentations, PDFs and pictures", &endings)
+            .pick_files()
         else {
             return;
         };
-        let (pdfs, pictures): (Vec<PathBuf>, Vec<PathBuf>) = chosen.into_iter().partition(|path| deck::is_pdf(path));
-        for pdf in pdfs {
-            self.start_deck(deck::Source::File(pdf));
+        let (pictures, files): (Vec<PathBuf>, Vec<PathBuf>) =
+            chosen.into_iter().partition(|path| media::is_media(path) && !media::is_video(path));
+        if !files.is_empty() {
+            self.import_songs(&files);
         }
         if !pictures.is_empty() {
             self.start_deck(deck::chosen_pictures(pictures));
@@ -4243,6 +4265,10 @@ impl ApplicationHandler<AppEvent> for App {
                 return;
             }
             AppEvent::LivePreview => String::new(),
+            AppEvent::DeckDone => {
+                self.handle_decks();
+                return;
+            }
         };
         // The output thread drew a new live preview: the window shows it.
         if id.is_empty() {

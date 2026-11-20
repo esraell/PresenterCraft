@@ -184,7 +184,7 @@ pub const MENUS: &[(&str, &[Entry])] = &[
             Do(Action::NewSlide, "New Slide", shift_cmd('N')),
             Do(Action::ImportSongs, "Import Songs…", None),
             Do(Action::ImportLibraryFolder, "Import from ProPresenter…", None),
-            Do(Action::ImportSlides, "Import Slides from a PDF or Pictures…", None),
+            Do(Action::ImportSlides, "Import Slides (PowerPoint, Keynote, PDF or Pictures)…", None),
             Line,
             Do(Action::CloseWindow, "Close Window", cmd('W')),
         ],

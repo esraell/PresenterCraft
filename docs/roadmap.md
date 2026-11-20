@@ -11,28 +11,25 @@ Size: S = under a day, M = days, L = a week or more. Sunday: how much it matters
 
 1. **Playlists and media from a church's existing presentation software.** Songs and libraries
    come across already; playlists, pictures, videos and bundles are next. · M
-2. **PowerPoint and Keynote files straight in.** Sermon and announcement slides arrive as
-   PowerPoint files every week; they should drop straight in, made into pictures by the program
-   that made them (PDFs and folders of pictures already work). · M
-3. **FFmpeg in the app.** Without it, MKV, WebM, AVI and some MP4 files won't play on a stock
+2. **FFmpeg in the app.** Without it, MKV, WebM, AVI and some MP4 files won't play on a stock
    Mac. · M
-4. **Media and placeholder items in playlists.** The countdown video, the announcement loop and
+3. **Media and placeholder items in playlists.** The countdown video, the announcement loop and
    a "sermon slides to come" slot belong in the running order. · M
-5. **Fixing a slide's words from the Show view.** Mend a typo on the live slide without leaving
+4. **Fixing a slide's words from the Show view.** Mend a typo on the live slide without leaving
    the Show view. · S–M
-6. **Corner pin (keystone).** Square up a projector that is off-axis. · M
-7. **More slide and macro actions.** Audio tracks and playlists, clearing audio and
+5. **Corner pin (keystone).** Square up a projector that is off-axis. · M
+6. **More slide and macro actions.** Audio tracks and playlists, clearing audio and
    announcements, changing a stage layout or a saved screen setup, running another macro,
    media playlists. · S each
-8. **A whole song that moves on by itself.** Announcement loops with one setting. · S
-9. **Clear buttons of your own.** Each clears a chosen set of layers. · M
-10. **Slides shown on the stage screens only**, and an action that changes a stage layout. · M
-11. **Saved screen setups switched live, and a theme for each screen.** Lyrics off the stream,
+7. **A whole song that moves on by itself.** Announcement loops with one setting. · S
+8. **Clear buttons of your own.** Each clears a chosen set of layers. · M
+9. **Slides shown on the stage screens only**, and an action that changes a stage layout. · M
+10. **Saved screen setups switched live, and a theme for each screen.** Lyrics off the stream,
     lower thirds on NDI. · M
-12. **Fill-in fields in messages**, for paging parents from the nursery. · S–M
-13. **What a video does when it ends, in and out points, and video sound against background
+11. **Fill-in fields in messages**, for paging parents from the nursery. · S–M
+12. **What a video does when it ends, in and out points, and video sound against background
     music.** · M
-14. **A fuller stage layout editor.** Free text, timers chosen by name, a video countdown and
+13. **A fuller stage layout editor.** Free text, timers chosen by name, a video countdown and
     slide pictures. · M
 
 Next in line: the network API with a phone remote, spell check, formatting one word, CCLI usage
@@ -184,7 +181,7 @@ rather than a feature, but no church on Windows can use the app without them.
 ## Library, playlists and import/export
 
 - **Choices when importing songs.** How slides are split (paragraph, line or marker, and how many lines), and the theme, library and playlist imported songs go to. (started: File › Import Songs…, drops and `sp song import` read text, lyric, ChordPro, rich-text and Word files, find sections, and share long stretches into slides of up to four lines) · S · Medium
-- **PowerPoint import.** As editable slides, as pictures, or as objects and text (weekly sermon slides). (started: PDFs and folders of pictures become picture slides) · L · High
+- **PowerPoint import.** As editable slides, as pictures, or as objects and text (weekly sermon slides). (started: PowerPoint, Keynote and OpenDocument files, PDFs and folders of pictures become picture slides; editable slides to come) · L · High
 - **Lighter screens for picture-heavy decks.** The drawing library keeps up to about thirty full-size pictures per screen (roughly half a gigabyte each) until its texture fills; let them go sooner. · S–M · Medium
 - **Importing from a church's existing presentation software**, so a library can move over in one go: songs, playlists and their media. (started: ProPresenter 7 songs and library folders, with groups, arrangements, labels, notes and copyright details; not yet playlists, pictures, videos or bundles) · M · High
 - **SongSelect inside the app.** Search, preview and import from the search panel (⌘F). May need CCLI's agreement. · L · Medium

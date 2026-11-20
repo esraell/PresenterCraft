@@ -1,5 +1,6 @@
-//! Slides made from pictures: the pages of a PDF (a sermon or announcement deck exported from a
-//! presentation program), or a folder of pictures exported from one. Each page or picture
+//! Slides made from pictures: the pages of a PDF, a presentation file (PowerPoint, Keynote,
+//! OpenDocument) turned into a PDF by the program that made it (see [`crate::convert`]), or a
+//! folder of pictures exported from one. Each page or picture
 //! becomes a slide showing it across the whole slide, in a new presentation named after the
 //! file or folder. Drawing a deck's pages takes a few seconds, so it is done on a thread of its
 //! own: the operator's window and keys go on working meanwhile, even mid-service.
@@ -11,8 +12,8 @@ use sp_model::{Group, Object, Presentation, SlideRect, Uuid};
 
 /// A PDF, whose pages become slides.
 pub const PDF_ENDING: &str = "pdf";
-/// Files presentation programs save, which have to be exported as a PDF or as pictures first.
-pub const DECK_ENDINGS: [&str; 4] = ["pptx", "ppt", "key", "odp"];
+/// Files presentation programs save, turned into a PDF by a program on this Mac first.
+pub const DECK_ENDINGS: [&str; 6] = ["pptx", "ppt", "pps", "ppsx", "key", "odp"];
 /// The most pages or pictures a deck makes slides of.
 const MOST_SLIDES: usize = 300;
 /// The largest PDF read.
@@ -29,18 +30,9 @@ pub fn is_pdf(path: &Path) -> bool {
     has_ending(path, &[PDF_ENDING])
 }
 
-/// True for a file a presentation program saved, which must be exported first.
-pub fn is_unexported_deck(path: &Path) -> bool {
+/// True for a file a presentation program saved (PowerPoint, Keynote, OpenDocument).
+pub fn is_presentation_file(path: &Path) -> bool {
     has_ending(path, &DECK_ENDINGS)
-}
-
-/// What to do with a presentation program's own file, in plain words.
-pub fn unexported_message(path: &Path) -> String {
-    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-    format!(
-        "{name} needs exporting first. In PowerPoint or Keynote, choose File › Export, save it as a PDF (or as pictures), \
-         then drop that here."
-    )
 }
 
 /// The pictures directly inside a folder, in the order people number them (Slide2 before
@@ -171,7 +163,11 @@ pub fn make(source: &Source) -> Result<Presentation, String> {
             let pictures = pictures_in(path).ok_or_else(|| format!("{title} has no pictures in it."))?;
             (title, pictures)
         }
-        Source::File(path) => return make_from_pdf(path),
+        Source::File(path) if is_presentation_file(path) => return make_from_presentation_file(path),
+        Source::File(path) => {
+            let title = path.file_stem().map_or_else(|| "Slides".to_owned(), |s| s.to_string_lossy().into_owned());
+            return make_from_pdf(path, title);
+        }
     };
     let mut slides = Vec::new();
     for picture in pictures.iter().take(MOST_SLIDES) {
@@ -181,9 +177,26 @@ pub fn make(source: &Source) -> Result<Presentation, String> {
     Ok(presentation(title, slides))
 }
 
-/// A PDF's pages as slides.
-fn make_from_pdf(path: &Path) -> Result<Presentation, String> {
+/// A presentation file's slides, through a PDF made by the program that opens it. The PDF is
+/// deleted afterwards; the slides' pictures stay in the Images folder.
+fn make_from_presentation_file(path: &Path) -> Result<Presentation, String> {
     let title = path.file_stem().map_or_else(|| "Slides".to_owned(), |s| s.to_string_lossy().into_owned());
+    let work = crate::bible_store::data_dir()
+        .ok_or("Could not find where to work on this computer.")?
+        .join("Converting")
+        .join(Uuid::new_v4().to_string());
+    let made = crate::convert::to_pdf(path, &work);
+    let deck = made.and_then(|(pdf, _)| {
+        let deck = make_from_pdf(&pdf, title);
+        let _ = std::fs::remove_file(&pdf);
+        deck
+    });
+    let _ = std::fs::remove_dir_all(&work);
+    deck
+}
+
+/// A PDF's pages as slides, in a presentation with this title.
+fn make_from_pdf(path: &Path, title: String) -> Result<Presentation, String> {
     let size = std::fs::metadata(path).map_err(|e| format!("{title} could not be read ({e}).")).map(|m| m.len())?;
     if size > LARGEST_PDF {
         return Err(format!("{title} is too large to make slides of."));
@@ -286,10 +299,9 @@ mod tests {
     }
 
     #[test]
-    fn a_presentation_programs_own_file_is_told_to_be_exported() {
-        assert!(is_unexported_deck(Path::new("Sermon.PPTX")) && is_unexported_deck(Path::new("Talk.key")));
-        assert!(!is_unexported_deck(Path::new("Sermon.pdf")) && is_pdf(Path::new("Sermon.PDF")));
-        assert!(unexported_message(Path::new("/x/Sermon.pptx")).contains("Export"));
+    fn presentation_files_and_pdfs_are_told_apart() {
+        assert!(is_presentation_file(Path::new("Sermon.PPTX")) && is_presentation_file(Path::new("Talk.key")));
+        assert!(!is_presentation_file(Path::new("Sermon.pdf")) && is_pdf(Path::new("Sermon.PDF")));
     }
 
     #[test]

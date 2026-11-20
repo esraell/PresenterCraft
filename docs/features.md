@@ -32,14 +32,18 @@ feature changes, this page changes in the same commit.
   number, writers and copyright go into the song's details; a church's own licence number is
   never kept), ChordPro (sections from its directives, chords taken out), SoftPresenter's own
   song text and song files, rich text, and on macOS Word and OpenDocument files.
-- **Slides from a PDF or pictures.** File › Import Slides from a PDF or Pictures…, dropping a
-  PDF or a folder of pictures on the window, or `sp song import`: each page or picture becomes
+- **Slides from PowerPoint, Keynote, a PDF or pictures.** File › Import Slides…, dropping the
+  file or a folder of pictures on the window, or `sp song import`. A PowerPoint, Keynote or
+  OpenDocument presentation is turned into a PDF by a program on the Mac that opens it
+  (PowerPoint, then Keynote, then LibreOffice for PowerPoint files; Keynote for Keynote files),
+  so its slides look exactly as that program draws them; macOS asks once to allow it, and a
+  program SoftPresenter opened is closed again. Each page or picture becomes
   a slide showing it across the whole slide, in a new presentation named after the file or
   folder. Pages are drawn at up to 1920 × 1080 on white, turned and cropped as the PDF says, and
   saved in the Images folder, so the deck keeps working when the file moves. Pictures in a
   folder go in the order people number them (Slide2 before Slide10). It happens in the
   background, so the window and keys go on working; a 60-page deck takes about ten seconds.
-  A PowerPoint or Keynote file dropped on the window says how to export it as a PDF.
+  With no program that opens the file, it says what to install, or to export a PDF.
 - **Bringing a library across from ProPresenter 7.** File › Import from ProPresenter… opens
   its Libraries folder; choose one library, or the folder of all of them. Each folder becomes a
   library of the same name. Each song keeps its groups, slides, arrangements (and the one
