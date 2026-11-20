@@ -521,7 +521,12 @@ fn source_heading(ui: &mut egui::Ui, text: &str, collapsed: &mut bool, add_hint:
 /// The left column: the libraries and the playlists as rows on top, the
 /// songs or items of the one chosen below, and a filter at the bottom.
 pub fn library(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
-    let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin { left: 12, right: 12, top: 14, bottom: 8 });
+    let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin {
+        left: 12,
+        right: 12,
+        top: 14,
+        bottom: COLUMN_BOTTOM as i8,
+    });
     egui::Panel::left("library").resizable(false).exact_size(256.0).frame(frame).show(ui, |ui| {
         let column_height = ui.available_height();
         let rows = state.libraries.len() + state.services.list.len() + 1;
@@ -1661,6 +1666,12 @@ pub fn program_panel(
 
 /// The strip under the slides that holds pictures to show behind the words. It is slim until
 /// it has something in it.
+/// The room the columns leave under what they hold, at the bottom of the window.
+const COLUMN_BOTTOM: f32 = 8.0;
+/// How tall the open media bin is: its top margin, its bar, a picture and its name (whose
+/// letters reach 2 points below their row), and the room under them.
+const MEDIA_STRIP_HEIGHT: f32 = 10.0 + 24.0 + 6.0 + 4.0 + 3.0 + 81.0 + 18.0 + 2.0 + COLUMN_BOTTOM;
+
 pub fn media_strip(
     ui: &mut egui::Ui,
     show: &Show,
@@ -1672,8 +1683,15 @@ pub fn media_strip(
     // opened by itself while there is something to say or a file is being dropped.
     let folded = state.media_hidden && state.notice.is_none() && !state.drop_hover;
     let empty = show.media().is_empty();
-    let height = if folded { 30.0 } else { 148.0 };
-    let margin = if folded { egui::Margin::symmetric(16, 4) } else { egui::Margin::symmetric(16, 10) };
+    // Open, it is as tall as its contents (the bar, the pictures and their names) with the same
+    // room under them as the left column leaves under its filter, so the three columns end on
+    // one line.
+    let height = if folded { 30.0 } else { MEDIA_STRIP_HEIGHT };
+    let margin = if folded {
+        egui::Margin::symmetric(16, 4)
+    } else {
+        egui::Margin { left: 16, right: 16, top: 10, bottom: COLUMN_BOTTOM as i8 }
+    };
     let frame = Frame::new().fill(PANEL).inner_margin(margin);
     egui::Panel::bottom("media bin").resizable(false).exact_size(height).frame(frame).show(ui, |ui| {
         let area = ui.max_rect().expand2(vec2(16.0, 10.0));
