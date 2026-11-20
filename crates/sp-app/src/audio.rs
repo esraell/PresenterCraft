@@ -11,6 +11,11 @@ use sp_model::Uuid;
 /// The file endings of audio the player can play, as the file chooser lists them.
 pub const AUDIO_ENDINGS: [&str; 9] = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "mp4", "aif", "aiff"];
 
+/// True for a file whose name says it is a sound.
+pub fn is_audio(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|ext| AUDIO_ENDINGS.iter().any(|ending| ext.eq_ignore_ascii_case(ending)))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
     pub id: Uuid,

@@ -124,7 +124,9 @@ feature changes, this page changes in the same commit.
   or as all slides), Hot Key (a letter or digit that puts the slide on screen, shown on its
   picture), Go to Next (after a number of seconds, shown on its picture), Disable, Template.
   A song's menu has Loop to First Slide, for a loop of announcements. Undo and Redo (Command-Z, Shift-Command-Z) step back through
-  these changes in the Show view, and the audience stays on the same slide.
+  these changes in the Show view and on the Bible page, and the audience stays on the same slide.
+  `sp undo` and `sp redo` do the same from the command line whatever the window shows, and say
+  which song and slides changed.
 - A song's right-click menu: Add to the playlist in front, Libraries, Rename, Duplicate, Theme (a theme of its own, or
   the songs theme), Reflow, and Delete (a song made in the app goes to the Trash).
 - **Timers** (count down, count down to a time of day, or count up), **Messages** shown over

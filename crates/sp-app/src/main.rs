@@ -4344,14 +4344,11 @@ impl App {
         if action == A::ImportSlides {
             return self.choose_slides_to_import();
         }
-        // In the Show view, with nothing being typed, Undo and Redo step through the changes
-        // made to songs there.
+        // In the Show view and on the Bible page (which has no undo of its own), with nothing
+        // being typed, Undo and Redo step through the changes made to songs.
         let in_show = self.running.as_ref().is_some_and(|r| {
             let state = &r.home_state;
-            state.editing.is_none()
-                && state.theme_edit.is_none()
-                && !state.bible_open
-                && !r.egui_ctx.text_edit_focused()
+            state.editing.is_none() && state.theme_edit.is_none() && !r.egui_ctx.text_edit_focused()
         });
         if in_show && matches!(action, A::Undo | A::Redo) {
             return self.undo_show(action == A::Redo);

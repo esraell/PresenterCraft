@@ -282,6 +282,8 @@ const COMMANDS: &[&str] = &[
     "announce",
     "bible",
     "song",
+    "undo",
+    "redo",
     "menu",
 ];
 
@@ -425,6 +427,10 @@ Changing a slide (each change is saved, can be undone, and shows on screen at on
 
   Put a song name with spaces in quotes: slide style \"Blessed Assurance\" all size=90
 
+Undo
+  undo                         undo the last change to a song, whatever the window shows
+  redo                         do it again
+
 Everything on the menu bar
   menu                         list the menu items
   menu ITEM                    choose one, as a click on it does
@@ -463,6 +469,24 @@ fn find(kind: &str, names: &[String], typed: &str) -> Result<usize, String> {
             "\u{201c}{typed}\u{201d} fits several {kind}s: {}. Type more of the name, or its number.",
             many.iter().map(|at| format!("{} ({})", names[*at], at + 1)).collect::<Vec<_>>().join(", ")
         )),
+    }
+}
+
+/// Which slides differ between two versions of a song, as words to follow its name:
+/// ", slide 2", ", slides 2 and 5", ", its slides (now 6)", or nothing when only the song's
+/// other settings changed.
+fn changed_slides(before: &sp_model::Presentation, after: &sp_model::Presentation) -> String {
+    if before.slide_count() != after.slide_count() {
+        return format!(", its slides (now {})", after.slide_count());
+    }
+    let changed: Vec<String> = (0..after.slide_count())
+        .filter(|at| before.slide(*at).map(|(_, slide)| slide) != after.slide(*at).map(|(_, slide)| slide))
+        .map(|at| (at + 1).to_string())
+        .collect();
+    match changed.as_slice() {
+        [] => String::new(),
+        [one] => format!(", slide {one}"),
+        [rest @ .., last] => format!(", slides {} and {last}", rest.join(", ")),
     }
 }
 
@@ -544,10 +568,10 @@ impl crate::App {
             "announce" => self.ctl_announce(args),
             "bible" => self.ctl_bible(args),
             "song" => self.ctl_song(args),
+            "undo" => self.ctl_undo(el, false),
+            "redo" => self.ctl_undo(el, true),
             "menu" => self.ctl_menu(el, args),
-            other => Err(format!(
-                "SoftPresenter doesn't know the command \u{201c}{other}\u{201d}. Try: softpresenter ctl help"
-            )),
+            other => Err(format!("SoftPresenter doesn't know the command \u{201c}{other}\u{201d}. See: sp help")),
         };
         if let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
@@ -914,7 +938,11 @@ impl crate::App {
                         .file_name()
                         .map_or_else(|| file.display().to_string(), |n| n.to_string_lossy().into_owned());
                     if !crate::media::is_media(file) {
-                        problems.push(format!("{name} isn't a picture or video (songs come in with song import)."));
+                        problems.push(if crate::audio::is_audio(file) {
+                            format!("{name} is a sound: sounds go in the Audio tab (there is no command for that yet).")
+                        } else {
+                            format!("{name} isn't a picture or video (songs come in with song import).")
+                        });
                         continue;
                     }
                     match self.add_media_file(file) {
@@ -1083,20 +1111,22 @@ impl crate::App {
             .iter()
             .flat_map(|playlist| playlist.tracks.iter().map(|track| (track.id, track.name.clone())))
             .collect();
-        let request = match args.get(1).map(|w| w.to_lowercase()).as_deref() {
+        let (request, done) = match args.get(1).map(|w| w.to_lowercase()).as_deref() {
             Some("play") => {
                 let names: Vec<String> = tracks.iter().map(|(_, name)| name.clone()).collect();
                 let at = find("track", &names, &rest(args, 2))?;
-                AudioRequest::Play(tracks[at].0)
+                (AudioRequest::Play(tracks[at].0), format!("Playing {}.", names[at]))
             }
-            Some("pause") => AudioRequest::TogglePause,
-            Some("stop") => AudioRequest::Stop,
+            Some("pause") => {
+                (AudioRequest::TogglePause, "Paused the audio, or played it on if it was paused.".to_owned())
+            }
+            Some("stop") => (AudioRequest::Stop, "Stopped the audio.".to_owned()),
             Some("volume") => {
                 let level: f32 = args.get(2).and_then(|w| w.parse().ok()).ok_or("audio volume 0-100")?;
                 if !(0.0..=100.0).contains(&level) {
                     return Err(format!("The volume goes from 0 to 100, not {level}."));
                 }
-                AudioRequest::Volume(level / 100.0)
+                (AudioRequest::Volume(level / 100.0), format!("Volume {level}."))
             }
             _ => {
                 let names: Vec<String> = tracks.into_iter().map(|(_, name)| name).collect();
@@ -1105,7 +1135,7 @@ impl crate::App {
         };
         self.with_state(|state| state.audio_request = Some(request));
         self.handle_audio();
-        Ok(Reply::done("Done."))
+        Ok(Reply::done(done))
     }
 
     fn ctl_bible(&mut self, args: &[String]) -> Result<Reply, String> {
@@ -1288,6 +1318,32 @@ impl crate::App {
             _ => Err("song new TITLE [FILE.txt], song import FILE…, song text SONG [FILE], or song delete SONG --yes"
                 .to_owned()),
         }
+    }
+
+    /// Undoes (or redoes) the last change to a song, whatever view the window shows, and says
+    /// what changed. In a song's Edit view it takes the step Cmd-Z would there, as the editor
+    /// keeps its own order of steps (typing in a box, then the song's slides).
+    fn ctl_undo(&mut self, el: &ActiveEventLoop, redo: bool) -> Result<Reply, String> {
+        let word = if redo { "redo" } else { "undo" };
+        let in_editor = self.running.as_ref().is_some_and(|r| {
+            let state = &r.home_state;
+            state.theme_edit.is_none()
+                && state.editing.as_ref().is_some_and(|draft| draft.at.presentation != crate::props::PROP_SLOT)
+        });
+        if in_editor {
+            self.menu_action(el, if redo { crate::menubar::Action::Redo } else { crate::menubar::Action::Undo });
+            return Ok(Reply::done(format!("Took the Edit view's {word} step (as Cmd-Z does there).")));
+        }
+        let index = self.history.peek(redo).ok_or_else(|| format!("There is nothing to {word}."))?;
+        let before = self.show.presentations().get(index).cloned().ok_or("That song is gone.")?;
+        self.undo_show(redo);
+        let after = self.show.presentations().get(index).cloned().ok_or("That song is gone.")?;
+        let what = changed_slides(&before, &after);
+        let done = if redo { "Redid" } else { "Undid" };
+        Ok(Reply::with(
+            format!("{done} a change to {}{what}.", after.title),
+            serde_json::json!({"song": after.title, "number": index + 1}),
+        ))
     }
 
     fn ctl_menu(&mut self, el: &ActiveEventLoop, args: &[String]) -> Result<Reply, String> {

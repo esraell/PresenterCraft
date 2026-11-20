@@ -165,8 +165,13 @@ pub fn import_file(path: &Path) -> Result<Presentation, String> {
     // Only the kinds of file songs come in: a sound, a picture or anything else is not read as
     // words.
     if !is_importable(path) && !is_song_file(path) {
+        if crate::audio::is_audio(path) {
+            return Err(format!("{name} is a sound: sounds go in the Audio tab."));
+        }
         return Err(format!(
-            "{name} isn't a kind of file songs come in (text, lyric, ChordPro, rich text, Word, .pro or a SoftPresenter song)."
+            "{name} isn't a kind of file songs come in. Songs come from text, lyric and ChordPro files, rich text, \
+             Word and OpenDocument files, .pro files, .sps and .sqlite songbooks and SoftPresenter songs; PDFs, \
+             PowerPoint and Keynote files and folders of pictures come in as slides."
         ));
     }
     let pro = has_extension(path, PRO_ENDING);
@@ -359,7 +364,10 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let sound = folder.join("Welcome.m4a");
         std::fs::write(&sound, [0u8, 0, 0, 0x20, b'f', b't', b'y', b'p', 0, 1, 2, 3, 4, 5]).unwrap();
-        assert!(import_file(&sound).unwrap_err().contains("isn't a kind of file songs come in"));
+        assert!(import_file(&sound).unwrap_err().contains("is a sound"));
+        let other = folder.join("Welcome.bin");
+        std::fs::write(&other, [0u8, 1, 2, 3]).unwrap();
+        assert!(import_file(&other).unwrap_err().contains("isn't a kind of file songs come in"));
         let disguised = folder.join("Welcome.txt");
         let bytes: Vec<u8> = (0..400u32).map(|n| (n % 32) as u8).collect();
         std::fs::write(&disguised, bytes).unwrap();
