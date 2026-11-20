@@ -261,6 +261,25 @@ pub fn bare(bundle: &Path) -> std::process::ExitCode {
     }
 }
 
+/// `groups`: each group name's colour and the letter key that jumps to it, as Settings › Groups
+/// shows them (they are fixed, not settings).
+fn ctl_groups() -> Reply {
+    let mut lines = Vec::new();
+    let mut data = Vec::new();
+    for (key, names) in sp_model::GROUP_KEYS {
+        let name = names.iter().find(|name| name.contains(' ')).or(names.first()).copied().unwrap_or("");
+        let color = sp_model::group_color(name);
+        let hex = format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b);
+        let mut shown = name.to_owned();
+        if let Some(first) = shown.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        lines.push(format!("{}  {shown}  {hex}", key.to_ascii_uppercase()));
+        data.push(serde_json::json!({"key": key.to_ascii_uppercase().to_string(), "group": shown, "names": names, "color": hex}));
+    }
+    Reply::with(lines.join("\n"), serde_json::json!(data))
+}
+
 /// The lines of the help for one command (the lines that begin with it, and those that go on
 /// from them), or `None` when no line does.
 fn help_for(word: &str) -> Option<String> {
@@ -405,6 +424,7 @@ const COMMANDS: &[&str] = &[
     "bibles",
     "screen",
     "settings",
+    "groups",
     "theme",
     "menu",
 ];
@@ -628,6 +648,7 @@ Screens and settings
                                edges=L,T,R,B theme=THEME|main layout=STAGE-LAYOUT
   screen delete SCREEN --yes
   settings                     the choices kept between runs
+  groups                       each group's colour, and the letter key that jumps to it
   settings set key=value…      transition=KIND[:SECONDS] media_transition=… copyright=never|first|
                                last|every ccli_licence=N start_audience=on|off continuous=on|off
                                start_with=nothing|media-playlist:NAME|announcements:SONG
@@ -792,6 +813,7 @@ impl crate::App {
             "bibles" => self.ctl_bibles(),
             "screen" => self.ctl_screen(args),
             "settings" => self.ctl_settings(args),
+            "groups" => Ok(ctl_groups()),
             "theme" => self.ctl_theme(args),
             "undo" => self.ctl_undo(el, false),
             "redo" => self.ctl_undo(el, true),
