@@ -2088,7 +2088,7 @@ fn transition_settings(ui: &mut egui::Ui, look: &mut sp_model::Transition, id: &
 }
 
 /// The video on screen: play and pause, start again, how far in it is (a click on the bar goes
-/// there), and whether it loops and has sound.
+/// there, and the playhead can be dragged), and whether it loops and has sound.
 fn video_controls(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home::VideoLive, width: f32) {
     use crate::home::VideoRequest;
     let clock = |seconds: f64| crate::audio::clock(std::time::Duration::from_secs_f64(seconds.max(0.0)));
@@ -2116,27 +2116,39 @@ fn video_controls(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home:
             ui.add_space(6.0);
             ui.add(egui::Label::new(egui::RichText::new(video.name.as_str()).size(12.0).color(TEXT)).truncate());
         });
-        let fraction = video.duration.map_or(0.0, |length| (video.position / length.max(0.001)).clamp(0.0, 1.0));
-        let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0), Sense::click());
-        let track = Rect::from_center_size(bar.center(), vec2(bar.width(), 4.0));
+        let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::click_and_drag());
+        let track = Rect::from_center_size(bar.center(), vec2(bar.width() - 8.0, 4.0));
+        let seconds_at = |x: f32, length: f64| f64::from(((x - track.min.x) / track.width()).clamp(0.0, 1.0)) * length;
+        // While the playhead is dragged it follows the pointer, not the player, which catches
+        // up a moment later (or, playing through FFmpeg, at the end of the drag).
+        let dragged = video
+            .duration
+            .zip(response.interact_pointer_pos().filter(|_| response.dragged() || response.drag_stopped()))
+            .map(|(length, at)| seconds_at(at.x, length));
+        let shown = dragged.unwrap_or(video.position);
+        let fraction = video.duration.map_or(0.0, |length| (shown / length.max(0.001)).clamp(0.0, 1.0));
+        let x = track.min.x + track.width() * fraction as f32;
         ui.painter().rect_filled(track, 2.0, LINE);
-        let done = Rect::from_min_max(track.min, pos2(track.min.x + track.width() * fraction as f32, track.max.y));
-        ui.painter().rect_filled(done, 2.0, ACCENT);
-        if let (Some(length), Some(at)) =
-            (video.duration, response.interact_pointer_pos().filter(|_| response.clicked()))
-        {
-            let to = f64::from(((at.x - track.min.x) / track.width()).clamp(0.0, 1.0)) * length;
-            state.video_request = Some(VideoRequest::Seek(to));
+        ui.painter().rect_filled(Rect::from_min_max(track.min, pos2(x, track.max.y)), 2.0, ACCENT);
+        if video.duration.is_some() && (response.hovered() || response.dragged()) {
+            ui.painter().circle_filled(pos2(x, track.center().y), 6.0, Color32::WHITE);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
-        response.on_hover_text("Click to go to that point in the video");
+        match dragged {
+            Some(to) if response.drag_stopped() => state.video_request = Some(VideoRequest::Seek(to)),
+            Some(to) => state.video_request = Some(VideoRequest::Scrub(to)),
+            None => {
+                if let (Some(length), Some(at)) =
+                    (video.duration, response.interact_pointer_pos().filter(|_| response.clicked()))
+                {
+                    state.video_request = Some(VideoRequest::Seek(seconds_at(at.x, length)));
+                }
+            }
+        }
+        response.on_hover_text("Click or drag to go to that point in the video");
         ui.horizontal(|ui| {
             let total = video.duration.map_or_else(|| "–".to_owned(), clock);
-            ui.label(
-                egui::RichText::new(format!("{} / {total}", clock(video.position)))
-                    .size(11.0)
-                    .color(TEXT_DIM)
-                    .monospace(),
-            );
+            ui.label(egui::RichText::new(format!("{} / {total}", clock(shown))).size(11.0).color(TEXT_DIM).monospace());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.selectable_label(!video.muted, "Sound").on_hover_text("Play the video's sound").clicked() {
                     state.video_request = Some(VideoRequest::Muted(!video.muted));
@@ -2464,6 +2476,59 @@ mod tests {
 
     fn press(at: egui::Pos2, pressed: bool) -> Event {
         Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
+    }
+
+    /// Runs the video controls through frames of input, and returns what each frame asked of
+    /// the video.
+    fn video_frames(video: &crate::home::VideoLive, frames: &[Vec<Event>]) -> Vec<Option<crate::home::VideoRequest>> {
+        let ctx = egui::Context::default();
+        let mut state = HomeState::default();
+        let mut asked = Vec::new();
+        for (n, events) in frames.iter().enumerate() {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))),
+                time: Some(n as f64 * 0.1),
+                events: events.clone(),
+                ..RawInput::default()
+            };
+            let output = ctx.run_ui(input, |ui| video_controls(ui, &mut state, video, 300.0));
+            output.drop_without_applying_deltas();
+            asked.push(state.video_request.take());
+        }
+        asked
+    }
+
+    #[test]
+    fn the_playhead_follows_a_drag_and_the_video_goes_where_it_is_let_go() {
+        use crate::home::VideoRequest;
+        let video = crate::home::VideoLive {
+            name: "Walk-in".to_owned(),
+            position: 0.0,
+            duration: Some(100.0),
+            playing: true,
+            looping: false,
+            muted: false,
+        };
+        // The bar is the row under the buttons; find it by where a drag along it scrubs.
+        let found = (10..100).map(|y| y as f32).find_map(|y| {
+            let frames = vec![
+                vec![Event::PointerMoved(pos2(60.0, y))],
+                vec![press(pos2(60.0, y), true)],
+                vec![Event::PointerMoved(pos2(120.0, y))],
+                vec![Event::PointerMoved(pos2(200.0, y))],
+                vec![press(pos2(200.0, y), false)],
+                vec![],
+            ];
+            let asked = video_frames(&video, &frames);
+            asked.iter().any(|a| matches!(a, Some(VideoRequest::Scrub(_)))).then_some(asked)
+        });
+        let asked = found.expect("a drag along the bar scrubs");
+        let scrubs: Vec<f64> =
+            asked.iter().filter_map(|a| if let Some(VideoRequest::Scrub(at)) = a { Some(*at) } else { None }).collect();
+        let landed = asked.iter().find_map(|a| if let Some(VideoRequest::Seek(at)) = a { Some(*at) } else { None });
+        let landed = landed.expect("letting go goes there");
+        assert!(scrubs.windows(2).all(|w| w[0] <= w[1]), "dragging right moves on: {scrubs:?}");
+        assert!(landed >= scrubs[0] && landed <= 100.0 && landed > 30.0, "{landed} after {scrubs:?}");
     }
 
     #[test]

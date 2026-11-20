@@ -2499,6 +2499,10 @@ pub enum VideoRequest {
     Muted(bool),
     /// Go to this many seconds in.
     Seek(f64),
+    /// The playhead being dragged to this many seconds in: followed live by a video the
+    /// system plays; one played through FFmpeg waits for the [`VideoRequest::Seek`] at the end,
+    /// since each jump restarts it.
+    Scrub(f64),
 }
 
 /// Something asked of the audio player from the Audio tab.

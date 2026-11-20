@@ -1405,6 +1405,8 @@ impl App {
                 live.muted = on;
             }
             VideoRequest::Seek(to) => player.seek(to),
+            VideoRequest::Scrub(to) if !player.uses_ffmpeg() => player.seek(to),
+            VideoRequest::Scrub(_) => {}
         }
         live.playing = player.playing();
         live.position = player.position();
