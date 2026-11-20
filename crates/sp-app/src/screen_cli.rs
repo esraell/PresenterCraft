@@ -1,0 +1,349 @@
+//! Command-line commands for screens (adding, changing, deleting), the settings kept between
+//! runs, and the Reflow view. Each changes the window's own state, which is saved as the
+//! window saves it, and says what it did.
+
+use crate::control::{Reply, find};
+use crate::screens::{Kind, Output, Screen};
+
+/// A change to the window's state, made once every setting asked for has been read.
+type Change = Box<dyn FnOnce(&mut crate::home::HomeState)>;
+
+fn on_off(key: &str, value: &str) -> Result<bool, String> {
+    match value.to_lowercase().as_str() {
+        "on" | "yes" | "true" => Ok(true),
+        "off" | "no" | "false" => Ok(false),
+        other => Err(format!("{key} is on or off, not {other}.")),
+    }
+}
+
+/// Where a screen goes, as typed: `display NAME`, `window`, `ndi NAME`, `automatic` or `off`.
+fn parse_output(words: &[String]) -> Result<Output, String> {
+    let usage = "display NAME | window | ndi NAME | automatic | off";
+    let rest = words.get(1..).map(|w| w.join(" ")).unwrap_or_default();
+    match words.first().map(|w| w.to_lowercase()).as_deref() {
+        Some("display") if !rest.trim().is_empty() => Ok(Output::Display(rest.trim().to_owned())),
+        Some("window") => Ok(Output::Window),
+        Some("ndi") if !rest.trim().is_empty() => Ok(Output::Ndi(rest.trim().to_owned())),
+        Some("automatic" | "auto") => Ok(Output::Automatic),
+        Some("off") => Ok(Output::Off),
+        _ => Err(usage.to_owned()),
+    }
+}
+
+fn output_words(output: &Output) -> String {
+    match output {
+        Output::Automatic => "the first other display (or a window)".to_owned(),
+        Output::Display(name) => format!("the display {name}"),
+        Output::Window => "a window".to_owned(),
+        Output::Ndi(name) => format!("NDI as {name}"),
+        Output::Off => "nowhere (off)".to_owned(),
+    }
+}
+
+impl crate::App {
+    /// `screen add|set|delete …`.
+    pub(crate) fn ctl_screen(&mut self, args: &[String]) -> Result<Reply, String> {
+        let usage = "screen add audience|stage NAME [on display NAME|window|ndi NAME|automatic] | screen set SCREEN key=value… | screen delete SCREEN --yes";
+        let words = &args[2.min(args.len())..];
+        match args.get(1).map(|w| w.to_lowercase()).as_deref() {
+            Some("add") => self.screen_add(words),
+            Some("set") => self.screen_set(words),
+            Some("delete") => {
+                let yes = words.iter().any(|w| w == "--yes");
+                let typed = words.iter().filter(|w| *w != "--yes").cloned().collect::<Vec<_>>().join(" ");
+                let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+                let names: Vec<String> = state.screens.iter().map(|s| s.name.clone()).collect();
+                let at = find("screen", &names, &typed)?;
+                if state.screens.len() < 2 {
+                    return Err(format!("{} is the only screen; there is always one.", names[at]));
+                }
+                if !yes {
+                    return Err(format!("This deletes the screen {}. Add --yes to do it.", names[at]));
+                }
+                state.screens.remove(at);
+                state.screen_selected = state.screen_selected.min(state.screens.len() - 1);
+                state.screens_changed = true;
+                Ok(Reply::done(format!("Deleted the screen {}.", names[at])))
+            }
+            _ => Err(usage.to_owned()),
+        }
+    }
+
+    fn screen_add(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "screen add audience|stage NAME [on display NAME|window|ndi NAME|automatic]";
+        let [kind, rest @ ..] = words else { return Err(usage.to_owned()) };
+        let stage = match kind.to_lowercase().as_str() {
+            "audience" => false,
+            "stage" => true,
+            _ => return Err(usage.to_owned()),
+        };
+        let (name, output) = match rest.iter().position(|w| w.eq_ignore_ascii_case("on")) {
+            Some(at) => (rest[..at].join(" "), parse_output(&rest[at + 1..])?),
+            None => (rest.join(" "), Output::Window),
+        };
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return Err(usage.to_owned());
+        }
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        if state.screens.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
+            return Err(format!("There is a screen called {name} already."));
+        }
+        let said = output_words(&output);
+        let screen = if stage { Screen::stage(name.clone(), output) } else { Screen::new(name.clone(), output) };
+        state.screens.push(screen);
+        state.screens_changed = true;
+        Ok(Reply::done(format!("Added the {} screen {name}, on {said}.", if stage { "stage" } else { "audience" })))
+    }
+
+    /// `screen set SCREEN key=value…`: name, output, kind, layers, color, edges, theme, layout.
+    fn screen_set(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "screen set SCREEN name=… output=display:NAME|window|ndi:NAME|automatic|off kind=audience|stage \
+                     layers=slides,media,props,messages,announcements color=#RRGGBB edges=LEFT,TOP,RIGHT,BOTTOM theme=THEME|main layout=STAGE-LAYOUT";
+        let at = words.iter().position(|w| w.contains('=')).filter(|at| *at > 0).ok_or(usage)?;
+        let theme_names: Vec<(sp_model::Uuid, String)> = self.themes.iter().map(|t| (t.id, t.name.clone())).collect();
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let names: Vec<String> = state.screens.iter().map(|s| s.name.clone()).collect();
+        let index = find("screen", &names, &words[..at].join(" "))?;
+        let layouts: Vec<(sp_model::Uuid, String)> =
+            state.stage_layouts.iter().map(|l| (l.id, l.name.clone())).collect();
+        let mut screen = state.screens[index].clone();
+        let mut said = Vec::new();
+        for setting in &words[at..] {
+            let (key, value) = setting.split_once('=').ok_or(usage)?;
+            match key.to_lowercase().as_str() {
+                "name" => {
+                    screen.name = value.trim().to_owned();
+                    said.push(format!("called {}", screen.name));
+                }
+                "output" => {
+                    let words: Vec<String> = match value.split_once(':') {
+                        Some((kind, name)) => vec![kind.to_owned(), name.to_owned()],
+                        None => vec![value.to_owned()],
+                    };
+                    screen.output = parse_output(&words)?;
+                    said.push(format!("on {}", output_words(&screen.output)));
+                }
+                "kind" => {
+                    screen.kind = match value.to_lowercase().as_str() {
+                        "audience" => Kind::Audience,
+                        "stage" => Kind::Stage,
+                        other => return Err(format!("kind is audience or stage, not {other}.")),
+                    };
+                    said.push(format!(
+                        "a{} {value} screen",
+                        if value.eq_ignore_ascii_case("audience") { "n" } else { "" }
+                    ));
+                }
+                "layers" => {
+                    let wanted: Vec<String> =
+                        value.split(',').map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect();
+                    let known = ["slides", "media", "props", "messages", "announcements"];
+                    if let Some(bad) = wanted.iter().find(|w| !known.contains(&w.as_str()) && w.as_str() != "all") {
+                        return Err(format!(
+                            "{bad} isn't a layer: slides, media, props, messages, announcements (or all)."
+                        ));
+                    }
+                    let has = |layer: &str| wanted.iter().any(|w| w == layer || w == "all");
+                    screen.look.slides = has("slides");
+                    screen.look.media = has("media");
+                    screen.look.props = has("props");
+                    screen.look.messages = has("messages");
+                    screen.look.announcements = has("announcements");
+                    said.push(format!("shows {}", wanted.join(", ")));
+                }
+                "color" | "colour" => {
+                    screen.look.color = crate::slide_cli::parse_color(value)
+                        .ok_or_else(|| format!("{value} isn't a colour: #RRGGBB, #RRGGBBAA or a colour's name."))?;
+                    said.push(format!("colour {value}"));
+                }
+                "edges" | "mask" => {
+                    let numbers: Vec<f32> = value
+                        .split(',')
+                        .map(|n| n.trim().parse::<f32>())
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| "edges are four numbers, in slide pixels: left,top,right,bottom".to_owned())?;
+                    let [left, top, right, bottom] = numbers.as_slice() else {
+                        return Err("edges are four numbers, in slide pixels: left,top,right,bottom".to_owned());
+                    };
+                    if numbers.iter().any(|n| !(0.0..=540.0).contains(n)) {
+                        return Err("Each edge covers 0 to 540 slide pixels.".to_owned());
+                    }
+                    screen.look.mask = [*left, *top, *right, *bottom];
+                    said.push(format!("edges covered {left},{top},{right},{bottom}"));
+                }
+                "theme" => {
+                    screen.theme = if value.eq_ignore_ascii_case("main") || value.eq_ignore_ascii_case("none") {
+                        None
+                    } else {
+                        let names: Vec<String> = theme_names.iter().map(|(_, n)| n.clone()).collect();
+                        Some(theme_names[find("theme", &names, value)?].0)
+                    };
+                    said.push(format!("theme {value}"));
+                }
+                "layout" => {
+                    let names: Vec<String> = layouts.iter().map(|(_, n)| n.clone()).collect();
+                    let which = find("stage layout", &names, value)
+                        .map_err(|problem| format!("{problem} The stage layouts: {}.", names.join(", ")))?;
+                    screen.stage_layout = Some(layouts[which].0);
+                    said.push(format!("stage layout {}", names[which]));
+                }
+                other => return Err(format!("{other} isn't a screen setting. {usage}")),
+            }
+        }
+        let was = std::mem::replace(&mut state.screens[index], screen);
+        state.screens_changed = true;
+        Ok(Reply::done(format!("The screen {}: {}.", was.name, said.join(", "))))
+    }
+
+    /// `settings`, and `settings set key=value…`: the choices kept between runs.
+    pub(crate) fn ctl_settings(&mut self, args: &[String]) -> Result<Reply, String> {
+        let usage = "settings | settings set transition=KIND[:SECONDS] media_transition=… copyright=never|first|last|every \
+                     ccli_licence=NUMBER start_audience=on|off start_with=nothing|media-playlist:NAME|announcements:SONG \
+                     continuous=on|off view=grid|easy|table columns=1-12";
+        let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+        if args.get(1).is_none() {
+            let prefs = state.prefs();
+            let start_with = match &prefs.start_with {
+                crate::service::StartWith::Nothing => "nothing".to_owned(),
+                crate::service::StartWith::MediaPlaylist { id } => state
+                    .media_playlists
+                    .iter()
+                    .find(|p| p.id == *id)
+                    .map_or("a media playlist (gone)".to_owned(), |p| format!("the media playlist {}", p.name)),
+                crate::service::StartWith::Announcements { song } => {
+                    crate::studio::playlist_song(&self.show, state, song).map_or("a song (gone)".to_owned(), |at| {
+                        format!("the announcements song {}", self.show.presentations()[at].title)
+                    })
+                }
+            };
+            let transition = |t: Option<sp_model::Transition>| {
+                t.map_or("Dissolve".to_owned(), |t| format!("{} {:.1}s", t.kind.name(), t.seconds))
+            };
+            let lines = [
+                format!("transition: {}", transition(prefs.transition)),
+                format!("media transition: {}", transition(prefs.media_transition)),
+                format!("copyright line: {}", prefs.copyright_show.name()),
+                format!("CCLI licence: {}", if prefs.ccli_licence.is_empty() { "(none)" } else { &prefs.ccli_licence }),
+                format!("audience screens at start: {}", if prefs.start_audience_off { "off" } else { "on" }),
+                format!("starts with: {start_with}"),
+                format!("continuous playlist: {}", if prefs.continuous { "on" } else { "off" }),
+                format!("slides: {} view, {} across", prefs.slide_view, prefs.columns),
+            ];
+            let data = serde_json::to_value(&prefs).unwrap_or_default();
+            return Ok(Reply::with(lines.join("\n"), data));
+        }
+        if !args[1].eq_ignore_ascii_case("set") || args.len() < 3 {
+            return Err(usage.to_owned());
+        }
+        let media_playlists: Vec<(sp_model::Uuid, String)> =
+            state.media_playlists.iter().map(|p| (p.id, p.name.clone())).collect();
+        let mut said = Vec::new();
+        let mut changes: Vec<Change> = Vec::new();
+        for setting in &args[2..] {
+            let (key, value) = setting.split_once('=').ok_or_else(|| format!("{setting} isn't key=value. {usage}"))?;
+            match key.to_lowercase().as_str() {
+                "transition" | "media_transition" => {
+                    let words: Vec<String> =
+                        value.split([':', ' ']).filter(|w| !w.is_empty()).map(str::to_owned).collect();
+                    let transition = crate::service_cli::parse_transition(&words)?.unwrap_or_default();
+                    let media = key.eq_ignore_ascii_case("media_transition");
+                    said.push(format!(
+                        "{} {} {:.1}s",
+                        if media { "media transition" } else { "transition" },
+                        transition.kind.name(),
+                        transition.seconds
+                    ));
+                    changes.push(Box::new(move |state| {
+                        if media {
+                            state.media_transition = transition;
+                        } else {
+                            state.transition = transition;
+                        }
+                    }));
+                }
+                "copyright" => {
+                    let show = match value.to_lowercase().as_str() {
+                        "never" | "off" => crate::service::CopyrightShow::Never,
+                        "first" => crate::service::CopyrightShow::FirstSlide,
+                        "last" => crate::service::CopyrightShow::LastSlide,
+                        "every" | "all" => crate::service::CopyrightShow::EverySlide,
+                        other => return Err(format!("copyright is never, first, last or every, not {other}.")),
+                    };
+                    said.push(format!("copyright line {}", show.name().to_lowercase()));
+                    changes.push(Box::new(move |state| state.copyright_show = show));
+                }
+                "ccli_licence" | "ccli" | "licence" | "license" => {
+                    if !value.chars().all(|c| c.is_ascii_digit()) {
+                        return Err(format!("A CCLI licence number is digits only, not {value}."));
+                    }
+                    let value = value.to_owned();
+                    said.push(format!("CCLI licence {value}"));
+                    changes.push(Box::new(move |state| state.ccli_licence = value));
+                }
+                "start_audience" => {
+                    let on = on_off(key, value)?;
+                    said.push(format!("audience screens {} at start", if on { "on" } else { "off" }));
+                    changes.push(Box::new(move |state| state.start_audience_off = !on));
+                }
+                "continuous" => {
+                    let on = on_off(key, value)?;
+                    said.push(format!("continuous playlist {}", if on { "on" } else { "off" }));
+                    changes.push(Box::new(move |state| state.continuous = on));
+                }
+                "start_with" => {
+                    let start = match value.split_once(':') {
+                        None if value.eq_ignore_ascii_case("nothing") => crate::service::StartWith::Nothing,
+                        Some((kind, name)) if kind.eq_ignore_ascii_case("media-playlist") => {
+                            let names: Vec<String> = media_playlists.iter().map(|(_, n)| n.clone()).collect();
+                            crate::service::StartWith::MediaPlaylist {
+                                id: media_playlists[find("media playlist", &names, name)?].0,
+                            }
+                        }
+                        Some((kind, name)) if kind.eq_ignore_ascii_case("announcements") => {
+                            let at = self.find_song_as_is(name)?;
+                            let key = state.song_keys.get(at).cloned().ok_or("That song can't start with the app.")?;
+                            crate::service::StartWith::Announcements { song: key }
+                        }
+                        _ => return Err("start_with is nothing, media-playlist:NAME or announcements:SONG.".to_owned()),
+                    };
+                    said.push(format!("starts with {value}"));
+                    changes.push(Box::new(move |state| state.start_with = start));
+                }
+                "view" => {
+                    let view = match value.to_lowercase().as_str() {
+                        "grid" => crate::home::SlideView::Grid,
+                        "easy" => crate::home::SlideView::Easy,
+                        "table" => crate::home::SlideView::Table,
+                        other => return Err(format!("view is grid, easy or table, not {other}.")),
+                    };
+                    said.push(format!("{value} view"));
+                    changes.push(Box::new(move |state| state.slide_view = view));
+                }
+                "columns" => {
+                    let columns =
+                        value.parse::<usize>().ok().filter(|c| (1..=12).contains(c)).ok_or("columns is 1 to 12.")?;
+                    said.push(format!("{columns} slides across"));
+                    changes.push(Box::new(move |state| state.columns = columns));
+                }
+                other => return Err(format!("{other} isn't a setting. {usage}")),
+            }
+        }
+        if let Some(running) = self.running.as_mut() {
+            for change in changes {
+                change(&mut running.home_state);
+            }
+            running.home_window.request_redraw();
+        }
+        Ok(Reply::done(format!("Settings: {}.", said.join(", "))))
+    }
+
+    /// `view reflow [SONG]`: the Reflow view, the song's words as text to edit.
+    pub(crate) fn view_reflow(&mut self, typed: &str) -> Result<Reply, String> {
+        let at = if typed.trim().is_empty() { self.show.selected() } else { self.find_song(typed)? };
+        let song = self.show.presentations().get(at).cloned().ok_or("That song is gone.")?;
+        let text = sp_model::to_song_text(&song);
+        self.with_state(|state| state.reflow = Some((at, text)));
+        Ok(Reply::done(format!("Showing {} in the Reflow view.", song.title)))
+    }
+}

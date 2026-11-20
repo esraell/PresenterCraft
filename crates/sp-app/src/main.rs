@@ -28,6 +28,7 @@ mod outside;
 mod pack;
 mod props;
 mod renamed;
+mod screen_cli;
 mod screens;
 mod service;
 mod service_cli;
@@ -819,6 +820,8 @@ struct App {
     /// done (`sp job N`, and `--wait`); the number of the last one started.
     jobs: Vec<(u64, Option<Result<String, String>>)>,
     last_job: Option<u64>,
+    /// Bible downloads started from the command line: each job's number, the Bible's id and name.
+    bible_jobs: Vec<(u64, String, String)>,
     /// The socket `softpresenter ctl` reaches the app through, while it listens.
     _control: Option<control::Listening>,
     show: Show,
@@ -3113,6 +3116,34 @@ impl App {
         }
         self.last_job = Some(job);
         job
+    }
+
+    /// Marks Bible downloads started from the command line done once their Bible is installed
+    /// (or the download has stopped without it).
+    fn finish_bible_jobs(&mut self) {
+        if self.bible_jobs.is_empty() {
+            return;
+        }
+        let Some(running) = self.running.as_mut() else { return };
+        let page = &mut running.home_state.bible;
+        let mut done = Vec::new();
+        self.bible_jobs.retain(|(job, id, name)| {
+            if page.shelf.position(id).is_some() {
+                done.push((*job, Ok(format!("Installed the {name}."))));
+                false
+            } else if !page.downloads.is_busy(id) {
+                let why = page.options.problem.clone().unwrap_or_else(|| "the download stopped".to_owned());
+                done.push((*job, Err(format!("The {name} wasn't installed: {why}"))));
+                false
+            } else {
+                true
+            }
+        });
+        for (job, result) in done {
+            if let Some((_, kept)) = self.jobs.iter_mut().find(|(have, _)| *have == job) {
+                *kept = Some(result);
+            }
+        }
     }
 
     /// Finishes the song packs written or read on threads of their own since the last look.
@@ -5998,6 +6029,7 @@ impl ApplicationHandler<AppEvent> for App {
                         home::ExportRequest::Playlist(at) => self.export_from_window(&[], Some(at)),
                     }
                 }
+                self.finish_bible_jobs();
                 // Reload or Keep mine, chosen in the bar for a file changed outside the app.
                 if let Some((what, reload)) = self.running.as_mut().and_then(|r| r.home_state.waiting_choice.take()) {
                     self.choose_outside(what, reload);
@@ -6291,6 +6323,7 @@ fn main() -> ExitCode {
         pack_rx,
         jobs: Vec::new(),
         last_job: None,
+        bible_jobs: Vec::new(),
         // Commands from `softpresenter ctl` come in on the control socket. Without it (another
         // copy has it, say) the app runs as usual.
         _control: {

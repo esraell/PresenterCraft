@@ -113,10 +113,11 @@ impl crate::App {
         }
         for setting in words {
             let (key, value) = setting.split_once('=').ok_or_else(|| format!("{setting} isn't key=value."))?;
+            let switch = |value: &str| on_off(value).map_err(|_| format!("{key} is on or off, not {value}."));
             match key.to_lowercase().as_str() {
-                "verses" | "numbers" | "verse_numbers" => options.show_verse_numbers = on_off(value)?,
-                "break" | "break_on_new_verse" => options.break_on_new_verse = on_off(value)?,
-                "translation" | "name" | "display_translation" => options.display_translation = on_off(value)?,
+                "verses" | "numbers" | "verse_numbers" => options.show_verse_numbers = switch(value)?,
+                "break" | "break_on_new_verse" => options.break_on_new_verse = switch(value)?,
+                "translation" | "name" | "display_translation" => options.display_translation = switch(value)?,
                 "reference" => {
                     options.reference = match value.to_lowercase().as_str() {
                         "verse" | "verses" => crate::bible::ReferenceStyle::VerseReferences,
@@ -196,7 +197,8 @@ impl crate::App {
         let at = offered
             .iter()
             .position(|b| b.short.eq_ignore_ascii_case(typed) || b.id.eq_ignore_ascii_case(typed))
-            .map_or_else(|| find("Bible offered", &names, typed), Ok)?;
+            .map_or_else(|| find("Bible offered", &names, typed), Ok)
+            .map_err(|problem| format!("{problem} Those offered: {}.", names.join(", ")))?;
         let bible = offered[at];
         if state.bible.shelf.position(bible.id).is_some() {
             return Err(format!("The {} is installed already.", bible.name));
@@ -205,6 +207,9 @@ impl crate::App {
             return Ok(Reply::done(format!("The {} is downloading already.", bible.name)));
         }
         state.bible.downloads.start(bible.id, bible.checksum, move || ctx.request_repaint());
+        // A job number, so `--wait` and `job N` cover it as they cover song packs.
+        let job = self.start_job();
+        self.bible_jobs.push((job, bible.id.to_owned(), bible.name.to_owned()));
         Ok(Reply::done(format!("Downloading the {}; bibles lists it once it is installed.", bible.name)))
     }
 

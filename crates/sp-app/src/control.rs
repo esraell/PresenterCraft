@@ -186,9 +186,15 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     let json = args.iter().any(|a| a == "--json");
     let wait = args.iter().any(|a| a == "--wait");
     let args = with_full_paths(args.into_iter().filter(|a| a != "--json" && a != "--wait").collect());
-    // Help needs no app: it is printed here.
+    // Help needs no app: it is printed here; `help COMMAND` prints that command's lines.
     let reply = if args.first().is_none_or(|w| w.eq_ignore_ascii_case("help")) {
-        Reply::done(HELP.trim_end())
+        match args.get(1) {
+            Some(word) => match help_for(word) {
+                Some(text) => Reply::done(text),
+                None => Reply::failed(format!("No command {word}. sp help lists them all.")),
+            },
+            None => Reply::done(HELP.trim_end()),
+        }
     } else {
         send(&args).unwrap_or_else(Reply::failed)
     };
@@ -253,6 +259,31 @@ pub fn bare(bundle: &Path) -> std::process::ExitCode {
             std::process::ExitCode::from(1)
         }
     }
+}
+
+/// The lines of the help for one command (the lines that begin with it, and those that go on
+/// from them), or `None` when no line does.
+fn help_for(word: &str) -> Option<String> {
+    let word = word.to_lowercase();
+    let mut lines = Vec::new();
+    let mut taking = false;
+    for line in HELP.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if indent == 2 {
+            let first = trimmed.split(|c: char| c.is_whitespace() || c == '|').next().unwrap_or("").to_lowercase();
+            taking =
+                first == word || trimmed.to_lowercase().split(" | ").any(|part| part.starts_with(&format!("{word} ")));
+            if taking {
+                lines.push(line.to_owned());
+            }
+        } else if taking && indent > 2 {
+            lines.push(line.to_owned());
+        } else {
+            taking = false;
+        }
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// The app doesn't share the terminal's folder, so a file or folder named in `song import` or
@@ -372,6 +403,8 @@ const COMMANDS: &[&str] = &[
     "video",
     "test",
     "bibles",
+    "screen",
+    "settings",
     "theme",
     "menu",
 ];
@@ -587,6 +620,21 @@ Changing a slide (each change is saved, can be undone, and shows on screen at on
 
   Put a song name with spaces in quotes: slide style \"Blessed Assurance\" all size=90
 
+Screens and settings
+  screens                      each screen and what it is doing
+  screen add audience|stage NAME [on display NAME|window|ndi NAME|automatic]
+  screen set SCREEN key=value… name= output=display:NAME|window|ndi:NAME|automatic|off
+                               kind=audience|stage layers=slides,media,… color=#RRGGBB
+                               edges=L,T,R,B theme=THEME|main layout=STAGE-LAYOUT
+  screen delete SCREEN --yes
+  settings                     the choices kept between runs
+  settings set key=value…      transition=KIND[:SECONDS] media_transition=… copyright=never|first|
+                               last|every ccli_licence=N start_audience=on|off continuous=on|off
+                               start_with=nothing|media-playlist:NAME|announcements:SONG
+                               view=grid|easy|table columns=1-12
+  view reflow [SONG]           a song's words as text to edit
+  help COMMAND                 the help for one command
+
 Undo
   undo                         undo the last change to a song, whatever the window shows
   redo                         do it again
@@ -725,6 +773,7 @@ impl crate::App {
                 self.with_state(|state| state.identify = on);
                 Reply::done(if on { "Identifying the screens." } else { "Stopped identifying the screens." })
             }),
+            "view" if args.get(1).is_some_and(|w| w.eq_ignore_ascii_case("reflow")) => self.view_reflow(&rest(args, 2)),
             "view" => self.ctl_view(args.get(1).map(String::as_str).unwrap_or("")),
             "message" => self.ctl_message(args),
             "prop" => self.ctl_prop(args),
@@ -741,6 +790,8 @@ impl crate::App {
             "video" => self.ctl_video(args),
             "test" => self.ctl_test(args),
             "bibles" => self.ctl_bibles(),
+            "screen" => self.ctl_screen(args),
+            "settings" => self.ctl_settings(args),
             "theme" => self.ctl_theme(args),
             "undo" => self.ctl_undo(el, false),
             "redo" => self.ctl_undo(el, true),

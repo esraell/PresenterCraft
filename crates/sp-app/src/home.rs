@@ -612,14 +612,20 @@ impl BiblePage {
     pub fn remove_bible(&mut self, index: usize) {
         match self.shelf.remove(index) {
             Ok(()) => {
+                // A row that showed the Bible removed goes, and the rows close up (one always
+                // stays, showing the first Bible); the rest keep theirs.
+                self.rows.retain(|row| row.bible != Some(index));
                 for row in &mut self.rows {
-                    match row.bible {
-                        Some(at) if at == index => row.bible = Some(0),
-                        Some(at) if at > index => row.bible = Some(at - 1),
-                        _ => {}
+                    if let Some(at) = row.bible
+                        && at > index
+                    {
+                        row.bible = Some(at - 1);
                     }
                 }
-                self.made_with.clear();
+                if self.rows.is_empty() {
+                    self.rows.push(BibleRow { bible: Some(0), verse: None, reference: None });
+                }
+                self.assign_boxes();
             }
             Err(problem) => self.options.problem = Some(problem),
         }

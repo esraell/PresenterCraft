@@ -384,6 +384,13 @@ feature changes, this page changes in the same commit.
   slide style keys and x= y= w= h=), `theme template THEME TEMPLATE for=songs|bible|both|none`;
   `song arrangements SONG`, `song arrangement SONG use NAME|none`, `set NAME GROUP…`, `delete
   NAME`.
+- Screens and settings from the command line: `screen add audience|stage NAME [on display
+  NAME|window|ndi NAME|automatic]`, `screen set SCREEN key=value…` (name, output, kind, layers,
+  colour, edges, theme, stage layout), `screen delete SCREEN --yes`; `settings` and `settings set
+  key=value…` (transitions, the copyright line and CCLI licence, the audience screens at start,
+  what starts with the app, the continuous playlist, the slide view and size); `view reflow
+  [SONG]`; and `help COMMAND` for one command's help, without the app running. Bible downloads
+  started from the command line have a job number, for `--wait` and `sp job N`.
 - `sp …` (full name `softpresenter`), installed from SoftPresenter › Install Command Line Tool…,
   controls the running app from a terminal, a script or an AI agent (`sp status`, `sp next`):
   what is on screen, the lists, going to slides, clearing, media, messages, props, timers,
