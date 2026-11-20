@@ -1731,7 +1731,8 @@ pub fn program_panel(
             );
         }
         if let Some(video) = state.video_live.clone() {
-            video_controls(ui, state, &video, width);
+            let compact = ui.available_height() < ROOMY_COLUMN;
+            video_controls(ui, state, &video, width, compact);
         }
         ui.add_space(2.0);
 
@@ -2368,148 +2369,205 @@ const ON: Color32 = Color32::from_rgb(52, 199, 89);
 /// How far Forward goes in the video on screen, in seconds.
 const VIDEO_STEP: f64 = 10.0;
 
+/// How tall the right column's room under the preview must be for the video's controls to take
+/// their full size; in less, they take two rows, leaving the tabs under them room.
+const ROOMY_COLUMN: f32 = 650.0;
+
 /// The video on screen, as a media player shows it: its name; a slim bar to click or drag
 /// through, the playhead showing under the pointer; the time gone and the time left; and the
 /// controls in one group about Play or Pause in the middle: Loop, Start Over, Play or Pause,
-/// Forward ten seconds, and Sound.
-fn video_controls(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home::VideoLive, width: f32) {
+/// Forward ten seconds, and Sound. `compact` (a short window) puts the same in two rows: the
+/// name with the times, then Play or Pause and Start Over, the bar, and Forward, Loop and Sound.
+fn video_controls(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home::VideoLive, width: f32, compact: bool) {
     use crate::home::VideoRequest;
     let clock = |seconds: f64| crate::audio::clock(std::time::Duration::from_secs_f64(seconds.max(0.0)));
+    let length = video.duration;
+    let left = |shown: f64| length.map_or_else(|| "–".to_owned(), |length| format!("−{}", clock(length - shown)));
+    // How big the buttons and their icons are.
+    let scale = if compact { 0.75 } else { 1.0 };
     // A round button that is only its icon: a patch under the pointer.
     let round = |ui: &egui::Ui, at: egui::Pos2, id: &str, hint: &str| {
-        let cell = Rect::from_center_size(at, vec2(34.0, 34.0));
+        let radius = 17.0 * scale;
+        let cell = Rect::from_center_size(at, egui::Vec2::splat(radius * 2.0));
         let response = ui.interact(cell, ui.scope_id().with(id), Sense::click());
         if response.hovered() {
-            ui.painter().circle_filled(at, 17.0, Color32::from_white_alpha(18));
+            ui.painter().circle_filled(at, radius, Color32::from_white_alpha(18));
         }
         response.on_hover_text(hint)
     };
-    egui::Frame::new()
-        .fill(CARD)
-        .corner_radius(10)
-        .inner_margin(egui::Margin { left: 14, right: 14, top: 10, bottom: 8 })
-        .show(ui, |ui| {
-            ui.set_width(width - 28.0);
-            ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
-            // The name, with a small mark that it is a video.
-            ui.horizontal(|ui| {
-                let (mark, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-                icons::paint(ui.painter(), Icon::Camera, mark, TEXT_DIM);
-                ui.add(
-                    egui::Label::new(egui::RichText::new(video.name.as_str()).font(semibold(12.5)).color(TEXT))
-                        .truncate(),
-                );
-            });
+    let margin = if compact {
+        egui::Margin { left: 10, right: 10, top: 8, bottom: 6 }
+    } else {
+        egui::Margin { left: 14, right: 14, top: 10, bottom: 8 }
+    };
+    egui::Frame::new().fill(CARD).corner_radius(10).inner_margin(margin).show(ui, |ui| {
+        ui.set_width(width - f32::from(margin.left + margin.right));
+        ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
+        // The name, with a small mark that it is a video; short, the times at its right.
+        ui.horizontal(|ui| {
+            let (mark, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+            icons::paint(ui.painter(), Icon::Camera, mark, TEXT_DIM);
+            let name =
+                egui::Label::new(egui::RichText::new(video.name.as_str()).font(semibold(12.5)).color(TEXT)).truncate();
+            if compact {
+                let times = format!("{} · {}", clock(video.position), left(video.position));
+                let font = FontId::proportional(11.0);
+                let wide = ui.painter().layout_no_wrap(times.clone(), font.clone(), TEXT_DIM).size().x;
+                let room = (ui.available_width() - wide - 8.0).max(0.0);
+                ui.allocate_ui(vec2(room, 16.0), |ui| ui.add(name));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(egui::RichText::new(times).font(font).color(TEXT_DIM));
+                });
+            } else {
+                ui.add(name);
+            }
+        });
+        // Where the bar, the times and the buttons go.
+        let (bar, times, row) = if compact {
+            let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+            let bar =
+                Rect::from_x_y_ranges(row.min.x + 64.0..=row.max.x - 88.0, row.center().y - 8.0..=row.center().y + 8.0);
+            (bar, None, row)
+        } else {
             ui.add_space(6.0);
-            let length = video.duration;
-            // The bar: a slim rounded track, the part played in white, the playhead under the
-            // pointer (and while dragged).
-            let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::click_and_drag());
-            let active = response.hovered() || response.dragged();
-            let track = Rect::from_center_size(bar.center(), vec2(bar.width(), if active { 6.0 } else { 4.0 }));
-            let seconds_at =
-                |x: f32, length: f64| f64::from(((x - track.min.x) / track.width()).clamp(0.0, 1.0)) * length;
-            // While the playhead is dragged it follows the pointer, not the player, which
-            // catches up a moment later (or, playing through FFmpeg, at the end of the drag).
-            let dragged = length
-                .zip(response.interact_pointer_pos().filter(|_| response.dragged() || response.drag_stopped()))
-                .map(|(length, at)| seconds_at(at.x, length));
-            let shown = dragged.unwrap_or(video.position);
-            let fraction = length.map_or(0.0, |length| (shown / length.max(0.001)).clamp(0.0, 1.0));
-            let x = track.min.x + track.width() * fraction as f32;
-            ui.painter().rect_filled(track, 3.0, Color32::from_white_alpha(38));
-            ui.painter().rect_filled(Rect::from_min_max(track.min, pos2(x, track.max.y)), 3.0, Color32::WHITE);
-            if active && let Some(length) = length {
-                ui.painter().circle_filled(pos2(x, track.center().y), 7.0, Color32::WHITE);
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                // Where a click would go, over the bar.
-                if let Some(hover) = response.hover_pos().filter(|_| !response.dragged()) {
-                    let tip = clock(seconds_at(hover.x, length));
-                    let at = pos2(hover.x.clamp(track.min.x + 16.0, track.max.x - 16.0), bar.min.y - 9.0);
-                    let galley = ui.painter().layout_no_wrap(tip, FontId::proportional(11.0), TEXT);
-                    let pill = Rect::from_center_size(at, galley.size() + vec2(10.0, 4.0));
-                    ui.painter().rect_filled(pill, 4.0, Color32::from_black_alpha(200));
-                    ui.painter().galley(pill.min + vec2(5.0, 2.0), galley, TEXT);
-                }
-            }
-            match dragged {
-                Some(to) if response.drag_stopped() => state.video_request = Some(VideoRequest::Seek(to)),
-                Some(to) => state.video_request = Some(VideoRequest::Scrub(to)),
-                None => {
-                    if let (Some(length), Some(at)) =
-                        (length, response.interact_pointer_pos().filter(|_| response.clicked()))
-                    {
-                        state.video_request = Some(VideoRequest::Seek(seconds_at(at.x, length)));
-                    }
-                }
-            }
-            // The time gone, and the time left.
+            let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::hover());
             let (times, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::hover());
-            let left = length.map_or_else(|| "–".to_owned(), |length| format!("−{}", clock(length - shown)));
+            let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
+            (bar, Some(times), row)
+        };
+        let shown = video_bar(ui, state, video, bar);
+        // The time gone, and the time left.
+        if let Some(times) = times {
             let font = FontId::proportional(11.0);
             ui.painter().text(times.left_center(), Align2::LEFT_CENTER, clock(shown), font.clone(), TEXT_DIM);
-            ui.painter().text(times.right_center(), Align2::RIGHT_CENTER, left, font, TEXT_DIM);
-            // The controls, one group about Play or Pause.
-            let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
+            ui.painter().text(times.right_center(), Align2::RIGHT_CENTER, left(shown), font, TEXT_DIM);
+        }
+        // Play or Pause, Start Over, Forward, Loop and Sound.
+        let [play_at, start_at, forward_at, loop_at, sound_at] = if compact {
+            let y = row.center().y;
+            [15.0, 45.0, -69.0, -41.0, -13.0].map(|x: f32| pos2(if x > 0.0 { row.min.x + x } else { row.max.x + x }, y))
+        } else {
             let middle = row.center();
-            let step = 52.0;
-            let slot = |n: f32| middle + vec2(step * n, 0.0);
-            // Play or Pause: the biggest, a white circle.
-            let big = ui.interact(
-                Rect::from_center_size(middle, vec2(42.0, 42.0)),
-                ui.scope_id().with("video play"),
-                Sense::click(),
-            );
-            ui.painter().circle_filled(middle, if big.hovered() { 21.0 } else { 20.0 }, Color32::WHITE);
-            let (play, words) = if video.playing { (Icon::Pause, "Pause") } else { (Icon::Play, "Play") };
-            let nudge = if video.playing { 0.0 } else { 1.5 };
-            icons::paint(
-                ui.painter(),
-                play,
-                Rect::from_center_size(middle + vec2(nudge, 0.0), vec2(16.0, 16.0)),
-                Color32::from_gray(28),
-            );
-            if big.on_hover_text(words).clicked() {
-                state.video_request = Some(VideoRequest::TogglePause);
+            [0.0, -1.0, 1.0, -2.0, 2.0].map(|n: f32| middle + vec2(52.0 * n, 0.0))
+        };
+        // Play or Pause: the biggest, a white circle.
+        let radius = 20.0 * scale;
+        let big = ui.interact(
+            Rect::from_center_size(play_at, egui::Vec2::splat(radius * 2.0 + 2.0)),
+            ui.scope_id().with("video play"),
+            Sense::click(),
+        );
+        ui.painter().circle_filled(play_at, if big.hovered() { radius + 1.0 } else { radius }, Color32::WHITE);
+        let (play, words) = if video.playing { (Icon::Pause, "Pause") } else { (Icon::Play, "Play") };
+        let nudge = if video.playing { 0.0 } else { 1.5 * scale };
+        icons::paint(
+            ui.painter(),
+            play,
+            Rect::from_center_size(play_at + vec2(nudge, 0.0), egui::Vec2::splat(16.0 * scale)),
+            Color32::from_gray(28),
+        );
+        if big.on_hover_text(words).clicked() {
+            state.video_request = Some(VideoRequest::TogglePause);
+        }
+        // Start Over, and Forward ten seconds.
+        if round(ui, start_at, "video start", "Start over, from the beginning").clicked() {
+            state.video_request = Some(VideoRequest::Restart);
+        }
+        icons::paint(
+            ui.painter(),
+            Icon::ToStart,
+            Rect::from_center_size(start_at, egui::Vec2::splat(15.0 * scale)),
+            TEXT,
+        );
+        let forward = round(ui, forward_at, "video forward", "Forward 10 seconds");
+        // The arrow that turns clockwise (the icon named Back is drawn that way), with 10 in it.
+        icons::paint(
+            ui.painter(),
+            Icon::Back,
+            Rect::from_center_size(forward_at, egui::Vec2::splat(20.0 * scale)),
+            TEXT,
+        );
+        let ten = FontId::proportional(if compact { 7.5 } else { 8.5 });
+        ui.painter().text(forward_at + vec2(0.0, 1.5 * scale), Align2::CENTER_CENTER, "10", ten, TEXT);
+        if forward.clicked()
+            && let Some(length) = length
+        {
+            state.video_request = Some(VideoRequest::Seek((video.position + VIDEO_STEP).min(length)));
+        }
+        // Loop and Sound: green while it loops; a speaker, struck through while muted.
+        let (loop_ink, loop_hint) = if video.looping {
+            (ON, "Looping: it starts again at the end. Click to stop looping")
+        } else {
+            (TEXT_FAINT, "Not looping: it stops at the end. Click to loop")
+        };
+        if round(ui, loop_at, "video loop", loop_hint).clicked() {
+            state.video_request = Some(VideoRequest::Looping(!video.looping));
+        }
+        icons::paint(
+            ui.painter(),
+            Icon::Loop,
+            Rect::from_center_size(loop_at, egui::Vec2::splat(17.0 * scale)),
+            loop_ink,
+        );
+        if video.looping {
+            ui.painter().circle_filled(loop_at + vec2(0.0, 13.0 * scale), 1.8 * scale, ON);
+        }
+        let (sound, sound_ink, sound_hint) = if video.muted {
+            (Icon::Muted, TEXT_FAINT, "Muted. Click to play its sound")
+        } else {
+            (Icon::Sound, TEXT, "Its sound plays. Click to mute")
+        };
+        if round(ui, sound_at, "video sound", sound_hint).clicked() {
+            state.video_request = Some(VideoRequest::Muted(!video.muted));
+        }
+        icons::paint(ui.painter(), sound, Rect::from_center_size(sound_at, egui::Vec2::splat(17.0 * scale)), sound_ink);
+    });
+}
+
+/// The bar of the video on screen, in `bar`: a slim rounded track, the part played in white, the
+/// playhead under the pointer (and while dragged), and the time a click would go to over it.
+/// Clicking or dragging asks for the video to go there. Returns the time it shows.
+fn video_bar(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home::VideoLive, bar: Rect) -> f64 {
+    use crate::home::VideoRequest;
+    let clock = |seconds: f64| crate::audio::clock(std::time::Duration::from_secs_f64(seconds.max(0.0)));
+    let length = video.duration;
+    let response = ui.interact(bar, ui.scope_id().with("video bar"), Sense::click_and_drag());
+    let active = response.hovered() || response.dragged();
+    let track = Rect::from_center_size(bar.center(), vec2(bar.width(), if active { 6.0 } else { 4.0 }));
+    let seconds_at = |x: f32, length: f64| f64::from(((x - track.min.x) / track.width()).clamp(0.0, 1.0)) * length;
+    // While the playhead is dragged it follows the pointer, not the player, which catches up a
+    // moment later (or, playing through FFmpeg, at the end of the drag).
+    let dragged = length
+        .zip(response.interact_pointer_pos().filter(|_| response.dragged() || response.drag_stopped()))
+        .map(|(length, at)| seconds_at(at.x, length));
+    let shown = dragged.unwrap_or(video.position);
+    let fraction = length.map_or(0.0, |length| (shown / length.max(0.001)).clamp(0.0, 1.0));
+    let x = track.min.x + track.width() * fraction as f32;
+    ui.painter().rect_filled(track, 3.0, Color32::from_white_alpha(38));
+    ui.painter().rect_filled(Rect::from_min_max(track.min, pos2(x, track.max.y)), 3.0, Color32::WHITE);
+    if active && let Some(length) = length {
+        ui.painter().circle_filled(pos2(x, track.center().y), 7.0, Color32::WHITE);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        // Where a click would go, over the bar.
+        if let Some(hover) = response.hover_pos().filter(|_| !response.dragged()) {
+            let tip = clock(seconds_at(hover.x, length));
+            let at = pos2(hover.x.clamp(track.min.x + 16.0, track.max.x - 16.0), bar.min.y - 9.0);
+            let galley = ui.painter().layout_no_wrap(tip, FontId::proportional(11.0), TEXT);
+            let pill = Rect::from_center_size(at, galley.size() + vec2(10.0, 4.0));
+            ui.painter().rect_filled(pill, 4.0, Color32::from_black_alpha(200));
+            ui.painter().galley(pill.min + vec2(5.0, 2.0), galley, TEXT);
+        }
+    }
+    match dragged {
+        Some(to) if response.drag_stopped() => state.video_request = Some(VideoRequest::Seek(to)),
+        Some(to) => state.video_request = Some(VideoRequest::Scrub(to)),
+        None => {
+            if let (Some(length), Some(at)) = (length, response.interact_pointer_pos().filter(|_| response.clicked())) {
+                state.video_request = Some(VideoRequest::Seek(seconds_at(at.x, length)));
             }
-            // Start Over, and Forward ten seconds, either side of it.
-            if round(ui, slot(-1.0), "video start", "Start over, from the beginning").clicked() {
-                state.video_request = Some(VideoRequest::Restart);
-            }
-            icons::paint(ui.painter(), Icon::ToStart, Rect::from_center_size(slot(-1.0), vec2(15.0, 15.0)), TEXT);
-            let forward = round(ui, slot(1.0), "video forward", "Forward 10 seconds");
-            // The arrow that turns clockwise (the icon named Back is drawn that way), with 10 in it.
-            icons::paint(ui.painter(), Icon::Back, Rect::from_center_size(slot(1.0), vec2(20.0, 20.0)), TEXT);
-            ui.painter().text(slot(1.0) + vec2(0.0, 1.5), Align2::CENTER_CENTER, "10", FontId::proportional(8.5), TEXT);
-            if forward.clicked()
-                && let Some(length) = length
-            {
-                state.video_request = Some(VideoRequest::Seek((video.position + VIDEO_STEP).min(length)));
-            }
-            // Loop and Sound at the two ends of the group: green while it loops; a speaker,
-            // struck through while muted.
-            let (loop_ink, loop_hint) = if video.looping {
-                (ON, "Looping: it starts again at the end. Click to stop looping")
-            } else {
-                (TEXT_FAINT, "Not looping: it stops at the end. Click to loop")
-            };
-            if round(ui, slot(-2.0), "video loop", loop_hint).clicked() {
-                state.video_request = Some(VideoRequest::Looping(!video.looping));
-            }
-            icons::paint(ui.painter(), Icon::Loop, Rect::from_center_size(slot(-2.0), vec2(17.0, 17.0)), loop_ink);
-            if video.looping {
-                ui.painter().circle_filled(slot(-2.0) + vec2(0.0, 13.0), 1.8, ON);
-            }
-            let (sound, sound_ink, sound_hint) = if video.muted {
-                (Icon::Muted, TEXT_FAINT, "Muted. Click to play its sound")
-            } else {
-                (Icon::Sound, TEXT, "Its sound plays. Click to mute")
-            };
-            if round(ui, slot(2.0), "video sound", sound_hint).clicked() {
-                state.video_request = Some(VideoRequest::Muted(!video.muted));
-            }
-            icons::paint(ui.painter(), sound, Rect::from_center_size(slot(2.0), vec2(17.0, 17.0)), sound_ink);
-        });
+        }
+    }
+    shown
 }
 
 /// The menu beside MEDIA: all media or one media playlist, a new playlist, and renaming or
@@ -2829,9 +2887,13 @@ mod tests {
         Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE }
     }
 
-    /// Runs the video controls through frames of input, and returns what each frame asked of
-    /// the video.
-    fn video_frames(video: &crate::home::VideoLive, frames: &[Vec<Event>]) -> Vec<Option<crate::home::VideoRequest>> {
+    /// Runs the video controls (full size, or in two rows) through frames of input, and returns
+    /// what each frame asked of the video.
+    fn video_frames(
+        video: &crate::home::VideoLive,
+        compact: bool,
+        frames: &[Vec<Event>],
+    ) -> Vec<Option<crate::home::VideoRequest>> {
         let ctx = egui::Context::default();
         let mut state = HomeState::default();
         let mut asked = Vec::new();
@@ -2842,7 +2904,7 @@ mod tests {
                 events: events.clone(),
                 ..RawInput::default()
             };
-            let output = ctx.run_ui(input, |ui| video_controls(ui, &mut state, video, 300.0));
+            let output = ctx.run_ui(input, |ui| video_controls(ui, &mut state, video, 300.0, compact));
             output.drop_without_applying_deltas();
             asked.push(state.video_request.take());
         }
@@ -2860,26 +2922,31 @@ mod tests {
             looping: false,
             muted: false,
         };
-        // The bar is the row under the buttons; find it by where a drag along it scrubs.
-        let found = (10..100).map(|y| y as f32).find_map(|y| {
-            let frames = vec![
-                vec![Event::PointerMoved(pos2(60.0, y))],
-                vec![press(pos2(60.0, y), true)],
-                vec![Event::PointerMoved(pos2(120.0, y))],
-                vec![Event::PointerMoved(pos2(200.0, y))],
-                vec![press(pos2(200.0, y), false)],
-                vec![],
-            ];
-            let asked = video_frames(&video, &frames);
-            asked.iter().any(|a| matches!(a, Some(VideoRequest::Scrub(_)))).then_some(asked)
-        });
-        let asked = found.expect("a drag along the bar scrubs");
-        let scrubs: Vec<f64> =
-            asked.iter().filter_map(|a| if let Some(VideoRequest::Scrub(at)) = a { Some(*at) } else { None }).collect();
-        let landed = asked.iter().find_map(|a| if let Some(VideoRequest::Seek(at)) = a { Some(*at) } else { None });
-        let landed = landed.expect("letting go goes there");
-        assert!(scrubs.windows(2).all(|w| w[0] <= w[1]), "dragging right moves on: {scrubs:?}");
-        assert!(landed >= scrubs[0] && landed <= 100.0 && landed > 30.0, "{landed} after {scrubs:?}");
+        // Full size the bar is a row of its own; in two rows it is between the buttons. Find it
+        // by where a drag along it scrubs (from x 100 to 180, inside the bar either way).
+        for compact in [false, true] {
+            let found = (10..100).map(|y| y as f32).find_map(|y| {
+                let frames = vec![
+                    vec![Event::PointerMoved(pos2(100.0, y))],
+                    vec![press(pos2(100.0, y), true)],
+                    vec![Event::PointerMoved(pos2(140.0, y))],
+                    vec![Event::PointerMoved(pos2(180.0, y))],
+                    vec![press(pos2(180.0, y), false)],
+                    vec![],
+                ];
+                let asked = video_frames(&video, compact, &frames);
+                asked.iter().any(|a| matches!(a, Some(VideoRequest::Scrub(_)))).then_some(asked)
+            });
+            let asked = found.unwrap_or_else(|| panic!("a drag along the bar scrubs (compact: {compact})"));
+            let scrubs: Vec<f64> = asked
+                .iter()
+                .filter_map(|a| if let Some(VideoRequest::Scrub(at)) = a { Some(*at) } else { None })
+                .collect();
+            let landed = asked.iter().find_map(|a| if let Some(VideoRequest::Seek(at)) = a { Some(*at) } else { None });
+            let landed = landed.expect("letting go goes there");
+            assert!(scrubs.windows(2).all(|w| w[0] <= w[1]), "dragging right moves on: {scrubs:?}");
+            assert!(landed >= scrubs[0] && landed <= 100.0 && landed > 30.0, "{landed} after {scrubs:?}");
+        }
     }
 
     #[test]

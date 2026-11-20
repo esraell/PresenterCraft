@@ -134,7 +134,10 @@ feature changes, this page changes in the same commit.
   media player shows it: its name, a slim bar to click or drag through (the time a click goes to
   shows over it), the time gone and the time left, and one group of controls about a round Play
   or Pause: Loop (green, with a dot, while on), Start Over, Forward 10 seconds and Sound (a
-  speaker, struck through while muted). An item's
+  speaker, struck through while muted). In a window too short for all of that, the player takes
+  two rows (the name with the times; then Play or Pause, Start Over, the bar, Forward, Loop and
+  Sound), leaving the tabs under it more room; a tab that goes on below what shows fades out at
+  its foot. An item's
   right-click menu sets its Scaling (Scale to Fill, Scale to Fit, Stretch to Fill), whether a
   video loops, and the media playlists it is in; the menu beside MEDIA shows All Media or one
   playlist, and makes, renames and deletes them.

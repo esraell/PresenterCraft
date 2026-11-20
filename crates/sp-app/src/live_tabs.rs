@@ -7,7 +7,7 @@ use egui::{Align, Color32, FontId, Layout, Sense, vec2};
 use crate::home::HomeState;
 use crate::messages::Message;
 use crate::screens::Kind;
-use crate::studio::{ACCENT, CARD, TALLY, TEXT, TEXT_DIM, TEXT_FAINT, caption, segmented};
+use crate::studio::{ACCENT, CARD, PANEL, TALLY, TEXT, TEXT_DIM, TEXT_FAINT, caption, segmented};
 use crate::timers::{self, Timer};
 
 /// Draws the tabs and the one that is open.
@@ -25,7 +25,7 @@ pub fn live_tabs(ui: &mut egui::Ui, show: &sp_engine::Show, state: &mut HomeStat
         state.live_tab = tab;
     }
     ui.add_space(2.0);
-    egui::ScrollArea::vertical().id_salt("live tab").auto_shrink([false, false]).show(ui, |ui| {
+    let scrolled = egui::ScrollArea::vertical().id_salt("live tab").auto_shrink([false, false]).show(ui, |ui| {
         ui.set_width(width);
         match state.live_tab {
             0 => timers_tab(ui, state),
@@ -36,6 +36,21 @@ pub fn live_tabs(ui: &mut egui::Ui, show: &sp_engine::Show, state: &mut HomeStat
             _ => audio_tab(ui, state),
         }
     });
+    // When the tab goes on below what shows, its foot fades out, so it reads as going on (scroll
+    // to see the rest) rather than cut off.
+    let view = scrolled.inner_rect;
+    let below = scrolled.content_size.y - scrolled.state.clamped_offset().y - view.height();
+    if below > 1.0 {
+        let foot = egui::Rect::from_min_max(egui::pos2(view.min.x, view.max.y - 28.0), view.max);
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(foot.left_top(), Color32::TRANSPARENT);
+        mesh.colored_vertex(foot.right_top(), Color32::TRANSPARENT);
+        mesh.colored_vertex(foot.left_bottom(), PANEL);
+        mesh.colored_vertex(foot.right_bottom(), PANEL);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(1, 3, 2);
+        ui.painter().add(egui::Shape::mesh(mesh));
+    }
 }
 
 /// A heading with a + at its right. Returns true when the + was clicked.
