@@ -10,7 +10,7 @@ mod numbering;
 
 use std::io::{Read, Write};
 
-pub use books::{BOOKS, Book, book_by_code, find_book, find_book_in};
+pub use books::{BOOKS, Book, book_by_code, find_book, find_book_in, suggest_books};
 pub use numbering::{Numbering, convert};
 
 const FIRST_LINE: &str = "softpresenter-bible 1";

@@ -148,6 +148,11 @@ feature changes, this page changes in the same commit.
   `Пс 22:1-3`, `Ів 3:16`) and word search. A short form is read in the language of the first
   translation first ("1 Цар" is 1 Samuel to a Russian Bible, 1 Kings to a Ukrainian one), and a
   Ukrainian Bible shows its books' Ukrainian names.
+- The slides follow what is typed in Scripture Lookup a moment after typing stops, without
+  waiting for Return (nothing goes on screen until a slide is clicked). While a book's name is
+  being typed, the books it could be are offered under the field (arrows pick, Tab or Return
+  takes one). Control-B, from anywhere, goes to the Bible page with the field's words selected,
+  ready for the next reference.
 - Up to four translations on one slide, lined up by verse using the standard versification
   tables; each row picks its Bible (or None) and the boxes its verse and reference go in.
 - Options for verse numbers, a new slide for each verse, the translation's name, and where the

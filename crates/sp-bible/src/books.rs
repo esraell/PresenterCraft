@@ -153,6 +153,65 @@ fn plain(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace() && *c != '.').flat_map(char::to_lowercase).collect()
 }
 
+/// Whether a book's name starts with what was typed (already plain), also without the word
+/// that joins it, at its start or after its number: "Иоанна" finds "От Иоанна", "Івана" finds
+/// "Від Івана" and "1 корин" finds "1 до коринтян".
+fn name_starts(name: &str, joins: &[&str], typed: &str) -> bool {
+    let name = plain(name);
+    if name.starts_with(typed) {
+        return true;
+    }
+    let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
+    let rest = &name[digits.len()..];
+    joins.iter().any(|join| rest.strip_prefix(join).is_some_and(|after| format!("{digits}{after}").starts_with(typed)))
+}
+
+/// Books whose names start with what was typed, best first, each with its name in the
+/// language it matched in: an exact name or short form, then names in `language`, then names
+/// in the other languages, each in Bible order. For the suggestions under Scripture Lookup:
+/// "jo" gives John, Joshua, Job, Joel, Jonah; "Ів" gives Від Івана.
+pub fn suggest_books(typed: &str, language: &str, limit: usize) -> Vec<(usize, &'static str)> {
+    let typed = plain(typed);
+    if typed.is_empty() {
+        return Vec::new();
+    }
+    let names =
+        |book: &'static Book, language: &str| -> (&'static str, &'static [&'static str], &'static [&'static str]) {
+            match language {
+                "ru" => (book.russian, book.russian_short, &["от", "к"]),
+                "uk" => (book.ukrainian, book.ukrainian_short, &["від", "до"]),
+                _ => (book.english, book.english_short, &[]),
+            }
+        };
+    let mut order: Vec<&str> = vec![language];
+    order.extend(["en", "ru", "uk"].into_iter().filter(|other| *other != language));
+    let mut found: Vec<(usize, &'static str)> = Vec::new();
+    let mut add = |book: usize, name: &'static str| {
+        if !found.iter().any(|(have, _)| *have == book) {
+            found.push((book, name));
+        }
+    };
+    // Exact names and short forms first ("jn" is John before anything starting with "jn").
+    for language in &order {
+        for (at, book) in BOOKS.iter().enumerate() {
+            let (name, shorts, _) = names(book, language);
+            if plain(name) == typed || shorts.contains(&typed.as_str()) {
+                add(at, name);
+            }
+        }
+    }
+    for language in &order {
+        for (at, book) in BOOKS.iter().enumerate() {
+            let (name, _, joins) = names(book, language);
+            if name_starts(name, joins, &typed) {
+                add(at, name);
+            }
+        }
+    }
+    found.truncate(limit);
+    found
+}
+
 /// The book someone means by what they typed, as its place in [`BOOKS`]. An exact name or
 /// short form wins; otherwise the first book whose name starts with what was typed.
 pub fn find_book(typed: &str) -> Option<usize> {
@@ -180,13 +239,9 @@ pub fn find_book_in(typed: &str, language: &str) -> Option<usize> {
     });
     exact.or_else(|| {
         BOOKS.iter().position(|book| {
-            // "От Иоанна" is also found by "Иоанна", and "Від Івана" by "Івана".
-            let starts = |name: &str, joins: &[&str]| {
-                let name = plain(name);
-                name.starts_with(&typed)
-                    || joins.iter().any(|join| name.strip_prefix(join).is_some_and(|rest| rest.starts_with(&typed)))
-            };
-            starts(book.english, &[]) || starts(book.russian, &["от", "к"]) || starts(book.ukrainian, &["від", "до"])
+            name_starts(book.english, &[], &typed)
+                || name_starts(book.russian, &["от", "к"], &typed)
+                || name_starts(book.ukrainian, &["від", "до"], &typed)
         })
     })
 }
@@ -198,6 +253,25 @@ pub fn book_by_code(code: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn suggestions_rank_exact_forms_then_the_bibles_language_and_name_the_book_as_matched() {
+        let names = |typed: &str, language: &str| -> Vec<&str> {
+            suggest_books(typed, language, 6).into_iter().map(|(_, name)| name).collect()
+        };
+        assert_eq!(names("jo", "en"), ["Joshua", "Job", "Joel", "Jonah", "John"]);
+        assert_eq!(names("jn", "en")[0], "John", "a short form comes first");
+        assert_eq!(names("Ів", "uk")[0], "Від Івана");
+        assert_eq!(names("1 ко", "uk"), ["1 до коринтян"]);
+        assert_eq!(names("Ин", "ru")[0], "От Иоанна");
+        // A Russian Bible reads "1 Цар" as 1 Samuel; a Ukrainian one as 1 Kings.
+        let first = |typed: &str, language: &str| BOOKS[suggest_books(typed, language, 1)[0].0].code;
+        assert_eq!(first("1 Цар", "ru"), "1SA");
+        assert_eq!(first("1 Цар", "uk"), "1KI");
+        assert!(suggest_books("", "en", 6).is_empty());
+        assert!(suggest_books("zzz", "en", 6).is_empty());
+    }
+
     use super::*;
 
     #[test]

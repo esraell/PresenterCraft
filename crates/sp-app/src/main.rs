@@ -3643,7 +3643,12 @@ impl App {
                     running.home_state.bible.lookup = reference;
                     running.home_state.bible.look_up(None);
                 }
-                // Testing aid: open the Options pop-up on the named pane.
+                // Testing aid: as if this had just been typed in Scripture Lookup, without Return.
+                if let Ok(typed) = std::env::var("SOFTPRESENTER_BIBLE_TYPING") {
+                    running.home_state.bible.lookup = typed;
+                    running.home_state.bible.typed_at = Some(0.0);
+                    running.home_state.bible.focus_lookup = true;
+                }
                 // Testing aid: open the Options pop-up, or with "bibles" the Bibles window.
                 if let Ok(pane) = std::env::var("SOFTPRESENTER_BIBLE_OPTIONS") {
                     if pane == "bibles" {
@@ -4281,7 +4286,12 @@ impl App {
             }
             A::ShowView => state.view_request = Some(0),
             A::EditView => state.view_request = Some(1),
-            A::BibleView => state.view_request = Some(2),
+            // Control-B: the Bible page, with the cursor in Scripture Lookup and its words
+            // selected, ready for the next reference.
+            A::BibleView => {
+                state.view_request = Some(2);
+                state.bible.focus_lookup = true;
+            }
             A::ThemesView => state.view_request = Some(3),
             A::Find => state.library_search = Some((String::new(), 0)),
             A::ReflowView => {

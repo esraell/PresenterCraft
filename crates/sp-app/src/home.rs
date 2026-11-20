@@ -474,6 +474,11 @@ pub struct BiblePage {
     pub message: Option<String>,
     /// Verses found by the last search: the verse's reference, its chapter's, and its words.
     pub found: Vec<(String, String, String)>,
+    /// When Scripture Lookup was last typed in: its passage is made a moment after typing
+    /// stops, without waiting for Return.
+    pub typed_at: Option<f64>,
+    /// Put the cursor in Scripture Lookup with its words selected, when it is next drawn.
+    pub focus_lookup: bool,
 }
 
 impl Default for BiblePage {
@@ -510,6 +515,8 @@ impl Default for BiblePage {
             pending: None,
             message: None,
             found: Vec::new(),
+            typed_at: None,
+            focus_lookup: false,
         }
     }
 }
@@ -675,6 +682,17 @@ impl BiblePage {
     /// Looks up what is typed and readies its slides for the app to take. `live` is the
     /// presentation on screen now, if any.
     pub fn look_up(&mut self, live: Option<usize>) {
+        self.typed_at = None;
+        self.make(live, false);
+    }
+
+    /// The same while typing: the slides follow what is typed, but the field is left as
+    /// typed and a reference not yet finished says nothing.
+    pub fn preview(&mut self, live: Option<usize>) {
+        self.make(live, true);
+    }
+
+    fn make(&mut self, live: Option<usize>, quiet: bool) {
         let Some(slots) = self.slots else { return };
         let mut rows = Vec::new();
         // A row set to no Bible is left out.
@@ -687,13 +705,17 @@ impl BiblePage {
                     reference: row.reference.clone(),
                 }),
                 Err(problem) => {
-                    self.message = Some(problem);
+                    if !quiet {
+                        self.message = Some(problem);
+                    }
                     return;
                 }
             }
         }
         if rows.is_empty() {
-            self.message = Some("Choose a Bible for at least one row.".to_owned());
+            if !quiet {
+                self.message = Some("Choose a Bible for at least one row.".to_owned());
+            }
             return;
         }
         match crate::bible::build_passage(&self.lookup, &rows, &self.options, self.template) {
@@ -704,15 +726,18 @@ impl BiblePage {
                     self.showing = 1 - self.showing;
                 }
                 self.pending = Some((slots[self.showing], passage));
-                // The field then says the passage in full, in the first Bible's language:
-                // "john 3" becomes "John 3:1-36".
-                self.lookup = passage_name;
-                self.shown = self.lookup.clone();
+                self.shown = passage_name.clone();
                 self.made_with = self.choices();
                 self.message = None;
-                self.found.clear();
+                if !quiet {
+                    // The field then says the passage in full, in the first Bible's language:
+                    // "john 3" becomes "John 3:1-36".
+                    self.lookup = passage_name;
+                    self.found.clear();
+                }
             }
-            Err(problem) => self.message = Some(problem),
+            Err(problem) if !quiet => self.message = Some(problem),
+            Err(_) => {}
         }
     }
 
@@ -3943,26 +3968,56 @@ fn bible_area(
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
                 };
                 let lookup_id = ui.scope_id().with("scripture lookup");
-                let lookup = ui
-                    .add(
+                // While a book's name is being typed, the books it could be are offered under
+                // the field, each named in the language typed in: arrows pick, Tab or Return
+                // (or a click) takes one, Escape hides them.
+                let language = state
+                    .bible
+                    .lead()
+                    .and_then(|at| state.bible.shelf.get(at).ok())
+                    .map(|bible| bible.info.language.clone())
+                    .unwrap_or_default();
+                let completion = egui::CompletionPopup::new(lookup_id)
+                    .word_boundary(|_| false)
+                    .align(egui::RectAlign::BOTTOM_START)
+                    .max_height(240.0)
+                    .show(
+                        ui,
                         egui::TextEdit::singleline(&mut state.bible.lookup)
-                            .id(lookup_id)
                             .hint_text("Scripture Lookup")
                             .desired_width(lookup_width),
-                    )
-                    .on_hover_text("Type a reference, such as John 3:16, and press Return");
+                        |query| book_suggestions(query.text, &language),
+                    );
+                let lookup =
+                    completion.text_edit.response.response.clone().on_hover_text("Type a reference, such as John 3:16 (Control-B comes here)");
+                let now = ui.input(|input| input.time);
+                if lookup.changed() && completion.accepted.is_none() {
+                    state.bible.typed_at = Some(now);
+                }
                 if entered(&lookup, ui) {
                     state.bible.look_up(live);
                     // The field keeps the keyboard with its words selected, ready for the next one.
                     lookup.request_focus();
-                    if let Some(mut edit) = egui::text_edit::TextEditState::load(ui.ctx(), lookup_id) {
-                        let all = egui::text::CCursorRange::two(
-                            egui::text::CCursor::new(0),
-                            egui::text::CCursor::new(state.bible.lookup.chars().count()),
-                        );
-                        edit.cursor.set_char_range(Some(all));
-                        edit.store(ui.ctx(), lookup_id);
+                    select_all_text(ui.ctx(), lookup_id, &state.bible.lookup);
+                } else if let Some(at) = state.bible.typed_at {
+                    // A moment after typing stops, the slides show what is typed. Nothing goes on
+                    // screen until a slide is clicked.
+                    let wait = LOOKUP_PAUSE - (now - at);
+                    if wait <= 0.0 {
+                        state.bible.typed_at = None;
+                        if has_chapter(&state.bible.lookup) {
+                            state.bible.preview(live);
+                        }
+                    } else {
+                        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(wait));
                     }
+                }
+                if std::mem::take(&mut state.bible.focus_lookup) {
+                    lookup.request_focus();
+                    select_all_text(ui.ctx(), lookup_id, &state.bible.lookup);
+                    // Drawn again at once, so the field shows it has the keyboard without
+                    // waiting for the mouse to move.
+                    ui.ctx().request_repaint();
                 }
                 // Book, then chapter, then verse, for when the reference is easier to pick than type.
                 let lead = state.bible.lead().and_then(|at| state.bible.shelf.get(at).ok());
@@ -4223,7 +4278,7 @@ fn bible_area(
                 ui.centered_and_justified(|ui| {
                     ui.label(
                         egui::RichText::new(
-                            "Type a reference such as John 3:16-18 in Scripture Lookup and press Return.\nIts verses appear here as slides; click one to show it.",
+                            "Type a reference such as John 3:16-18 in Scripture Lookup (Control-B goes there).\nIts verses appear here as slides as you type; click one to show it.",
                         )
                         .color(DIM),
                     );
@@ -4754,6 +4809,43 @@ const WAS_LIVE_OUTLINE: Color32 = Color32::from_rgb(110, 60, 58);
 /// One presentation's slides, in the view chosen: a grid of thumbnails, the same grid showing
 /// only words, or a table. Clicking a slide puts it on screen; a right-click picks it out
 /// without showing it.
+/// How long after typing stops in Scripture Lookup its passage is made, in seconds.
+const LOOKUP_PAUSE: f64 = 0.25;
+
+/// Whether what is typed in Scripture Lookup has got as far as a chapter: a number after the
+/// book's name. A number before it is part of the name ("1 John").
+fn has_chapter(typed: &str) -> bool {
+    let name_onwards = typed.trim().trim_start_matches(|c: char| c.is_ascii_digit() || c.is_whitespace());
+    name_onwards.chars().any(|c| c.is_ascii_digit())
+}
+
+/// The books offered under Scripture Lookup for what is typed: only while a book's name is
+/// being typed (no chapter yet), and not when the one book offered is already what is typed.
+fn book_suggestions(typed: &str, language: &str) -> Vec<egui::Suggestion> {
+    let trimmed = typed.trim();
+    let name_onwards = trimmed.trim_start_matches(|c: char| c.is_ascii_digit() || c.is_whitespace());
+    if name_onwards.is_empty() || has_chapter(trimmed) || trimmed.contains(':') {
+        return Vec::new();
+    }
+    let books = sp_bible::suggest_books(trimmed, language, 8);
+    if let [(_, name)] = books.as_slice()
+        && name.to_lowercase() == trimmed.to_lowercase()
+    {
+        return Vec::new();
+    }
+    books.into_iter().map(|(_, name)| egui::Suggestion::new(format!("{name} "))).collect()
+}
+
+/// Selects all the words in a text field, as after a lookup, so the next typing replaces them.
+fn select_all_text(ctx: &egui::Context, id: egui::Id, text: &str) {
+    if let Some(mut edit) = egui::text_edit::TextEditState::load(ctx, id) {
+        let all =
+            egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()));
+        edit.cursor.set_char_range(Some(all));
+        edit.store(ctx, id);
+    }
+}
+
 /// How rounded a slide's corners are in the slide grid, in points.
 const SLIDE_ROUND: u8 = 3;
 
@@ -5623,6 +5715,67 @@ mod tests {
     fn show(slides: usize) -> Show {
         let text = (0..slides).map(|i| format!("Slide {i}\n")).collect::<Vec<_>>().join("\n");
         Show::new(vec![Arc::new(parse_song_text("Song", &text))])
+    }
+
+    /// Runs frames of the home screen on the Bible page with the window active, as typing in
+    /// it would be, and returns the words drawn in the last one.
+    fn bible_frames(state: &mut HomeState, frames: usize) -> Vec<String> {
+        fn words(shape: &egui::Shape, into: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => into.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| words(shape, into)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let show = show(1);
+        let mut drawn = Vec::new();
+        for at in 0..frames {
+            let raw = RawInput { focused: true, time: Some(at as f64), ..input(None) };
+            let output = ctx.run_ui(raw, |ui| {
+                home_ui(ui, &show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            drawn.clear();
+            output.shapes.iter().for_each(|clipped| words(&clipped.shape, &mut drawn));
+            output.drop_without_applying_deltas();
+        }
+        drawn
+    }
+
+    #[test]
+    fn typing_a_book_offers_its_names_and_typing_a_reference_fills_the_slides_without_return() {
+        // A book's name half typed: the books it could be are offered under the field.
+        let mut state = HomeState { bible_open: true, ..HomeState::default() };
+        state.bible.lookup = "jo".to_owned();
+        state.bible.focus_lookup = true;
+        let drawn = bible_frames(&mut state, 4);
+        for book in ["Joshua", "Job", "John"] {
+            assert!(drawn.iter().any(|words| words.trim() == book), "{book} is offered");
+        }
+        assert!(state.bible.pending.is_none(), "a book's name alone makes no slides");
+
+        // A reference typed, no Return: a moment later its slides are made, and the field is
+        // left as typed.
+        let mut state = HomeState { bible_open: true, ..HomeState::default() };
+        state.bible.slots = Some([0, 1]);
+        state.bible.lookup = "jn 3:16".to_owned();
+        state.bible.typed_at = Some(0.0);
+        bible_frames(&mut state, 3);
+        let (_, passage) = state.bible.pending.as_ref().expect("the passage is made");
+        assert_eq!(passage.title, "От Иоанна 3:16", "made in the first translation (Russian Synodal)");
+        assert_eq!(state.bible.lookup, "jn 3:16");
+        assert_eq!(state.bible.message, None);
+    }
+
+    #[test]
+    fn a_number_starting_a_books_name_is_not_its_chapter() {
+        assert!(!has_chapter("1 ко"));
+        assert!(!has_chapter("1 John"));
+        assert!(has_chapter("1 John 3"));
+        assert!(has_chapter("jn 3:16"));
+        assert!(book_suggestions("1 ко", "uk").iter().any(|s| s.insert == "1 до коринтян "));
+        assert!(book_suggestions("John 3", "en").is_empty());
+        assert!(book_suggestions("Job", "en").is_empty(), "nothing offered for a name already typed in full");
     }
 
     #[test]
