@@ -4385,12 +4385,12 @@ impl ApplicationHandler<AppEvent> for App {
                     running.home_state.bible.apply_settings(&page);
                 }
                 self.bible_page_saved = running.home_state.bible.choices();
-                let fresh = !service::prefs_saved_before();
                 let prefs = service::load_prefs();
                 running.home_state.apply_prefs(&prefs);
-                // A fresh install starts with the setup. Testing aid: SOFTPRESENTER_SETUP=1 shows
+                // The setup opens once on every Mac that hasn't seen it yet, a fresh install or
+                // one set up before there was a setup. Testing aid: SOFTPRESENTER_SETUP=1 shows
                 // it in a quiet run too.
-                if (fresh && !prefs.setup_done && !self.quiet()) || std::env::var_os("SOFTPRESENTER_SETUP").is_some() {
+                if (!prefs.setup_done && !self.quiet()) || std::env::var_os("SOFTPRESENTER_SETUP").is_some() {
                     running.home_state.setup = Some(setup::Setup::new());
                 }
                 // The audience screens start off when Settings says so.

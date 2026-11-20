@@ -369,11 +369,6 @@ impl Default for Prefs {
     }
 }
 
-/// True when settings have been saved on this computer before: not a fresh install.
-pub fn prefs_saved_before() -> bool {
-    prefs_file().is_some_and(|path| path.is_file())
-}
-
 fn prefs_file() -> Option<std::path::PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("preferences.json"))
 }
