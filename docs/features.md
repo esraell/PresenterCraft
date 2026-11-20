@@ -44,6 +44,12 @@ feature changes, this page changes in the same commit.
   folder go in the order people number them (Slide2 before Slide10). It happens in the
   background, so the window and keys go on working; a 60-page deck takes about ten seconds.
   With no program that opens the file, it says what to install, or to export a PDF.
+- **Bringing songs across from SoftProjector.** Its database (`spData.sqlite`) or an exported
+  songbook (`.sps`), dropped on the window or chosen in File › Import Songs…: each songbook
+  becomes a library of its name, each song keeps its number before its title (so "123" still
+  finds it), its lyricist and composer, its verses, choruses and other parts as groups (a
+  "&Куплет" part as more slides of its verse), and an arrangement, "As sung", that repeats the
+  chorus after every verse as SoftProjector does. Read with macOS's own SQLite tool, read-only.
 - **Bringing a library across from ProPresenter 7.** File › Import from ProPresenter… opens
   its Libraries folder; choose song documents, one library, or the folder of all of them. Each folder becomes a
   library of the same name. Each song keeps its groups, slides, arrangements (and the one

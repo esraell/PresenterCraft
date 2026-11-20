@@ -31,6 +31,9 @@ pub const DOCUMENT_ENDINGS: [&str; 3] = ["doc", "docx", "odt"];
 pub const RICH_TEXT_ENDING: &str = "rtf";
 /// The documents ProPresenter 7 saves songs in.
 pub const PRO_ENDING: &str = "pro";
+/// SoftProjector's songbooks: its own database, or a songbook exported from it. Both are
+/// SQLite files holding many songs.
+pub const SONGBOOK_ENDINGS: [&str; 2] = ["sps", "sqlite"];
 /// A song file is a few kilobytes; anything far bigger is not one, and isn't read into memory.
 const LARGEST_SONG_FILE: u64 = 4 * 1024 * 1024;
 
@@ -40,7 +43,58 @@ pub fn is_importable(path: &Path) -> bool {
         .iter()
         .chain(&DOCUMENT_ENDINGS)
         .chain(&[RICH_TEXT_ENDING, PRO_ENDING])
+        .chain(&SONGBOOK_ENDINGS)
         .any(|ending| has_extension(path, ending))
+}
+
+/// True for a file of many songs: a SoftProjector database or songbook.
+pub fn is_songbook(path: &Path) -> bool {
+    SONGBOOK_ENDINGS.iter().any(|ending| has_extension(path, ending))
+}
+
+/// Every song in a SoftProjector database or exported songbook, each with the name of its
+/// songbook. It is read with macOS's own SQLite tool, opened read-only, with a fixed query.
+pub fn import_songbook(path: &Path) -> Result<Vec<(Presentation, Option<String>)>, String> {
+    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let full = path.canonicalize().map_err(|e| format!("{name} could not be found ({e})."))?;
+    let output = std::process::Command::new("/usr/bin/sqlite3")
+        .arg("-readonly")
+        .arg("-json")
+        .arg(&full)
+        .arg(
+            "SELECT s.number AS number, s.title AS title, s.words AS words, s.music AS music, \
+             s.song_text AS text, b.name AS book FROM Songs s LEFT JOIN Songbooks b ON b.id = s.songbook_id \
+             ORDER BY b.name, s.number",
+        )
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("{name} could not be read ({e})."))?;
+    if !output.status.success() {
+        return Err(format!("{name} isn't a SoftProjector songbook SoftPresenter can read."));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    if text.trim().is_empty() {
+        return Err(format!("{name} has no songs in it."));
+    }
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&text).map_err(|e| format!("{name} could not be read ({e})."))?;
+    let field = |row: &serde_json::Value, key: &str| row.get(key).and_then(|v| v.as_str()).unwrap_or("").to_owned();
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let number = row.get("number").and_then(|v| v.as_i64().or_else(|| v.as_str()?.trim().parse().ok()));
+            let song = sp_model::from_softprojector(
+                number,
+                &field(row, "title"),
+                &field(row, "words"),
+                &field(row, "music"),
+                &field(row, "text"),
+            );
+            let book = Some(field(row, "book")).filter(|b| !b.trim().is_empty());
+            (song, book)
+        })
+        .filter(|(song, _)| song.slide_count() > 0)
+        .collect())
 }
 
 /// The files to import for the paths given, each with the library it goes into. A file goes
@@ -80,6 +134,7 @@ pub fn import_endings() -> Vec<&'static str> {
     endings.extend(TEXT_ENDINGS);
     endings.extend(DOCUMENT_ENDINGS);
     endings.extend([RICH_TEXT_ENDING, PRO_ENDING]);
+    endings.extend(SONGBOOK_ENDINGS);
     endings
 }
 

@@ -8,6 +8,7 @@ mod import;
 mod link;
 mod pro_file;
 mod rtf;
+mod softprojector;
 mod song_text;
 mod theme;
 mod transition;
@@ -20,6 +21,7 @@ pub use import::{decode_text, import_song_text};
 pub use link::TextLink;
 pub use pro_file::{LARGEST_PRO_FILE, read_pro_file};
 pub use rtf::rtf_to_text;
+pub use softprojector::from_softprojector;
 pub use song_text::{
     GROUP_KEYS, clean_box_text, group_color, groups_for_key, key_for_group, parse_song_text, to_song_text,
 };

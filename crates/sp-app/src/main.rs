@@ -2486,13 +2486,29 @@ impl App {
             .map(|(at, s)| ((s.title.trim().to_lowercase(), sp_model::to_song_text(s)), at))
             .collect();
         let mut libraries_used: Vec<String> = Vec::new();
+        // Each file is one song, but a songbook (SoftProjector's) is many, each going into a
+        // library named after its songbook.
+        let mut songs_read: Vec<(Result<sp_model::Presentation, String>, PathBuf, Option<String>)> = Vec::new();
         for (path, library) in &files {
             let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            if load::is_songbook(path) {
+                match load::import_songbook(path) {
+                    Ok(book) => songs_read.extend(
+                        book.into_iter().map(|(song, book)| (Ok(song), path.clone(), book.or_else(|| library.clone()))),
+                    ),
+                    Err(problem) => songs_read.push((Err(problem), path.clone(), None)),
+                }
+                continue;
+            }
             let read = if load::is_song_file(path) {
                 load::read_song_file(path).map_err(|reason| format!("{name}: {reason}"))
             } else {
                 load::import_file(path)
             };
+            songs_read.push((read, path.clone(), library.clone()));
+        }
+        for (read, path, library) in songs_read {
+            let (path, library) = (&path, &library);
             let mut song = match read {
                 Ok(song) => song,
                 Err(problem) => {
