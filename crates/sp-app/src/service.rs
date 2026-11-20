@@ -309,6 +309,9 @@ pub struct Prefs {
     /// True once the setup a fresh install starts with has been seen.
     #[serde(default)]
     pub setup_done: bool,
+    /// True when the Bible page's book, chapter and verse lists were put away.
+    #[serde(default)]
+    pub bible_lists_hidden: bool,
 }
 
 /// When a song's copyright line is shown.
@@ -365,6 +368,7 @@ impl Default for Prefs {
             continuous: false,
             start_with: StartWith::Nothing,
             setup_done: false,
+            bible_lists_hidden: false,
         }
     }
 }

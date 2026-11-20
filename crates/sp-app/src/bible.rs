@@ -694,6 +694,170 @@ fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, themes: &ThemeCh
     picked_theme
 }
 
+/// How wide the book, chapter and verse lists are, together.
+pub const LISTS_WIDTH: f32 = 300.0;
+
+/// The book, chapter and verse lists beside the Bible page's slides, in the first
+/// translation's language. A book opens its chapters, a chapter its verses; a verse is looked
+/// up at once (its slides appear beside the lists), Shift-click makes a passage from the verse
+/// before, and All takes the whole chapter. What is showing is lit, whichever way it was
+/// looked up. Nothing goes on screen until a slide is clicked.
+pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<usize>) {
+    let bible = page.lead().and_then(|lead| page.shelf.get(lead).ok());
+    let Some(bible) = bible else {
+        ui.add_space(12.0);
+        nothing(ui, "Choose a Bible for the first row.");
+        return;
+    };
+    let shown = parse_reference_in(&page.shown, &bible.info.language).ok();
+    let lit = |book: usize, chapter: u16, verse: u16| {
+        shown.is_some_and(|range| {
+            let here = (book, chapter, verse);
+            (range.start.book, range.start.chapter, range.start.verse) <= here
+                && here <= (range.end.book, range.end.chapter, range.end.verse)
+        })
+    };
+    let scroll = std::mem::take(&mut page.list_scroll);
+    let height = ui.available_height();
+    let new_testament = sp_bible::BOOKS.iter().position(|book| book.code == "MAT").unwrap_or(39);
+    let mut chosen: Option<String> = None;
+    let shift = ui.input(|input| input.modifiers.shift);
+    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+    Frame::new().fill(Color32::from_rgb(34, 34, 36)).show(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            // Books.
+            list_column(ui, "bible books", 176.0, height, |ui| {
+                for book in 0..sp_bible::BOOKS.len() {
+                    let chapters = bible.chapter_count(book);
+                    if chapters == 0 {
+                        continue;
+                    }
+                    if book == 0 || book == new_testament {
+                        let heading = if book == 0 { "OLD TESTAMENT" } else { "NEW TESTAMENT" };
+                        ui.add_space(if book == 0 { 6.0 } else { 10.0 });
+                        ui.label(egui::RichText::new(heading).size(10.0).strong().color(Color32::from_gray(120)));
+                        ui.add_space(3.0);
+                    }
+                    let open = page.list_book == book;
+                    let showing = shown.is_some_and(|range| range.start.book == book);
+                    let row = list_row(ui, ("book", book), bible.book_name(book), open, showing, Align::Min);
+                    if open && scroll {
+                        row.scroll_to_me(Some(Align::Center));
+                    }
+                    if row.clicked() {
+                        page.list_book = book;
+                        page.list_chapter = if chapters == 1 { 1 } else { 0 };
+                        page.list_from = None;
+                    }
+                }
+            });
+            // Chapters of the book open.
+            let chapters = bible.chapter_count(page.list_book);
+            list_column(ui, "bible chapters", 58.0, height, |ui| {
+                ui.add_space(6.0);
+                for chapter in 1..=chapters {
+                    let open = page.list_chapter == chapter;
+                    let showing = shown.is_some_and(|r| {
+                        r.start.book == page.list_book && r.start.chapter <= chapter && chapter <= r.end.chapter
+                    });
+                    let row = list_row(ui, ("chapter", chapter), &chapter.to_string(), open, showing, Align::Center);
+                    if open && scroll {
+                        row.scroll_to_me(Some(Align::Center));
+                    }
+                    if row.clicked() {
+                        page.list_chapter = chapter;
+                        page.list_from = None;
+                    }
+                }
+            });
+            // Verses of the chapter open.
+            list_column(ui, "bible verses", LISTS_WIDTH - 176.0 - 58.0, height, |ui| {
+                ui.add_space(6.0);
+                let (book, chapter) = (page.list_book, page.list_chapter);
+                if chapter == 0 || chapter > chapters {
+                    return;
+                }
+                let name = bible.book_name(book);
+                if list_row(ui, ("all", chapter), "All", false, false, Align::Center)
+                    .on_hover_text("The whole chapter")
+                    .clicked()
+                {
+                    chosen = Some(format!("{name} {chapter}"));
+                }
+                for verse in 1..=bible.last_verse(book, chapter) {
+                    let row = list_row(
+                        ui,
+                        ("verse", verse),
+                        &verse.to_string(),
+                        false,
+                        lit(book, chapter, verse),
+                        Align::Center,
+                    );
+                    if lit(book, chapter, verse) && scroll {
+                        row.scroll_to_me(Some(Align::Center));
+                    }
+                    if row.clicked() {
+                        let place = |verse| VerseRef { book, chapter, verse };
+                        chosen = Some(match page.list_from.filter(|_| shift) {
+                            Some(from) => bible.label(place(from.min(verse)), place(from.max(verse))),
+                            None => bible.label(place(verse), place(verse)),
+                        });
+                        if !shift {
+                            page.list_from = Some(verse);
+                        }
+                    }
+                }
+            });
+        });
+    });
+    if let Some(reference) = chosen {
+        page.lookup = reference;
+        page.look_up(live);
+    }
+}
+
+/// One of the lists: a column of its width, scrolling on its own.
+fn list_column(ui: &mut egui::Ui, id: &str, width: f32, height: f32, add: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(vec2(width, height), Layout::top_down(Align::Min), |ui| {
+        ui.set_min_size(vec2(width, height));
+        egui::ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).max_height(height).show(ui, |ui| {
+            ui.set_width(width);
+            Frame::new().inner_margin(egui::Margin::symmetric(6, 0)).show(ui, add);
+            ui.add_space(8.0);
+        });
+    });
+}
+
+/// One row of a list: open (blue), part of the passage showing (lit), or neither.
+fn list_row(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    text: &str,
+    open: bool,
+    showing: bool,
+    align: Align,
+) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let response = ui.interact(rect, ui.scope_id().with(id), Sense::click());
+    let fill = if open {
+        BLUE
+    } else if showing {
+        Color32::from_white_alpha(30)
+    } else if response.hovered() {
+        Color32::from_white_alpha(12)
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, 5.0, fill);
+    let (at, anchor) = match align {
+        Align::Min => (pos2(rect.min.x + 8.0, rect.center().y), Align2::LEFT_CENTER),
+        _ => (rect.center(), Align2::CENTER_CENTER),
+    };
+    let painter = ui.painter().with_clip_rect(rect.shrink(2.0));
+    painter.text(at, anchor, text, FontId::proportional(13.0), if open || showing { Color32::WHITE } else { INK });
+    response
+}
+
 /// A language as people who speak it write it, for the Bibles window: from a language code
 /// (`uk`) or an English name ("Ukrainian").
 pub fn language_name(language: &str) -> String {

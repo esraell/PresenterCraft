@@ -1702,7 +1702,13 @@ pub fn media_strip(
                     .color(TEXT_FAINT),
             };
             ui.add_space(6.0);
-            ui.label(note);
+            // Cut off before the controls at the right, rather than run under them; the whole of
+            // it shows on hover.
+            let full = note.text().to_owned();
+            ui.scope(|ui| {
+                ui.set_max_width((ui.available_width() - 150.0).max(0.0));
+                ui.add(egui::Label::new(note).truncate()).on_hover_text(full);
+            });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.small_button("+").on_hover_text("Add pictures and videos").clicked() {
                     state.media_request = Some(crate::home::MediaRequest::Choose);
@@ -2027,11 +2033,17 @@ pub fn view_controls(ui: &mut egui::Ui, state: &mut HomeState) {
             state.slide_view = view;
         }
     }
-    ui.add_space(10.0);
     // How one slide gives way to the next on the screens: Cut, Dissolve, or another chosen
     // from the picker, which the label beside the buttons names ("Push: 0.6s").
     use sp_model::TransitionKind as K;
     let kind = state.transition.kind;
+    // Without room beside what is to their left (a narrow window), the transition buttons are
+    // left out rather than drawn over it. They need 216 points, and the label more.
+    let needed = if kind == K::Cut { 216.0 } else { 300.0 };
+    if ui.available_width() < needed {
+        return;
+    }
+    ui.add_space(10.0);
     if kind != K::Cut {
         let label = ui
             .add(

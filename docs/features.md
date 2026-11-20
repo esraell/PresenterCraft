@@ -159,8 +159,11 @@ feature changes, this page changes in the same commit.
 - Up to four translations on one slide, lined up by verse using the standard versification
   tables; each row picks its Bible (or None) and the boxes its verse and reference go in.
 - Options for verse numbers, a new slide for each verse, the translation's name, and where the
-  reference goes; ‹ Verse and Verse › make the passage a verse longer at either end; Books picks
-  a book, chapter and verse; search results open a verse or its whole chapter.
+  reference goes; ‹ Verse and Verse › make the passage a verse longer at either end; search
+  results open a verse or its whole chapter.
+- Book, chapter and verse lists beside the slides (Books shows or hides them): a click on a
+  verse looks it up at once, Shift-click makes a passage from the verse before, All takes the
+  whole chapter. The passage showing is lit in them, however it was looked up.
 - Four Bibles ship with the app (King James, World English, Berean Standard, Russian Synodal)
   and sixteen more can be downloaded. Options › Bibles opens the Bibles window: a search box,
   the Bibles installed (each with Remove, but for the four built in), and every Bible that can
