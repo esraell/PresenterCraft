@@ -83,6 +83,16 @@ needed. Then:
 | `song new TITLE [FILE.txt]` | A new song, its words from a song text file (a line in square brackets starts a group, a blank line a new slide) |
 | `song import FILE… or FOLDER…` | Imports songs from text, lyric, ChordPro, rich-text or Word files, ProPresenter 7 `.pro` documents, or SoftPresenter song files, as File › Import Songs… does; a folder becomes a library of its name, and each folder inside it another. A PowerPoint, Keynote or OpenDocument presentation, a PDF, or a folder of pictures becomes a presentation of picture slides, made in the background (the reply's data lists them under `making`). A song already in the library is skipped. The reply's data lists `imported` and `problems` |
 | `song delete SONG --yes` | Deletes a song (one made in SoftPresenter goes to the Trash) |
+| `song text SONG [FILE]` | The song as song text; with a file, its words replaced from it, keeping the song (its id, theme and playlist entries) and its slides' looks, labels and notes where they still match, as Reflow does |
+| `slide SONG N [--json]` | A slide's objects: each one's number, name, role, words, place and look, with `*` beside the settings that are the slide's own rather than the theme's. `--json` adds the slide as stored |
+| `slide text SONG N [OBJECT] WORDS` | Sets an object's words; `\n` in WORDS starts a new line. OBJECT is its number, name or role (`main`, `translation`, `reference`…), the main text if left out |
+| `slide style SONG N\|all [OBJECT] key=value…` | Changes an object's look on one slide, or on every slide of the song: `size=90 font="Helvetica Neue" weight=bold italic=on color=#ffcc00 align=left valign=top scaling=none outline=4 …`; `key=reset` goes back to the theme's setting, and `reset` alone to all of the theme's. `slide style keys` lists every setting |
+| `slide frame SONG N OBJECT x= y= w= h=` | Where an object sits, in the slide's pixels (`reset`: back to the theme's place) |
+
+Every change from `song text` and `slide …` is saved at once, can be undone (Edit › Undo, or
+`sp menu Undo`), redraws the slide's picture, reloads it in an editor that has it open, and a
+slide on screen shows it at once. Put a song name with spaces in quotes:
+`sp slide style "Blessed Assurance" all size=90`.
 | `playlist open NAME` | Puts a playlist in front |
 | `library open NAME` | Shows a library's songs in the song list; `library open all` shows every song |
 | `playlist add SONG [to PLAYLIST]` | Adds a song to a playlist (the one in front if none is named) |

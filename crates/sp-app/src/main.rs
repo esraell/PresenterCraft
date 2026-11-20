@@ -27,6 +27,7 @@ mod renamed;
 mod screens;
 mod service;
 mod setup;
+mod slide_cli;
 mod stage;
 mod stage_editor;
 mod studio;

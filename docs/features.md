@@ -308,7 +308,11 @@ feature changes, this page changes in the same commit.
 - `sp …` (full name `softpresenter`), installed from SoftPresenter › Install Command Line Tool…,
   controls the running app from a terminal, a script or an AI agent (`sp status`, `sp next`):
   what is on screen, the lists, going to slides, clearing, media, messages, props, timers,
-  macros, announcements, audio, the Bible and songs, and every menu bar item. It reaches the
+  macros, announcements, audio, the Bible and songs, and every menu bar item. A quick fix
+  needs no editor: `sp slide SONG N` shows a slide's objects and how they look, and
+  `sp slide text`, `sp slide style` (one slide or `all`) and `sp slide frame` change an object's
+  words, look or place; `sp song text` reads or replaces a song's words. Each change is saved,
+  can be undone, and shows on screen at once. It reaches the
   app through a socket only the same user can open, and nothing listens on the network. See
   [cli.md](cli.md); [app-map.md](app-map.md) maps every part of the app.
 

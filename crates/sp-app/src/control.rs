@@ -40,11 +40,11 @@ pub struct Reply {
 }
 
 impl Reply {
-    fn done(text: impl Into<String>) -> Reply {
+    pub(crate) fn done(text: impl Into<String>) -> Reply {
         Reply { ok: true, text: text.into(), data: serde_json::Value::Null }
     }
 
-    fn with(text: impl Into<String>, data: serde_json::Value) -> Reply {
+    pub(crate) fn with(text: impl Into<String>, data: serde_json::Value) -> Reply {
         Reply { ok: true, text: text.into(), data }
     }
 
@@ -187,7 +187,7 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
 /// in the folder (a song called "notes") is meant as words.
 fn with_full_paths(args: Vec<String>) -> Vec<String> {
     let names_files = args.first().is_some_and(|w| w.eq_ignore_ascii_case("song"))
-        && args.get(1).is_some_and(|w| w.eq_ignore_ascii_case("import") || w.eq_ignore_ascii_case("new"));
+        && args.get(1).is_some_and(|w| ["import", "new", "text"].iter().any(|word| w.eq_ignore_ascii_case(word)));
     if !names_files {
         return args;
     }
@@ -385,6 +385,22 @@ Songs, libraries and playlists
   libraries                    the libraries, with how many songs each has
   library open NAME | all      show a library's songs, or all songs
   song delete SONG --yes
+  song text SONG [FILE]        the song as song text, or its words replaced from a file (its
+                               slides keep their looks, labels and notes)
+
+Changing a slide (each change is saved, can be undone, and shows on screen at once)
+  slide SONG N [--json]        the slide's objects: words, place and look (* = the slide's own)
+  slide text SONG N [OBJECT] WORDS
+                               an object's words (\n starts a new line); OBJECT is a number,
+                               name or role, the main text if left out
+  slide style SONG N|all [OBJECT] key=value…
+                               an object's look: size=90 font=… weight=bold italic=on
+                               color=#ffffff align=center …; key=reset, or reset alone, for the
+                               theme's look; `slide style keys` lists them all
+  slide frame SONG N OBJECT x= y= w= h=
+                               where an object sits, in the slide's pixels (reset: the theme's)
+
+  Put a song name with spaces in quotes: slide style \"Blessed Assurance\" all size=90
   playlist open NAME
   playlist add SONG [PLAYLIST]
 
@@ -452,6 +468,7 @@ impl crate::App {
             "status" => Ok(self.ctl_status()),
             "songs" => Ok(self.ctl_songs()),
             "slides" => self.ctl_slides(&rest(args, 1)),
+            "slide" => self.ctl_slide(args),
             "playlists" => Ok(self.ctl_playlists()),
             "libraries" => Ok(self.ctl_libraries()),
             "library" => self.ctl_library(args),
@@ -528,7 +545,7 @@ impl crate::App {
             .collect()
     }
 
-    fn find_song(&self, typed: &str) -> Result<usize, String> {
+    pub(crate) fn find_song(&self, typed: &str) -> Result<usize, String> {
         let songs = self.listed_songs();
         let names: Vec<String> = songs.iter().map(|(_, title)| title.clone()).collect();
         find("song", &names, typed).map(|at| songs[at].0)
@@ -1084,6 +1101,7 @@ impl crate::App {
                 self.handle_song_request();
                 Ok(Reply::done(format!("Deleted {title}.")))
             }
+            Some("text") => self.ctl_song_text(&args[2..]),
             Some("import") => {
                 let paths: Vec<std::path::PathBuf> = args[2..].iter().map(std::path::PathBuf::from).collect();
                 if paths.is_empty() {
@@ -1131,7 +1149,8 @@ impl crate::App {
                 }
                 Ok(Reply::with(text, serde_json::json!({"imported": imported, "problems": problems, "making": decks})))
             }
-            _ => Err("song new TITLE [FILE.txt], song import FILE…, or song delete SONG --yes".to_owned()),
+            _ => Err("song new TITLE [FILE.txt], song import FILE…, song text SONG [FILE], or song delete SONG --yes"
+                .to_owned()),
         }
     }
 
