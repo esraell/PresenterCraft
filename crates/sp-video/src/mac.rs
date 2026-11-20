@@ -246,7 +246,11 @@ fn copy_pixels(buffer: &CVPixelBuffer) -> Option<Frame> {
 
 /// Draws a picture the system decoded into RGBA rows.
 fn draw(image: &CGImage) -> Option<Frame> {
-    let (width, height) = (CGImage::width(Some(image)), CGImage::height(Some(image)));
+    draw_at(image, CGImage::width(Some(image)), CGImage::height(Some(image)))
+}
+
+/// Draws a picture into RGBA rows of a size, scaling it to fill them.
+pub(crate) fn draw_at(image: &CGImage, width: usize, height: usize) -> Option<Frame> {
     if width == 0 || height == 0 {
         return None;
     }

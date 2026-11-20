@@ -19,8 +19,17 @@ objc2-core-video = "0.3"
 objc2-core-graphics = "0.3"
 objc2-image-io = "0.3"
 objc2-core-foundation = "0.3"
-# The names macOS gives the displays ("HP 27f", "3DTV"), for the Screens window.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSScreen", "NSGraphics"] }
+# The names macOS gives the displays ("HP 27f", "3DTV"), for the Screens window; and the
+# off-screen window a web page is drawn in.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSScreen", "NSGraphics", "NSWindow", "NSView", "NSResponder", "NSImage", "NSColor", "NSApplication", "NSGraphicsContext", "NSImageRep", "objc2-core-foundation", "objc2-core-graphics"] }
+# Web pages in boxes on slides, drawn off-screen by the system's web view.
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKSnapshotConfiguration", "WKNavigationDelegate", "WKUIDelegate", "WKNavigationAction", "WKNavigationResponse", "WKNavigation", "WKWebsiteDataStore", "WKPreferences", "WKFrameInfo", "WKSecurityOrigin", "WKWindowFeatures", "WKDownload", "WKUserContentController", "WKContentWorld"] }
+block2 = "0.6"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# The web engine's check (examples/web_check.rs) runs outside the app, so it starts AppKit itself.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication"] }
 
 # Calls into the system's media frameworks need `unsafe`; this crate alone allows it, and only
 # in its macOS module. Every unsafe block says why it is sound.

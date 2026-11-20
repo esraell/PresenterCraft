@@ -262,7 +262,8 @@ The code is a Rust workspace:
     crates/sp-render   draws slides on the GPU: screens, thumbnails, preview
     crates/sp-bible    Bible files, references, search, verse numbering
     crates/sp-ndi      NDI output
-    crates/sp-video    videos (macOS's AVFoundation, then FFmpeg) and system picture formats
+    crates/sp-video    videos (macOS's AVFoundation, then FFmpeg), system picture formats, and
+                       web pages drawn off-screen (macOS's web view)
     crates/sp-app      the app and its windows
 
 [AGENTS.md](AGENTS.md#rules) says where `unsafe` code is allowed. Before sending a change:

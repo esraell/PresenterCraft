@@ -190,7 +190,7 @@ problems, and once a minute how long drawing took.
 | `sp-model` | The data: songs (presentations, groups, slides, objects), themes and layouts, transitions, builds, actions |
 | `sp-engine` | The show's state: what is selected, what is on screen, next and previous, clearing layers |
 | `sp-render` | Drawing slides on the GPU with vello: screens, thumbnails, transitions |
-| `sp-video` | Playing videos: macOS's own player, FFmpeg for other formats |
+| `sp-video` | Playing videos: macOS's own player, FFmpeg for other formats; web pages drawn off-screen by macOS's web view (`web`, `web_mac`), copied into frames as a video's are |
 | `sp-ndi` | Sending screens over NDI (the runtime is opened when an NDI screen starts) |
 | `sp-bible` | Bibles: references, verse numbering, search |
 | `sp-app` | The app: the window (egui), the screens' thread (`output.rs`), the views (`home.rs`, `studio.rs`, `editor.rs`, `inspector.rs`), the command line (`control.rs`, and `slide_cli.rs` for changing slides), the menu bar (`menubar.rs`) |

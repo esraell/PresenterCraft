@@ -7,12 +7,23 @@
 //! A [`Player`] is made and controlled on the main thread. The pictures it makes are taken from
 //! a [`Frames`], which can go to another thread: the one drawing the screens.
 //!
+//! Web pages are drawn the same way: a [`WebPage`] made on the main thread, its pictures taken
+//! from a [`Frames`] (see the `web` module).
+//!
 //! This is the one crate in SoftPresenter that may use `unsafe` code, for calls into the
-//! system's frameworks; each such call says why it is sound.
+//! system's frameworks, and only in its two macOS modules (`mac` for videos and pictures,
+//! `web_mac` for web pages); each such call says why it is sound.
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod mac;
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod web_mac;
+
+pub mod web;
+pub use web::WebPage;
 
 mod ffmpeg;
 
@@ -87,12 +98,14 @@ pub enum Player {
     Ffmpeg(Box<ffmpeg::Player>),
 }
 
-/// Where a playing video's pictures are taken from. It can be sent to another thread.
+/// Where a playing video's (or a web page's) pictures are taken from. It can be sent to
+/// another thread.
 #[derive(Clone)]
 pub enum Frames {
     #[cfg(target_os = "macos")]
     System(mac::Frames),
     Ffmpeg(ffmpeg::Frames),
+    Web(web::WebFrames),
 }
 
 impl Frames {
@@ -102,6 +115,7 @@ impl Frames {
             #[cfg(target_os = "macos")]
             (Frames::System(a), Frames::System(b)) => a.same(b),
             (Frames::Ffmpeg(a), Frames::Ffmpeg(b)) => a.same(b),
+            (Frames::Web(a), Frames::Web(b)) => a.same(b),
             #[allow(unreachable_patterns)]
             _ => false,
         }
@@ -113,6 +127,7 @@ impl Frames {
             #[cfg(target_os = "macos")]
             Frames::System(frames) => frames.next(),
             Frames::Ffmpeg(frames) => frames.next(),
+            Frames::Web(frames) => frames.next(),
         }
     }
 }

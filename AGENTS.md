@@ -81,8 +81,11 @@ message.
 
 ## Rules
 
-- **`unsafe` code** is allowed only in `sp-video`'s macOS module and `sp-ndi`'s `runtime`
-  module, and every block says why it is sound. Anywhere else, find a safe way or ask the owner.
+- **`unsafe` code** is allowed only in `sp-video`'s two macOS modules (`mac` for videos and
+  pictures, `web_mac` for web pages) and `sp-ndi`'s `runtime` module, and every block says why
+  it is sound. `web_mac` also calls two web view settings outside Apple's published interface
+  (window occlusion detection and the page background), only when the web view answers to them;
+  the owner agreed to that on 2026-11-20. Anywhere else, find a safe way or ask the owner.
 - **Live safety.** Nothing slow (reading files, decoding, network, waiting on NDI) runs on the
   thread that draws the screens. The audience must never see a freeze or the wrong slide because
   the operator's window was busy.
