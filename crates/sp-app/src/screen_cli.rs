@@ -89,7 +89,12 @@ impl crate::App {
         if state.screens.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
             return Err(format!("There is a screen called {name} already."));
         }
-        let said = output_words(&output);
+        let mut said = output_words(&output);
+        if let Output::Display(display) = &output
+            && !state.displays.iter().any(|d| d.is_named(display))
+        {
+            said.push_str(" (not connected now; the screen waits for it)");
+        }
         let screen = if stage { Screen::stage(name.clone(), output) } else { Screen::new(name.clone(), output) };
         state.screens.push(screen);
         state.screens_changed = true;
@@ -123,6 +128,16 @@ impl crate::App {
                     };
                     screen.output = parse_output(&words)?;
                     said.push(format!("on {}", output_words(&screen.output)));
+                    // A display not connected now is kept (the screen waits for it), and said.
+                    if let Output::Display(name) = &screen.output
+                        && !state.displays.iter().any(|display| display.is_named(name))
+                    {
+                        let connected: Vec<&str> = state.displays.iter().map(|d| d.name.as_str()).collect();
+                        said.push(format!(
+                            "but no display called {name} is connected now, so the screen waits for it (connected: {})",
+                            if connected.is_empty() { "none".to_owned() } else { connected.join(", ") }
+                        ));
+                    }
                 }
                 "kind" => {
                     screen.kind = match value.to_lowercase().as_str() {
@@ -194,6 +209,22 @@ impl crate::App {
         let was = std::mem::replace(&mut state.screens[index], screen);
         state.screens_changed = true;
         Ok(Reply::done(format!("The screen {}: {}.", was.name, said.join(", "))))
+    }
+
+    /// `displays`: the displays connected now, by name, with their size and which is the main one.
+    pub(crate) fn ctl_displays(&self) -> Result<Reply, String> {
+        let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+        let lines: Vec<String> = state
+            .displays
+            .iter()
+            .map(|d| format!("{} ({}x{}){}", d.name, d.w, d.h, if d.main { ", the main display" } else { "" }))
+            .collect();
+        let data: Vec<serde_json::Value> = state
+            .displays
+            .iter()
+            .map(|d| serde_json::json!({"name": d.name, "width": d.w, "height": d.h, "main": d.main}))
+            .collect();
+        Ok(Reply::with(crate::control::numbered(&lines), serde_json::json!(data)))
     }
 
     /// `settings`, and `settings set key=value…`: the choices kept between runs.

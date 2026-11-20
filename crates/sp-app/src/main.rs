@@ -4168,7 +4168,9 @@ impl App {
             for place in &mut placed {
                 match place {
                     Placed::Fullscreen(_) => *place = Placed::Window,
-                    Placed::Ndi(_) if !ndi_aid => *place = Placed::Nothing("Not sent during a capture.".to_owned()),
+                    Placed::Ndi(_) if !ndi_aid => {
+                        *place = Placed::Nothing("Not sent in a quiet run (a test or a capture).".to_owned());
+                    }
                     _ => {}
                 }
             }

@@ -425,6 +425,7 @@ const COMMANDS: &[&str] = &[
     "screen",
     "settings",
     "groups",
+    "displays",
     "theme",
     "menu",
 ];
@@ -642,6 +643,7 @@ Changing a slide (each change is saved, can be undone, and shows on screen at on
 
 Screens and settings
   screens                      each screen and what it is doing
+  displays                     the displays connected now (names for screen add … on display)
   screen add audience|stage NAME [on display NAME|window|ndi NAME|automatic]
   screen set SCREEN key=value… name= output=display:NAME|window|ndi:NAME|automatic|off
                                kind=audience|stage layers=slides,media,… color=#RRGGBB
@@ -814,6 +816,7 @@ impl crate::App {
             "screen" => self.ctl_screen(args),
             "settings" => self.ctl_settings(args),
             "groups" => Ok(ctl_groups()),
+            "displays" => self.ctl_displays(),
             "theme" => self.ctl_theme(args),
             "undo" => self.ctl_undo(el, false),
             "redo" => self.ctl_undo(el, true),
