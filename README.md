@@ -41,7 +41,8 @@ SoftPresenter is built to be:
 - **Congregations in two languages:** both languages on every song slide, and up to four Bible
   translations on one slide, lined up verse by verse.
 - **Worship teams and livestreams:** stage screens with the words now, the next slide, the clock
-  and a timer; any screen sent over NDI to streaming software or a video switcher.
+  and a timer; any screen sent over NDI to streaming software or a video switcher, laid out its
+  own way if needed (a lower third for the stream).
 - **Lobbies and automation:** loops of pictures and videos before and after the service, and a
   command line for scripts, button panels and AI agents.
 
@@ -50,16 +51,21 @@ SoftPresenter is built to be:
 - **Songs and slides.** Songs as slides in groups (Verse, Chorus, Bridge), arrangements, one-key
   jumps, nineteen transitions, libraries of your own, and playlists with headers, shown as one
   scroll from song to song. Songs import from text, ChordPro, rich-text, Word and lyric-service
-  files, in any common encoding. PowerPoint, Keynote and PDF files, and folders of pictures,
-  come in as slides. Undo and redo.
-- **Bible.** Look up `John 3:16-18` or `Пс 22:1-3`, search by word, up to four translations on
-  one slide; four Bibles come with the app and sixteen more download from inside it.
+  files, in any common encoding, and whole song libraries come across from other presentation
+  software. PowerPoint, Keynote and PDF files, and folders of pictures, come in as slides. Undo
+  and redo.
+- **Bible.** Type `John 3:16-18`, `Пс 22:1-3` or `Ів 3:16` and the slides fill as you type, with
+  no need to press Return; or click through book, chapter and verse lists, or search by word.
+  Up to four translations on one slide, a history of the passages shown, and book names in
+  English, Russian and Ukrainian. Four Bibles come with the app and sixteen more install from
+  its Bibles window.
 - **Media.** Pictures and videos behind the words or on their own, media playlists, folders the
   app watches, and an announcements layer that loops by itself. Videos play as they are, never
   converted.
 - **Screens.** Any number of audience screens on displays (never the one the operator works
-  on), in windows or over NDI; stage screens with layouts you design; a look for each screen (a
-  lobby can show only the media); test patterns and Identify Screens.
+  on), in windows or over NDI, each with its own look and theme if you like (a lobby can show
+  only the media, a stream a lower third); stage screens with layouts you design; test patterns
+  and Identify Screens.
 - **Live tools.** Timers, messages over the slides, props such as a logo, macros that do several
   things in one click, walk-in music with crossfades, and a message for the stage.
 - **Editing and themes.** A slide editor with text, shapes, pictures, videos, gradients and
@@ -73,7 +79,7 @@ The full list, area by area, is in [docs/features.md](docs/features.md).
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/images/bible.png" alt="The Bible view: John 3:16-18 in the King James Version beside the Russian Synodal, one slide per verse"></td>
+    <td width="50%"><img src="docs/images/bible.png" alt="The Bible page: John 3:16-18 in the Russian Synodal and the King James Version, one slide per verse, beside the book, chapter and verse lists"></td>
     <td width="50%"><img src="docs/images/stage.png" alt="A stage screen: the slide on screen in English and Russian, the next slide below it, a sermon timer and the clock"></td>
   </tr>
   <tr>
@@ -104,15 +110,20 @@ The full list, area by area, is in [docs/features.md](docs/features.md).
    pasted in: a line in square brackets starts a group, a blank line starts a new slide, and a
    line with only `--` separates the main language from the translation. Songs you already have
    come in with File › Import Songs…, or by dropping their files on the window: text (see
-   [the format](#song-text-files)), ChordPro, rich text, Word and lyric-service files.
+   [the format](#song-text-files)), ChordPro, rich text, Word and lyric-service files. A whole
+   library from other presentation software comes across too, from the File menu or the
+   first-run setup, keeping each song's groups and arrangements.
 3. **Build the running order.** Make a playlist with the + beside PLAYLISTS (say "Sunday
    Morning"), drag songs into it in order, and add headers to group them. Sermon and notice
    slides that arrive as PowerPoint, Keynote or PDF files come in with File › Import Slides…,
    or by dropping them on the window: each page becomes a slide, ready to drag into the
    playlist.
-4. **Add the readings.** In the Bible view (Control-B), type a reference such as `John 3:16-18`,
-   pick a second translation for the next row, and add the passage to the playlist with one
-   click.
+4. **Add the readings.** Control-B goes to the Bible page from anywhere. Type a reference such
+   as `John 3:16-18` and the slides fill as you type (book names are offered as you go), or
+   click through the book, chapter and verse lists; nothing goes on screen until you click a
+   slide. Pick a second translation for the next row, set what each slide shows under Options
+   (with a live preview), and add the passage to the playlist with one click. History brings
+   back any passage that was on screen.
 5. **Add pictures and videos.** Drop them on the window to put them in the media bin, and group
    them in a media playlist (the menu beside MEDIA). For a loop before the service, choose Play
    This Playlist, or right-click a song and choose Play on Announcements Layer. To start it every
