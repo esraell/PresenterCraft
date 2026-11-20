@@ -235,7 +235,8 @@ complete enough for a large Sunday service, simple enough for a volunteer, light
 old laptop, and open to scripts and AI. First on the list: bringing playlists and media across
 from a church's existing software, FFmpeg inside the app, media and placeholder items in
 playlists, and fixing a slide's words from the Show view. After that come a network API with a
-phone remote and an MCP server for AI assistants, and tested Windows and Linux builds.
+phone remote, the whole app in a browser, an MCP server for AI assistants, and tested Windows and
+Linux builds.
 
 The full plan, about 170 features with their size and how much each matters on a Sunday, is in
 [docs/roadmap.md](docs/roadmap.md). Nothing in it is promised by a date.

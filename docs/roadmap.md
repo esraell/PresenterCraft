@@ -32,7 +32,7 @@ Size: S = under a day, M = days, L = a week or more. Sunday: how much it matters
 13. **A fuller stage layout editor.** Free text, timers chosen by name, a video countdown and
     slide pictures. · M
 
-Next in line: the network API with a phone remote, spell check, formatting one word, CCLI usage
+Next in line: the network API, with the whole app in a browser and a phone remote, spell check, formatting one word, CCLI usage
 reporting, editable key mappings, adding time to a running timer, and Russian and Ukrainian
 menus. Tested Windows and Linux builds are left out of the ranking because they are a port
 rather than a feature, but no church on Windows can use the app without them.
@@ -208,9 +208,10 @@ rather than a feature, but no church on Windows can use the app without them.
 
 ## Remote control and integrations
 
-- **Network API.** HTTP (and one JSON message per line over TCP) control of slides, playlists, clears, timers, messages, props, macros, screen setups and screens, with live status updates and slide thumbnails. Most of this section needs it. (started: `softpresenter ctl` controls the running app from the same computer; nothing listens on the network) · L · Medium
+- **Network API.** HTTP and WebSocket (and one JSON message per line over TCP) control of slides, playlists, clears, timers, messages, props, macros, screen setups and screens, with live status updates and slide thumbnails. It runs the same commands as `sp`, so the command line, the browser, remotes and AI agents always do the same thing. Off until it is switched on in Settings, on the local network only, with passwords for watching and for control. Most of this section needs it. (started: `sp` controls the running app from the same computer; nothing listens on the network) · L · Medium
 - **Phone or tablet remote.** Browse playlists, put slides up, clear, run macros; passwords for watching only and for control. M as a web page the app serves, L as an app. · M–L · Medium
-- **Control page in a browser.** Needs the network API. · M · Medium
+- **The whole app in a browser.** A web page the app serves, laid out like the Show view: libraries and playlists, the slides, what is on screen, the media and the live tools (timers, messages, props, macros, clears), updating as the show changes. The show can then be run from any computer or tablet on the network, and a second operator can help from another room. Needs the network API. · L · Medium
+- **Running without a window (headless).** SoftPresenter on a computer with nobody at it: it drives the screens or sends NDI, and is run from the browser page, a remote or `sp`. For a booth or rack computer that only feeds the projectors or a stream, a second computer that sends the stage screens, and scripts and agents that make slides, packs or pictures with no one watching. Needs the network API to be useful from another computer. · M · Low
 - **Stream Deck and Bitfocus Companion.** Buttons that run the show, ideally through modules that already exist. Needs the network API. · M · Medium
 - **MIDI in and out.** A note map (next slide, clear, pick by number) and slide actions that send notes. · M · Low
 - **DMX and Art-Net.** · M · Low
