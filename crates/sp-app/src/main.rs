@@ -2628,19 +2628,21 @@ impl App {
         self.import_songs(&paths);
     }
 
-    /// Asks for a folder of songs (a library folder, or the folder of libraries) and imports
-    /// it, each folder becoming a library. Opens where ProPresenter keeps its libraries, when
-    /// that folder is there.
+    /// Asks for song documents, a library folder, or the folder of libraries, and imports them,
+    /// each folder becoming a library. Opens where ProPresenter keeps its libraries, when that
+    /// folder is there.
     fn choose_library_folder_to_import(&mut self) {
-        let mut dialog = rfd::FileDialog::new().set_title("Import a Library Folder");
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Choose Songs or a Library Folder")
+            .add_filter("Song documents", &[load::PRO_ENDING]);
         if let Some(home) = std::env::var_os("HOME") {
             let libraries = PathBuf::from(home).join("Documents").join("ProPresenter").join("Libraries");
             if libraries.is_dir() {
                 dialog = dialog.set_directory(libraries);
             }
         }
-        if let Some(folder) = dialog.pick_folder() {
-            self.import_songs(&[folder]);
+        if let Some(chosen) = dialog.pick_files_or_folders() {
+            self.import_songs(&chosen);
         }
     }
 
@@ -2783,8 +2785,11 @@ impl App {
                 self.open_theme_editor(self.themes.len() - 1);
             }
             Some(ThemeRequest::Edit(index)) if index < count => self.open_theme_editor(index),
-            // The built-in theme, at the front of the list, is always kept.
-            Some(ThemeRequest::Delete(index)) if index > 0 && index < count => {
+            // The built-in theme, at the front of the list, and the built-in Bible theme are
+            // always kept.
+            Some(ThemeRequest::Delete(index))
+                if index > 0 && index < count && self.themes[index].id != sp_model::BIBLE_THEME_ID =>
+            {
                 // Write what is waiting first, so the places in the list still mean what they did.
                 self.save_unsaved();
                 let gone = self.themes.remove(index);

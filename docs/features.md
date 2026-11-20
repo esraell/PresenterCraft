@@ -45,7 +45,7 @@ feature changes, this page changes in the same commit.
   background, so the window and keys go on working; a 60-page deck takes about ten seconds.
   With no program that opens the file, it says what to install, or to export a PDF.
 - **Bringing a library across from ProPresenter 7.** File › Import from ProPresenter… opens
-  its Libraries folder; choose one library, or the folder of all of them. Each folder becomes a
+  its Libraries folder; choose song documents, one library, or the folder of all of them. Each folder becomes a
   library of the same name. Each song keeps its groups, slides, arrangements (and the one
   chosen), slide labels and notes, slides switched off, and its copyright details. A slide's
   text box in the largest type becomes the words, the next the translation, and a line such as
@@ -195,6 +195,10 @@ feature changes, this page changes in the same commit.
   templates, each a set of named boxes. A song's slide uses the template that suits it (two
   languages or one) unless you pick one from the slide's right-click menu; Bible slides use
   the template you choose.
+- Two themes come with the app: Built-in, for songs, and Bible, which Bible slides start with:
+  the Russian Synodal verse and its reference on top, the King James Version and its reference
+  below, in Linux Biolinum on black. Either can be changed and saved, and neither can be
+  deleted. (Bible's settings live in `crates/sp-model/themes/bible.sptheme`.)
 - The theme editor works as the song editor does: Add Text, Shapes, Media… and pictures or
   videos dragged from the Finder. A template's shapes, pictures and videos (a logo, a bar, a
   moving background) are drawn behind the words on every slide that uses it, and a video in

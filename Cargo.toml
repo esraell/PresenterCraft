@@ -31,7 +31,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Playing audio files: walk-in music and other tracks.
 rodio = { version = "0.21", default-features = false, features = ["playback", "mp3", "wav", "flac", "mp4", "vorbis", "symphonia-aiff"] }
 # The system's own window for choosing files to add.
-rfd = "0.15"
+rfd = "0.17"
 # Moving a deleted song's file to the Trash rather than erasing it.
 trash = "5"
 # The macOS menu bar.

@@ -55,6 +55,11 @@ impl Role {
     pub fn translation() -> Role {
         Role("translation".to_owned())
     }
+
+    /// Where the translation of a Bible verse is from, when it is shown apart from the first.
+    pub fn translation_reference() -> Role {
+        Role("translation-reference".to_owned())
+    }
 }
 
 /// What an object on a slide is. More kinds (pictures, video) are added here.

@@ -431,6 +431,9 @@ pub struct ThemeTemplate {
     pub objects: Vec<Object>,
 }
 
+/// The id of the built-in theme Bible slides start with ([`Theme::builtin_bible`]).
+pub const BIBLE_THEME_ID: Uuid = Uuid::from_u128(0xb1b1);
+
 /// A theme: any number of templates, and a colour behind them all.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "ThemeOnDisk")]
@@ -645,6 +648,14 @@ impl Theme {
     /// The theme the app starts with: a large white main language above a smaller orange
     /// translation, both outlined and shadowed, with a small line for a Bible reference; and
     /// a second template for slides with one language, where the main language is centred.
+    /// The theme Bible slides start with: the verse in one language above the same verse in
+    /// another, each with its reference, in Linux Biolinum on black. It is kept as a theme file
+    /// beside the code, `themes/bible.sptheme`, so it can be changed in the app and saved back.
+    pub fn builtin_bible() -> Theme {
+        // The file is part of the program and is checked by a test, so it always reads.
+        Theme::from_json(include_str!("../themes/bible.sptheme")).unwrap_or_else(|_| Theme::builtin())
+    }
+
     pub fn builtin() -> Theme {
         let base = |role: Role, rect: SlideRect, size: f32, min_size: f32, fill: Rgba, outline: f32| BoxStyle {
             role,
@@ -999,6 +1010,16 @@ pub fn missing_fonts(used: &[String], installed: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_built_in_bible_theme_reads_and_has_both_languages_with_their_references() {
+        let theme = Theme::builtin_bible();
+        assert_eq!((theme.id, theme.name.as_str()), (BIBLE_THEME_ID, "Bible"));
+        let roles: Vec<String> = theme.templates[0].boxes.iter().map(|b| b.role.0.clone()).collect();
+        assert_eq!(roles, ["primary", "reference", "translation", "translation-reference"]);
+        assert!(theme.background_picture.is_none(), "no picture is built in");
+    }
+
     use super::*;
 
     #[test]

@@ -14,21 +14,24 @@ fn in_use_file() -> Option<PathBuf> {
 }
 
 /// Every theme, the places in the list of the ones songs and Bible slides use, and which
-/// layout of its theme Bible slides use. The built-in theme is always
-/// there, as it was last saved if it has been changed; the others follow in name order.
+/// layout of its theme Bible slides use. The built-in theme is always there first, and the
+/// built-in Bible theme always among the rest, each as it was last saved if it has been
+/// changed; the others follow in name order. Bible slides start with the built-in Bible theme.
 pub fn load_all() -> (Vec<Theme>, usize, usize, usize) {
-    let mut themes = folder().map_or_else(|| vec![Theme::builtin()], |folder| load_from(&folder));
+    let mut themes =
+        folder().map_or_else(|| vec![Theme::builtin(), Theme::builtin_bible()], |folder| load_from(&folder));
     themes[1..].sort_by_key(|theme| theme.name.to_lowercase());
     // The note has a line for each kind of slide: `songs=<id>` and `bible=<id>`.
     let note = in_use_file().and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default();
-    let place = |kind: &str| {
+    let noted = |kind: &str| {
         note.lines()
             .find_map(|line| line.strip_prefix(kind)?.strip_prefix('='))
             .and_then(|id| Uuid::parse_str(id.trim()).ok())
             .and_then(|id| themes.iter().position(|theme| theme.id == id))
-            .unwrap_or(0)
     };
-    let (songs, bible) = (place("songs"), place("bible"));
+    let songs = noted("songs").unwrap_or(0);
+    let bible_theme = themes.iter().position(|theme| theme.id == sp_model::BIBLE_THEME_ID).unwrap_or(0);
+    let bible = noted("bible").unwrap_or(bible_theme);
     // The Bible theme's template is noted by its id. A note from before templates had ids
     // says `bible_layout=alone` for the second of the two there were then.
     let templates = &themes[bible].templates;
@@ -43,7 +46,7 @@ pub fn load_all() -> (Vec<Theme>, usize, usize, usize) {
 }
 
 fn load_from(folder: &Path) -> Vec<Theme> {
-    let mut themes = vec![Theme::builtin()];
+    let mut themes = vec![Theme::builtin(), Theme::builtin_bible()];
     let files = std::fs::read_dir(folder).ok();
     for path in files.into_iter().flatten().flatten().map(|entry| entry.path()) {
         // Themes saved before the project was renamed end in .pctheme; they still open.
@@ -54,6 +57,7 @@ fn load_from(folder: &Path) -> Vec<Theme> {
         match read {
             // The built-in theme's own file takes its place.
             Ok(theme) if theme.id.is_nil() => themes[0] = theme,
+            Ok(theme) if theme.id == sp_model::BIBLE_THEME_ID => themes[1] = theme,
             Ok(theme) if themes.iter().all(|have| have.id != theme.id) => themes.push(theme),
             Ok(_) => {}
             Err(problem) => eprintln!("{}: {problem}", path.display()),
@@ -114,7 +118,7 @@ mod tests {
     fn saved_themes_come_back_and_a_saved_built_in_takes_its_place() {
         let folder = std::env::temp_dir().join(format!("softpresenter-test-themes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
-        assert_eq!(load_from(&folder), vec![Theme::builtin()]);
+        assert_eq!(load_from(&folder), vec![Theme::builtin(), Theme::builtin_bible()]);
 
         let mut sunday = Theme::builtin();
         sunday.id = Uuid::new_v4();
@@ -126,9 +130,15 @@ mod tests {
         std::fs::write(folder.join("broken.pctheme"), "not a theme").unwrap();
 
         let loaded = load_from(&folder);
-        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded.len(), 3);
         assert_eq!(loaded[0], built_in);
-        assert_eq!(loaded[1], sunday);
+        assert_eq!(loaded[1], Theme::builtin_bible());
+        assert_eq!(loaded[2], sunday);
+        // The built-in Bible theme, changed and saved, takes its own place too.
+        let mut bible = Theme::builtin_bible();
+        bible.templates[0].boxes[0].size = 80.0;
+        save_in(&folder, &bible).unwrap();
+        assert_eq!(load_from(&folder)[1], bible);
         let _ = std::fs::remove_dir_all(&folder);
     }
 }

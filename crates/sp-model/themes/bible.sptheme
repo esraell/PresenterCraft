@@ -1,0 +1,332 @@
+{
+  "format": "softpresenter-theme",
+  "version": 2,
+  "theme": {
+    "id": "00000000-0000-0000-0000-00000000b1b1",
+    "name": "Bible",
+    "templates": [
+      {
+        "id": "00000000-0000-0000-0000-00000000b1b2",
+        "name": "Two languages",
+        "boxes": [
+          {
+            "role": "primary",
+            "rect": {
+              "x": 64.8,
+              "y": 17.6,
+              "w": 1790.3,
+              "h": 378.5
+            },
+            "font_family": "Linux Biolinum",
+            "weight": 400,
+            "italic": false,
+            "size": 96.0,
+            "min_size": 40.0,
+            "fill": {
+              "r": 255,
+              "g": 255,
+              "b": 255,
+              "a": 255
+            },
+            "align": "left",
+            "outline_width": 0.0,
+            "outline_color": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 255
+            },
+            "shadow": false,
+            "shadow_look": {
+              "color": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 255
+              },
+              "opacity": 0.5,
+              "angle": 315.0,
+              "offset": 10.0,
+              "blur": 15.0
+            },
+            "valign": "middle",
+            "caps": "none",
+            "underline": false,
+            "strike": false,
+            "scaling": "text_up_or_down",
+            "line_transform": "remove_line_returns",
+            "line_height": 1.25,
+            "letter_spacing": 0.0,
+            "margins": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "line_fill": {
+              "on": false,
+              "color": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 170
+              },
+              "full_width": false
+            },
+            "list": "none",
+            "scroll": "none",
+            "paragraph_spacing": 0.0,
+            "baseline": 0.0,
+            "gradient": {
+              "kind": "none",
+              "to": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 255
+              },
+              "angle": 90.0
+            }
+          },
+          {
+            "role": "reference",
+            "rect": {
+              "x": 64.8,
+              "y": 428.9,
+              "w": 1790.35,
+              "h": 109.80002
+            },
+            "font_family": "Linux Biolinum",
+            "weight": 700,
+            "italic": false,
+            "size": 44.0,
+            "min_size": 24.0,
+            "fill": {
+              "r": 255,
+              "g": 255,
+              "b": 255,
+              "a": 255
+            },
+            "align": "right",
+            "outline_width": 0.0,
+            "outline_color": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 255
+            },
+            "shadow": false,
+            "shadow_look": {
+              "color": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 255
+              },
+              "opacity": 0.5,
+              "angle": 315.0,
+              "offset": 10.0,
+              "blur": 15.0
+            },
+            "valign": "middle",
+            "caps": "none",
+            "underline": false,
+            "strike": false,
+            "scaling": "text_up_or_down",
+            "line_transform": "none",
+            "line_height": 1.25,
+            "letter_spacing": 0.0,
+            "margins": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "line_fill": {
+              "on": false,
+              "color": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 170
+              },
+              "full_width": false
+            },
+            "list": "none",
+            "scroll": "none",
+            "paragraph_spacing": 0.0,
+            "baseline": 0.0,
+            "gradient": {
+              "kind": "none",
+              "to": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 255
+              },
+              "angle": 90.0
+            }
+          },
+          {
+            "role": "translation",
+            "rect": {
+              "x": 64.84999,
+              "y": 540.0,
+              "w": 1790.3,
+              "h": 378.5
+            },
+            "font_family": "Linux Biolinum",
+            "weight": 400,
+            "italic": false,
+            "size": 96.0,
+            "min_size": 40.0,
+            "fill": {
+              "r": 255,
+              "g": 255,
+              "b": 255,
+              "a": 255
+            },
+            "align": "left",
+            "outline_width": 0.0,
+            "outline_color": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 255
+            },
+            "shadow": false,
+            "shadow_look": {
+              "color": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 255
+              },
+              "opacity": 0.5,
+              "angle": 315.0,
+              "offset": 10.0,
+              "blur": 15.0
+            },
+            "valign": "middle",
+            "caps": "none",
+            "underline": false,
+            "strike": false,
+            "scaling": "text_up_or_down",
+            "line_transform": "remove_line_returns",
+            "line_height": 1.25,
+            "letter_spacing": 0.0,
+            "margins": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "line_fill": {
+              "on": false,
+              "color": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 170
+              },
+              "full_width": false
+            },
+            "list": "none",
+            "scroll": "none",
+            "paragraph_spacing": 0.0,
+            "baseline": 0.0,
+            "gradient": {
+              "kind": "none",
+              "to": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 255
+              },
+              "angle": 90.0
+            }
+          },
+          {
+            "role": "translation-reference",
+            "rect": {
+              "x": 64.8,
+              "y": 951.3,
+              "w": 1790.35,
+              "h": 109.79999
+            },
+            "font_family": "Linux Biolinum",
+            "weight": 700,
+            "italic": false,
+            "size": 44.0,
+            "min_size": 40.0,
+            "fill": {
+              "r": 255,
+              "g": 255,
+              "b": 255,
+              "a": 255
+            },
+            "align": "right",
+            "outline_width": 0.0,
+            "outline_color": {
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 255
+            },
+            "shadow": false,
+            "shadow_look": {
+              "color": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 255
+              },
+              "opacity": 0.5,
+              "angle": 315.0,
+              "offset": 10.0,
+              "blur": 15.0
+            },
+            "valign": "middle",
+            "caps": "none",
+            "underline": false,
+            "strike": false,
+            "scaling": "text_up_or_down",
+            "line_transform": "none",
+            "line_height": 1.25,
+            "letter_spacing": 0.0,
+            "margins": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "line_fill": {
+              "on": false,
+              "color": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 170
+              },
+              "full_width": false
+            },
+            "list": "none",
+            "scroll": "none",
+            "paragraph_spacing": 0.0,
+            "baseline": 0.0,
+            "gradient": {
+              "kind": "none",
+              "to": {
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 255
+              },
+              "angle": 90.0
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

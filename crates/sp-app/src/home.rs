@@ -471,18 +471,23 @@ impl Default for BiblePage {
             lookup: String::new(),
             search: String::new(),
             options: crate::bible::BibleOptions::default(),
-            // Two translations side by side is the usual case here: one for each language.
+            // Two translations, one for each language, as the built-in Bible theme lays them out:
+            // the Russian Synodal on top, the King James Version below, each with its reference.
             rows: vec![
                 BibleRow {
-                    bible: Some(place("kjv")),
+                    bible: Some(place("syn")),
                     verse: Some(sp_model::Role::primary()),
                     reference: Some(sp_model::Role::reference()),
                 },
-                BibleRow { bible: Some(place("syn")), verse: Some(sp_model::Role::translation()), reference: None },
+                BibleRow {
+                    bible: Some(place("kjv")),
+                    verse: Some(sp_model::Role::translation()),
+                    reference: Some(sp_model::Role::translation_reference()),
+                },
             ],
             shelf,
-            boxes: layout_boxes(&Theme::builtin(), 0),
-            box_labels: layout_labels(&Theme::builtin(), 0),
+            boxes: layout_boxes(&Theme::builtin_bible(), 0),
+            box_labels: layout_labels(&Theme::builtin_bible(), 0),
             template: None,
             downloads: crate::bible_store::Downloads::default(),
             slots: None,
@@ -543,10 +548,11 @@ impl BiblePage {
         let main = has(sp_model::Role::primary()).or_else(|| self.boxes.first().map(|(role, _)| role.clone()));
         let reference = has(sp_model::Role::reference());
         let translation = has(sp_model::Role::translation());
+        let translation_reference = has(sp_model::Role::translation_reference());
         for (index, row) in self.rows.iter_mut().enumerate() {
             (row.verse, row.reference) = match index {
                 0 => (main.clone(), reference.clone()),
-                1 => (translation.clone(), None),
+                1 => (translation.clone(), translation_reference.clone()),
                 _ => (None, None),
             };
         }
