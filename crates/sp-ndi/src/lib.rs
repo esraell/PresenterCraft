@@ -108,11 +108,12 @@ impl NdiOutput {
 
 impl Drop for NdiOutput {
     fn drop(&mut self) {
-        // Closing the channel ends the thread's loop.
+        // Closing the channel ends the thread's loop, and it takes its source down on its own.
+        // It isn't waited for: it may be part-way through sending a picture (paced to the
+        // frame rate) or still starting NDI, and the thread dropping this is the one drawing
+        // the screens, which must never wait on NDI.
         self.tx = None;
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        drop(self.thread.take());
     }
 }
 

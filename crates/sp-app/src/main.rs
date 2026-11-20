@@ -968,6 +968,8 @@ struct App {
     video: Option<(Uuid, sp_video::Player)>,
     /// A video in a box on the slide on screen, by the file the box names, playing.
     slide_videos: Vec<(String, sp_video::Player)>,
+    /// Box videos neither the system nor FFmpeg could play, so they aren't tried again.
+    slide_video_refused: std::collections::HashSet<String>,
     /// The pages of web page boxes: those on screen, and those loaded ahead (see `WebBox`).
     web_pages: Vec<WebBox>,
     /// Web page boxes whose page couldn't be opened, not tried again until they change.
@@ -987,6 +989,8 @@ struct App {
     /// when the folders were last looked at.
     media_cycle: Option<MediaCycle>,
     folders_seen: std::collections::HashMap<std::path::PathBuf, std::time::SystemTime>,
+    /// Files in followed folders that couldn't be read, as they were then.
+    folders_refused: std::collections::HashMap<std::path::PathBuf, std::time::SystemTime>,
     folders_checked: Instant,
     /// The media playlists read at the start, handed to the window's state once it is made.
     media_playlists: Vec<media::Playlist>,
@@ -1428,15 +1432,22 @@ impl App {
                 let known = self.folders_seen.get(path).copied();
                 let in_bin = self.show.media().iter().position(|item| &item.path == path);
                 match (in_bin, known) {
-                    (None, _) => {
-                        if let Ok(picture) = media::load_picture(path) {
+                    // One that couldn't be read is tried again only once it has changed (a file
+                    // still being written changes as it grows), not every few seconds.
+                    (None, _) if self.folders_refused.get(path) == Some(modified) => {}
+                    (None, _) => match media::load_picture(path) {
+                        Ok(picture) => {
                             let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
                             self.show.add_media(MediaItem::new(name, path.clone()));
                             self.pictures.push(media::MediaPicture::of(picture));
                             applog::event("media", &format!("{} appeared in a followed folder", path.display()));
+                            self.folders_refused.remove(path);
                             changed_list = true;
                         }
-                    }
+                        Err(_) => {
+                            self.folders_refused.insert(path.clone(), *modified);
+                        }
+                    },
                     (Some(index), Some(seen)) if seen != *modified => {
                         // Written over: read it again; if it is on screen, show the new one.
                         if let Ok(picture) = media::load_picture(path)
@@ -1997,10 +2008,16 @@ impl App {
         let mut switched = false;
         for (file, player) in &mut self.slide_videos {
             wait = wait.min(player.tick());
-            if player.problem().is_some()
-                && !player.uses_ffmpeg()
-                && let Some(path) = images::resolve(file)
-                && let Ok(mut fallback) = sp_video::Player::open_with_ffmpeg(&path)
+            // A video FFmpeg couldn't take over either isn't tried again on every tick (each try
+            // starts FFmpeg's prober on this thread).
+            if player.problem().is_none() || player.uses_ffmpeg() || self.slide_video_refused.contains(file) {
+                continue;
+            }
+            let fallback = images::resolve(file).map(|path| (sp_video::Player::open_with_ffmpeg(&path), path));
+            let Some((Ok(mut fallback), path)) = fallback else {
+                self.slide_video_refused.insert(file.clone());
+                continue;
+            };
             {
                 applog::event("video", &format!("playing {} in a box with FFmpeg instead", path.display()));
                 fallback.set_looping(true);
@@ -7126,6 +7143,7 @@ fn main() -> ExitCode {
         started: Instant::now(),
         video: None,
         slide_videos: Vec::new(),
+        slide_video_refused: std::collections::HashSet::new(),
         web_pages: Vec::new(),
         web_refused: Vec::new(),
         web_traced: None,
@@ -7139,6 +7157,7 @@ fn main() -> ExitCode {
         held_themes: Vec::new(),
         media_cycle: None,
         folders_seen: std::collections::HashMap::new(),
+        folders_refused: std::collections::HashMap::new(),
         folders_checked: Instant::now(),
         unsaved_since: None,
         was_editing: false,

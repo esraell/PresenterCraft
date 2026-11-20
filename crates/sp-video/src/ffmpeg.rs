@@ -407,10 +407,28 @@ impl Player {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = pictures.spawn().map_err(|e| format!("FFmpeg could not be started: {e}"))?;
-        let (Some(mut out), Some(mut errors)) = (child.stdout.take(), child.stderr.take()) else {
+        let (Some(mut out), Some(errors)) = (child.stdout.take(), child.stderr.take()) else {
             return Err("FFmpeg could not be started.".to_owned());
         };
         run.children.push(child);
+        // What FFmpeg says is read as it says it, keeping only the first line: left unread, a
+        // video that keeps logging errors would fill the pipe and stop FFmpeg, and the video.
+        let first_error: Arc<Mutex<String>> = Arc::default();
+        let kept_error = first_error.clone();
+        let drained = std::thread::spawn(move || {
+            let mut errors = std::io::BufReader::new(errors);
+            let mut line = Vec::new();
+            while std::io::BufRead::read_until(&mut errors, b'\n', &mut line).is_ok_and(|read| read > 0) {
+                let said = String::from_utf8_lossy(&line);
+                if let Ok(mut first) = kept_error.lock()
+                    && first.is_empty()
+                    && !said.trim().is_empty()
+                {
+                    *first = said.trim().chars().take(300).collect();
+                }
+                line.clear();
+            }
+        });
         let sound_drives = self.info.sound && self.stream.is_some();
         let slot = self.slot.clone();
         let (looping, frame_len) = (self.looping, (w as usize) * (h as usize) * 4);
@@ -421,9 +439,10 @@ impl Player {
                 let mut rgba = vec![0u8; frame_len];
                 if out.read_exact(&mut rgba).is_err() {
                     if shown == 0 && !stop_v.load(Ordering::Relaxed) {
-                        let mut said = String::new();
-                        let _ = errors.read_to_string(&mut said);
-                        let first = said.lines().next().unwrap_or("it could not decode the video").trim().to_owned();
+                        // FFmpeg has stopped, so what it said is all read in a moment.
+                        let _ = drained.join();
+                        let said = first_error.lock().map(|first| first.clone()).unwrap_or_default();
+                        let first = if said.is_empty() { "it could not decode the video".to_owned() } else { said };
                         if let Ok(mut problem) = problem.lock() {
                             *problem = Some(format!("FFmpeg could not play the video: {first}"));
                         }
