@@ -473,11 +473,11 @@ it and `slide frame` moves it, while `slide text` and `slide style` say "The sli
     Moved John 3:16-18 to place 1 in Sunday Evening.
     $ sp playlist remove 9 from sunday evening
     No item called “9”. Sunday Evening has 3 items.
-    $ sp library add "Blessed Assurance" "River Song" to Hymns
-    Added to Hymns: Blessed Assurance, River Song.
+    $ sp library add "Blessed Assurance" "River Song" to Favourites
+    Added to Favourites: Blessed Assurance, River Song.
 
-    $ sp playlist media Walk-in.webm at 1 in sunday evening
-    Put the video Walk-in.webm at place 1 in Sunday Evening.
+    $ sp playlist media Bars.mp4 at 1 in sunday evening
+    Put the video Bars.mp4 at place 1 in Sunday Evening.
     $ sp playlist media-playlist Announcements at 1 in sunday evening
     Put the media playlist Announcements at place 1 in Sunday Evening.
     $ sp playlist placeholder Sermon slides in sunday evening
@@ -485,7 +485,7 @@ it and `slide frame` moves it, while `slide text` and `slide style` say "The sli
     $ sp playlist "Sunday Evening"
     Sunday Evening
       1. Announcements (media playlist)
-      2. Walk-in.webm (video)
+      2. Bars.mp4 (video)
       3. John 3:16-18
       4. — Opening songs —
       5. Blessed Assurance
