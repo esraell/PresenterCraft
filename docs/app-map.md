@@ -35,7 +35,7 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 | Show / Edit / Bible / Themes | Switches the view | `view show\|edit\|bible\|themes` |
 | Audience ON/OFF | The audience screens on or off (Command-1) | `audience on\|off` |
 | Stage ON/OFF | The stage screens on or off (Command-2) | `stage on\|off` |
-| ⚙ | Settings: General, Screens, Groups, Key Mappings (Command-comma) | `menu Settings` |
+| ⚙ | Settings: General, Screens, Groups, Key Mappings, Integrations (Command-comma) | `menu Settings` |
 
 ### Left column: library and playlists
 
@@ -150,7 +150,7 @@ Every menu bar item, with its shortcut, is listed by `sp menu`; any of them can 
 | Window | Opened from | Holds |
 |---|---|---|
 | Screens | Settings, Screens; or Screens, Configure Screens… | Audience and stage screens: where each goes (a display, a window, NDI, off), its name, its look (which layers, colour, covered edges); Identify |
-| Settings | ⚙ or Command-comma | General (copyright line, start-up choices), Screens, Groups (names and colours), Key Mappings |
+| Settings | ⚙ or Command-comma | General (copyright line, start-up choices), Screens, Groups (names and colours), Key Mappings, Integrations (VoxLive: its API key, its state, the church's screens; `voxlive …`) |
 | Stage Layouts | Screens, Edit Stage Layouts… | Layouts for the stage screens: now, next, notes, clock, timer, message |
 
 ## Where the app keeps things

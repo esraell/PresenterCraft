@@ -382,7 +382,18 @@ feature changes, this page changes in the same commit.
 - Each song's Artist, Author, Publisher, Year and CCLI Song # (the Info icon at the right of its header, beside Reflow, Arrangement and Notes), and a
   copyright line on the screens on a song's first slide, last slide or every slide, with the
   church's CCLI licence number, chosen in Settings.
-- A Settings window (Cmd+,) with General, Screens, Groups and Key Mappings panes.
+- A Settings window (Cmd+,) with General, Screens, Groups, Key Mappings and Integrations panes.
+- **Integrations** (Settings): the services SoftPresenter works with, each with how it stands,
+  opening a page to connect it. **VoxLive** (live translation captions) is connected with an
+  API key made in VoxLive (Settings › API keys, with the screens permissions), pasted on its
+  page or piped to `sp voxlive connect`. The key is kept in the Mac's Keychain (a test copy
+  keeps its own in its own folder) and sent only to VoxLive, with redirects off; it never goes
+  into a settings file, the log, a command's reply or a song pack, and only its first
+  characters (VoxLive's own handle for it) are shown. Connected, the page lists the church's
+  VoxLive screens (name, language, captions or Scripture), found again every 30 seconds; a
+  key VoxLive refuses stops the asking until another is given, so the church's other devices
+  aren't locked out, and a "wait" answer is waited out. Disconnect forgets the key on this
+  computer.
 
 ## From the command line
 - Preparing a service from the command line, as the window does it: `playlist new|rename|delete|

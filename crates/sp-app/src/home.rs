@@ -272,6 +272,8 @@ pub struct HomeState {
     /// True while the Settings window is open, and which of its panes is showing.
     pub preferences_open: bool,
     pub preferences_pane: usize,
+    /// Settings › Integrations: VoxLive's state, and what is asked of it.
+    pub voxlive: crate::voxlive::View,
     /// When a song's copyright line is shown, and the church's CCLI licence number.
     pub copyright_show: crate::service::CopyrightShow,
     pub ccli_licence: String,
@@ -994,6 +996,7 @@ impl Default for HomeState {
             view_request: None,
             preferences_open: false,
             preferences_pane: 0,
+            voxlive: Default::default(),
             copyright_show: crate::service::CopyrightShow::Never,
             ccli_licence: String::new(),
             start_audience_off: false,
@@ -3346,7 +3349,7 @@ const TITLE_ROOM: f32 = 12.0;
 /// The Settings window's contents: its panes down the left, the chosen one on the right.
 pub fn settings_ui(ui: &mut egui::Ui, state: &mut HomeState) {
     use crate::studio::{ACCENT, HOVER, PANEL, TEXT, TEXT_DIM};
-    const PANES: [&str; 4] = ["General", "Screens", "Groups", "Key Mappings"];
+    const PANES: [&str; 5] = ["General", "Screens", "Groups", "Key Mappings", "Integrations"];
     egui::Panel::left("settings panes")
         .resizable(false)
         .exact_size(180.0)
@@ -3376,6 +3379,7 @@ pub fn settings_ui(ui: &mut egui::Ui, state: &mut HomeState) {
         ui.label(egui::RichText::new(pane).font(crate::studio::semibold(18.0)).color(TEXT));
         ui.add_space(12.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match pane {
+            "Integrations" => crate::integrations::pane(ui, &mut state.voxlive),
             "General" => {
                 crate::studio::caption(ui, "COPYRIGHT");
                 ui.label("Show a song's copyright line on the audience screens:");

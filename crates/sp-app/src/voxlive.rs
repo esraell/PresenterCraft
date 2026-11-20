@@ -1,0 +1,431 @@
+//! VoxLive: live translation of the sermon, shown as captions. SoftPresenter talks to a church's
+//! VoxLive account through its church API (`https://voxlive.app/api/v1`), with an API key the
+//! church makes in VoxLive and pastes into Settings › Integrations.
+//!
+//! - The key is kept in the Mac's Keychain, and is never written to a settings file, the log,
+//!   a reply on the command line, a song pack, or anywhere else. A test copy of the app (one
+//!   started with `SOFTPRESENTER_DATA`) keeps its own key in its own folder instead, so it never
+//!   reads, changes or asks for the owner's.
+//! - The key is sent only to VoxLive's address (or, for tests, to a stand-in on this computer),
+//!   with redirects off, so it never follows one elsewhere.
+//! - Every request runs on a thread of its own, never on the thread that draws.
+//! - The screens are asked for every 30 seconds while connected. A key VoxLive refuses stops
+//!   the asking until another is given (VoxLive locks out an address that keeps trying a bad
+//!   key, which would stop the church's other devices too); "wait" answers are waited out.
+
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
+
+use serde::Deserialize;
+
+/// VoxLive's church API.
+pub const LIVE_API: &str = "https://voxlive.app/api/v1";
+
+/// How often the screens are asked for while connected.
+const POLL_EVERY: Duration = Duration::from_secs(30);
+
+/// The most a reply may be, in bytes.
+const LARGEST_REPLY: u64 = 2 * 1024 * 1024;
+
+/// The API's address. Testing aid: `SOFTPRESENTER_VOXLIVE_API` points at a stand-in for it on
+/// this computer (plain http to 127.0.0.1 or localhost only, so a key can't be sent elsewhere).
+pub fn api_base() -> String {
+    if let Ok(base) = std::env::var("SOFTPRESENTER_VOXLIVE_API") {
+        let base = base.trim().trim_end_matches('/');
+        let on_this_computer = ["http://127.0.0.1:", "http://localhost:", "http://127.0.0.1/", "http://localhost/"]
+            .iter()
+            .any(|start| base.starts_with(start) || format!("{base}/").starts_with(start));
+        if on_this_computer {
+            return base.to_owned();
+        }
+    }
+    LIVE_API.to_owned()
+}
+
+/// One of the church's VoxLive screens: a caption display, in one language.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct Screen {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub language: String,
+    /// `captions` (the sermon as it is spoken or translated) or `reference` (a Bible passage).
+    #[serde(default)]
+    pub mode: String,
+    /// The live display: it joins the captions and can start a paid translation, so it is
+    /// opened only on a real screen.
+    #[serde(default)]
+    pub url: String,
+    /// The test pattern: sample text in the screen's look, free, for previews.
+    #[serde(default)]
+    pub demo_url: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub style: serde_json::Value,
+}
+
+impl Screen {
+    /// What it is called, with its language.
+    pub fn label(&self) -> String {
+        let name = if self.name.trim().is_empty() { "VoxLive screen" } else { self.name.trim() };
+        if self.language.is_empty() { name.to_owned() } else { format!("{name} · {}", self.language.to_uppercase()) }
+    }
+
+    /// Cleans what VoxLive sent: no control characters in the names, and only addresses at
+    /// VoxLive's own display (or the test stand-in's) kept.
+    fn cleaned(mut self, base: &str) -> Screen {
+        for text in [&mut self.id, &mut self.name, &mut self.language, &mut self.mode, &mut self.version] {
+            text.retain(|c| !c.is_control());
+        }
+        let display = display_prefix(base);
+        for address in [&mut self.url, &mut self.demo_url] {
+            if !address.starts_with(&display) || address.chars().any(char::is_control) {
+                address.clear();
+            }
+        }
+        self
+    }
+}
+
+/// Where VoxLive's caption displays are: `https://voxlive.app/listen/`, or the test stand-in's.
+fn display_prefix(base: &str) -> String {
+    match base.strip_suffix("/api/v1") {
+        Some(site) if site.starts_with("http://") => format!("{site}/listen/"),
+        _ => "https://voxlive.app/listen/".to_owned(),
+    }
+}
+
+/// What the Integrations pane shows (a copy of the connection's state, made each frame it
+/// changes) and asks for. The key typed is never kept here past Connect.
+#[derive(Default)]
+pub struct View {
+    /// VoxLive's page is open (otherwise the list of services).
+    pub open: bool,
+    pub typed: String,
+    pub status: Status,
+    pub key_hint: Option<String>,
+    pub screens: Vec<Screen>,
+    /// Why the key given wasn't taken.
+    pub problem: Option<String>,
+    pub request: Option<crate::integrations::Request>,
+}
+
+/// How the connection stands.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Status {
+    /// No key given.
+    #[default]
+    NoKey,
+    /// A key given, its first answer awaited.
+    Checking,
+    Connected,
+    /// VoxLive refused the key; the words say why. Nothing more is asked until another key.
+    Refused(String),
+    /// VoxLive couldn't be reached, or answered with a problem; it is tried again.
+    Trouble(String),
+}
+
+impl Status {
+    /// In a few words, for the window and the command line.
+    pub fn words(&self) -> String {
+        match self {
+            Status::NoKey => "Not connected".to_owned(),
+            Status::Checking => "Connecting…".to_owned(),
+            Status::Connected => "Connected".to_owned(),
+            Status::Refused(why) | Status::Trouble(why) => why.clone(),
+        }
+    }
+}
+
+/// What went wrong with a request.
+enum Problem {
+    /// The key: missing, unknown, revoked, expired, or without the permission.
+    Refused(String),
+    /// Asked to wait (too many requests, or VoxLive busy) for this long.
+    Wait(Duration, String),
+    Other(String),
+}
+
+/// What a finished request found.
+enum Answer {
+    Screens(Result<Vec<Screen>, Problem>),
+}
+
+/// The connection to VoxLive: the key, the screens last found, and requests under way.
+pub struct Client {
+    key: Option<String>,
+    pub status: Status,
+    pub screens: Vec<Screen>,
+    /// When the screens were last found.
+    pub found_at: Option<Instant>,
+    /// When to ask again.
+    next: Option<Instant>,
+    busy: bool,
+    tx: Sender<Answer>,
+    rx: Receiver<Answer>,
+}
+
+impl Client {
+    /// The connection as it was left: with the key kept, if there is one, being checked.
+    pub fn new() -> Client {
+        let (tx, rx) = channel();
+        let key = store::load();
+        let status = if key.is_some() { Status::Checking } else { Status::NoKey };
+        let next = key.as_ref().map(|_| Instant::now());
+        Client { key, status, screens: Vec::new(), found_at: None, next, busy: false, tx, rx }
+    }
+
+    /// True when a key is kept.
+    pub fn has_key(&self) -> bool {
+        self.key.is_some()
+    }
+
+    /// The key's first characters (VoxLive's own handle for it), to show which key it is.
+    pub fn key_hint(&self) -> Option<String> {
+        self.key.as_ref().map(|key| format!("{}…", key.chars().take(12).collect::<String>()))
+    }
+
+    /// Takes a key: keeps it, and checks it by asking for the screens. The error is a sentence.
+    pub fn connect(&mut self, key: &str) -> Result<(), String> {
+        let key = key.trim();
+        if !looks_like_key(key) {
+            return Err(
+                "That isn't a VoxLive API key: a key starts with vxk_ (make one in VoxLive, Settings › API keys)."
+                    .to_owned(),
+            );
+        }
+        store::save(key)?;
+        self.key = Some(key.to_owned());
+        self.status = Status::Checking;
+        self.screens.clear();
+        self.found_at = None;
+        self.next = Some(Instant::now());
+        Ok(())
+    }
+
+    /// Forgets the key (here, not in VoxLive) and the screens.
+    pub fn disconnect(&mut self) {
+        store::forget();
+        self.key = None;
+        self.status = Status::NoKey;
+        self.screens.clear();
+        self.found_at = None;
+        self.next = None;
+    }
+
+    /// Asks for the screens now (unless a key was refused, or a request is under way).
+    pub fn refresh(&mut self) {
+        if self.key.is_some() && !matches!(self.status, Status::Refused(_)) {
+            self.next = Some(Instant::now());
+        }
+    }
+
+    /// Takes in finished requests and starts those due. Says when to look again.
+    pub fn tick(&mut self) -> Option<Instant> {
+        while let Ok(answer) = self.rx.try_recv() {
+            self.busy = false;
+            match answer {
+                Answer::Screens(Ok(screens)) => {
+                    self.screens = screens;
+                    self.found_at = Some(Instant::now());
+                    self.status = Status::Connected;
+                    self.next = Some(Instant::now() + POLL_EVERY);
+                }
+                Answer::Screens(Err(Problem::Refused(why))) => {
+                    crate::applog::problem("voxlive", &why);
+                    self.status = Status::Refused(why);
+                    self.next = None;
+                }
+                Answer::Screens(Err(Problem::Wait(wait, why))) => {
+                    self.status = Status::Trouble(why);
+                    self.next = Some(Instant::now() + wait);
+                }
+                Answer::Screens(Err(Problem::Other(why))) => {
+                    crate::applog::problem("voxlive", &why);
+                    self.status = Status::Trouble(why);
+                    self.next = Some(Instant::now() + POLL_EVERY);
+                }
+            }
+        }
+        let due = self.next.is_some_and(|at| at <= Instant::now());
+        if due
+            && !self.busy
+            && let Some(key) = self.key.clone()
+        {
+            self.busy = true;
+            self.next = None;
+            let tx = self.tx.clone();
+            let base = api_base();
+            std::thread::spawn(move || {
+                let _ = tx.send(Answer::Screens(get_screens(&base, &key)));
+            });
+        }
+        if self.busy { Some(Instant::now() + Duration::from_millis(250)) } else { self.next }
+    }
+}
+
+/// True for something shaped like a VoxLive API key: `vxk_`, then letters, digits, `_` or `-`.
+pub fn looks_like_key(key: &str) -> bool {
+    key.strip_prefix("vxk_").is_some_and(|rest| {
+        rest.len() >= 16 && rest.len() <= 128 && rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    })
+}
+
+/// The church's screens, as `GET /screens` gives them.
+fn get_screens(base: &str, key: &str) -> Result<Vec<Screen>, Problem> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .https_only(base.starts_with("https://"))
+        .timeout_global(Some(Duration::from_secs(15)))
+        .build()
+        .into();
+    let mut response = agent
+        .get(format!("{base}/screens"))
+        .header("Authorization", format!("Bearer {key}"))
+        .header("Accept", "application/json")
+        .call()
+        .map_err(|e| Problem::Other(format!("VoxLive couldn't be reached ({e}).")))?;
+    let status = response.status().as_u16();
+    let wait = response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| Duration::from_secs(seconds.clamp(2, 3600)));
+    let body = response.body_mut().with_config().limit(LARGEST_REPLY).read_to_string().unwrap_or_default();
+    let reply: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    let error = reply.get("error").and_then(serde_json::Value::as_str).unwrap_or("");
+    match status {
+        200 => {
+            let screens: Vec<Screen> = reply
+                .get("screens")
+                .and_then(|screens| serde_json::from_value(screens.clone()).ok())
+                .ok_or_else(|| Problem::Other("VoxLive's answer didn't list screens.".to_owned()))?;
+            Ok(screens.into_iter().map(|screen| screen.cleaned(base)).filter(|screen| !screen.id.is_empty()).collect())
+        }
+        401 | 403 => Err(Problem::Refused(refused_words(error))),
+        429 if error == "too_many_attempts" => Err(Problem::Refused(refused_words(error))),
+        429 | 503 => {
+            Err(Problem::Wait(wait.unwrap_or(Duration::from_secs(60)), "VoxLive asked to wait a moment.".to_owned()))
+        }
+        other => Err(Problem::Other(format!("VoxLive answered with a problem ({other})."))),
+    }
+}
+
+/// Why VoxLive refused the key, in words.
+fn refused_words(error: &str) -> String {
+    match error {
+        "key_revoked" => "VoxLive says that key was revoked: make a new one in VoxLive, Settings › API keys.",
+        "key_expired" => "VoxLive says that key has expired: make a new one in VoxLive, Settings › API keys.",
+        "insufficient_scope" => {
+            "That key can't read screens: make one in VoxLive with the screens permissions (read and write)."
+        }
+        "too_many_attempts" => {
+            "VoxLive has paused requests from this network after too many wrong keys; it lifts within the hour."
+        }
+        _ => "VoxLive doesn't know that key: check it in VoxLive, Settings › API keys.",
+    }
+    .to_owned()
+}
+
+/// Where the key is kept.
+mod store {
+    /// The Keychain item's service.
+    #[cfg(target_os = "macos")]
+    const SERVICE: &str = "SoftPresenter VoxLive";
+
+    /// A test copy's own key file, in its own folder; `None` for the owner's app.
+    fn test_file() -> Option<std::path::PathBuf> {
+        std::env::var_os("SOFTPRESENTER_DATA").map(|dir| std::path::PathBuf::from(dir).join("voxlive-test-key"))
+    }
+
+    pub fn load() -> Option<String> {
+        if let Some(file) = test_file() {
+            return std::fs::read_to_string(file).ok().map(|key| key.trim().to_owned()).filter(|key| !key.is_empty());
+        }
+        #[cfg(target_os = "macos")]
+        return security_framework::passwords::get_generic_password(SERVICE, "church API key")
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        #[cfg(not(target_os = "macos"))]
+        None
+    }
+
+    pub fn save(key: &str) -> Result<(), String> {
+        if let Some(file) = test_file() {
+            std::fs::write(&file, key).map_err(|e| format!("The key could not be kept: {e}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+            }
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        return security_framework::passwords::set_generic_password(SERVICE, "church API key", key.as_bytes())
+            .map_err(|e| format!("The key could not be kept in the Keychain: {e}"));
+        #[cfg(not(target_os = "macos"))]
+        Err("Keeping a VoxLive key needs macOS for now.".to_owned())
+    }
+
+    pub fn forget() {
+        if let Some(file) = test_file() {
+            let _ = std::fs::remove_file(file);
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let _ = security_framework::passwords::delete_generic_password(SERVICE, "church API key");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_is_shaped_like_voxlives_and_nothing_else_is_taken() {
+        assert!(looks_like_key("vxk_live_0123456789abcdefABCDEF-_xyz"));
+        assert!(looks_like_key("vxk_test_dummydummydummy"));
+        for bad in [
+            "",
+            "vxk_",
+            "vxk_short",
+            "sk_live_0123456789abcdef",
+            "vxk_live_0123456789abc def",
+            "vxk_live_ünï0123456789",
+        ] {
+            assert!(!looks_like_key(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_voxlives_own_display_addresses_are_kept_from_a_reply() {
+        let screen = Screen {
+            id: "abc2345".to_owned(),
+            name: "Main\u{1b}[31m".to_owned(),
+            url: "https://voxlive.app/listen/grace/screen/abc2345".to_owned(),
+            demo_url: "https://evil.example/listen/grace/screen/abc2345?demo=1".to_owned(),
+            ..Screen::default()
+        }
+        .cleaned(LIVE_API);
+        assert_eq!(screen.name, "Main[31m", "no control characters");
+        assert_eq!(screen.url, "https://voxlive.app/listen/grace/screen/abc2345");
+        assert!(screen.demo_url.is_empty(), "an address elsewhere is dropped");
+        let test = Screen {
+            id: "x".to_owned(),
+            url: "http://127.0.0.1:9100/listen/t/screen/x".to_owned(),
+            ..Screen::default()
+        }
+        .cleaned("http://127.0.0.1:9100/api/v1");
+        assert_eq!(test.url, "http://127.0.0.1:9100/listen/t/screen/x", "the test stand-in's own display");
+    }
+
+    #[test]
+    fn the_api_is_voxlives_unless_a_stand_in_on_this_computer_is_named() {
+        assert_eq!(LIVE_API, "https://voxlive.app/api/v1");
+        assert_eq!(display_prefix(LIVE_API), "https://voxlive.app/listen/");
+    }
+}

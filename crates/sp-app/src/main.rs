@@ -13,6 +13,7 @@ mod home;
 mod icons;
 mod images;
 mod inspector;
+mod integrations;
 mod libraries;
 mod library_folder;
 mod links;
@@ -43,6 +44,7 @@ mod theme_cli;
 mod theme_store;
 mod thumbs;
 mod timers;
+mod voxlive;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -919,6 +921,8 @@ struct App {
     web_refused: Vec<String>,
     /// Testing aid: when the web pages' state was last logged (SOFTPRESENTER_TRACE_WEB).
     web_traced: Option<Instant>,
+    /// The connection to the church's VoxLive account.
+    voxlive: voxlive::Client,
     /// The song on the Announcements layer: which, the slide shown, since when, and what was
     /// sent to the screens.
     announcing: Option<Announcing>,
@@ -1696,6 +1700,42 @@ impl App {
             .iter()
             .map(|web| web.asked.unwrap_or(now) + if web.live { WEB_LIVE_EVERY } else { WEB_AHEAD_EVERY })
             .min()
+    }
+
+    /// Does what Settings › Integrations asked of VoxLive, keeps the connection going, and shows
+    /// its state in the window. Says when to look again.
+    fn tick_voxlive(&mut self) -> Option<Instant> {
+        if let Some(running) = self.running.as_mut()
+            && let Some(request) = running.home_state.voxlive.request.take()
+        {
+            running.home_state.voxlive.problem = None;
+            match request {
+                integrations::Request::Connect(key) => match self.voxlive.connect(&key) {
+                    Ok(()) => applog::event("voxlive", "a key was given; checking it"),
+                    Err(problem) => running.home_state.voxlive.problem = Some(problem),
+                },
+                integrations::Request::Disconnect => {
+                    self.voxlive.disconnect();
+                    applog::event("voxlive", "the key was forgotten on this computer");
+                }
+                integrations::Request::Refresh => self.voxlive.refresh(),
+            }
+        }
+        let at = self.voxlive.tick();
+        if let Some(running) = self.running.as_mut() {
+            let view = &mut running.home_state.voxlive;
+            let hint = self.voxlive.key_hint();
+            if view.status != self.voxlive.status || view.screens != self.voxlive.screens || view.key_hint != hint {
+                view.status = self.voxlive.status.clone();
+                view.screens = self.voxlive.screens.clone();
+                view.key_hint = hint;
+                running.home_window.request_redraw();
+                for panel in &running.panels {
+                    panel.window.request_redraw();
+                }
+            }
+        }
+        at
     }
 
     /// Keeps the videos in boxes on the slide going; if the system's player can't play one,
@@ -4981,8 +5021,19 @@ impl App {
                 commands.push(Command::ShowMedia(media));
             }
             // Testing aid: open the Settings window.
-            if running.frames == GO_LIVE_AT + 2 && std::env::var_os("SOFTPRESENTER_CAPTURE_PREFERENCES").is_some() {
+            if running.frames == GO_LIVE_AT + 2
+                && let Ok(pane) = std::env::var("SOFTPRESENTER_CAPTURE_PREFERENCES")
+            {
                 running.home_state.preferences_open = true;
+                // Testing aid: a pane by name (integrations, or voxlive for VoxLive's own page).
+                match pane.as_str() {
+                    "integrations" => running.home_state.preferences_pane = 4,
+                    "voxlive" => {
+                        running.home_state.preferences_pane = 4;
+                        running.home_state.voxlive.open = true;
+                    }
+                    _ => {}
+                }
             }
             // Testing aid: open Settings.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("SOFTPRESENTER_CAPTURE_SETTINGS").is_some() {
@@ -6096,7 +6147,11 @@ impl ApplicationHandler<AppEvent> for App {
                 let reply = self.control(el, &incoming.request.args);
                 applog::event(
                     "control",
-                    &format!("{:?} -> {}", incoming.request.args, if reply.ok { "done" } else { "refused" }),
+                    &format!(
+                        "{:?} -> {}",
+                        control::shown_args(&incoming.request.args),
+                        if reply.ok { "done" } else { "refused" }
+                    ),
                 );
                 let _ = incoming.reply.send(reply);
                 self.sync_panels(el);
@@ -6448,6 +6503,7 @@ impl ApplicationHandler<AppEvent> for App {
         let video_at = self.tick_video();
         let box_video_at = self.tick_slide_video();
         let web_at = self.tick_web();
+        let voxlive_at = self.tick_voxlive();
         let audio_at = self.tick_audio();
         let announce_at = self.tick_announcements();
         let cycle_at = self.tick_media_cycle();
@@ -6488,6 +6544,7 @@ impl ApplicationHandler<AppEvent> for App {
             video_at,
             box_video_at,
             web_at,
+            voxlive_at,
             audio_at,
             announce_at,
             cycle_at,
@@ -6758,6 +6815,7 @@ fn main() -> ExitCode {
         web_pages: Vec::new(),
         web_refused: Vec::new(),
         web_traced: None,
+        voxlive: voxlive::Client::new(),
         media_playlists: Vec::new(),
         announcing: None,
         stamps,

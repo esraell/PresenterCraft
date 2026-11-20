@@ -565,6 +565,35 @@ video)" or "(missing media playlist)". The JSON of `playlist` is the list of the
 A screen set to a display that isn't plugged in keeps it by name and waits for it. Displays are
 named as macOS names them (`sp displays`); the main display, with the menu bar, is never filled.
 
+## VoxLive
+
+[VoxLive](https://voxlive.app) translates the sermon live. Connected with an API key made in
+VoxLive (Settings › API keys, with the screens permissions), SoftPresenter finds the church's
+VoxLive screens.
+
+| Command | Does |
+|---|---|
+| `voxlive` | Whether VoxLive is connected (the key's first characters, VoxLive's handle for it) and how many screens it has |
+| `voxlive screens` | The church's VoxLive screens: name, language, captions or Scripture (JSON: `id`, `name`, `language`, `mode`) |
+| `voxlive connect` | Connects with a key read from the standard input, never from an argument (an argument would stay in the shell's history): pipe it in or paste it. The key is checked in the background; `voxlive` then says how it went |
+| `voxlive refresh` | Finds the screens again now (they are also found every 30 seconds) |
+| `voxlive disconnect --yes` | Forgets the key on this computer (it stays in VoxLive until revoked there) |
+
+    $ echo "$VOXLIVE_KEY" | sp voxlive connect
+    Checking the key with VoxLive; sp voxlive says how it went.
+    $ sp voxlive
+    VoxLive: Connected (key vxk_live_abc…), 2 screens.
+    $ sp voxlive screens
+      1. Spanish captions · ES (captions)
+      2. Scripture · RU (Scripture)
+
+The key is kept in the Mac's Keychain, and never appears in the log, a reply or a file. A key
+VoxLive refuses stops the asking until another is given: VoxLive pauses an address that keeps
+trying a wrong key, which would stop the church's other devices too. A test copy (one started
+with `SOFTPRESENTER_DATA`) keeps its own key in its own folder and never touches the owner's;
+`SOFTPRESENTER_VOXLIVE_API` can point it at a stand-in for VoxLive on this computer (plain http
+to 127.0.0.1 or localhost only).
+
 ## Undo, jobs and the menu bar
 
 | Command | Does |

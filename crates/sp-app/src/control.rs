@@ -203,6 +203,27 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     let json = args.iter().any(|a| a == "--json");
     let wait = args.iter().any(|a| a == "--wait");
     let args = with_full_paths(args.into_iter().filter(|a| a != "--json" && a != "--wait").collect());
+    // `voxlive connect`: the key is read from the standard input (piped in, or pasted), never
+    // taken as an argument, where it would stay in the shell's history and show in the list of
+    // processes.
+    let connect = args.len() >= 2 && args[0].eq_ignore_ascii_case("voxlive") && args[1].eq_ignore_ascii_case("connect");
+    if connect && args.len() > 2 {
+        say_err!("Give the key on the standard input, not as an argument: echo \"$KEY\" | sp voxlive connect");
+        return std::process::ExitCode::FAILURE;
+    }
+    let args = if connect {
+        use std::io::{BufRead, IsTerminal};
+        if std::io::stdin().is_terminal() {
+            eprint!("Paste the VoxLive API key, then press Return: ");
+        }
+        let mut line = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut line);
+        let mut args = args;
+        args.push(line.trim().to_owned());
+        args
+    } else {
+        args
+    };
     // Help needs no app: it is printed here; `help COMMAND` prints that command's lines.
     let reply = if args.first().is_none_or(|w| w.eq_ignore_ascii_case("help")) {
         match args.get(1) {
@@ -337,6 +358,12 @@ fn help_for(word: &str) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
+/// A command's words as the log shows them: the key given to `voxlive connect` is left out.
+pub fn shown_args(args: &[String]) -> Vec<String> {
+    let secret = args.len() > 2 && args[0].eq_ignore_ascii_case("voxlive") && args[1].eq_ignore_ascii_case("connect");
+    if secret { vec![args[0].clone(), args[1].clone(), "…".to_owned()] } else { args.to_vec() }
+}
+
 /// The app doesn't share the terminal's folder, so a file or folder named in `song import` or
 /// `song new` is sent as a full path. Only those commands: elsewhere a word that happens to match a file
 /// in the folder (a song called "notes") is meant as words.
@@ -417,6 +444,7 @@ const COMMANDS: &[&str] = &[
     "playlist",
     "media",
     "media-playlist",
+    "voxlive",
     "themes",
     "screens",
     "timers",
@@ -600,6 +628,11 @@ Layers and controls
   audio add FILE… [to PLAYLIST] | audio playlists | audio playlist new NAME | delete NAME --yes
   media-playlist new NAME | media-playlist add ITEM… to NAME | remove ITEM… from NAME
   media-playlist follow NAME FOLDER|off | media-playlist delete NAME --yes
+  voxlive                      whether VoxLive is connected, and how many screens it has
+  voxlive screens              the church's VoxLive screens
+  voxlive connect              connect with an API key read from the standard input
+                               (paste it, or pipe it in; never as an argument)
+  voxlive refresh | voxlive disconnect --yes      find the screens again | forget the key
   bible REFERENCE [--show]     look a passage up (and put its first verse on screen)
   bible REFERENCE --add [to PLAYLIST]
                                look it up and put it in a playlist, with the page's rows
@@ -800,6 +833,7 @@ impl crate::App {
             "playlist" => self.ctl_playlist(args),
             "media" => self.ctl_media(args),
             "media-playlist" => self.ctl_media_playlist(args),
+            "voxlive" => self.ctl_voxlive(args),
             "themes" => Ok(self.ctl_named_list("themes", |s| s.theme_names.clone())),
             "screens" => Ok(self.ctl_screens()),
             "timers" => Ok(self.ctl_timers()),
@@ -1630,6 +1664,81 @@ impl crate::App {
                     .collect();
                 Ok(Reply::with(format!("{}\n{}", playlist.name, numbered(&items)), serde_json::json!(items)))
             }
+        }
+    }
+
+    /// `voxlive [screens | connect KEY | refresh | disconnect --yes]`: the connection to the
+    /// church's VoxLive account. The key comes from `sp voxlive connect`'s standard input, and
+    /// no reply ever has more of it than its first characters, VoxLive's own handle for it.
+    fn ctl_voxlive(&mut self, args: &[String]) -> Result<Reply, String> {
+        let usage = "voxlive | voxlive screens | voxlive connect (key on the standard input) | voxlive refresh | voxlive disconnect --yes";
+        match args.get(1).map(|word| word.to_lowercase()).as_deref() {
+            None => {
+                let connected = self.voxlive.status == crate::voxlive::Status::Connected;
+                let hint = self.voxlive.key_hint();
+                let count = self.voxlive.screens.len();
+                // A refusal or a problem is a sentence that names VoxLive already.
+                let mut text = match &self.voxlive.status {
+                    crate::voxlive::Status::Refused(why) | crate::voxlive::Status::Trouble(why) => {
+                        why.trim_end_matches('.').to_owned()
+                    }
+                    status => format!("VoxLive: {}", status.words()),
+                };
+                if let Some(hint) = &hint {
+                    text.push_str(&format!(" (key {hint})"));
+                }
+                if connected {
+                    text.push_str(&format!(", {count} screen{}", if count == 1 { "" } else { "s" }));
+                }
+                Ok(Reply::with(
+                    format!("{text}."),
+                    serde_json::json!({"connected": connected, "status": self.voxlive.status.words(), "key": hint, "screens": count}),
+                ))
+            }
+            Some("screens") => {
+                if !self.voxlive.has_key() {
+                    return Err("VoxLive isn't connected: echo \"$KEY\" | sp voxlive connect".to_owned());
+                }
+                let lines: Vec<String> = self
+                    .voxlive
+                    .screens
+                    .iter()
+                    .map(|screen| {
+                        let kind = if screen.mode == "reference" { "Scripture" } else { "captions" };
+                        format!("{} ({kind})", screen.label())
+                    })
+                    .collect();
+                let data: Vec<serde_json::Value> = self
+                    .voxlive
+                    .screens
+                    .iter()
+                    .map(|screen| serde_json::json!({"id": screen.id, "name": screen.name, "language": screen.language, "mode": screen.mode}))
+                    .collect();
+                let text = if lines.is_empty() { "(none found yet)".to_owned() } else { numbered(&lines) };
+                Ok(Reply::with(text, serde_json::json!(data)))
+            }
+            Some("connect") => {
+                let key = args.get(2).map(String::as_str).unwrap_or("");
+                self.voxlive.connect(key)?;
+                crate::applog::event("voxlive", "a key was given; checking it");
+                Ok(Reply::done("Checking the key with VoxLive; sp voxlive says how it went."))
+            }
+            Some("refresh") => {
+                if !self.voxlive.has_key() {
+                    return Err("VoxLive isn't connected.".to_owned());
+                }
+                self.voxlive.refresh();
+                Ok(Reply::done("Finding the VoxLive screens again."))
+            }
+            Some("disconnect") => {
+                if !args.iter().any(|word| word == "--yes") {
+                    return Err("This forgets the VoxLive key on this computer. Add --yes to do it.".to_owned());
+                }
+                self.voxlive.disconnect();
+                crate::applog::event("voxlive", "the key was forgotten on this computer");
+                Ok(Reply::done("Forgot the VoxLive key on this computer (it stays in VoxLive until revoked there)."))
+            }
+            _ => Err(usage.to_owned()),
         }
     }
 
