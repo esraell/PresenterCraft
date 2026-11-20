@@ -2476,11 +2476,7 @@ fn edit_view(
         let picture_bar =
             Rect::from_center_size(pos2(inner.center().x + 104.0, inner.min.y + 22.0), vec2(96.0, 28.0));
         let picture = ui.interact(picture_bar, ui.scope_id().with("add picture"), Sense::click());
-        ui.painter().rect_filled(
-            picture_bar,
-            8.0,
-            if picture.hovered() { crate::studio::HOVER } else { crate::studio::CARD },
-        );
+        crate::studio::paint_button(ui.painter(), picture_bar, picture.hovered());
         ui.painter().text(
             picture_bar.center(),
             Align2::CENTER_CENTER,
@@ -2496,11 +2492,7 @@ fn edit_view(
         }
         let shapes_bar = Rect::from_center_size(pos2(inner.center().x, inner.min.y + 22.0), vec2(96.0, 28.0));
         let shapes = ui.interact(shapes_bar, ui.scope_id().with("add shape"), Sense::click());
-        ui.painter().rect_filled(
-            shapes_bar,
-            8.0,
-            if shapes.hovered() { crate::studio::HOVER } else { crate::studio::CARD },
-        );
+        crate::studio::paint_button(ui.painter(), shapes_bar, shapes.hovered());
         ui.painter().text(
             shapes_bar.center(),
             Align2::CENTER_CENTER,
@@ -2520,7 +2512,7 @@ fn edit_view(
         });
         let bar = Rect::from_center_size(pos2(inner.center().x + offset, inner.min.y + 22.0), vec2(96.0, 28.0));
         let add = ui.interact(bar, ui.scope_id().with("add text"), Sense::click());
-        ui.painter().rect_filled(bar, 8.0, if add.hovered() { crate::studio::HOVER } else { crate::studio::CARD });
+        crate::studio::paint_button(ui.painter(), bar, add.hovered());
         ui.painter().text(
             bar.center(),
             Align2::CENTER_CENTER,

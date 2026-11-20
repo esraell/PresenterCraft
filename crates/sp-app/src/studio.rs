@@ -41,6 +41,20 @@ pub const TALLY: Color32 = Color32::from_rgb(255, 69, 58);
 pub const READY: Color32 = Color32::from_rgb(50, 208, 116);
 /// The corner radius of buttons, fields and cards.
 pub const RADIUS: f32 = 8.0;
+/// A button: its fill, lighter under the pointer, and its outline. Lighter than a card and
+/// outlined, so a button stands out from the panel or window behind it.
+pub const BUTTON: Color32 = Color32::from_rgb(62, 62, 66);
+pub const BUTTON_HOVER: Color32 = Color32::from_rgb(80, 80, 85);
+pub const BUTTON_EDGE: Color32 = Color32::from_rgb(94, 94, 99);
+const BUTTON_EDGE_HOVER: Color32 = Color32::from_rgb(120, 120, 126);
+
+/// Paints a button's block, as every button is drawn: its fill, lighter under the pointer (or
+/// while it is on), and its outline.
+pub fn paint_button(painter: &egui::Painter, rect: Rect, lit: bool) {
+    painter.rect_filled(rect, RADIUS, if lit { BUTTON_HOVER } else { BUTTON });
+    let edge = if lit { BUTTON_EDGE_HOVER } else { BUTTON_EDGE };
+    painter.rect_stroke(rect, RADIUS, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+}
 
 /// Sets the whole window's colours, sizes and font.
 pub fn apply_style(ctx: &egui::Context) {
@@ -58,17 +72,18 @@ pub fn apply_style(ctx: &egui::Context) {
     visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
     visuals.hyperlink_color = ACCENT;
     let radius = CornerRadius::same(RADIUS as u8);
-    for (widget, fill) in [
-        (&mut visuals.widgets.noninteractive, PANEL),
-        (&mut visuals.widgets.inactive, CARD),
-        (&mut visuals.widgets.hovered, HOVER),
-        (&mut visuals.widgets.active, HOVER),
-        (&mut visuals.widgets.open, HOVER),
+    // Buttons, menus and fields are lighter than the panels and outlined, so they stand out.
+    for (widget, fill, edge) in [
+        (&mut visuals.widgets.noninteractive, PANEL, Color32::TRANSPARENT),
+        (&mut visuals.widgets.inactive, BUTTON, BUTTON_EDGE),
+        (&mut visuals.widgets.hovered, BUTTON_HOVER, BUTTON_EDGE_HOVER),
+        (&mut visuals.widgets.active, BUTTON_HOVER, BUTTON_EDGE_HOVER),
+        (&mut visuals.widgets.open, BUTTON_HOVER, BUTTON_EDGE_HOVER),
     ] {
         widget.corner_radius = radius;
         widget.bg_fill = fill;
         widget.weak_bg_fill = fill;
-        widget.bg_stroke = Stroke::NONE;
+        widget.bg_stroke = Stroke::new(1.0, edge);
         widget.fg_stroke = Stroke::new(1.0, TEXT);
     }
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
@@ -204,13 +219,21 @@ pub fn block_button(ui: &mut egui::Ui, size: egui::Vec2, text: &str, key: &str, 
     let sense = if emphasis == Emphasis::Idle { Sense::hover() } else { Sense::click() };
     let (rect, response) = ui.allocate_exact_size(size, sense);
     let hovered = response.hovered() && emphasis != Emphasis::Idle;
-    let (fill, ink) = match emphasis {
-        Emphasis::Plain => (if hovered { HOVER } else { CARD }, TEXT),
-        Emphasis::Live => (if hovered { TALLY } else { TALLY.gamma_multiply(0.88) }, Color32::WHITE),
-        Emphasis::Idle => (CARD.gamma_multiply(0.7), TEXT_FAINT),
-    };
     let painter = ui.painter();
-    painter.rect_filled(rect, RADIUS, fill);
+    let ink = match emphasis {
+        Emphasis::Plain => {
+            paint_button(painter, rect, hovered);
+            TEXT
+        }
+        Emphasis::Live => {
+            painter.rect_filled(rect, RADIUS, if hovered { TALLY } else { TALLY.gamma_multiply(0.88) });
+            Color32::WHITE
+        }
+        Emphasis::Idle => {
+            painter.rect_filled(rect, RADIUS, CARD.gamma_multiply(0.7));
+            TEXT_FAINT
+        }
+    };
     painter.text(rect.center(), Align2::CENTER_CENTER, text, semibold(13.5), ink);
     if !key.is_empty() {
         // The key that does the same thing, small at the right.
@@ -343,7 +366,7 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 // Settings, at the far right.
                 let (gear, response) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::click());
                 let on = state.preferences_open;
-                ui.painter().rect_filled(gear, RADIUS, if on || response.hovered() { HOVER } else { CARD });
+                paint_button(ui.painter(), gear, on || response.hovered());
                 icons::paint(
                     ui.painter(),
                     Icon::Gear,
@@ -358,7 +381,7 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 let stage_on = state.stage_on;
                 let (rect, response) = ui.allocate_exact_size(vec2(118.0, 30.0), Sense::click());
                 let painter = ui.painter();
-                painter.rect_filled(rect, RADIUS, if response.hovered() { HOVER } else { CARD });
+                paint_button(painter, rect, response.hovered());
                 painter.circle_filled(
                     rect.left_center() + vec2(15.0, 0.0),
                     4.5,
@@ -390,7 +413,7 @@ pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: 
                 let on = show.output_enabled();
                 let (rect, response) = ui.allocate_exact_size(vec2(148.0, 30.0), Sense::click());
                 let painter = ui.painter();
-                painter.rect_filled(rect, RADIUS, if response.hovered() { HOVER } else { CARD });
+                paint_button(painter, rect, response.hovered());
                 let light = if on { READY } else { TEXT_FAINT };
                 painter.circle_filled(rect.left_center() + vec2(15.0, 0.0), 4.5, light);
                 painter.text(
