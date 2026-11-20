@@ -52,27 +52,39 @@ pub fn is_songbook(path: &Path) -> bool {
     SONGBOOK_ENDINGS.iter().any(|ending| has_extension(path, ending))
 }
 
-/// Every song in a SoftProjector database or exported songbook, each with the name of its
-/// songbook. It is read with macOS's own SQLite tool, opened read-only, with a fixed query.
-pub fn import_songbook(path: &Path) -> Result<Vec<(Presentation, Option<String>)>, String> {
-    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-    let full = path.canonicalize().map_err(|e| format!("{name} could not be found ({e})."))?;
+/// Runs one fixed query on an SQLite file with macOS's own SQLite tool, opened read-only, and
+/// returns its rows as JSON text.
+fn sqlite_rows(full: &Path, query: &str) -> Option<String> {
     let output = std::process::Command::new("/usr/bin/sqlite3")
         .arg("-readonly")
         .arg("-json")
-        .arg(&full)
-        .arg(
-            "SELECT s.number AS number, s.title AS title, s.words AS words, s.music AS music, \
-             s.song_text AS text, b.name AS book FROM Songs s LEFT JOIN Songbooks b ON b.id = s.songbook_id \
-             ORDER BY b.name, s.number",
-        )
+        .arg(full)
+        .arg(query)
         .stdin(std::process::Stdio::null())
         .output()
-        .map_err(|e| format!("{name} could not be read ({e})."))?;
-    if !output.status.success() {
+        .ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Every song in a SoftProjector database or exported songbook, each with the name of its
+/// songbook. The two keep songs differently: the database has a `Songbooks` table and each
+/// song names its songbook; an exported songbook has one `SongBook` row (its title) and its
+/// songs. Read with macOS's own SQLite tool, opened read-only, with fixed queries.
+pub fn import_songbook(path: &Path) -> Result<Vec<(Presentation, Option<String>)>, String> {
+    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let full = path.canonicalize().map_err(|e| format!("{name} could not be found ({e})."))?;
+    let tables = sqlite_rows(&full, "SELECT name FROM sqlite_master WHERE type = 'table'")
+        .ok_or_else(|| format!("{name} isn't a SoftProjector songbook SoftPresenter can read."))?;
+    let query = if tables.contains("\"Songbooks\"") {
+        "SELECT s.number AS number, s.title AS title, s.words AS words, s.music AS music, s.song_text AS text, \
+         b.name AS book FROM Songs s LEFT JOIN Songbooks b ON b.id = s.songbook_id ORDER BY b.name, s.number"
+    } else if tables.contains("\"SongBook\"") {
+        "SELECT s.number AS number, s.title AS title, s.words AS words, s.music AS music, s.song_text AS text, \
+         (SELECT title FROM SongBook LIMIT 1) AS book FROM Songs s ORDER BY s.number"
+    } else {
         return Err(format!("{name} isn't a SoftProjector songbook SoftPresenter can read."));
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
+    };
+    let text = sqlite_rows(&full, query).ok_or_else(|| format!("{name} could not be read."))?;
     if text.trim().is_empty() {
         return Err(format!("{name} has no songs in it."));
     }
@@ -145,6 +157,11 @@ pub fn import_endings() -> Vec<&'static str> {
 pub fn import_file(path: &Path) -> Result<Presentation, String> {
     let name = path.file_name().map_or_else(|| "The file".into(), |n| n.to_string_lossy().into_owned());
     let size = std::fs::metadata(path).map_err(|e| format!("{name} could not be read ({e})."))?.len();
+    if is_songbook(path) {
+        return Err(format!(
+            "{name} holds many songs: import it with File › Import Songs… or by dropping it on the window."
+        ));
+    }
     let pro = has_extension(path, PRO_ENDING);
     let largest = if pro { LARGEST_PRO_FILE as u64 } else { LARGEST_SONG_FILE };
     if size > largest {

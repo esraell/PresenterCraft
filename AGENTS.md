@@ -85,7 +85,11 @@ message.
   agreed by the owner: the song importer reads ProPresenter 7 `.pro` documents using
   greyshirtguy's MIT-licensed definitions, may name ProPresenter as a plain fact where it says
   what it reads, and never writes that format
-  ([docs/licences/song-documents.md](docs/licences/song-documents.md)).
+  ([docs/licences/song-documents.md](docs/licences/song-documents.md)). A second, the same way:
+  the song importer reads SoftProjector's song databases and songbooks, whose layout was
+  learnt from SoftProjector's GPL-3.0 source (table and column names, how a song's text is
+  split); none of its code is used, and SoftProjector may be named where the importer says
+  what it reads.
 - **Content.** No song lyrics or Bible text that isn't public domain, in tests or anywhere else.
   Tests use text written for them.
 - **Privacy.** No secrets, tokens, local paths (`/Users/…`), links to private sessions or

@@ -29,3 +29,14 @@ the work. It is reproduced in [NOTICE.md](../../NOTICE.md).
 owner agreed this one exception on 2026-11-19, for reading a church's own songs only, through
 the definitions above. It does not extend to writing the format, to other files of that
 program, or to any other product.
+
+## SoftProjector song databases and songbooks
+
+SoftPresenter also imports songs from SoftProjector (its `spData.sqlite` database and the
+`.sps` songbooks it exports), so a church moving from it keeps its songs. The layout was learnt
+by reading SoftProjector's source code, which is published under the GPL version 3
+(github.com/SoftProjector/softprojector): the names of its tables and columns, and how it splits
+a song's text into verses and choruses. Those are facts about the format; no code was copied.
+The files are read with macOS's own `sqlite3`, read-only. The songs in a church's own
+SoftProjector files are the church's to bring across; the songbooks SoftProjector offers for
+download carry their publishers' copyrights, and SoftPresenter does not ship any of them.

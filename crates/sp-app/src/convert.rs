@@ -2,7 +2,7 @@
 //! by a program on this Mac that can open them, so their slides come in as pictures that look
 //! exactly as that program draws them. Which programs are tried, in order:
 //!
-//! - PowerPoint files: PowerPoint, then Keynote (which opens them too), then LibreOffice.
+//! - PowerPoint files: Keynote (which opens them), then PowerPoint, then LibreOffice.
 //! - Keynote files: Keynote.
 //! - OpenDocument presentations: LibreOffice, then PowerPoint.
 //!
@@ -58,7 +58,9 @@ const TIME_ALLOWED: Duration = Duration::from_secs(120);
 pub fn programs_for(path: &Path) -> &'static [Program] {
     let ending = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     match ending.as_str() {
-        "pptx" | "ppt" | "pps" | "ppsx" => &[Program::PowerPoint, Program::Keynote, Program::LibreOffice],
+        // Keynote first: it has been tried and works; PowerPoint is asked when Keynote isn't
+        // there, until it has been tried.
+        "pptx" | "ppt" | "pps" | "ppsx" => &[Program::Keynote, Program::PowerPoint, Program::LibreOffice],
         "key" => &[Program::Keynote],
         "odp" => &[Program::LibreOffice, Program::PowerPoint],
         _ => &[],
@@ -225,7 +227,7 @@ mod tests {
 
     #[test]
     fn each_kind_of_file_has_its_programs_best_first() {
-        assert_eq!(programs_for(Path::new("a.PPTX")), &[Program::PowerPoint, Program::Keynote, Program::LibreOffice]);
+        assert_eq!(programs_for(Path::new("a.PPTX")), &[Program::Keynote, Program::PowerPoint, Program::LibreOffice]);
         assert_eq!(programs_for(Path::new("a.key")), &[Program::Keynote]);
         assert_eq!(programs_for(Path::new("a.odp")), &[Program::LibreOffice, Program::PowerPoint]);
         assert!(programs_for(Path::new("a.pdf")).is_empty());
@@ -235,7 +237,7 @@ mod tests {
     fn with_no_program_the_message_says_what_would_do() {
         let said = none_installed(Path::new("/x/Sermon.pptx"));
         assert!(
-            said.contains("Sermon.pptx") && said.contains("PowerPoint, Keynote or LibreOffice") && said.contains("PDF")
+            said.contains("Sermon.pptx") && said.contains("Keynote, PowerPoint or LibreOffice") && said.contains("PDF")
         );
         assert!(none_installed(Path::new("Talk.key")).contains("uses Keynote,"));
     }

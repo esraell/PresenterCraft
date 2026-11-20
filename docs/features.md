@@ -35,7 +35,7 @@ feature changes, this page changes in the same commit.
 - **Slides from PowerPoint, Keynote, a PDF or pictures.** File › Import Slides…, dropping the
   file or a folder of pictures on the window, or `sp song import`. A PowerPoint, Keynote or
   OpenDocument presentation is turned into a PDF by a program on the Mac that opens it
-  (PowerPoint, then Keynote, then LibreOffice for PowerPoint files; Keynote for Keynote files),
+  (Keynote, then PowerPoint, then LibreOffice for PowerPoint files; Keynote for Keynote files),
   so its slides look exactly as that program draws them; macOS asks once to allow it, and a
   program SoftPresenter opened is closed again. Each page or picture becomes
   a slide showing it across the whole slide, in a new presentation named after the file or
