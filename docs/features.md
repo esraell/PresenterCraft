@@ -209,6 +209,14 @@ feature changes, this page changes in the same commit.
 
 ![The theme editor](images/themes.png)
 
+## Getting started
+- A fresh install opens a short setup: which display the congregation sees (by name, never the
+  main display; the screen goes there at once, and Identify shows each screen's name) and an
+  optional stage display, or a window or NDI on a Mac with one display; bringing songs in (one
+  click for a ProPresenter library found on the Mac, or song files); which Bible goes on top
+  and which below; and what macOS will ask permission for and why. SoftPresenter › Set Up
+  SoftPresenter… opens it again.
+
 ## Screens
 - Any number of audience screens, each sent to a display, a window, or the network over NDI,
   all showing the same picture, set up in the Screens window (**Option-Command-1**).

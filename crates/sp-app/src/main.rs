@@ -26,6 +26,7 @@ mod props;
 mod renamed;
 mod screens;
 mod service;
+mod setup;
 mod stage;
 mod stage_editor;
 mod studio;
@@ -2628,6 +2629,24 @@ impl App {
         });
     }
 
+    /// Carries out what the setup asked: importing songs, which needs more than the window.
+    fn handle_setup(&mut self) {
+        let Some(request) = self.running.as_mut().and_then(|r| r.home_state.setup_request.take()) else { return };
+        match request {
+            setup::SetupRequest::ImportLibrary(folder) => {
+                self.import_songs(&[folder]);
+            }
+            setup::SetupRequest::ChooseSongFiles => self.choose_songs_to_import(),
+        }
+        if let Some(running) = self.running.as_mut() {
+            let said = running.home_state.notice.clone();
+            if let Some(setup) = running.home_state.setup.as_mut() {
+                setup.songs_said = said;
+            }
+            running.home_window.request_redraw();
+        }
+    }
+
     /// Adds the decks made since the last look, and says how each went.
     fn handle_decks(&mut self) {
         for (path, made) in self.decks.finished() {
@@ -4172,6 +4191,7 @@ impl App {
                 });
             }
             A::ConfigureScreens => state.settings_open = true,
+            A::SetUp => state.setup = Some(setup::Setup::new()),
             A::StageLayouts => state.stage_editor_open = true,
             A::NewSong => state.new_song = true,
             // Handled above, before the window's state is borrowed.
@@ -4365,8 +4385,14 @@ impl ApplicationHandler<AppEvent> for App {
                     running.home_state.bible.apply_settings(&page);
                 }
                 self.bible_page_saved = running.home_state.bible.choices();
+                let fresh = !service::prefs_saved_before();
                 let prefs = service::load_prefs();
                 running.home_state.apply_prefs(&prefs);
+                // A fresh install starts with the setup. Testing aid: SOFTPRESENTER_SETUP=1 shows
+                // it in a quiet run too.
+                if (fresh && !prefs.setup_done && !self.quiet()) || std::env::var_os("SOFTPRESENTER_SETUP").is_some() {
+                    running.home_state.setup = Some(setup::Setup::new());
+                }
                 // The audience screens start off when Settings says so.
                 let start_off = prefs.start_audience_off;
                 // The screens, as they were left. The first start after screens could be
@@ -4721,6 +4747,7 @@ impl ApplicationHandler<AppEvent> for App {
                 self.handle_themes();
                 self.handle_songs();
                 self.handle_decks();
+                self.handle_setup();
                 // The Bible page's set-up (translations, boxes, options) is remembered the
                 // moment it changes, so it is as it was left at the next start.
                 if let Some(running) = self.running.as_mut() {

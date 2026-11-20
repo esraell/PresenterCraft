@@ -346,6 +346,12 @@ pub struct HomeState {
     pub stage_on: bool,
     /// True while every screen shows its own name instead of the show.
     pub identify: bool,
+    /// The setup a fresh install starts with, while it is open.
+    pub setup: Option<crate::setup::Setup>,
+    /// What the setup asked the app to do.
+    pub setup_request: Option<crate::setup::SetupRequest>,
+    /// True once the setup has been seen, so it isn't shown again at the next start.
+    pub setup_done: bool,
     /// An NDI name being typed in the Screens window, and the screen it is for. It is used
     /// when the field is left, so NDI is not restarted at every letter.
     pub ndi_draft: Option<(sp_model::Uuid, String)>,
@@ -943,6 +949,9 @@ impl Default for HomeState {
             stage_message_live: false,
             stage_on: true,
             identify: false,
+            setup: None,
+            setup_request: None,
+            setup_done: false,
             ndi_draft: None,
             // Assumed until it has been looked for.
             ndi_available: true,
@@ -997,6 +1006,7 @@ impl HomeState {
             start_audience_off: self.start_audience_off,
             start_with: self.start_with.clone(),
             stage_off: !self.stage_on,
+            setup_done: self.setup_done,
             ..crate::service::Prefs::default()
         }
     }
@@ -1024,6 +1034,7 @@ impl HomeState {
         self.start_audience_off = prefs.start_audience_off;
         self.start_with = prefs.start_with.clone();
         self.stage_on = !prefs.stage_off;
+        self.setup_done = prefs.setup_done;
     }
 
     /// How long a new picture takes to fade in on the output; zero when slides cut.
@@ -1081,6 +1092,7 @@ pub fn home_ui(
     // Text boxes are dark wells in the lighter side columns.
     ui.visuals_mut().extreme_bg_color = FIELD;
     crate::studio::toolbar(ui, show, state, &mut commands);
+    crate::setup::setup_ui(ui.ctx(), show, state, &mut commands);
     if ui.input(|input| command_key(input, egui::Key::Comma, false)) {
         state.preferences_open = true;
     }

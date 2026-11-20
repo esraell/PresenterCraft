@@ -306,6 +306,9 @@ pub struct Prefs {
     pub continuous: bool,
     /// What starts playing by itself when the app opens.
     pub start_with: StartWith,
+    /// True once the setup a fresh install starts with has been seen.
+    #[serde(default)]
+    pub setup_done: bool,
 }
 
 /// When a song's copyright line is shown.
@@ -361,8 +364,14 @@ impl Default for Prefs {
             start_audience_off: false,
             continuous: false,
             start_with: StartWith::Nothing,
+            setup_done: false,
         }
     }
+}
+
+/// True when settings have been saved on this computer before: not a fresh install.
+pub fn prefs_saved_before() -> bool {
+    prefs_file().is_some_and(|path| path.is_file())
 }
 
 fn prefs_file() -> Option<std::path::PathBuf> {
