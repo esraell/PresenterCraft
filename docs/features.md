@@ -182,6 +182,15 @@ feature changes, this page changes in the same commit.
 ![The Bible page: John 3:16-18 in the Russian Synodal and the King James Version, beside the book, chapter and verse lists](images/bible.png)
 
 ## Editing
+- **Moving slides.** Drag a slide to another place in its song, in the Show view's grid or the
+  Edit view's list; a line shows where it will go (before or after the slide it is dropped on,
+  in that slide's group), and the list scrolls when the drag nears its top or bottom. Pick out
+  several (Command or Shift) and drag one of them to move them all, in their order. In the Edit
+  view, a slide dropped on a group's name goes at its start, and its right-click menu has Move
+  Up and Move Down. The slide on screen stays on screen; Undo puts them back. A drag between
+  slides still draws a box to pick them out.
+- The Edit view lists the song's slides as cards, as the Show view does: each picture with a
+  bar in its group's colour under it, its number, and the group's name on its first slide.
 - An editor for a song's slides: move, resize and restyle text boxes, with alignment guides
   and a safe-area edge, multi-select (Shift or Command, or drag a box around them), copy and
   paste, undo, renaming by clicking a name, font search, and typing straight on the slide.

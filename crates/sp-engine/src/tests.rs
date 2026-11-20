@@ -422,3 +422,15 @@ fn a_song_that_loops_goes_back_to_its_first_slide() {
     assert!(s.apply(Command::Next).slides);
     assert_eq!(s.live(), at(0, 0));
 }
+
+#[test]
+fn the_slide_on_screen_follows_its_slide_when_slides_are_moved() {
+    let mut show = show();
+    show.apply(Command::GoTo(SlideRef { presentation: 0, slide: 0 }));
+    // Slide 0 went to place 2; the others moved up.
+    show.slides_reordered(0, &[2, 0, 1]);
+    assert_eq!(show.live(), at(0, 2));
+    // Another presentation's slides moving leaves it alone.
+    show.slides_reordered(1, &[1, 0]);
+    assert_eq!(show.live(), at(0, 2));
+}

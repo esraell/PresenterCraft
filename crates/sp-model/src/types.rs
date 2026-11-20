@@ -688,6 +688,58 @@ impl Presentation {
         None
     }
 
+    /// A copy with the slides at `moving` taken out and put, in the order they were in, just
+    /// before the slide at `to` (or just after it, with `after`), in that slide's group. A group
+    /// left with no slides goes, and so does its place in the arrangements. Returns the copy and,
+    /// for each slide's place before, its place after. `None` if a place is not a slide, `to` is
+    /// one of those moving, or nothing would move.
+    pub fn with_slides_moved(&self, moving: &[usize], to: usize, after: bool) -> Option<(Presentation, Vec<usize>)> {
+        let count = self.slide_count();
+        if moving.is_empty() || to >= count || moving.contains(&to) || moving.iter().any(|at| *at >= count) {
+            return None;
+        }
+        // Every slide, by its place before, in its group.
+        let mut place = 0;
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for group in &self.groups {
+            groups.push((place..place + group.slides.len()).collect());
+            place += group.slides.len();
+        }
+        let mut carried: Vec<usize> = moving.to_vec();
+        carried.sort_unstable();
+        carried.dedup();
+        for group in &mut groups {
+            group.retain(|at| !carried.contains(at));
+        }
+        let (target, at) = groups.iter().enumerate().find_map(|(g, slides)| {
+            slides.iter().position(|have| *have == to).map(|at| (g, at + usize::from(after)))
+        })?;
+        groups[target].splice(at..at, carried.iter().copied());
+        let order: Vec<usize> = groups.iter().flatten().copied().collect();
+        if order.iter().enumerate().all(|(new, old)| new == *old) {
+            return None;
+        }
+        // The slides themselves, group by group; a group left empty goes.
+        let slides: Vec<&Slide> = self.groups.iter().flat_map(|group| &group.slides).collect();
+        let mut copy = self.clone();
+        let mut gone = Vec::new();
+        for (group, places) in copy.groups.iter_mut().zip(&groups) {
+            group.slides = places.iter().map(|old| slides[*old].clone()).collect();
+            if group.slides.is_empty() {
+                gone.push(group.id);
+            }
+        }
+        copy.groups.retain(|group| !group.slides.is_empty());
+        for arrangement in &mut copy.arrangements {
+            arrangement.groups.retain(|id| !gone.contains(id));
+        }
+        let mut new_of_old = vec![0; count];
+        for (new, old) in order.iter().enumerate() {
+            new_of_old[*old] = new;
+        }
+        Some((copy, new_of_old))
+    }
+
     /// A copy without one slide. A group left empty goes too. `None` if there is no such slide.
     pub fn without_slide(&self, index: usize) -> Option<Presentation> {
         let (group, at) = self.locate(index)?;
@@ -812,6 +864,62 @@ impl MediaItem {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn slides_move_into_the_group_of_the_slide_they_are_dropped_by() {
+        let words = |text: &str| Slide::new(vec![Object::text(Role::primary(), text.to_owned())]);
+        let group = |name: &str, texts: &[&str]| Group {
+            id: Uuid::new_v4(),
+            name: name.to_owned(),
+            color: crate::group_color(name),
+            slides: texts.iter().map(|t| words(t)).collect(),
+        };
+        let mut song = Presentation {
+            id: Uuid::new_v4(),
+            title: "Song".to_owned(),
+            groups: vec![group("Verse 1", &["a", "b"]), group("Chorus", &["c"]), group("Verse 2", &["d", "e"])],
+            copyright: Copyright::default(),
+            theme: None,
+            arrangements: Vec::new(),
+            arrangement: None,
+            loops: false,
+            transition: None,
+        };
+        let verse = song.groups[0].id;
+        let chorus = song.groups[1].id;
+        song.arrangements =
+            vec![Arrangement { id: Uuid::new_v4(), name: "As sung".to_owned(), groups: vec![verse, chorus, verse] }];
+        let texts = |song: &Presentation| -> Vec<(String, String)> {
+            song.groups
+                .iter()
+                .flat_map(|g| {
+                    g.slides
+                        .iter()
+                        .map(move |s| (g.name.clone(), s.text_for(&Role::primary()).unwrap_or("").to_owned()))
+                })
+                .collect()
+        };
+        // One slide, after another in a later group: it joins that group.
+        let (moved, places) = song.with_slides_moved(&[0], 3, true).unwrap();
+        assert_eq!(
+            texts(&moved),
+            [("Verse 1", "b"), ("Chorus", "c"), ("Verse 2", "d"), ("Verse 2", "a"), ("Verse 2", "e")]
+                .map(|(g, t)| (g.to_owned(), t.to_owned()))
+        );
+        assert_eq!(places, [3, 0, 1, 2, 4]);
+        // Two picked slides together, before the first: they keep their order.
+        let (moved, places) = song.with_slides_moved(&[4, 2], 0, false).unwrap();
+        assert_eq!(texts(&moved).iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(), ["c", "e", "a", "b", "d"]);
+        assert_eq!(places, [2, 3, 0, 4, 1]);
+        // The Chorus emptied goes, from the groups and from the arrangement.
+        assert_eq!(moved.groups.len(), 2);
+        assert_eq!(moved.arrangements[0].groups, [verse, verse]);
+        // Nothing to do: dropped where it already is, or onto itself.
+        assert!(song.with_slides_moved(&[1], 2, false).is_none());
+        assert!(song.with_slides_moved(&[1], 1, true).is_none());
+        assert!(song.with_slides_moved(&[9], 1, true).is_none());
+    }
+
     use super::*;
 
     #[test]

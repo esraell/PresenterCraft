@@ -340,6 +340,21 @@ impl Show {
     /// Keeps what is live and the cursor on the same slides after a slide was removed from, or
     /// added to, a song: `at` is where, `added` says which. A removed slide that was live is
     /// taken off the screen.
+    /// After a presentation's slides were put in another order (`new_of_old[old]` is each
+    /// slide's new place), the slide on screen and the cursor follow their slides.
+    pub fn slides_reordered(&mut self, presentation: usize, new_of_old: &[usize]) {
+        for place in [&mut self.live, &mut self.cursor] {
+            if let Some(here) = place.as_mut().filter(|here| here.presentation == presentation)
+                && let Some(new) = new_of_old.get(here.slide)
+            {
+                here.slide = *new;
+            }
+        }
+        if self.cursor.is_some_and(|c| c.presentation == presentation) {
+            self.refind_step();
+        }
+    }
+
     pub fn slides_shifted(&mut self, presentation: usize, at: usize, added: bool) -> Changes {
         let shift = |place: &mut Option<SlideRef>| {
             if let Some(here) = place.as_mut().filter(|here| here.presentation == presentation) {

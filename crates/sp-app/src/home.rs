@@ -2029,9 +2029,29 @@ fn edit_view(
                     let image_size = vec2(width - 16.0, (width - 16.0) * 9.0 / 16.0);
                     let mut index = 0;
                     let groups = presentation.map(|p| p.groups.as_slice()).unwrap_or_default();
+                    let movable = !state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation));
+                    let moving = egui::DragAndDrop::payload::<SlideDrag>(ui.ctx())
+                        .filter(|drag| movable && drag.presentation == at.presentation);
+                    scroll_while_dragging(ui);
                     for (group_index, group) in groups.iter().enumerate() {
-                        let (bar, bar_response) = ui.allocate_exact_size(vec2(width, 22.0), Sense::click());
-                        ui.painter().rect_filled(bar, 0.0, color32(group.color).gamma_multiply(0.8));
+                        let (row, bar_response) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
+                        let bar = Rect::from_min_max(row.min + vec2(8.0, 6.0), row.max - vec2(8.0, 2.0));
+                        ui.painter().rect_filled(bar, 4.0, color32(group.color).gamma_multiply(0.8));
+                        // Slides dropped on a group's name go at its start.
+                        let first_here = index;
+                        if movable
+                            && let Some(dropped) = bar_response.dnd_release_payload::<SlideDrag>().filter(|drag| {
+                                drag.presentation == at.presentation && !drag.slides.contains(&first_here)
+                            })
+                        {
+                            state.slide_request = Some((
+                                SlideRef { presentation: at.presentation, slide: dropped.slides[0] },
+                                SlideRequest::Move { slides: dropped.slides.clone(), to: first_here, after: false },
+                            ));
+                        }
+                        if movable && bar_response.dnd_hover_payload::<SlideDrag>().is_some() {
+                            ui.painter().rect_stroke(bar, 4.0, Stroke::new(2.0, DROP_LINE), StrokeKind::Outside);
+                        }
                         let ink = text_on(group.color);
                         icons::paint(
                             ui.painter(),
@@ -2081,51 +2101,122 @@ fn edit_view(
                             }
                         }
 
-                        for slide in &group.slides {
+                        // Each slide a card, as in the Show view: its picture, and under it a bar in
+                        // the group's colour with its number (and the group's name on its first
+                        // slide), apart from the next. A card dragged goes to another place.
+                        for (in_group, slide) in group.slides.iter().enumerate() {
                             let here = SlideRef { presentation: at.presentation, slide: index };
-                            let (cell, response) =
-                                ui.allocate_exact_size(vec2(width, image_size.y + 30.0), Sense::click());
+                            let (cell, response) = ui.allocate_exact_size(
+                                vec2(width, image_size.y + EDIT_CARD_BAR + EDIT_CARD_GAP),
+                                Sense::click_and_drag(),
+                            );
+                            let card = Rect::from_min_size(
+                                cell.min + vec2(8.0, EDIT_CARD_GAP / 2.0),
+                                vec2(image_size.x, image_size.y + EDIT_CARD_BAR),
+                            );
                             let selected = here == at;
+                            let round = SLIDE_ROUND;
                             if ui.is_rect_visible(cell) {
-                                ui.painter().rect_filled(
-                                    cell,
-                                    0.0,
-                                    if selected { EDIT_SELECTED } else { color32(group.color).gamma_multiply(0.22) },
-                                );
-                                let image = Rect::from_min_size(cell.min + vec2(8.0, 8.0), image_size);
-                                ui.painter().rect_filled(image, 0.0, Color32::BLACK);
-                                let of = if state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation)) {
-                                    ThumbOf::BibleSlide(slide)
-                                } else {
-                                    ThumbOf::Slide(slide)
-                                };
+                                let image = Rect::from_min_size(card.min, image_size);
+                                let top = egui::CornerRadius { nw: round, ne: round, sw: 0, se: 0 };
+                                ui.painter().rect_filled(image, top, Color32::BLACK);
+                                let of = if movable { ThumbOf::Slide(slide) } else { ThumbOf::BibleSlide(slide) };
                                 match thumb(of) {
-                                    Some((texture, _)) => {
-                                        egui::Image::from_texture((texture, image_size)).paint_at(ui, image)
-                                    }
+                                    Some((texture, _)) => egui::Image::from_texture((texture, image_size))
+                                        .corner_radius(top)
+                                        .paint_at(ui, image),
                                     None => ui.ctx().request_repaint(),
                                 }
-                                if selected {
-                                    ui.painter().rect_stroke(
-                                        image,
-                                        0.0,
-                                        Stroke::new(2.0, EDIT_OUTLINE),
-                                        StrokeKind::Outside,
-                                    );
-                                }
-                                ui.painter().text(
-                                    pos2(cell.min.x + 9.0, image.max.y + 10.0),
+                                let bar = Rect::from_min_max(pos2(card.min.x, image.max.y), card.max);
+                                let bottom = egui::CornerRadius { nw: 0, ne: 0, sw: round, se: round };
+                                ui.painter().rect_filled(bar, bottom, color32(group.color));
+                                let ink = text_on(group.color);
+                                let words = match (in_group, slide.label.as_deref()) {
+                                    (_, Some(label)) => format!("{}  {label}", index + 1),
+                                    (0, None) if !group.name.is_empty() => format!("{}  {}", index + 1, group.name),
+                                    _ => (index + 1).to_string(),
+                                };
+                                ui.painter().with_clip_rect(bar.shrink(2.0)).text(
+                                    bar.left_center() + vec2(8.0, 0.0),
                                     Align2::LEFT_CENTER,
-                                    format!("{}.", index + 1),
-                                    FontId::proportional(11.5),
-                                    Color32::from_gray(230),
+                                    words,
+                                    crate::studio::semibold(12.0),
+                                    ink,
                                 );
+                                // A hairline round it, so a black slide does not melt into the column.
+                                ui.painter().rect_stroke(
+                                    card,
+                                    f32::from(round),
+                                    Stroke::new(1.0, crate::studio::LINE),
+                                    StrokeKind::Outside,
+                                );
+                                let outline = if selected {
+                                    Some(Stroke::new(2.0, EDIT_OUTLINE))
+                                } else if response.hovered() {
+                                    Some(Stroke::new(1.0, crate::studio::TEXT_FAINT))
+                                } else {
+                                    None
+                                };
+                                if let Some(stroke) = outline {
+                                    ui.painter().rect_stroke(card, f32::from(round) + 1.0, stroke, StrokeKind::Outside);
+                                }
+                                if moving.as_ref().is_some_and(|drag| drag.slides.contains(&index)) {
+                                    ui.painter().rect_filled(card, f32::from(round), Color32::from_black_alpha(150));
+                                }
+                            }
+                            if movable {
+                                if response.dragged() {
+                                    response.dnd_set_drag_payload(SlideDrag {
+                                        presentation: at.presentation,
+                                        slides: vec![index],
+                                    });
+                                }
+                                let target = |drag: &SlideDrag| {
+                                    drag.presentation == at.presentation && !drag.slides.contains(&index)
+                                };
+                                if response.dnd_hover_payload::<SlideDrag>().is_some_and(|drag| target(&drag)) {
+                                    paint_drop_line(ui, card, drop_after(ui, card, true), true, EDIT_CARD_GAP);
+                                }
+                                if let Some(dropped) =
+                                    response.dnd_release_payload::<SlideDrag>().filter(|drag| target(drag))
+                                {
+                                    let after = drop_after(ui, card, true);
+                                    state.slide_request = Some((
+                                        SlideRef { presentation: at.presentation, slide: dropped.slides[0] },
+                                        SlideRequest::Move { slides: dropped.slides.clone(), to: index, after },
+                                    ));
+                                }
+                                // Or a step at a time, from its menu.
+                                let count = presentation.map_or(0, |song| song.slide_count());
+                                response.context_menu(|ui| {
+                                    if ui.add_enabled(index > 0, egui::Button::new("Move Up")).clicked() {
+                                        state.slide_request = Some((
+                                            here,
+                                            SlideRequest::Move { slides: vec![index], to: index - 1, after: false },
+                                        ));
+                                        ui.close();
+                                    }
+                                    if ui.add_enabled(index + 1 < count, egui::Button::new("Move Down")).clicked() {
+                                        state.slide_request = Some((
+                                            here,
+                                            SlideRequest::Move { slides: vec![index], to: index + 1, after: true },
+                                        ));
+                                        ui.close();
+                                    }
+                                });
                             }
                             if response.clicked() && !selected {
                                 chosen = Some(here);
                             }
                             index += 1;
                         }
+                    }
+                    // One of the slides being dragged follows the pointer.
+                    if let Some(drag) = &moving {
+                        let first =
+                            drag.slides.first().and_then(|at| presentation.and_then(|p| p.slide(*at))).map(|(_, s)| s);
+                        let texture = first.and_then(|slide| thumb(ThumbOf::Slide(slide)));
+                        paint_drag_ghost(ui, texture.map(|(texture, _)| texture), drag.slides.len());
                     }
                     // After the last slide: a blank tile with a plus. It adds a slide laid out
                     // like the one before it.
@@ -2669,6 +2760,13 @@ fn capitalize(text: &str) -> String {
 /// A change to one slide asked for from its right-click menu. The app makes it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SlideRequest {
+    /// Move these slides of the song, in their order, to just before the slide at `to` (or
+    /// just after it, with `after`), into its group.
+    Move {
+        slides: Vec<usize>,
+        to: usize,
+        after: bool,
+    },
     Delete,
     /// Delete these slides of the song at once (one step for Undo).
     DeleteMany(Vec<usize>),
@@ -2745,6 +2843,13 @@ pub enum MediaRequest {
 /// A media bin item being dragged, by its place in the bin.
 #[derive(Clone, Copy)]
 pub struct MediaDrag(pub usize);
+
+/// Slides being dragged to another place in their song: the song, and the slides' places.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlideDrag {
+    pub presentation: usize,
+    pub slides: Vec<usize>,
+}
 
 /// A slide that shows a media item when it goes on screen (or none), its words and the rest
 /// kept: its Show Media action is the item.
@@ -5163,6 +5268,7 @@ fn slide_grid(
             state.selected_slide = None;
         }
         start_slide_box(ui, state, &background);
+        scroll_while_dragging(ui);
         state.slide_rects.clear();
         ui.add_space(10.0);
         Frame::new().inner_margin(egui::Margin::symmetric(20, 0)).show(ui, |ui| {
@@ -5470,6 +5576,9 @@ fn song_slides(
     let Some(presentation) = show.presentations().get(which) else { return };
     let from_bible = state.bible.slots.is_some_and(|slots| slots.contains(&which));
     let Cells { view, gap, bar_height, width, image_size, cell } = *sizes;
+    // Slides of this song being dragged to another place in it.
+    let moving = egui::DragAndDrop::payload::<SlideDrag>(ui.ctx()).filter(|drag| drag.presentation == which);
+    let mut moving_rects: Vec<Rect> = Vec::new();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = if view == SlideView::Table { vec2(0.0, 2.0) } else { vec2(gap, gap) };
         let mut last_group = None;
@@ -5480,8 +5589,36 @@ fn song_slides(
             let (rect, response) = ui.allocate_exact_size(cell, Sense::click_and_drag());
             let here = SlideRef { presentation: which, slide: index };
             state.slide_rects.push((here, rect));
-            // A drag starting on a slide draws a box that picks out the slides it touches.
-            start_slide_box(ui, state, &response);
+            if moving.as_ref().is_some_and(|drag| drag.slides.contains(&index)) {
+                moving_rects.push(rect);
+            }
+            if from_bible {
+                // A Bible passage's slides stay in the order they are made: a drag on one draws a
+                // box that picks out the slides it touches, as a drag between slides does.
+                start_slide_box(ui, state, &response);
+            } else {
+                // A slide dragged goes to another place in its song, and the slides picked out
+                // with it when it is one of them; a line shows where they will go.
+                if response.dragged() {
+                    let mut picked: Vec<usize> =
+                        state.picked_slides.iter().filter(|p| p.presentation == which).map(|p| p.slide).collect();
+                    picked.sort_unstable();
+                    let slides = if picked.contains(&index) { picked } else { vec![index] };
+                    response.dnd_set_drag_payload(SlideDrag { presentation: which, slides });
+                }
+                let target = |drag: &SlideDrag| drag.presentation == which && !drag.slides.contains(&index);
+                if response.dnd_hover_payload::<SlideDrag>().is_some_and(|drag| target(&drag)) {
+                    let after = drop_after(ui, rect, view == SlideView::Table);
+                    paint_drop_line(ui, rect, after, view == SlideView::Table, gap);
+                }
+                if let Some(dropped) = response.dnd_release_payload::<SlideDrag>().filter(|drag| target(drag)) {
+                    let after = drop_after(ui, rect, view == SlideView::Table);
+                    state.slide_request = Some((
+                        SlideRef { presentation: which, slide: dropped.slides[0] },
+                        SlideRequest::Move { slides: dropped.slides.clone(), to: index, after },
+                    ));
+                }
+            }
             let mods = ui.input(|input| input.modifiers);
             if response.clicked() && (mods.command || mods.shift) {
                 // Picked out without going on screen, to delete several at once.
@@ -5915,6 +6052,103 @@ fn song_slides(
             }
         }
     });
+    // The slides being moved are dimmed where they are, and one of them follows the pointer,
+    // with how many there are.
+    if let Some(drag) = moving {
+        for rect in &moving_rects {
+            ui.painter().rect_filled(*rect, f32::from(SLIDE_ROUND), Color32::from_black_alpha(150));
+        }
+        let first = drag.slides.first().and_then(|at| presentation.slide(*at)).map(|(_, slide)| slide);
+        let texture =
+            first.and_then(|slide| thumb(if from_bible { ThumbOf::BibleSlide(slide) } else { ThumbOf::Slide(slide) }));
+        paint_drag_ghost(ui, texture.map(|(texture, _)| texture), drag.slides.len());
+    }
+}
+
+/// The Edit view's slide cards: the bar under each picture, and the room between cards.
+const EDIT_CARD_BAR: f32 = 22.0;
+const EDIT_CARD_GAP: f32 = 10.0;
+
+/// While slides are dragged near the top or bottom of a scrolling list of them, the list
+/// scrolls that way, faster nearer the edge.
+fn scroll_while_dragging(ui: &mut egui::Ui) {
+    if !egui::DragAndDrop::has_payload_of_type::<SlideDrag>(ui.ctx()) {
+        return;
+    }
+    let Some(pointer) = ui.ctx().pointer_hover_pos() else { return };
+    let area = ui.clip_rect();
+    if !area.x_range().contains(pointer.x) {
+        return;
+    }
+    let edge = 48.0;
+    let by = if pointer.y < area.min.y + edge {
+        (area.min.y + edge - pointer.y).min(edge) * 0.35
+    } else if pointer.y > area.max.y - edge {
+        -(pointer.y - (area.max.y - edge)).min(edge) * 0.35
+    } else {
+        0.0
+    };
+    if by != 0.0 {
+        ui.scroll_with_delta(vec2(0.0, by));
+        ui.ctx().request_repaint();
+    }
+}
+
+/// The colour of the line that shows where dragged slides will go.
+const DROP_LINE: Color32 = Color32::from_rgb(80, 150, 255);
+
+/// Whether slides dropped on a slide go after it: on its right half in a grid, its lower half
+/// in a list.
+fn drop_after(ui: &egui::Ui, rect: Rect, list: bool) -> bool {
+    let pointer = ui.input(|input| input.pointer.interact_pos().or(input.pointer.hover_pos())).unwrap_or(rect.center());
+    if list { pointer.y > rect.center().y } else { pointer.x > rect.center().x }
+}
+
+/// The line between two slides where dragged ones will go: beside a slide in a grid, above or
+/// below it in a list.
+fn paint_drop_line(ui: &egui::Ui, rect: Rect, after: bool, list: bool, gap: f32) {
+    let painter = ui
+        .ctx()
+        .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("slide drop line")))
+        .with_clip_rect(ui.clip_rect());
+    let stroke = Stroke::new(3.0, DROP_LINE);
+    if list {
+        let y = if after { rect.max.y + gap / 2.0 } else { rect.min.y - gap / 2.0 };
+        painter.hline(rect.x_range(), y, stroke);
+    } else {
+        let x = if after { rect.max.x + gap / 2.0 } else { rect.min.x - gap / 2.0 };
+        painter.vline(x, rect.y_range(), stroke);
+    }
+}
+
+/// What follows the pointer while slides are dragged: the first of them, small, and how many
+/// there are when there are several.
+fn paint_drag_ghost(ui: &egui::Ui, texture: Option<TextureId>, count: usize) {
+    let Some(pointer) = ui.ctx().pointer_hover_pos() else { return };
+    let painter =
+        ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("slide drag ghost")));
+    let card = Rect::from_min_size(pointer + vec2(14.0, 10.0), vec2(144.0, 81.0));
+    painter.rect_filled(card, f32::from(SLIDE_ROUND), Color32::BLACK);
+    if let Some(texture) = texture {
+        painter.image(
+            texture,
+            card,
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::from_white_alpha(220),
+        );
+    }
+    painter.rect_stroke(card, f32::from(SLIDE_ROUND), Stroke::new(2.0, DROP_LINE), StrokeKind::Outside);
+    if count > 1 {
+        let badge = egui::Rect::from_center_size(card.right_top() + vec2(-2.0, 2.0), vec2(24.0, 20.0));
+        painter.rect_filled(badge, 10.0, DROP_LINE);
+        painter.text(
+            badge.center(),
+            Align2::CENTER_CENTER,
+            count.to_string(),
+            crate::studio::semibold(12.0),
+            Color32::WHITE,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6198,6 +6432,62 @@ mod tests {
         assert_eq!(state.bible.lookup, "От Иоанна 3:1-36");
         assert!(state.bible.pending.is_some());
         assert_eq!(state.bible.go_live, Some(4), "the fifth slide, one verse a slide");
+    }
+
+    /// Drags in the Show view's grid from one point to another, over a few frames.
+    fn drag_in_grid(state: &mut HomeState, show: &Show, from: egui::Pos2, to: egui::Pos2) {
+        let ctx = egui::Context::default();
+        let mut clock = 0.0;
+        let mut run = |state: &mut HomeState, events: Vec<Event>| {
+            clock += 0.05;
+            let raw = RawInput { focused: true, time: Some(clock), events, ..input(None) };
+            let output = ctx.run_ui(raw, |ui| {
+                home_ui(ui, show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            output.drop_without_applying_deltas();
+        };
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        run(state, Vec::new());
+        run(state, vec![Event::PointerMoved(from)]);
+        run(state, vec![button(from, true)]);
+        for step in 1..=6 {
+            run(state, vec![Event::PointerMoved(from + (to - from) * (step as f32 / 6.0))]);
+        }
+        run(state, vec![button(to, false)]);
+        run(state, Vec::new());
+    }
+
+    #[test]
+    fn slides_dragged_in_the_grid_are_asked_to_move_where_they_are_dropped() {
+        let show = show(4);
+        // Lay the grid out once, to know where the slides are.
+        let mut state = HomeState::default();
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(input(None), |ui| {
+            home_ui(ui, &show, &mut state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+        });
+        output.drop_without_applying_deltas();
+        let rect = |at: usize| state.slide_rects.iter().find(|(here, _)| here.slide == at).map(|(_, r)| *r).unwrap();
+        let (first, third) = (rect(0), rect(2));
+        // One slide, onto the right half of the third: after it.
+        let mut moving = HomeState::default();
+        drag_in_grid(&mut moving, &show, first.center(), third.center() + vec2(third.width() / 4.0, 0.0));
+        let asked = moving.slide_request.take().map(|(_, request)| request);
+        assert_eq!(asked, Some(SlideRequest::Move { slides: vec![0], to: 2, after: true }));
+        // Two picked out, one of them dragged: both go, before the fourth.
+        let fourth = rect(3);
+        let mut picked = HomeState {
+            picked_slides: vec![SlideRef { presentation: 0, slide: 1 }, SlideRef { presentation: 0, slide: 0 }],
+            ..HomeState::default()
+        };
+        drag_in_grid(&mut picked, &show, rect(1).center(), fourth.center() - vec2(fourth.width() / 4.0, 0.0));
+        let asked = picked.slide_request.take().map(|(_, request)| request);
+        assert_eq!(asked, Some(SlideRequest::Move { slides: vec![0, 1], to: 3, after: false }));
     }
 
     #[test]

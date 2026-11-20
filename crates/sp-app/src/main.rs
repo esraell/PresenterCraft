@@ -3902,6 +3902,39 @@ impl App {
             return;
         };
         let Some(song) = self.show.presentations().get(at.presentation).cloned() else { return };
+        // Slides moved to another place: the slide on screen, the one being edited and the ones
+        // picked out follow them.
+        if let SlideRequest::Move { slides, to, after } = &request {
+            let Some((moved, new_of_old)) = song.with_slides_moved(slides, *to, *after) else { return };
+            self.remember_for_undo(at.presentation);
+            self.show.replace_presentation(at.presentation, Arc::new(moved));
+            self.show.slides_reordered(at.presentation, &new_of_old);
+            if !self.unsaved.contains(&at.presentation) {
+                self.unsaved.push(at.presentation);
+            }
+            self.save_unsaved();
+            // What comes next has changed, for the stage screens.
+            self.refresh_output();
+            if let Some(running) = self.running.as_mut() {
+                let state = &mut running.home_state;
+                let follow = |place: &mut sp_engine::SlideRef| {
+                    if place.presentation == at.presentation
+                        && let Some(new) = new_of_old.get(place.slide)
+                    {
+                        place.slide = *new;
+                    }
+                };
+                if let Some(draft) = state.editing.as_mut() {
+                    follow(&mut draft.at);
+                }
+                state.picked_slides.iter_mut().for_each(follow);
+                if let Some(selected) = state.selected_slide.as_mut() {
+                    follow(selected);
+                }
+                running.home_window.request_redraw();
+            }
+            return;
+        }
         // Several slides: from the last to the first, so each place still names the same slide.
         if let SlideRequest::DeleteMany(slides) = &request {
             let mut slides = slides.clone();
@@ -3936,7 +3969,7 @@ impl App {
             return;
         }
         let (changed, shift) = match &request {
-            SlideRequest::DeleteMany(_) => (None, None),
+            SlideRequest::DeleteMany(_) | SlideRequest::Move { .. } => (None, None),
             SlideRequest::Delete => (song.without_slide(at.slide), Some(false)),
             SlideRequest::PasteAfter(slide) => (song.with_slide_after(at.slide, slide), Some(true)),
             SlideRequest::Group(name) => (song.with_group_starting(at.slide, name), None),
