@@ -144,8 +144,10 @@ feature changes, this page changes in the same commit.
 ![A stage screen: the slide on screen in English and Russian, the next slide, a sermon timer and the clock](images/stage.png)
 
 ## Bible
-- Scripture Lookup in English and Russian (`John 3:16-18`, `jn 3:16`, `Psalm 23`,
-  `Пс 22:1-3`) and word search.
+- Scripture Lookup in English, Russian and Ukrainian (`John 3:16-18`, `jn 3:16`, `Psalm 23`,
+  `Пс 22:1-3`, `Ів 3:16`) and word search. A short form is read in the language of the first
+  translation first ("1 Цар" is 1 Samuel to a Russian Bible, 1 Kings to a Ukrainian one), and a
+  Ukrainian Bible shows its books' Ukrainian names.
 - Up to four translations on one slide, lined up by verse using the standard versification
   tables; each row picks its Bible (or None) and the boxes its verse and reference go in.
 - Options for verse numbers, a new slide for each verse, the translation's name, and where the

@@ -719,9 +719,8 @@ impl BiblePage {
     /// Makes the passage shown one verse longer, at its end or at its start.
     pub fn step(&mut self, forward: bool, live: Option<usize>) {
         let Some(lead) = self.lead() else { return };
-        let (Ok(bible), Ok(range)) = (self.shelf.get(lead), sp_bible::parse_reference(&self.shown)) else {
-            return;
-        };
+        let Ok(bible) = self.shelf.get(lead) else { return };
+        let Ok(range) = sp_bible::parse_reference_in(&self.shown, &bible.info.language) else { return };
         match bible.extend(range, forward) {
             Some(longer) => {
                 self.lookup = bible.label(longer.start, longer.end);

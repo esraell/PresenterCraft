@@ -5,7 +5,7 @@ use egui::{Align, Align2, Color32, FontId, Frame, Layout, Rect, Sense, Stroke, p
 
 use std::sync::Arc;
 
-use sp_bible::{Bible, VerseRef, convert, parse_reference};
+use sp_bible::{Bible, VerseRef, convert, parse_reference_in};
 use sp_model::{Group, Object, Presentation, Rgba, Role, Slide, Uuid};
 
 use crate::home::BibleTarget;
@@ -169,7 +169,9 @@ pub fn build_passage(
     template: Option<Uuid>,
 ) -> Result<Presentation, String> {
     let lead = rows.first().ok_or_else(|| "Choose a Bible first.".to_owned())?;
-    let mut range = parse_reference(typed)?;
+    // A book's short form is read in the first translation's language first: "1 Цар" is
+    // 1 Samuel to a Russian Bible and 1 Kings to a Ukrainian one.
+    let mut range = parse_reference_in(typed, &lead.bible.info.language)?;
     // A chapter past the end of the book is read as its last chapter: "John 99" is John 21.
     let chapters = lead.bible.chapter_count(range.start.book);
     if chapters > 0 && range.start.chapter > chapters {
@@ -920,6 +922,19 @@ fn bible_row(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_ukrainian_bible_reads_ukrainian_book_names_and_shows_them() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../dist/bibles/ukr1905.pcbible");
+        let Ok(bytes) = std::fs::read(path) else { return };
+        let mut shelf = Shelf::shipped();
+        let info = sp_bible::Bible::read_info(&bytes).unwrap();
+        shelf.add_file(path.into(), info);
+        let rows = rows(&mut shelf, &[("ukr1905", main(), reference())]);
+        let passage = build_passage("Ів 3:16", &rows, &BibleOptions::default(), None).unwrap();
+        assert_eq!(passage.title, "Від Івана 3:16");
+    }
+
     use super::*;
 
     fn main() -> BibleTarget {

@@ -10,7 +10,7 @@ mod numbering;
 
 use std::io::{Read, Write};
 
-pub use books::{BOOKS, Book, book_by_code, find_book};
+pub use books::{BOOKS, Book, book_by_code, find_book, find_book_in};
 pub use numbering::{Numbering, convert};
 
 const FIRST_LINE: &str = "softpresenter-bible 1";
@@ -324,7 +324,11 @@ impl Bible {
     /// A book's name as this Bible's language writes it.
     pub fn book_name(&self, book: usize) -> &'static str {
         let names = &BOOKS[book.min(BOOKS.len() - 1)];
-        if self.info.language == "ru" { names.russian } else { names.english }
+        match self.info.language.as_str() {
+            "ru" => names.russian,
+            "uk" => names.ukrainian,
+            _ => names.english,
+        }
     }
 
     /// How a run of verses is named, such as "John 3:16-18" or "Psalms 23". `first` and `last`
@@ -353,6 +357,12 @@ fn parse_verse_line(line: &str) -> Option<(VerseRef, &str)> {
 /// Reads what someone typed, such as "John 3:16", "jn 3:16-18", "1 Cor 13", "Пс 22:1-3" or
 /// "John 3:16-4:2", into the verses it names. The error is a plain sentence.
 pub fn parse_reference(typed: &str) -> Result<Range, String> {
+    parse_reference_in(typed, "")
+}
+
+/// The same, reading the book's name in a language first (`en`, `ru` or `uk`), as
+/// [`books::find_book_in`] does.
+pub fn parse_reference_in(typed: &str, language: &str) -> Result<Range, String> {
     let typed = typed.trim();
     if typed.is_empty() {
         return Err("Type a reference, such as John 3:16.".to_owned());
@@ -370,8 +380,8 @@ pub fn parse_reference(typed: &str) -> Result<Range, String> {
         Some(at) => (&typed[..at], &typed[at..]),
         None => (typed, ""),
     };
-    let book =
-        find_book(book_text).ok_or_else(|| format!("No book of the Bible is called \"{}\".", book_text.trim()))?;
+    let book = find_book_in(book_text, language)
+        .ok_or_else(|| format!("No book of the Bible is called \"{}\".", book_text.trim()))?;
     let unclear = || format!("\"{}\" is not a chapter and verse. Try something like 3:16 or 3:16-18.", numbers.trim());
     let number = |text: &str| text.trim().parse::<u16>().ok().filter(|n| *n > 0);
     // "3:16" or "3,16" or "3.16"; a space also separates chapter from verse.
