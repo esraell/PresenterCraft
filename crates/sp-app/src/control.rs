@@ -274,7 +274,11 @@ fn with_full_paths(args: Vec<String>) -> Vec<String> {
         }
         return args;
     }
-    let names_files = (first("song") && second(&["import", "new", "text"])) || (first("media") && second(&["add"]));
+    let names_files = (first("song") && second(&["import", "new", "text"]))
+        || (first("media") && second(&["add"]))
+        || (first("audio") && second(&["add"]))
+        || (first("prop") && second(&["new"]))
+        || (first("media-playlist") && second(&["follow"]));
     if !names_files {
         return args;
     }
@@ -476,7 +480,7 @@ Running the show
   media next|previous          the next or previous picture or video behind the words
   media set ITEM scaling=fit|fill|stretch loop=on|off
   stage message TEXT | stage message clear      words for the stage screens only
-  stage layout SCREEN LAYOUT   which stage layout a stage screen shows
+  stage layouts | stage layout SCREEN LAYOUT    the stage layouts; which one a screen shows
   test bars|grid|white|off     a test pattern on the audience screens
   go SONG [SLIDE]              put a slide on screen (SONG by name or number; SLIDE from 1)
   select SONG                  show a song's slides without putting anything on screen
@@ -490,9 +494,23 @@ Layers and controls
   message show NAME | message hide
   prop show NAME | prop hide NAME
   timer start|stop|reset NAME
+  timer new NAME countdown M:SS | to HH:MM | up [to M:SS]     (30 alone is 30 minutes)
+  timer set NAME countdown …|to …|up … | overrun on|off | name NEW
+  timer delete NAME --yes
+  message new NAME [WORDS] | message set NAME text=… leaves=SECONDS|never name=…
+  message delete NAME --yes | message show --text WORDS   (words once, as Quick message)
+  prop new NAME [PICTURE] | prop delete NAME --yes
+  macro new NAME | macro add NAME STEP [then STEP…] | macro remove NAME N | macro delete NAME --yes
+                               steps: clear all|slide|media|props|messages, show|hide message
+                               NAME, show|hide prop NAME, start|stop|reset timer NAME,
+                               audience on|off, song SONG, media ITEM
   macro run NAME
   announce SONG | announce stop
   audio play TRACK | audio pause | audio stop | audio volume 0-100
+  audio next|previous | audio shuffle on|off | audio through on|off | audio crossfade SECONDS
+  audio add FILE… [to PLAYLIST] | audio playlists | audio playlist new NAME | delete NAME --yes
+  media-playlist new NAME | media-playlist add ITEM… to NAME | remove ITEM… from NAME
+  media-playlist follow NAME FOLDER|off | media-playlist delete NAME --yes
   bible REFERENCE [--show]     look a passage up (and put its first verse on screen)
   bible REFERENCE --add [to PLAYLIST]
                                look it up and put it in a playlist, with the page's rows
@@ -959,8 +977,8 @@ impl crate::App {
         if let Some((list, item, shown)) = &open {
             lines.push(format!(
                 "Playlist in front: {list}{}{}",
-                item.as_ref().map_or_else(String::new, |item| format!(", item {item}")),
-                if *shown { " (shown)" } else { "" }
+                if *shown { " (listed in the left column)" } else { "" },
+                item.as_ref().map_or_else(String::new, |item| format!("; item last opened from it: {item}"))
             ));
         }
         let theme = self.themes.get(self.songs_theme).map(|t| t.name.clone());
@@ -975,7 +993,7 @@ impl crate::App {
             "media_playlist": media_playlist,
             "timers": timers,
             "audio": audio,
-            "playlist": open.as_ref().map(|(list, item, shown)| serde_json::json!({"name": list, "item": item, "shown": shown})),
+            "playlist": open.as_ref().map(|(list, item, shown)| serde_json::json!({"name": list, "item_last_opened": item, "listed": shown})),
             "continuous": state.is_some_and(|s| s.continuous),
             "identify": state.is_some_and(|s| s.identify),
             "main_theme": theme,
@@ -998,7 +1016,7 @@ impl crate::App {
 
     /// Whether a `stage` command is one of the newer ones (message, layout).
     fn ctl_stage_more_applies(&self, args: &[String]) -> bool {
-        args.get(1).is_some_and(|w| w.eq_ignore_ascii_case("message") || w.eq_ignore_ascii_case("layout"))
+        args.get(1).is_some_and(|w| ["message", "layout", "layouts"].iter().any(|word| w.eq_ignore_ascii_case(word)))
     }
 
     /// What a slide or macro action does, in words.
@@ -1039,15 +1057,7 @@ impl crate::App {
             .timers
             .iter()
             .map(|timer| {
-                let kind = match &timer.kind {
-                    crate::timers::Kind::Countdown { seconds } => {
-                        format!("counts down from {}:{:02}", seconds / 60, seconds % 60)
-                    }
-                    crate::timers::Kind::CountdownTo { hour, minute, .. } => {
-                        format!("counts down to {hour:02}:{minute:02}")
-                    }
-                    crate::timers::Kind::Elapsed { .. } => "counts up".to_owned(),
-                };
+                let kind = crate::make_cli::kind_words(&timer.kind);
                 serde_json::json!({
                     "name": timer.name,
                     "kind": kind,
@@ -1555,6 +1565,9 @@ impl crate::App {
     }
 
     fn ctl_media_playlist(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_media_playlist_make(args) {
+            return result;
+        }
         let lists: Vec<(sp_model::Uuid, String)> = self
             .running
             .as_ref()
@@ -1589,6 +1602,9 @@ impl crate::App {
     }
 
     fn ctl_message(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_message_make(args) {
+            return result;
+        }
         let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
         let names: Vec<String> = state.messages.iter().map(|m| m.name.clone()).collect();
         let ids: Vec<sp_model::Uuid> = state.messages.iter().map(|m| m.id).collect();
@@ -1607,6 +1623,9 @@ impl crate::App {
     }
 
     fn ctl_prop(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_prop_make(args) {
+            return result;
+        }
         let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
         let names: Vec<String> = state.props.iter().map(|p| p.name.clone()).collect();
         let ids: Vec<sp_model::Uuid> = state.props.iter().map(|p| p.id).collect();
@@ -1621,6 +1640,9 @@ impl crate::App {
     }
 
     fn ctl_timer(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_timer_make(args) {
+            return result;
+        }
         let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
         let names: Vec<String> = state.timers.iter().map(|t| t.name.clone()).collect();
         let ids: Vec<sp_model::Uuid> = state.timers.iter().map(|t| t.id).collect();
@@ -1641,6 +1663,9 @@ impl crate::App {
     }
 
     fn ctl_macro(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_macro_make(args) {
+            return result;
+        }
         if args.get(1).map(|w| w.to_lowercase()).as_deref() != Some("run") {
             return Err("macro run NAME".to_owned());
         }
@@ -1669,7 +1694,7 @@ impl crate::App {
     }
 
     /// Does one slide action now, as a slide or a macro does it.
-    fn run_action(&mut self, action: sp_model::ShowAction) {
+    pub(crate) fn run_action(&mut self, action: sp_model::ShowAction) {
         self.with_state(|state| state.actions_to_run.push(action));
         self.run_actions();
     }
@@ -1689,6 +1714,9 @@ impl crate::App {
     }
 
     fn ctl_audio(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_audio_make(args) {
+            return result;
+        }
         use crate::home::AudioRequest;
         let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
         let tracks: Vec<(sp_model::Uuid, String)> = state

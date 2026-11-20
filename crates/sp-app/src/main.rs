@@ -19,6 +19,7 @@ mod links;
 mod live_tabs;
 mod load;
 mod macros;
+mod make_cli;
 mod media;
 mod menubar;
 mod messages;

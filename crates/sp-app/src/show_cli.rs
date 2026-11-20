@@ -175,7 +175,9 @@ impl crate::App {
                 if let Some(length) = length.filter(|length| to > *length) {
                     return Err(format!("The video is {length:.0} seconds long."));
                 }
-                (VideoRequest::Seek(to), format!("The video is at {to:.0} seconds."))
+                let shown = format!("{to:.1}");
+                let shown = shown.trim_end_matches(".0");
+                (VideoRequest::Seek(to), format!("The video is at {shown} seconds."))
             }
             Some("loop") => {
                 let on = on_off(args.get(2))?;
@@ -220,6 +222,7 @@ impl crate::App {
         let at = find("media item", &names, &name.iter().map(|w| w.as_str()).collect::<Vec<_>>().join(" "))?;
         let item = self.show.media()[at].clone();
         let (mut fit, mut looping) = (item.fit, item.looping);
+        let video = crate::media::is_video(&item.path);
         for setting in settings {
             let (key, value) = setting.split_once('=').unwrap_or_default();
             match key.to_lowercase().as_str() {
@@ -231,6 +234,7 @@ impl crate::App {
                         other => return Err(format!("scaling is fit, fill or stretch, not {other}.")),
                     }
                 }
+                "loop" if !video => return Err(format!("{} is a picture: loop is for videos.", item.name)),
                 "loop" => looping = on_off(Some(&value.to_owned()))?,
                 other => return Err(format!("{other} isn't a media setting: scaling, loop.")),
             }
@@ -245,6 +249,9 @@ impl crate::App {
             sp_model::ImageFit::Fill => "filling the screen",
             sp_model::ImageFit::Stretch => "stretched to the screen",
         };
+        if !video {
+            return Ok(Reply::done(format!("{}: {scaling}.", item.name)));
+        }
         Ok(Reply::done(format!("{}: {scaling}, {}.", item.name, if looping { "looping" } else { "not looping" })))
     }
 
@@ -271,6 +278,7 @@ impl crate::App {
                 }
             }
             "layout" => self.stage_layout(&args[2..]),
+            "layouts" => self.stage_layouts(),
             _ => return None,
         };
         Some(result)
@@ -286,10 +294,43 @@ impl crate::App {
         let screens: Vec<String> = state.screens.iter().map(|s| s.name.clone()).collect();
         let at = find("screen", &screens, screen)?;
         let layouts: Vec<String> = state.stage_layouts.iter().map(|l| l.name.clone()).collect();
-        let which = find("stage layout", &layouts, &layout.join(" "))?;
+        let which = find("stage layout", &layouts, &layout.join(" "))
+            .map_err(|problem| format!("{problem} The stage layouts: {}.", layouts.join(", ")))?;
         state.screens[at].stage_layout = Some(state.stage_layouts[which].id);
         state.screens_changed = true;
         Ok(Reply::done(format!("{} shows the stage layout {}.", screens[at], layouts[which])))
+    }
+
+    /// `stage layouts`: each stage layout, and the screens that show it.
+    fn stage_layouts(&self) -> Result<Reply, String> {
+        let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+        let lines: Vec<String> = state
+            .stage_layouts
+            .iter()
+            .map(|layout| {
+                let on: Vec<&str> = state
+                    .screens
+                    .iter()
+                    .filter(|s| s.stage_layout == Some(layout.id))
+                    .map(|s| s.name.as_str())
+                    .collect();
+                if on.is_empty() { layout.name.clone() } else { format!("{} (on {})", layout.name, on.join(", ")) }
+            })
+            .collect();
+        let data: Vec<serde_json::Value> = state
+            .stage_layouts
+            .iter()
+            .map(|layout| {
+                let on: Vec<&str> = state
+                    .screens
+                    .iter()
+                    .filter(|s| s.stage_layout == Some(layout.id))
+                    .map(|s| s.name.as_str())
+                    .collect();
+                serde_json::json!({"name": layout.name, "screens": on})
+            })
+            .collect();
+        Ok(Reply::with(crate::control::numbered(&lines), serde_json::json!(data)))
     }
 
     /// `test bars|grid|white|off`: a test pattern on the audience screens, for lining up a projector.

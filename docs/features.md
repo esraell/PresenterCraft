@@ -368,6 +368,15 @@ feature changes, this page changes in the same commit.
   playlist, Identify and the main theme; `timers`, `messages`, `props` and `macros` list each
   with its state, and `slide SONG N` and `slides` show what a slide sets for itself (off, label,
   hot key, transition, template, actions, notes).
+- Making things from the command line: timers (`timer new NAME countdown 5:00 | to 10:30 | up
+  [to M:SS]`, `timer set`, `timer delete`), messages (`message new`, `message set NAME text=…
+  leaves=…`, `message delete`, and `message show --text WORDS` for words shown once), props
+  (`prop new NAME [PICTURE]`, `prop delete`), macros (`macro new`, `macro add NAME STEP then
+  STEP…` in the slide-action words, `macro remove`, `macro delete`), audio (`audio add FILE…
+  [to PLAYLIST]`, `audio playlist new|delete`, `audio next|previous`, `audio shuffle|through
+  on|off`, `audio crossfade SECONDS`) and media playlists (`media-playlist new`, `add ITEM… to`,
+  `remove ITEM… from`, `follow NAME FOLDER|off`, `delete`). `stage layouts` lists the stage
+  layouts and the screens showing each.
 - `sp …` (full name `softpresenter`), installed from SoftPresenter › Install Command Line Tool…,
   controls the running app from a terminal, a script or an AI agent (`sp status`, `sp next`):
   what is on screen, the lists, going to slides, clearing, media, messages, props, timers,
