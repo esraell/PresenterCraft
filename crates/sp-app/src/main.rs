@@ -516,7 +516,7 @@ fn operator_displays(
 
 /// The connected displays, named as macOS names them in System Settings, and which is the main
 /// display (`primary`, with the menu bar).
-fn display_list(
+pub(crate) fn display_list(
     monitors: impl Iterator<Item = winit::monitor::MonitorHandle>,
     primary: Option<winit::monitor::MonitorHandle>,
 ) -> Vec<DisplayInfo> {

@@ -85,13 +85,14 @@ impl crate::App {
         if name.is_empty() {
             return Err(usage.to_owned());
         }
+        let connected = self.connected_displays();
         let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
         if state.screens.iter().any(|s| s.name.eq_ignore_ascii_case(&name)) {
             return Err(format!("There is a screen called {name} already."));
         }
         let mut said = output_words(&output);
         if let Output::Display(display) = &output
-            && !state.displays.iter().any(|d| d.is_named(display))
+            && !connected.iter().any(|d| d.is_named(display))
         {
             said.push_str(" (not connected now; the screen waits for it)");
         }
@@ -107,6 +108,7 @@ impl crate::App {
                      layers=slides,media,props,messages,announcements color=#RRGGBB edges=LEFT,TOP,RIGHT,BOTTOM theme=THEME|main layout=STAGE-LAYOUT";
         let at = words.iter().position(|w| w.contains('=')).filter(|at| *at > 0).ok_or(usage)?;
         let theme_names: Vec<(sp_model::Uuid, String)> = self.themes.iter().map(|t| (t.id, t.name.clone())).collect();
+        let connected = self.connected_displays();
         let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
         let names: Vec<String> = state.screens.iter().map(|s| s.name.clone()).collect();
         let index = find("screen", &names, &words[..at].join(" "))?;
@@ -130,9 +132,9 @@ impl crate::App {
                     said.push(format!("on {}", output_words(&screen.output)));
                     // A display not connected now is kept (the screen waits for it), and said.
                     if let Output::Display(name) = &screen.output
-                        && !state.displays.iter().any(|display| display.is_named(name))
+                        && !connected.iter().any(|display| display.is_named(name))
                     {
-                        let connected: Vec<&str> = state.displays.iter().map(|d| d.name.as_str()).collect();
+                        let connected: Vec<&str> = connected.iter().map(|d| d.name.as_str()).collect();
                         said.push(format!(
                             "but no display called {name} is connected now, so the screen waits for it (connected: {})",
                             if connected.is_empty() { "none".to_owned() } else { connected.join(", ") }
@@ -211,16 +213,34 @@ impl crate::App {
         Ok(Reply::done(format!("The screen {}: {}.", was.name, said.join(", "))))
     }
 
+    /// The displays connected now, as the operator's window sees them (the event loop's own list
+    /// can be empty in a quiet run), else as the screens were last placed.
+    pub(crate) fn connected_displays(&self) -> Vec<crate::displays::DisplayInfo> {
+        let Some(running) = self.running.as_ref() else { return Vec::new() };
+        let monitors: Vec<_> = running.home_window.available_monitors().collect();
+        if !monitors.is_empty() {
+            return crate::display_list(monitors.into_iter(), running.home_window.primary_monitor());
+        }
+        if !running.home_state.displays.is_empty() {
+            return running.home_state.displays.clone();
+        }
+        // Where even that is empty (a run started where the system lists no monitors), at least
+        // the display the window is on.
+        running
+            .home_window
+            .current_monitor()
+            .map(|monitor| crate::display_list(std::iter::once(monitor), running.home_window.primary_monitor()))
+            .unwrap_or_default()
+    }
+
     /// `displays`: the displays connected now, by name, with their size and which is the main one.
     pub(crate) fn ctl_displays(&self) -> Result<Reply, String> {
-        let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
-        let lines: Vec<String> = state
-            .displays
+        let displays = self.connected_displays();
+        let lines: Vec<String> = displays
             .iter()
             .map(|d| format!("{} ({}x{}){}", d.name, d.w, d.h, if d.main { ", the main display" } else { "" }))
             .collect();
-        let data: Vec<serde_json::Value> = state
-            .displays
+        let data: Vec<serde_json::Value> = displays
             .iter()
             .map(|d| serde_json::json!({"name": d.name, "width": d.w, "height": d.h, "main": d.main}))
             .collect();
