@@ -133,6 +133,16 @@ impl WebPage {
         self.page.capture();
     }
 
+    /// Lets the page run (shown) or rests it (not shown): resting, it all but stops (no
+    /// animation, slow timers) and costs next to nothing, but stays loaded, and runs again at
+    /// once when shown. Pictures of a resting page are slow to come. A page opens shown.
+    pub fn set_shown(&self, shown: bool) {
+        #[cfg(target_os = "macos")]
+        self.page.set_shown(shown);
+        #[cfg(not(target_os = "macos"))]
+        let _ = shown;
+    }
+
     /// How far the page has got.
     pub fn loading(&self) -> Loading {
         #[cfg(target_os = "macos")]

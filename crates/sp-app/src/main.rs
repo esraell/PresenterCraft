@@ -427,6 +427,9 @@ const WEB_LIVE_EVERY: Duration = Duration::from_millis(33);
 /// How often a web page loaded ahead is asked for one: enough to have a fresh picture ready,
 /// and to show it in the editor.
 const WEB_AHEAD_EVERY: Duration = Duration::from_millis(500);
+/// How often a page resting off the screens (loaded ahead, with its first picture taken, and
+/// not being edited) is asked for a new picture.
+const WEB_RESTING_EVERY: Duration = Duration::from_secs(5);
 
 /// The preview of a VoxLive screen's look: its display page in preview mode, the look last
 /// painted in it and when, and when a picture was last asked for.
@@ -447,12 +450,28 @@ struct WebBox {
     /// On the screens now (they take its pictures); otherwise loaded ahead, for a slide that
     /// may come next.
     live: bool,
+    /// Running (its view shown), or resting off the screens.
+    shown: bool,
     /// When a picture was last asked for.
     asked: Option<Instant>,
     /// How many of its pictures went to the operator's window (for SOFTPRESENTER_TRACE_WEB).
     pictures: u32,
     /// A page that costs, once off the screens, is kept running until then.
     warm_until: Option<Instant>,
+}
+
+impl WebBox {
+    /// How often it is asked for a new picture: as often as the screens show one while it is on
+    /// them, twice a second while it runs ahead, and every few seconds while it rests.
+    fn every(&self) -> Duration {
+        if self.live {
+            WEB_LIVE_EVERY
+        } else if self.shown {
+            WEB_AHEAD_EVERY
+        } else {
+            WEB_RESTING_EVERY
+        }
+    }
 }
 
 /// How long a page that costs (a VoxLive screen's live display) keeps running after it leaves
@@ -1690,7 +1709,15 @@ impl App {
             match sp_video::WebPage::open(&url, width, height) {
                 Ok(page) => {
                     applog::event("web", &format!("opened a web page box ({})", web_host(&url)));
-                    self.web_pages.push(WebBox { key, page, live, asked: None, pictures: 0, warm_until: None });
+                    self.web_pages.push(WebBox {
+                        key,
+                        page,
+                        live,
+                        shown: true,
+                        asked: None,
+                        pictures: 0,
+                        warm_until: None,
+                    });
                 }
                 Err(problem) => {
                     applog::problem("web", &problem);
@@ -1715,9 +1742,19 @@ impl App {
         let now = Instant::now();
         let mut fresh = false;
         let mut first = false;
+        let editing = self.running.as_ref().is_some_and(|running| running.home_state.editing.is_some());
         for web in &mut self.web_pages {
-            let every = if web.live { WEB_LIVE_EVERY } else { WEB_AHEAD_EVERY };
-            if web.asked.is_none_or(|asked| now.duration_since(asked) >= every) {
+            // A page runs while it is on the screens, until its first picture (for the
+            // thumbnails), while a slide is being edited, and while one that costs is kept warm
+            // (it stays connected for the service); otherwise it rests, loaded, and runs again
+            // at once when it goes on screen.
+            let warm = web.warm_until.is_some_and(|until| until > now);
+            let runs = web.live || web.pictures == 0 || editing || warm;
+            if web.shown != runs {
+                web.page.set_shown(runs);
+                web.shown = runs;
+            }
+            if web.asked.is_none_or(|asked| now.duration_since(asked) >= web.every()) {
                 web.page.capture();
                 web.asked = Some(now);
             }
@@ -1765,10 +1802,7 @@ impl App {
                 );
             }
         }
-        self.web_pages
-            .iter()
-            .map(|web| web.asked.unwrap_or(now) + if web.live { WEB_LIVE_EVERY } else { WEB_AHEAD_EVERY })
-            .min()
+        self.web_pages.iter().map(|web| web.asked.unwrap_or(now) + web.every()).min()
     }
 
     /// Does what Settings › Integrations asked of VoxLive, keeps the connection going, and shows

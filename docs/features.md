@@ -286,7 +286,10 @@ feature changes, this page changes in the same commit.
   background, so it can sit over the slide's background or under its words. Only addresses
   starting with https:// open. The page of a song open in the window is loaded ahead, so it has
   loaded and drawn by the time its slide goes on screen; nothing shows on the screens until it
-  has, and a page shown again isn't loaded again. The editor and the slide thumbnails show it
+  has, and a page shown again isn't loaded again. Once loaded and drawn for the thumbnails, a
+  page off the screens rests (no animation, next to no work) until its slide goes on screen,
+  when it runs again at once; it keeps running while a slide is being edited, and a VoxLive
+  display kept warm after leaving the screens keeps running too. The editor and the slide thumbnails show it
   too (a see-through globe until it has loaded). A page can't download anything, open a window,
   use the camera or microphone, or keep anything between pages; one whose own process stops is
   loaded again. Songs with a web page are saved as version 3 of the song file; older

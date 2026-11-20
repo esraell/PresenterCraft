@@ -273,6 +273,12 @@ impl Page {
         })
     }
 
+    /// Shows or hides the page's view in its window. Hidden, WebKit counts the page as not
+    /// visible and rests it (no animation frames, slow timers); shown, it runs at once.
+    pub fn set_shown(&self, shown: bool) {
+        self.view.setHidden(!shown);
+    }
+
     pub fn loading(&self) -> Loading {
         match self.guard.ivars().loading.get() {
             1 => Loading::Loaded,
