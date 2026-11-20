@@ -738,6 +738,9 @@ fn slides_preview(ui: &mut egui::Ui, preview: &SlidesPreview) {
 /// How wide the book, chapter and verse lists are, together.
 pub const LISTS_WIDTH: f32 = 300.0;
 
+/// How tall the bar along the top of the lists is, with Hide in it.
+const LISTS_BAR: f32 = 28.0;
+
 /// The book, chapter and verse lists beside the Bible page's slides, in the first
 /// translation's language. A book opens its chapters, a chapter its verses; a verse is looked
 /// up at once (its slides appear beside the lists), Shift-click makes a passage from the verse
@@ -759,12 +762,38 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
         })
     };
     let scroll = std::mem::take(&mut page.list_scroll);
-    let height = ui.available_height();
     let new_testament = sp_bible::BOOKS.iter().position(|book| book.code == "MAT").unwrap_or(39);
     let mut chosen: Option<String> = None;
     let shift = ui.input(|input| input.modifiers.shift);
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
     Frame::new().fill(Color32::from_rgb(34, 34, 36)).show(ui, |ui| {
+        // Along the top, a way to put the lists away for those who would rather type; Books
+        // brings them back, and the choice is kept.
+        let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), LISTS_BAR), Sense::hover());
+        ui.painter().text(
+            pos2(bar.min.x + 12.0, bar.center().y),
+            Align2::LEFT_CENTER,
+            "BOOKS",
+            FontId::proportional(10.5),
+            Color32::from_gray(120),
+        );
+        let hide_rect =
+            Rect::from_min_max(pos2(bar.max.x - 64.0, bar.min.y + 4.0), pos2(bar.max.x - 6.0, bar.max.y - 4.0));
+        let hide = ui.interact(hide_rect, list_row_id("hide"), Sense::click());
+        if hide.hovered() {
+            ui.painter().rect_filled(hide_rect, 5.0, Color32::from_white_alpha(14));
+        }
+        ui.painter().text(
+            hide_rect.center(),
+            Align2::CENTER_CENTER,
+            "Hide",
+            FontId::proportional(12.0),
+            if hide.hovered() { Color32::WHITE } else { DIM },
+        );
+        if hide.on_hover_text("Hide the book, chapter and verse lists (Books shows them again)").clicked() {
+            page.lists_open = false;
+        }
+        let height = ui.available_height();
         ui.horizontal_top(|ui| {
             // Books.
             list_column(ui, "bible books", 176.0, height, |ui| {
@@ -869,6 +898,12 @@ fn list_column(ui: &mut egui::Ui, id: &str, width: f32, height: f32, add: impl F
     });
 }
 
+/// The id of a row in the lists: ("book", 42), ("chapter", 3u16), ("verse", 16u16) or
+/// ("all", 3u16).
+pub fn list_row_id(id: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
+    egui::Id::unique(("bible lists", id))
+}
+
 /// One row of a list: open (blue), part of the passage showing (lit), or neither.
 fn list_row(
     ui: &mut egui::Ui,
@@ -879,7 +914,8 @@ fn list_row(
     align: Align,
 ) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-    let response = ui.interact(rect, ui.scope_id().with(id), Sense::click());
+    // There is one set of lists, so each row's id can be fixed: ("verse", 17) and so on.
+    let response = ui.interact(rect, list_row_id(id), Sense::click());
     let fill = if open {
         BLUE
     } else if showing {

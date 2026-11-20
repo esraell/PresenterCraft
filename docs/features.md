@@ -164,7 +164,8 @@ feature changes, this page changes in the same commit.
   changes as they are clicked (the passage showing, or two sample verses). Manage Bibles… opens
   the Bibles window. ‹ Verse and Verse › make the passage a verse longer at either end; search
   results open a verse or its whole chapter.
-- Book, chapter and verse lists beside the slides (Books shows or hides them): a click on a
+- Book, chapter and verse lists beside the slides (Hide, at their top, puts them away and Books
+  brings them back; the choice is kept): a click on a
   verse looks it up at once, Shift-click makes a passage from the verse before, All takes the
   whole chapter. The passage showing is lit in them, however it was looked up.
 - Four Bibles ship with the app (King James, World English, Berean Standard, Russian Synodal)

@@ -4325,6 +4325,9 @@ fn bible_area(
                     },
                 );
                 ui.allocate_ui_with_layout(ui.available_size(), Layout::top_down(Align::Min), |ui| {
+                    // The slides keep to their own column: without this, what they draw and the
+                    // space between them (which takes clicks) reach over the lists.
+                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                     bible_results(ui, show, state, thumb, commands, live);
                 });
             });
@@ -5064,8 +5067,11 @@ fn slide_grid(
     let bar_height = 22.0;
     egui::ScrollArea::vertical().id_salt("slide grid").auto_shrink([false, false]).show(ui, |ui| {
         // Between the slides: a click picks nothing; a drag draws a box that picks out every
-        // slide it touches.
-        let background = ui.interact(ui.clip_rect(), ui.scope_id().with("slide background"), Sense::click_and_drag());
+        // slide it touches. Only the grid's own width: a scroll area that scrolls up and down
+        // leaves the width of its clip to whatever holds it, which can be wider.
+        let visible =
+            ui.clip_rect().intersect(Rect::from_x_y_ranges(ui.max_rect().x_range(), ui.clip_rect().y_range()));
+        let background = ui.interact(visible, ui.scope_id().with("slide background"), Sense::click_and_drag());
         if background.clicked() {
             state.picked_slides.clear();
             state.selected_slide = None;
@@ -6011,6 +6017,51 @@ mod tests {
         page.options.break_on_new_verse = false;
         assert_eq!(page.sample().unwrap().slide_count(), 1, "as many verses as fit");
         assert_ne!(first(&mut page), id);
+    }
+
+    #[test]
+    fn a_verse_in_the_lists_can_be_clicked_while_slides_are_showing() {
+        // Slides showing beside the lists (the song's, standing in for a passage).
+        let mut state = HomeState { bible_open: true, ..HomeState::default() };
+        state.bible.slots = Some([0, 1]);
+        state.bible.list_book = sp_bible::BOOKS.iter().position(|book| book.code == "JOH").unwrap();
+        state.bible.list_chapter = 3;
+        let ctx = egui::Context::default();
+        let show = show(3);
+        let run = |state: &mut HomeState, events: Vec<Event>, at: f64| {
+            let raw = RawInput { focused: true, time: Some(at), events, ..input(None) };
+            let output = ctx.run_ui(raw, |ui| {
+                home_ui(ui, &show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            output.drop_without_applying_deltas();
+        };
+        run(&mut state, Vec::new(), 0.0);
+        run(&mut state, Vec::new(), 0.1);
+        let row = ctx.read_response(crate::bible::list_row_id(("verse", 5u16))).expect("verse 5 is drawn").rect;
+        let press = |pressed| Event::PointerButton {
+            pos: row.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        run(&mut state, vec![Event::PointerMoved(row.center())], 0.2);
+        run(&mut state, vec![press(true)], 0.3);
+        run(&mut state, vec![press(false)], 0.35);
+        assert_eq!(state.bible.lookup, "От Иоанна 3:5", "the click looked the verse up");
+
+        // Hide, at the top of the lists, puts them away.
+        let hide = ctx.read_response(crate::bible::list_row_id("hide")).expect("Hide is drawn").rect;
+        let press = |pressed| Event::PointerButton {
+            pos: hide.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        run(&mut state, vec![Event::PointerMoved(hide.center())], 0.5);
+        run(&mut state, vec![press(true)], 0.6);
+        run(&mut state, vec![press(false)], 0.65);
+        assert!(!state.bible.lists_open);
+        assert!(state.prefs().bible_lists_hidden, "and stay hidden at the next start");
     }
 
     #[test]
