@@ -9,9 +9,11 @@ service, made for services in two languages.**
 
 ![The Show view: the Sunday Morning playlist with its songs one after another in English and Russian, a slide on screen over a background picture, two timers and the media bin](docs/images/home.png)
 
-> **Early days.** SoftPresenter is young. Some buttons do less than they look like they should,
-> and file formats may still change, so it isn't ready to run a Sunday service on its own yet.
-> It is built in the open; bug reports and ideas are welcome in
+> **Early days: everything may change until 1.0.** SoftPresenter is young. Until version 1.0,
+> anything may change without notice: how the window looks and is laid out (a redesign is
+> planned), how features work, the `sp` commands, the files it saves, and the code itself. Some
+> buttons still do less than they look like they should, so it isn't ready to run a Sunday
+> service on its own yet. It is built in the open; bug reports and ideas are welcome in
 > [Issues](https://github.com/esraell/SoftPresenter/issues).
 
 ## Why SoftPresenter

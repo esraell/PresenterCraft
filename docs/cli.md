@@ -6,7 +6,8 @@ does and what a click does are always the same.
 
 Every example on this page was run against a test copy of the app, with a small library made
 for testing (songs written for it, and the public-domain hymn Blessed Assurance); the replies
-shown are the ones it gave. Command names may still change before the first release.
+shown are the ones it gave. Until version 1.0, the commands, their words and their replies may
+change, as everything else may (see the README).
 
 - [Install](#install) and [the basics](#the-basics): names, numbers, `--json`, exit codes
 - [Trying it safely](#trying-it-safely): a test copy for agents and scripts
