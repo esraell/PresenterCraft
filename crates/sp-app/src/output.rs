@@ -447,6 +447,17 @@ fn run(
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
+        } else if capture_wanted() {
+            // Testing aid: while a picture of the output is still to be taken, keep drawing, so
+            // it is taken even where no window asks to be drawn (a quiet run's are hidden).
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(msg) => Some(msg),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    output.draw(false);
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
         } else if output.ticks() {
             // Stage screens show the time: wake at the start of each second to redraw them.
             let into_second = std::time::SystemTime::now()
@@ -1061,7 +1072,6 @@ impl Output {
     /// (SOFTPRESENTER_CAPTURE_OUTPUT_AFTER seconds, 3 if not given).
     fn capture(&mut self, frame: &Frame) {
         static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let Some(path) = std::env::var_os("SOFTPRESENTER_CAPTURE_OUTPUT") else { return };
         let after = std::env::var("SOFTPRESENTER_CAPTURE_OUTPUT_AFTER").ok().and_then(|s| s.parse().ok());
         let started = *STARTED.get_or_init(Instant::now);
@@ -1069,7 +1079,7 @@ impl Output {
         let showing = frame.slide.is_some() || frame.media.is_some();
         if started.elapsed().as_secs_f32() < after.unwrap_or(3.0)
             || !showing
-            || DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
+            || CAPTURE_DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             return;
         }
@@ -1290,6 +1300,15 @@ fn identify_marks(scene: &mut vello::Scene, color: sp_model::Rgba, strength: f32
 /// came with (the main theme, or a song's own).
 fn screen_theme(themes: &[(Uuid, Arc<Theme>)], screen: Uuid, slide_theme: &Arc<Theme>) -> Arc<Theme> {
     themes.iter().find(|(have, _)| *have == screen).map_or_else(|| slide_theme.clone(), |(_, own)| own.clone())
+}
+
+/// Testing aid: whether the picture of the output SOFTPRESENTER_CAPTURE_OUTPUT asks for is
+/// still to be taken.
+static CAPTURE_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn capture_wanted() -> bool {
+    std::env::var_os("SOFTPRESENTER_CAPTURE_OUTPUT").is_some()
+        && !CAPTURE_DONE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]

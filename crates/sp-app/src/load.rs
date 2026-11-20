@@ -162,6 +162,13 @@ pub fn import_file(path: &Path) -> Result<Presentation, String> {
             "{name} holds many songs: import it with File › Import Songs… or by dropping it on the window."
         ));
     }
+    // Only the kinds of file songs come in: a sound, a picture or anything else is not read as
+    // words.
+    if !is_importable(path) && !is_song_file(path) {
+        return Err(format!(
+            "{name} isn't a kind of file songs come in (text, lyric, ChordPro, rich text, Word, .pro or a SoftPresenter song)."
+        ));
+    }
     let pro = has_extension(path, PRO_ENDING);
     let largest = if pro { LARGEST_PRO_FILE as u64 } else { LARGEST_SONG_FILE };
     if size > largest {
@@ -179,12 +186,23 @@ pub fn import_file(path: &Path) -> Result<Presentation, String> {
         } else {
             decode_text(&read()?)
         };
+        if !looks_like_text(&text) {
+            return Err(format!("{name} doesn't read as text (is it the right file?)."));
+        }
         import_song_text(&title, &text)
     };
     if song.slide_count() == 0 {
         return Err(format!("{name} has no words in it."));
     }
     Ok(song)
+}
+
+/// Whether decoded words look like text and not a binary file read as letters: almost no
+/// control characters besides line breaks and tabs.
+pub fn looks_like_text(text: &str) -> bool {
+    let total = text.chars().count().max(1);
+    let control = text.chars().filter(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t')).count();
+    control * 100 <= total
 }
 
 /// The words of a Word or OpenDocument file, from macOS's own converter
@@ -334,6 +352,22 @@ fn load_one(path: &Path, songs: &mut Vec<Loaded>, problems: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_sound_or_a_binary_file_is_not_imported_as_a_song() {
+        let folder = std::env::temp_dir().join(format!("softpresenter-binary-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let sound = folder.join("Welcome.m4a");
+        std::fs::write(&sound, [0u8, 0, 0, 0x20, b'f', b't', b'y', b'p', 0, 1, 2, 3, 4, 5]).unwrap();
+        assert!(import_file(&sound).unwrap_err().contains("isn't a kind of file songs come in"));
+        let disguised = folder.join("Welcome.txt");
+        let bytes: Vec<u8> = (0..400u32).map(|n| (n % 32) as u8).collect();
+        std::fs::write(&disguised, bytes).unwrap();
+        assert!(import_file(&disguised).unwrap_err().contains("doesn't read as text"));
+        assert!(looks_like_text("Amazing grace\nHow sweet the sound\n"));
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
     use sp_model::{Role, parse_song_text};
 
     use super::*;

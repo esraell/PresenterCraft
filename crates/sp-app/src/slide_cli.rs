@@ -159,8 +159,19 @@ impl crate::App {
         let frame = target.frame.unwrap_or(placed);
         let song = presentation.with_slide(index, changed).ok_or("No such slide.")?;
         self.change_song(at, song);
+        // Said, though not refused: a box partly or wholly off the slide.
+        let (slide_w, slide_h) = (sp_model::SLIDE_WIDTH, sp_model::SLIDE_HEIGHT);
+        let outside = frame.x + frame.w <= 0.0 || frame.y + frame.h <= 0.0 || frame.x >= slide_w || frame.y >= slide_h;
+        let partly = frame.x < 0.0 || frame.y < 0.0 || frame.x + frame.w > slide_w || frame.y + frame.h > slide_h;
+        let warning = if outside {
+            format!(" It is off the slide ({slide_w:.0} x {slide_h:.0}), so it won't show.")
+        } else if partly {
+            format!(" Part of it is off the slide ({slide_w:.0} x {slide_h:.0}).")
+        } else {
+            String::new()
+        };
         Ok(Reply::done(format!(
-            "{}, slide {}: {name} at x={:.0} y={:.0} w={:.0} h={:.0}.",
+            "{}, slide {}: {name} at x={:.0} y={:.0} w={:.0} h={:.0}.{warning}",
             presentation.title,
             index + 1,
             frame.x,
@@ -188,6 +199,9 @@ impl crate::App {
         let bytes = std::fs::read(file).map_err(|e| format!("Could not read {file}: {e}"))?;
         let text = sp_model::decode_text(&bytes);
         let song = presentation.reflowed(&text);
+        if song.slide_count() == 0 {
+            return Err(format!("{file} has no words in it; {} is unchanged.", presentation.title));
+        }
         let count = song.slide_count();
         self.change_song(at, song);
         Ok(Reply::done(format!("{} now has the words from {file}: {count} slides.", presentation.title)))
@@ -224,18 +238,21 @@ const SLIDE_USAGE: &str = "slide SONG N [--json], slide text SONG N [OBJECT] WOR
 /// The settings `slide style` takes.
 pub const STYLE_KEYS: &str = "\
 Settings for slide style (key=value; key=reset goes back to the theme's; reset alone, all of them):
-  font=NAME            size=NUMBER          weight=NUMBER|light|regular|semibold|bold
-  italic=on|off        underline=on|off     strike=on|off        shadow=on|off
-  color=#RRGGBB[AA]    outline=NUMBER       outline_color=#RRGGBB[AA]
+  font=NAME            size=1-1000          weight=100-1000|light|regular|medium|semibold|bold|heavy
+  italic=on|off        underline=on|off     strike=on|off        shadow=on|off   (yes|no too)
+  color=#RRGGBB[AA]    outline=0-100        outline_color=#RRGGBB[AA]
   align=left|center|right|justify           valign=top|middle|bottom
   caps=none|all_caps|small_caps|title_case|start_case
   scaling=none|text_down|text_up|text_up_or_down|container_up_or_down
   line_transform=none|remove_line_returns|line_returns_as_slashes
-  line_height=NUMBER   letter_spacing=NUMBER   paragraph_spacing=NUMBER   baseline=NUMBER
+  line_height=0.1-10   letter_spacing=-50-200  paragraph_spacing=0-500   baseline=-500-500
 ";
 
 /// A slide by its number (from 1).
 fn slide_number(typed: &str, count: usize) -> Result<usize, String> {
+    if count == 0 {
+        return Err("That song has no slides.".to_owned());
+    }
     match typed.trim().parse::<usize>() {
         Ok(n) if n >= 1 && n <= count => Ok(n - 1),
         _ => Err(format!("Slide numbers go from 1 to {count}.")),
@@ -380,12 +397,27 @@ pub fn apply_settings(style: &mut TextStyle, settings: &[String]) -> Result<Vec<
                             number.parse::<u16>().map_err(|_| format!("weight is a number or bold, not {value}."))?
                         }
                     };
+                    if !(100..=1000).contains(&weight) {
+                        return Err(format!("weight goes from 100 to 1000, not {value}."));
+                    }
                     serde_json::json!(weight)
                 }
                 "size" | "outline_width" | "line_height" | "letter_spacing" | "paragraph_spacing" | "baseline" => {
                     let number = value.parse::<f32>().map_err(|_| format!("{key} is a number, not {value}."))?;
+                    let (low, high) = match field {
+                        "size" => (1.0, 1000.0),
+                        "outline_width" => (0.0, 100.0),
+                        "line_height" => (0.1, 10.0),
+                        "letter_spacing" => (-50.0, 200.0),
+                        "paragraph_spacing" => (0.0, 500.0),
+                        _ => (-500.0, 500.0),
+                    };
+                    if !(low..=high).contains(&number) {
+                        return Err(format!("{key} goes from {low} to {high}, not {value}."));
+                    }
                     serde_json::json!(number)
                 }
+                "font_family" if value.is_empty() => return Err("font needs a name (or font=reset).".to_owned()),
                 "font_family" => serde_json::json!(value),
                 // A choice among names: written as the theme files write them.
                 _ => serde_json::json!(value.to_lowercase().replace([' ', '-'], "_")),
@@ -416,8 +448,11 @@ pub fn set_frame(mut frame: SlideRect, settings: &[String]) -> Result<SlideRect,
         match key.trim().to_lowercase().as_str() {
             "x" => frame.x = number,
             "y" => frame.y = number,
-            "w" | "width" => frame.w = number.max(1.0),
-            "h" | "height" => frame.h = number.max(1.0),
+            "w" | "width" | "h" | "height" if number <= 0.0 => {
+                return Err(format!("{key} must be more than 0, not {value}."));
+            }
+            "w" | "width" => frame.w = number,
+            "h" | "height" => frame.h = number,
             other => return Err(format!("{other} isn't x, y, w or h.")),
         }
     }
@@ -541,6 +576,11 @@ mod tests {
         assert!(apply_settings(&mut style, &["sise=90".into()]).unwrap_err().contains("sise"));
         assert!(apply_settings(&mut style, &["align=sideways".into()]).is_err());
         assert!(apply_settings(&mut style, &["color=orange".into()]).unwrap_err().contains("colour"));
+        assert!(apply_settings(&mut style, &["size=-5".into()]).unwrap_err().contains("from 1 to 1000"));
+        assert!(apply_settings(&mut style, &["size=99999".into()]).is_err());
+        assert!(apply_settings(&mut style, &["outline=-1".into()]).is_err());
+        assert!(apply_settings(&mut style, &["font=".into()]).is_err());
+        assert!(apply_settings(&mut style, &["weight=5".into()]).is_err());
         assert_eq!(style, TextStyle::default());
     }
 
@@ -553,5 +593,7 @@ mod tests {
         let moved = set_frame(frame, &["x=10".into(), "h=50".into()]).unwrap();
         assert_eq!((moved.x, moved.y, moved.w, moved.h), (10.0, 0.0, 100.0, 50.0));
         assert!(set_frame(frame, &["z=1".into()]).is_err());
+        assert!(set_frame(frame, &["w=0".into()]).is_err());
+        assert!(set_frame(frame, &["h=-3".into()]).is_err());
     }
 }

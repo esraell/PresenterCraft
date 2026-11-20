@@ -1899,14 +1899,25 @@ impl App {
             running.home_window.request_redraw();
             return;
         }
+        let _ = self.add_media_file(path);
+    }
+
+    /// Puts a picture or video in the media bin (and in the media playlist shown, if any).
+    /// Ok(true) when it was added, Ok(false) when it was in the bin already; the error says
+    /// why it couldn't be.
+    fn add_media_file(&mut self, path: &std::path::Path) -> Result<bool, String> {
         // A file already in the bin isn't added twice; it joins the playlist shown, if any.
         let already = self.show.media().iter().any(|item| item.path == path);
         let started = Instant::now();
         let result = if already { Ok(None) } else { media::load_picture(path).map(Some) };
         let Some(running) = self.running.as_mut() else {
-            return;
+            return Err("The window isn't open.".to_owned());
         };
         running.home_state.drop_hover = false;
+        let outcome = match &result {
+            Ok(loaded) => Ok(loaded.is_some()),
+            Err(problem) => Err(problem.clone()),
+        };
         match result {
             Ok(loaded) => {
                 if let Some(picture) = loaded {
@@ -1937,6 +1948,7 @@ impl App {
         if let Some(running) = self.running.as_mut() {
             running.home_window.request_redraw();
         }
+        outcome
     }
 
     /// Remembers what is in the media bin, how each item is shown, and the media playlists.
@@ -4168,7 +4180,16 @@ impl App {
                     // A deleted song can't be brought back by Undo, which would save it again.
                     self.history.forget(index);
                     if let Some(running) = self.running.as_mut() {
-                        running.home_state.removed_songs.push(index);
+                        let state = &mut running.home_state;
+                        state.removed_songs.push(index);
+                        // Nor is it in any library any more.
+                        if let Some(key) = state.song_keys.get(index).cloned() {
+                            for library in &mut state.libraries {
+                                let before = library.songs.len();
+                                library.songs.retain(|have| *have != key);
+                                state.libraries_changed |= library.songs.len() != before;
+                            }
+                        }
                     }
                     // Another song is shown in its place.
                     let removed = self.running.as_ref().map(|r| r.home_state.removed_songs.clone()).unwrap_or_default();
@@ -5126,8 +5147,15 @@ fn main() -> ExitCode {
                 }
             };
         }
-        Some(first) if control::is_command(first) && !std::path::Path::new(first).exists() => {
+        // A command always wins over a file of the same name (open that as ./name); one
+        // after options, such as `sp --json status`, is a command too.
+        _ if args.iter().find(|word| !word.starts_with('-')).is_some_and(|word| control::is_command(word)) => {
             return control::run_client(args);
+        }
+        // --json with no command after it.
+        _ if args.iter().any(|word| word == "--json") => {
+            eprintln!("sp: --json goes with a command, such as sp status --json. See: sp help");
+            return ExitCode::from(2);
         }
         // A first word that is neither a command nor a file to open is a mistake, said so,
         // rather than handed to the app as a file it can't read.

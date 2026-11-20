@@ -144,7 +144,11 @@ fn answer(stream: std::os::unix::net::UnixStream, deliver: &impl Fn(Incoming)) {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let mut line = String::new();
     let read = BufReader::new((&stream).take(MAX_REQUEST)).read_line(&mut line);
+    let too_long = line.len() as u64 >= MAX_REQUEST && !line.ends_with('\n');
     let reply = match read.map_err(|e| e.to_string()).and_then(|_| {
+        if too_long {
+            return Err(format!("A command may be at most {} KB.", MAX_REQUEST / 1024));
+        }
         serde_json::from_str::<Request>(line.trim())
             .map_err(|e| format!("Not a request SoftPresenter understands: {e}"))
     }) {
@@ -170,8 +174,15 @@ fn answer(stream: std::os::unix::net::UnixStream, deliver: &impl Fn(Incoming)) {
 pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     let json = args.iter().any(|a| a == "--json");
     let args = with_full_paths(args.into_iter().filter(|a| a != "--json").collect());
-    let reply = send(&args);
-    let reply = reply.unwrap_or_else(Reply::failed);
+    // Help needs no app: it is printed here.
+    let reply = if args.first().is_none_or(|w| w.eq_ignore_ascii_case("help")) {
+        Reply::done(HELP.trim_end())
+    } else {
+        send(&args).unwrap_or_else(Reply::failed)
+    };
+    // A command that did what it was asked always says so.
+    let reply =
+        if reply.ok && reply.text.trim().is_empty() { Reply { text: "Done.".to_owned(), ..reply } } else { reply };
     if json {
         println!("{}", serde_json::to_string_pretty(&reply).unwrap_or_default());
     } else if reply.ok {
@@ -186,8 +197,9 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
 /// `song new` is sent as a full path. Only those commands: elsewhere a word that happens to match a file
 /// in the folder (a song called "notes") is meant as words.
 fn with_full_paths(args: Vec<String>) -> Vec<String> {
-    let names_files = args.first().is_some_and(|w| w.eq_ignore_ascii_case("song"))
-        && args.get(1).is_some_and(|w| ["import", "new", "text"].iter().any(|word| w.eq_ignore_ascii_case(word)));
+    let second = |words: &[&str]| args.get(1).is_some_and(|w| words.iter().any(|word| w.eq_ignore_ascii_case(word)));
+    let first = |word: &str| args.first().is_some_and(|w| w.eq_ignore_ascii_case(word));
+    let names_files = (first("song") && second(&["import", "new", "text"])) || (first("media") && second(&["add"]));
     if !names_files {
         return args;
     }
@@ -204,6 +216,14 @@ fn with_full_paths(args: Vec<String>) -> Vec<String> {
 
 #[cfg(unix)]
 fn send(args: &[String]) -> Result<Reply, String> {
+    let probe = serde_json::to_string(&Request { v: PROTOCOL, args: args.to_vec() }).map_err(|e| e.to_string())?;
+    if probe.len() as u64 >= MAX_REQUEST {
+        return Err(format!(
+            "That command is {} KB; one may be at most {} KB. Give long words in a file (song text SONG FILE).",
+            probe.len() / 1024,
+            MAX_REQUEST / 1024
+        ));
+    }
     let path = socket_path().ok_or("Could not find where the control socket is.")?;
     let mut stream = std::os::unix::net::UnixStream::connect(&path).map_err(|_| {
         "SoftPresenter isn't running (or isn't listening for commands). Open it, then try again.".to_owned()
@@ -386,13 +406,15 @@ Songs, libraries and playlists
   libraries                    the libraries, with how many songs each has
   library open NAME | all      show a library's songs, or all songs
   song delete SONG --yes
+  playlist open NAME
+  playlist add SONG [to PLAYLIST]
   song text SONG [FILE]        the song as song text, or its words replaced from a file (its
                                slides keep their looks, labels and notes)
 
 Changing a slide (each change is saved, can be undone, and shows on screen at once)
   slide SONG N [--json]        the slide's objects: words, place and look (* = the slide's own)
   slide text SONG N [OBJECT] WORDS
-                               an object's words (\n starts a new line); OBJECT is a number,
+                               an object's words (\\n starts a new line); OBJECT is a number,
                                name or role, the main text if left out
   slide style SONG N|all [OBJECT] key=value…
                                an object's look: size=90 font=… weight=bold italic=on
@@ -402,8 +424,6 @@ Changing a slide (each change is saved, can be undone, and shows on screen at on
                                where an object sits, in the slide's pixels (reset: the theme's)
 
   Put a song name with spaces in quotes: slide style \"Blessed Assurance\" all size=90
-  playlist open NAME
-  playlist add SONG [PLAYLIST]
 
 Everything on the menu bar
   menu                         list the menu items
@@ -419,8 +439,16 @@ fn find(kind: &str, names: &[String], typed: &str) -> Result<usize, String> {
     if wanted.is_empty() {
         return Err(format!("Which {kind}?"));
     }
-    if let Some(at) = names.iter().position(|name| name.to_lowercase() == wanted) {
-        return Ok(at);
+    let exact: Vec<usize> = (0..names.len()).filter(|at| names[*at].to_lowercase() == wanted).collect();
+    match exact.as_slice() {
+        [one] => return Ok(*one),
+        [] => {}
+        many => {
+            return Err(format!(
+                "Several {kind}s are called \u{201c}{typed}\u{201d}: {}. Give its number instead.",
+                many.iter().map(|at| format!("{} ({})", names[*at], at + 1)).collect::<Vec<_>>().join(", ")
+            ));
+        }
     }
     if let Ok(number) = wanted.parse::<usize>()
         && (1..=names.len()).contains(&number)
@@ -433,7 +461,7 @@ fn find(kind: &str, names: &[String], typed: &str) -> Result<usize, String> {
         [] => Err(format!("No {kind} called \u{201c}{typed}\u{201d}.")),
         many => Err(format!(
             "\u{201c}{typed}\u{201d} fits several {kind}s: {}. Type more of the name, or its number.",
-            many.iter().map(|at| names[*at].as_str()).collect::<Vec<_>>().join(", ")
+            many.iter().map(|at| format!("{} ({})", names[*at], at + 1)).collect::<Vec<_>>().join(", ")
         )),
     }
 }
@@ -669,6 +697,9 @@ impl crate::App {
         };
         let at = self.find_song(&song_words)?;
         let song = self.show.presentations().get(at).ok_or("That song is gone.")?.clone();
+        if song.slide_count() == 0 {
+            return Err(format!("{} has no slides.", song.title));
+        }
         let slide = match slide {
             Some(number) if (1..=song.slide_count()).contains(&number) => number - 1,
             Some(number) => {
@@ -874,11 +905,36 @@ impl crate::App {
                         return Err(format!("There is no file {}.", file.display()));
                     }
                 }
-                let before = self.show.media().len();
+                // Pictures and videos only: songs are imported with song import. Each file not
+                // added says why.
+                let mut added = Vec::new();
+                let mut problems = Vec::new();
                 for file in &files {
-                    self.add_dropped_file(Path::new(file));
+                    let name = file
+                        .file_name()
+                        .map_or_else(|| file.display().to_string(), |n| n.to_string_lossy().into_owned());
+                    if !crate::media::is_media(file) {
+                        problems.push(format!("{name} isn't a picture or video (songs come in with song import)."));
+                        continue;
+                    }
+                    match self.add_media_file(file) {
+                        Ok(true) => added.push(name),
+                        Ok(false) => problems.push(format!("{name} is already in the media bin.")),
+                        Err(problem) => problems.push(format!("{name}: {problem}")),
+                    }
                 }
-                Ok(Reply::done(format!("Added {} to the media bin.", self.show.media().len() - before)))
+                let data = serde_json::json!({"added": added, "problems": problems});
+                if added.is_empty() {
+                    return Err(problems.join("\n"));
+                }
+                let mut text = match added.as_slice() {
+                    [one] => format!("Added {one} to the media bin."),
+                    many => format!("Added {} to the media bin: {}.", many.len(), many.join(", ")),
+                };
+                for problem in &problems {
+                    text.push_str(&format!("\n{problem}"));
+                }
+                Ok(Reply::with(text, data))
             }
             Some("delete") => {
                 let yes = args.iter().any(|w| w == "--yes");
@@ -909,6 +965,16 @@ impl crate::App {
             Some("play") => {
                 let names: Vec<String> = lists.iter().map(|(_, name)| name.clone()).collect();
                 let at = find("media playlist", &names, &rest(args, 2))?;
+                let has_items = self.running.as_ref().is_some_and(|r| {
+                    r.home_state
+                        .media_playlists
+                        .iter()
+                        .find(|p| p.id == lists[at].0)
+                        .is_some_and(|p| self.show.media().iter().any(|item| p.has(&item.path)))
+                });
+                if !has_items {
+                    return Err(format!("The media playlist {} has nothing in it to play.", names[at]));
+                }
                 self.play_media_playlist(lists[at].0);
                 Ok(Reply::done(format!("Playing the media playlist {}.", names[at])))
             }
@@ -967,7 +1033,12 @@ impl crate::App {
         };
         let at = find("timer", &names, &rest(args, 2))?;
         self.run_action(sp_model::ShowAction::Timer { id: ids[at], act });
-        Ok(Reply::done(format!("{} the timer {}.", act.name(), names[at])))
+        let done = match act {
+            sp_model::TimerDo::Start => "Started",
+            sp_model::TimerDo::Stop => "Stopped",
+            sp_model::TimerDo::Reset => "Reset",
+        };
+        Ok(Reply::done(format!("{done} the timer {}.", names[at])))
     }
 
     fn ctl_macro(&mut self, args: &[String]) -> Result<Reply, String> {
@@ -1022,7 +1093,10 @@ impl crate::App {
             Some("stop") => AudioRequest::Stop,
             Some("volume") => {
                 let level: f32 = args.get(2).and_then(|w| w.parse().ok()).ok_or("audio volume 0-100")?;
-                AudioRequest::Volume((level / 100.0).clamp(0.0, 1.0))
+                if !(0.0..=100.0).contains(&level) {
+                    return Err(format!("The volume goes from 0 to 100, not {level}."));
+                }
+                AudioRequest::Volume(level / 100.0)
             }
             _ => {
                 let names: Vec<String> = tracks.into_iter().map(|(_, name)| name).collect();
@@ -1041,6 +1115,24 @@ impl crate::App {
             return Err("Which passage? For example: bible John 3:16-18".to_owned());
         }
         let live = self.show.live().map(|at| at.presentation);
+        // A chapter or verse the book doesn't have is said, rather than read as the last one
+        // (as typing in Scripture Lookup reads it).
+        if let Some(running) = self.running.as_mut() {
+            let page = &mut running.home_state.bible;
+            if let Some(bible) = page.lead().and_then(|lead| page.shelf.get(lead).ok())
+                && let Ok(range) = sp_bible::parse_reference_in(&reference, &bible.info.language)
+            {
+                let book = bible.book_name(range.start.book);
+                let chapters = bible.chapter_count(range.start.book);
+                if chapters > 0 && (range.start.chapter > chapters || range.end.chapter > chapters) {
+                    return Err(format!("{book} has {chapters} chapters."));
+                }
+                let verses = bible.last_verse(range.start.book, range.start.chapter);
+                if verses > 0 && range.start.verse != sp_bible::LAST && range.start.verse > verses {
+                    return Err(format!("{book} {} has {verses} verses.", range.start.chapter));
+                }
+            }
+        }
         let (found, message) = {
             let running = self.running.as_mut().ok_or("The app isn't ready.")?;
             let state = &mut running.home_state;
@@ -1063,6 +1155,32 @@ impl crate::App {
     }
 
     fn ctl_song(&mut self, args: &[String]) -> Result<Reply, String> {
+        // `--library NAME` (or `--library none`): the library new and imported songs go into,
+        // instead of the one shown in the window.
+        if let Some(at) = args.iter().position(|w| w == "--library") {
+            let name = args.get(at + 1).cloned().ok_or("--library NAME, or --library none")?;
+            let mut rest: Vec<String> = args.to_vec();
+            rest.drain(at..=at + 1);
+            let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+            let wanted = if name.eq_ignore_ascii_case("none") {
+                None
+            } else {
+                let names: Vec<String> = state.libraries.iter().map(|l| l.name.clone()).collect();
+                Some(state.libraries[find("library", &names, &name)?].id)
+            };
+            let shown = std::mem::replace(&mut state.library_shown, wanted);
+            let result = self.ctl_song(&rest);
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.library_shown = shown;
+            }
+            return result;
+        }
+        // Where new songs go: the library shown, said in the reply.
+        let into = self.running.as_ref().and_then(|r| {
+            let state = &r.home_state;
+            state.library_shown.and_then(|id| state.libraries.iter().find(|l| l.id == id)).map(|l| l.name.clone())
+        });
+        let into_words = into.map_or_else(String::new, |name| format!(" into the library {name}"));
         match args.get(1).map(|w| w.to_lowercase()).as_deref() {
             Some("new") => {
                 // `song new TITLE [FILE.txt]`: the file is the last word when it names a file.
@@ -1070,6 +1188,12 @@ impl crate::App {
                 let (title_words, file) = match words.last() {
                     Some(last) if words.len() > 1 && Path::new(last).is_file() => {
                         (&words[..words.len() - 1], Some(last))
+                    }
+                    // A last word that names a file that isn't there is a mistake, not the title.
+                    Some(last)
+                        if words.len() > 1 && (last.contains('/') || crate::load::is_importable(Path::new(last))) =>
+                    {
+                        return Err(format!("There is no file {last}."));
                     }
                     _ => (words, None),
                 };
@@ -1085,8 +1209,17 @@ impl crate::App {
                 };
                 let request = crate::home::NewSong { title: title.trim().to_owned(), theme: None, words, focus: false };
                 self.with_state(|state| state.new_song_request = Some(request));
+                let same =
+                    self.listed_songs().iter().filter(|(_, have)| have.eq_ignore_ascii_case(title.trim())).count();
                 self.handle_songs();
-                Ok(Reply::done(format!("Made the song {}.", title.trim())))
+                let mut text = format!("Made the song {}{into_words}.", title.trim());
+                if same > 0 {
+                    text.push_str(&format!(
+                        " There was already a song called {}; give its number (sp songs) to tell them apart.",
+                        title.trim()
+                    ));
+                }
+                Ok(Reply::done(text))
             }
             Some("delete") => {
                 let yes = args.iter().any(|w| w == "--yes");
@@ -1130,10 +1263,12 @@ impl crate::App {
                 // The text names the first few; the data lists them all.
                 const NAMED: usize = 10;
                 let mut text = match imported.as_slice() {
-                    [one] => format!("Imported {one}."),
-                    many if many.len() <= NAMED => format!("Imported {} songs: {}.", many.len(), many.join(", ")),
+                    [one] => format!("Imported {one}{into_words}."),
+                    many if many.len() <= NAMED => {
+                        format!("Imported {} songs{into_words}: {}.", many.len(), many.join(", "))
+                    }
                     many => format!(
-                        "Imported {} songs: {}, and {} more.",
+                        "Imported {} songs{into_words}: {}, and {} more.",
                         many.len(),
                         many[..NAMED].join(", "),
                         many.len() - NAMED
@@ -1175,9 +1310,7 @@ impl crate::App {
                     || label.trim_end_matches('…').eq_ignore_ascii_case(typed.trim_end_matches('…'))
             })
             .map(|(action, _)| *action)
-            .ok_or_else(|| {
-                format!("No menu item called \u{201c}{typed}\u{201d}. softpresenter ctl menu lists them.")
-            })?;
+            .ok_or_else(|| format!("No menu item called \u{201c}{typed}\u{201d}. sp menu lists them."))?;
         self.menu_action(el, action);
         Ok(Reply::done(format!("Chose {} from the menu.", crate::menubar::id_of(action))))
     }
