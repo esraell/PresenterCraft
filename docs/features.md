@@ -89,8 +89,9 @@ feature changes, this page changes in the same commit.
   WMV, FLV, MPEG, TS and others, or an MP4 the Mac's player can't decode, such as AV1 on an older
   Mac) through FFmpeg, played as it is, never converted first. FFmpeg must be installed for
   those for now; a release will include it. Under the Program preview, a video on screen has
-  Play or Pause and Start Over buttons that say what they do, how far in it is, a bar to click
-  or drag through it, and two ticks, Loop when it ends and Sound. An item's
+  a bar to click or drag through it, with the time gone and its length under it, and its
+  controls as icons: Loop at the left (green while on), Start Over and a round Play or Pause in
+  the middle, and Sound at the right (a speaker, struck through while muted). An item's
   right-click menu sets its Scaling (Scale to Fill, Scale to Fit, Stretch to Fill), whether a
   video loops, and the media playlists it is in; the menu beside MEDIA shows All Media or one
   playlist, and makes, renames and deletes them.

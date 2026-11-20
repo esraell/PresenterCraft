@@ -53,11 +53,16 @@ pub enum Icon {
     Options,
     Sidebar,
     Trash,
+    /// Two arrows chasing each other round: plays again from the start.
+    Loop,
+    /// A speaker with sound coming from it, and the same speaker struck through.
+    Sound,
+    Muted,
 }
 
 /// Every icon, so a test can draw them all.
 #[cfg(test)]
-pub const ALL: [Icon; 46] = [
+pub const ALL: [Icon; 49] = [
     Icon::Search,
     Icon::Theme,
     Icon::Play,
@@ -104,6 +109,9 @@ pub const ALL: [Icon; 46] = [
     Icon::Options,
     Icon::Sidebar,
     Icon::Trash,
+    Icon::Loop,
+    Icon::Sound,
+    Icon::Muted,
 ];
 
 /// Draws inside a square using coordinates from 0 to 1.
@@ -378,6 +386,22 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
             p.closed(&[(0.22, 0.24), (0.28, 0.88), (0.72, 0.88), (0.78, 0.24)]);
             p.line(&[(0.42, 0.38), (0.43, 0.74)]);
             p.line(&[(0.58, 0.38), (0.57, 0.74)]);
+        }
+        Icon::Loop => {
+            p.line(&[(0.16, 0.58), (0.16, 0.4), (0.28, 0.28), (0.8, 0.28)]);
+            p.line(&[(0.68, 0.16), (0.8, 0.28), (0.68, 0.4)]);
+            p.line(&[(0.84, 0.42), (0.84, 0.6), (0.72, 0.72), (0.2, 0.72)]);
+            p.line(&[(0.32, 0.6), (0.2, 0.72), (0.32, 0.84)]);
+        }
+        Icon::Sound | Icon::Muted => {
+            p.filled(&[(0.1, 0.38), (0.28, 0.38), (0.5, 0.18), (0.5, 0.82), (0.28, 0.62), (0.1, 0.62)]);
+            if icon == Icon::Sound {
+                p.arc(0.5, 0.5, 0.18, -0.12, 0.12);
+                p.arc(0.5, 0.5, 0.33, -0.13, 0.13);
+            } else {
+                p.line(&[(0.64, 0.36), (0.9, 0.64)]);
+                p.line(&[(0.9, 0.36), (0.64, 0.64)]);
+            }
         }
     }
 }
