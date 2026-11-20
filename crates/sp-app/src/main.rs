@@ -4693,6 +4693,10 @@ impl ApplicationHandler<AppEvent> for App {
                 let drawing = Instant::now();
                 let commands = self.draw_home();
                 self.home_timing.add(drawing.elapsed());
+                // A command chosen from a right-click menu in the window, done as the menu bar's.
+                if let Some(action) = self.running.as_mut().and_then(|r| r.home_state.menu_asked.take()) {
+                    self.menu_action(el, action);
+                }
                 self.home_timing.report_each_minute("window", || {
                     applog::memory_mb().map_or_else(String::new, |mb| format!("{mb} MB resident"))
                 });

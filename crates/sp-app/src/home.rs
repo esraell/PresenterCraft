@@ -221,6 +221,9 @@ pub struct HomeState {
     pub removed_songs: Vec<usize>,
     /// A change to the selected objects asked for from the menu bar.
     pub edit_request: Option<EditRequest>,
+    /// A menu bar command chosen from a right-click menu in the window, carried out as if it
+    /// had been chosen from the menu bar.
+    pub menu_asked: Option<crate::menubar::Action>,
     /// True when a picture is to be chosen for the slide being edited; the picture chosen, copied
     /// into the Images folder, waiting to be put on the slide.
     pub picture_request: bool,
@@ -859,6 +862,7 @@ impl Default for HomeState {
             media_playing: None,
             copyright_request: None,
             edit_request: None,
+            menu_asked: None,
             picture_request: false,
             theme_picture_request: false,
             picture_to_add: Vec::new(),
@@ -1383,6 +1387,9 @@ fn edit_view(
             EditRequest::DeselectAll => draft.select_only(None),
         }
     }
+    // Whether a box was selected when Delete was pressed: deleting it leaves nothing selected,
+    // and the same key press must not then go on to delete the template behind it.
+    let had_selection = state.editing.as_ref().is_some_and(|draft| draft.selected.is_some());
     if let Some(draft) = state.editing.as_mut() {
         if undo && !typing {
             draft.undo();
@@ -1400,6 +1407,7 @@ fn edit_view(
     // Delete with no box selected, in the Theme Editor, is for the template itself.
     let delete_template_key = delete
         && theme_mode
+        && !had_selection
         && state.editing.as_ref().is_some_and(|draft| draft.selected.is_none())
         && state.renaming_template.is_none()
         && state.confirm_delete_template.is_none()
@@ -2168,6 +2176,56 @@ fn edit_view(
                     let keep_shape = ui.input(|input| input.modifiers.shift);
                     draft.drag_to(point, keep_shape, !free);
                 }
+                // A right-click on an object selects it (keeping the selection when it is in
+                // it), so what the menu does is done to what was clicked, not to the slide or
+                // template behind it.
+                if response.secondary_clicked() {
+                    let hit = crate::editor::object_at(&draft.slide, theme, point);
+                    if !hit.is_some_and(|id| draft.is_selected(id)) {
+                        draft.select_only(hit);
+                    }
+                }
+            }
+            let any = draft.selected.is_some();
+            let mut asked = None;
+            response.context_menu(|ui| {
+                use crate::menubar::Action as A;
+                let mut item = |ui: &mut egui::Ui, label: &str, action: A| {
+                    if ui.button(label).clicked() {
+                        asked = Some(action);
+                        ui.close();
+                    }
+                };
+                if any {
+                    item(ui, "Cut", A::Cut);
+                    item(ui, "Copy", A::Copy);
+                    item(ui, "Paste", A::Paste);
+                    item(ui, "Duplicate", A::Duplicate);
+                    item(ui, "Delete", A::Delete);
+                    ui.separator();
+                    item(ui, "Bring to Front", A::BringToFront);
+                    item(ui, "Bring Forward", A::BringForward);
+                    item(ui, "Send Backward", A::SendBackward);
+                    item(ui, "Send to Back", A::SendToBack);
+                    ui.separator();
+                    ui.menu_button("Align to Slide", |ui| {
+                        for (label, edge) in
+                            [("Left", 0), ("Centre", 1), ("Right", 2), ("Top", 3), ("Middle", 4), ("Bottom", 5)]
+                        {
+                            item(ui, label, A::AlignObjects(edge));
+                        }
+                    });
+                    item(ui, "Copy Style", A::CopyStyle);
+                    item(ui, "Paste Style", A::PasteStyle);
+                    item(ui, "Lock", A::Lock);
+                } else {
+                    item(ui, "Paste", A::Paste);
+                    item(ui, "Select All", A::SelectAll);
+                    item(ui, "Add Text", A::InsertText);
+                }
+            });
+            if asked.is_some() {
+                state.menu_asked = asked;
             }
             if response.drag_stopped() || response.clicked() {
                 draft.release();
@@ -5615,6 +5673,24 @@ mod tests {
 
     fn three_songs() -> Show {
         Show::new(["One", "Two", "Three"].iter().map(|title| Arc::new(parse_song_text(title, "Words\n"))).collect())
+    }
+
+    #[test]
+    fn delete_with_a_box_selected_in_the_theme_editor_deletes_the_box_not_the_template() {
+        let (ctx, show) = (egui::Context::default(), three_songs());
+        let theme = Theme::builtin();
+        let slide = theme.templates[0].as_slide();
+        let boxes = slide.objects.len();
+        let mut draft = EditDraft::of_slide(slide, 0);
+        draft.select_only(draft.slide.objects.first().map(|o| o.id));
+        let mut state =
+            HomeState { theme_edit: Some(ThemeEdit::of(0, theme)), editing: Some(draft), ..HomeState::default() };
+        frame_with(&ctx, &show, &mut state, Some(Key::Delete));
+        assert_eq!(state.confirm_delete_template, None, "the template isn't asked about");
+        assert_eq!(state.editing.as_ref().map(|d| d.slide.objects.len()), Some(boxes - 1), "the box is gone");
+        // With nothing selected, Delete is for the template.
+        frame_with(&ctx, &show, &mut state, Some(Key::Delete));
+        assert_eq!(state.confirm_delete_template, Some(0));
     }
 
     #[test]
