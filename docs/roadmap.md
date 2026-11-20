@@ -188,14 +188,13 @@ rather than a feature, but no church on Windows can use the app without them.
 - **Importing from a church's existing presentation software**, so a library can move over in one go: songs, playlists and their media. (started: ProPresenter 7 songs and library folders, with groups, arrangements, labels, notes and copyright details; not yet playlists, pictures, videos or bundles) · M · High
 - **SongSelect inside the app.** Search, preview and import from the search panel (⌘F). May need CCLI's agreement. · L · Medium
 - **Media, placeholder and stream items in a playlist.** A countdown video, an announcement loop, a "sermon slides to come" placeholder, a cue, a video or audio stream, and hidden items. (started: playlists hold songs, saved passages and headers) · M · Medium
-- **Exporting a playlist with its songs and media.** Prepare at home, run at church. · M · Medium
 - **CCLI usage reporting.** Each song shown is logged, then exported or reported automatically. (started: CCLI song numbers and the licence number) · M · Medium
 - **Playlist templates.** Save a service's shape and start next week from it. · S–M · Medium
 - **Arrangement and key chosen per playlist item.** The same song sung differently in two services. (started: one chosen arrangement per song) · S–M · Medium
 - **Planning Center Services.** A plan becomes a playlist, its items match songs in the library, and its sequences become arrangements. · L · Medium
 - **OpenLyrics and EasyWorship import.** OpenLyrics covers OpenLP, Quelea and FreeShow, and could be SoftPresenter's open export format too. · M each · Medium
 - **OpenSong import.** (ChordPro is done) · S–M · Low
-- **Exporting a song.** As a file, a bundle with its media, text, or slide pictures. (started: song files can be copied by hand) · S–M · Low
+- **Exporting a song as text or slide pictures.** (done: song packs carry songs, or a playlist, with their themes, pictures and videos) · S · Low
 - **Printing.** Lyrics, slides and playlists, with notes (lyric sheets for the band). · M · Low
 - **Song menu extras.** Hiding an item, moving a song, copying and pasting songs between libraries, and showing a song in its library. (started: dragging to a library, and Duplicate) · S · Low
 - **Playlist menu extras and folders.** Duplicating, exporting and printing a playlist; folders for playlists and libraries in the sidebar; coloured headers. · S–M · Low

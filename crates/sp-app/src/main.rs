@@ -24,6 +24,7 @@ mod menubar;
 mod messages;
 mod output;
 mod outside;
+mod pack;
 mod props;
 mod renamed;
 mod screens;
@@ -44,10 +45,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sp_engine::{Command, Show};
-use sp_model::{MediaItem, Slide, Theme, Uuid, parse_song_text};
+use sp_model::{MediaItem, ShowAction, Slide, Theme, Uuid, parse_song_text};
 use sp_render::Layers;
 use sp_render::vello::util::RenderContext;
 use sp_render::wgpu;
+use std::collections::HashMap;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -287,8 +289,9 @@ fn action_commands(show: &Show, state: &home::HomeState, action: &sp_model::Show
             Some(show.media().iter().position(|item| item.id == *id).map(Command::ShowMedia).into_iter().collect())
         }
         ShowAction::Song { key } => {
-            // The song's first slide in its play order that is not disabled.
-            let at = state.song_keys.iter().position(|have| have == key);
+            // The song's first slide in its play order that is not disabled; found as a playlist
+            // finds it, so the two agree.
+            let at = studio::playlist_song(show, state, key);
             let first = at.and_then(|at| {
                 let song = show.presentations().get(at)?;
                 song.order().into_iter().find(|slide| song.slide(*slide).is_some_and(|(_, s)| s.enabled))
@@ -405,7 +408,19 @@ enum AppEvent {
     Control(control::Incoming),
     /// A deck of slides finished on its own thread.
     DeckDone,
+    /// A song pack was written or read on its own thread.
+    PackDone,
 }
+
+/// A song pack written or read on a thread of its own, for the app to finish.
+enum PackJob {
+    Wrote(Result<String, String>),
+    Opened { result: Box<Result<pack::Opened, String>>, same: Option<pack::Same>, library: Option<Uuid> },
+}
+
+/// A song pack is read at once (the reply waits for it) when its file is no bigger than this;
+/// a larger one, which holds videos, is read on a thread of its own.
+const PACK_READ_AT_ONCE: u64 = 64 * 1024 * 1024;
 
 /// What a theme calls its templates, in order.
 fn template_names(theme: &Theme) -> Vec<String> {
@@ -793,6 +808,9 @@ struct App {
     options: Options,
     /// Wakes the event loop from other threads (the output thread, for a new live preview).
     waker: Option<winit::event_loop::EventLoopProxy<AppEvent>>,
+    /// Song packs written or read on threads of their own report here.
+    pack_tx: std::sync::mpsc::Sender<PackJob>,
+    pack_rx: std::sync::mpsc::Receiver<PackJob>,
     /// The socket `softpresenter ctl` reaches the app through, while it listens.
     _control: Option<control::Listening>,
     show: Show,
@@ -1901,6 +1919,16 @@ impl App {
 
     /// Adds a file dropped on the window to the media bin, or says why it could not be added.
     fn add_dropped_file(&mut self, path: &std::path::Path) {
+        // A song pack: its songs and what they need come into the library.
+        if pack::is_pack(path) {
+            let library = self.running.as_ref().and_then(|r| r.home_state.library_shown);
+            let said = self.open_pack(path.to_owned(), None, library, false).unwrap_or_else(|problem| problem);
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.drop_hover = false;
+                running.home_state.notice = Some(said);
+            }
+            return;
+        }
         // A Bible file is installed rather than added as media.
         if path.extension().is_some_and(|ext| ext == "spbible" || ext == "pcbible") {
             let Some(running) = self.running.as_mut() else {
@@ -2906,6 +2934,463 @@ impl App {
         done
     }
 
+    /// The id of the song a key names (a "go to song" action's, or a playlist item's), if the
+    /// app has it.
+    fn song_id_for_key(&self, key: &str) -> Option<Uuid> {
+        let running = self.running.as_ref()?;
+        studio::playlist_song(&self.show, &running.home_state, key)
+            .and_then(|index| self.show.presentations().get(index))
+            .map(|song| song.id)
+    }
+
+    /// Plans a song pack of the songs at `indices`, or of a playlist's songs and the playlist.
+    fn plan_pack(&self, indices: &[usize], playlist: Option<usize>) -> Result<pack::Export, String> {
+        let running = self.running.as_ref().ok_or("The app isn't ready.")?;
+        let state = &running.home_state;
+        let mut indices: Vec<usize> = indices.to_vec();
+        let playlist_file = match playlist {
+            Some(at) => {
+                let list = state.services.list.get(at).ok_or("No such playlist.")?;
+                for item in &list.items {
+                    if let service::Item::Song { key, .. } = item
+                        && let Some(index) = studio::playlist_song(&self.show, state, key)
+                        && !indices.contains(&index)
+                    {
+                        indices.push(index);
+                    }
+                }
+                Some(pack::PlaylistFile { name: list.name.clone(), items: list.items.clone() })
+            }
+            None => None,
+        };
+        let songs: Vec<sp_model::Presentation> = indices
+            .iter()
+            .filter(|index| !self.bible_slots.contains(index) && !state.removed_songs.contains(index))
+            .filter_map(|index| self.show.presentations().get(*index).map(|song| (**song).clone()))
+            .collect();
+        if songs.is_empty() && playlist_file.is_none() {
+            return Err("No songs to pack.".to_owned());
+        }
+        Ok(pack::Export::plan(songs, &self.themes, playlist_file, |key| self.song_id_for_key(key)))
+    }
+
+    /// Writes a planned pack: at once when it holds no videos, else on a thread of its own (the
+    /// window says when it is done). Returns what was done, or is being done.
+    fn write_pack(&mut self, export: pack::Export, to: PathBuf) -> Result<String, String> {
+        if export.videos.is_empty() {
+            let said = export.write(&to)?;
+            applog::event("pack", &said);
+            return Ok(said);
+        }
+        let size = pack::size_words(export.video_bytes());
+        let (tx, waker) = (self.pack_tx.clone(), self.waker.clone());
+        let name = to.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        std::thread::spawn(move || {
+            let _ = tx.send(PackJob::Wrote(export.write(&to)));
+            if let Some(waker) = waker {
+                let _ = waker.send_event(AppEvent::PackDone);
+            }
+        });
+        Ok(format!("Writing {name}, with its videos ({size}); the window says when it is done."))
+    }
+
+    /// Makes a song pack from the window: asks whether to put the videos in (with their size)
+    /// and where to save it.
+    fn export_from_window(&mut self, indices: &[usize], playlist: Option<usize>) {
+        let said = match self.plan_pack(indices, playlist) {
+            Err(problem) => problem,
+            Ok(mut export) => {
+                if !export.videos.is_empty() {
+                    let size = pack::size_words(export.video_bytes());
+                    let keep = rfd::MessageDialog::new()
+                        .set_title("Export Songs")
+                        .set_description(format!(
+                            "The songs use {} ({size}). Put them in the song pack?",
+                            if export.videos.len() == 1 {
+                                "a video".to_owned()
+                            } else {
+                                format!("{} videos", export.videos.len())
+                            }
+                        ))
+                        .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+                            format!("Include Videos ({size})"),
+                            "Leave Them Out".to_owned(),
+                            "Cancel".to_owned(),
+                        ))
+                        .show();
+                    match keep {
+                        rfd::MessageDialogResult::Custom(choice) if choice.starts_with("Include") => {}
+                        rfd::MessageDialogResult::Custom(choice) if choice.starts_with("Leave") => {
+                            export.leave_out_videos()
+                        }
+                        _ => return,
+                    }
+                }
+                let name = match playlist {
+                    Some(at) => {
+                        self.running.as_ref().and_then(|r| r.home_state.services.list.get(at)).map(|l| l.name.clone())
+                    }
+                    None if export.songs.len() == 1 => export.songs.first().map(|song| song.title.clone()),
+                    None => Some("Songs".to_owned()),
+                };
+                let file =
+                    format!("{}.{}", name.unwrap_or_else(|| "Songs".to_owned()).replace(['/', ':'], "-"), pack::ENDING);
+                let Some(to) = rfd::FileDialog::new()
+                    .set_title("Export Songs")
+                    .set_file_name(file)
+                    .add_filter("Song pack", &[pack::ENDING])
+                    .save_file()
+                else {
+                    return;
+                };
+                self.write_pack(export, to).unwrap_or_else(|problem| problem)
+            }
+        };
+        if let Some(running) = self.running.as_mut() {
+            running.home_state.notice = Some(said);
+            running.home_window.request_redraw();
+        }
+    }
+
+    /// Opens a song pack: at once when it is small (and returns what came in), else on a thread
+    /// of its own (and returns that it is under way). `same` says what to do with songs the
+    /// library has already; `None` asks. Songs go into `library`, if one is named.
+    fn open_pack(
+        &mut self,
+        path: PathBuf,
+        same: Option<pack::Same>,
+        library: Option<Uuid>,
+        now: bool,
+    ) -> Result<String, String> {
+        let Some(dir) = bible_store::data_dir() else {
+            return Err("Could not find the library folder.".to_owned());
+        };
+        let staging = dir.join(format!(".opening-pack-{}", Uuid::new_v4()));
+        let small = std::fs::metadata(&path).is_ok_and(|meta| meta.len() <= PACK_READ_AT_ONCE);
+        if now || small || self.running.is_none() {
+            return match pack::open(&path, &staging) {
+                Ok(opened) => {
+                    let said = self.apply_pack(opened, same, library);
+                    applog::event("pack", said.as_ref().unwrap_or_else(|problem| problem));
+                    said
+                }
+                Err(problem) => {
+                    let _ = std::fs::remove_dir_all(&staging);
+                    applog::event("pack", &problem);
+                    Err(problem)
+                }
+            };
+        }
+        let (tx, waker) = (self.pack_tx.clone(), self.waker.clone());
+        let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        std::thread::spawn(move || {
+            let result = pack::open(&path, &staging);
+            if result.is_err() {
+                let _ = std::fs::remove_dir_all(&staging);
+            }
+            let _ = tx.send(PackJob::Opened { result: Box::new(result), same, library });
+            if let Some(waker) = waker {
+                let _ = waker.send_event(AppEvent::PackDone);
+            }
+        });
+        Ok(format!("Opening {name}; the window says when its songs are in."))
+    }
+
+    /// Finishes the song packs written or read on threads of their own since the last look.
+    fn finish_packs(&mut self) {
+        while let Ok(job) = self.pack_rx.try_recv() {
+            let said = match job {
+                PackJob::Wrote(result) => result.unwrap_or_else(|problem| problem),
+                PackJob::Opened { result, same, library } => match *result {
+                    Ok(opened) => self.apply_pack(opened, same, library).unwrap_or_else(|problem| problem),
+                    Err(problem) => problem,
+                },
+            };
+            applog::event("pack", &said);
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.notice = Some(said);
+                running.home_window.request_redraw();
+            }
+        }
+    }
+
+    /// Brings an opened pack's songs into the library, with the themes, pictures and videos
+    /// those songs need (and only those), and its playlist as a new playlist. Says what came in.
+    fn apply_pack(
+        &mut self,
+        opened: pack::Opened,
+        same: Option<pack::Same>,
+        library: Option<Uuid>,
+    ) -> Result<String, String> {
+        let Some(dir) = bible_store::data_dir() else {
+            return Err("Could not find the library folder.".to_owned());
+        };
+        let removed = self.running.as_ref().map(|r| r.home_state.removed_songs.clone()).unwrap_or_default();
+        let existing = |show: &sp_engine::Show, id: Uuid, bible: &[usize; 2]| {
+            show.presentations()
+                .iter()
+                .enumerate()
+                .position(|(at, song)| song.id == id && !bible.contains(&at) && !removed.contains(&at))
+        };
+        let already =
+            opened.songs.iter().filter(|song| existing(&self.show, song.id, &self.bible_slots).is_some()).count();
+        // Songs the library has already: as asked, else ask (once, for all of them).
+        let same = match same {
+            Some(same) => same,
+            None if already == 0 => pack::Same::Skip,
+            None => {
+                let answer = rfd::MessageDialog::new()
+                    .set_title("Import Song Pack")
+                    .set_description(format!(
+                        "{} in the pack {} already here. Replace them with the pack's, keep both, or skip them?",
+                        if already == 1 { "1 song".to_owned() } else { format!("{already} songs") },
+                        if already == 1 { "is" } else { "are" }
+                    ))
+                    .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+                        "Replace".to_owned(),
+                        "Keep Both".to_owned(),
+                        "Skip".to_owned(),
+                    ))
+                    .show();
+                match answer {
+                    rfd::MessageDialogResult::Custom(choice) if choice == "Replace" => pack::Same::Replace,
+                    rfd::MessageDialogResult::Custom(choice) if choice == "Keep Both" => pack::Same::KeepBoth,
+                    _ => pack::Same::Skip,
+                }
+            }
+        };
+        // Which songs are taken, and the new ids of copies kept beside songs already here.
+        let mut renamed: HashMap<Uuid, Uuid> = HashMap::new();
+        let mut taken = Vec::new();
+        let mut skipped = Vec::new();
+        for song in &opened.songs {
+            let here = existing(&self.show, song.id, &self.bible_slots);
+            match (here, same) {
+                (Some(_), pack::Same::Skip) => skipped.push(song.title.clone()),
+                (Some(_), pack::Same::KeepBoth) => {
+                    renamed.insert(song.id, Uuid::new_v4());
+                    taken.push((song.clone(), None));
+                }
+                (here, _) => taken.push((song.clone(), here)),
+            }
+        }
+        let remap = |key: &mut String| {
+            if let Some(new) = Uuid::parse_str(key).ok().and_then(|id| renamed.get(&id)) {
+                *key = new.to_string();
+            }
+        };
+        // What this computer has, for slide actions that point at its things.
+        let (timers, messages, props): (Vec<Uuid>, Vec<Uuid>, Vec<Uuid>) =
+            self.running.as_ref().map_or_else(Default::default, |r| {
+                let state = &r.home_state;
+                (
+                    state.timers.iter().map(|t| t.id).collect(),
+                    state.messages.iter().map(|m| m.id).collect(),
+                    state.props.iter().map(|p| p.id).collect(),
+                )
+            });
+        let media: Vec<Uuid> = self.show.media().iter().map(|item| item.id).collect();
+        let mut brought: HashMap<String, String> = HashMap::new();
+        let mut themes_in: HashMap<Uuid, Uuid> = HashMap::new();
+        let mut new_themes = 0;
+        let mut lost_actions = 0;
+        let mut added = Vec::new();
+        let mut replaced = Vec::new();
+        let mut waiting = Vec::new();
+        for (mut song, here) in taken {
+            if let Some(new) = renamed.get(&song.id) {
+                song.id = *new;
+            }
+            // No control characters from a pack reach the window, the log or a terminal.
+            song.title.retain(|c| !c.is_control());
+            pack::bring_song_files(&mut song, &opened, &dir, &mut brought);
+            for group in &mut song.groups {
+                for slide in &mut group.slides {
+                    for action in &mut slide.actions {
+                        let found = match action {
+                            ShowAction::Song { key } => {
+                                remap(key);
+                                true
+                            }
+                            ShowAction::Timer { id, .. } => timers.contains(id),
+                            ShowAction::Message { id, .. } => messages.contains(id),
+                            ShowAction::Prop { id, .. } => props.contains(id),
+                            ShowAction::Media { id } => media.contains(id),
+                            _ => true,
+                        };
+                        lost_actions += usize::from(!found);
+                    }
+                }
+            }
+            // The song's own theme comes with it, as a theme of this computer's; a song using the
+            // main theme takes on this computer's main theme.
+            song.theme = match song.theme {
+                Some(id) if themes_in.contains_key(&id) => themes_in.get(&id).copied(),
+                Some(id) => opened.themes.get(&id).map(|theme| {
+                    let same_here = self.themes.iter().any(|have| have.id == id && have.to_json() == theme.to_json());
+                    if same_here {
+                        themes_in.insert(id, id);
+                        return id;
+                    }
+                    let mut theme = theme.clone();
+                    theme.name.retain(|c| !c.is_control());
+                    pack::bring_theme_files(&mut theme, &opened, &dir, &mut brought);
+                    if self.themes.iter().any(|have| have.id == theme.id) {
+                        theme.id = Uuid::new_v4();
+                    }
+                    let base = theme.name.clone();
+                    let mut n = 2;
+                    while self.themes.iter().any(|have| have.name == theme.name) {
+                        theme.name = format!("{base} ({n})");
+                        n += 1;
+                    }
+                    if theme_store::save(&theme).is_ok()
+                        && let Some(file) = theme_store::file_of(&theme)
+                    {
+                        self.stamps.note(&file);
+                    }
+                    let new = theme.id;
+                    self.themes.push(theme);
+                    themes_in.insert(id, new);
+                    new_themes += 1;
+                    new
+                }),
+                None => None,
+            };
+            let title = song.title.clone();
+            match here {
+                // Replaced: written over its file, then read again as an outside change is (so a
+                // song on screen, being edited or holding changes waits on a choice in the bar).
+                Some(index) => match self.sources.get(index).cloned().flatten() {
+                    Some(path) => {
+                        if let Err(problem) = load::save_song(&path, &song) {
+                            waiting.push(format!("{title} ({problem})"));
+                            continue;
+                        }
+                        if self.freshen(index, false) {
+                            replaced.push(title);
+                        } else {
+                            waiting.push(title);
+                        }
+                    }
+                    None => {
+                        self.show.replace_presentation(index, Arc::new(song));
+                        self.unsaved.push(index);
+                        replaced.push(title);
+                    }
+                },
+                None => {
+                    let (_, key) = self.store_song(song);
+                    if let Some(id) = library
+                        && let Some(running) = self.running.as_mut()
+                        && let Some(into) = running.home_state.libraries.iter_mut().find(|l| l.id == id)
+                    {
+                        into.songs.push(key);
+                        running.home_state.libraries_changed = true;
+                    }
+                    added.push(title);
+                }
+            }
+        }
+        if new_themes > 0 {
+            self.themes_changed();
+        }
+        self.save_unsaved();
+        // The playlist, as a new playlist.
+        let mut playlist_name = None;
+        if let Some(mut playlist) = opened.playlist.clone()
+            && let Some(running) = self.running.as_mut()
+        {
+            playlist.name.retain(|c| !c.is_control());
+            for item in &mut playlist.items {
+                if let service::Item::Song { key, .. } = item {
+                    remap(key);
+                }
+            }
+            let services = &mut running.home_state.services;
+            // The same playlist again (opening the pack a second time) isn't added twice.
+            let here = services.list.iter().any(|have| have.name == playlist.name && have.items == playlist.items);
+            if here {
+                playlist_name = Some(format!("{} (here already)", playlist.name));
+            } else {
+                let mut name = playlist.name.clone();
+                let mut n = 2;
+                while services.list.iter().any(|have| have.name == name) {
+                    name = format!("{} ({n})", playlist.name);
+                    n += 1;
+                }
+                services.list.push(service::Service { name: name.clone(), items: playlist.items });
+                services.changed = true;
+                playlist_name = Some(name);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&opened.staging);
+        if let Some(running) = self.running.as_mut() {
+            running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
+            running.home_window.request_redraw();
+        }
+        // In words.
+        let list = |names: &[String]| names.join(", ");
+        let mut parts = Vec::new();
+        if !added.is_empty() {
+            parts.push(format!(
+                "Imported {}: {}.",
+                if added.len() == 1 { "1 song".to_owned() } else { format!("{} songs", added.len()) },
+                list(&added)
+            ));
+        }
+        if !replaced.is_empty() {
+            parts.push(format!("Replaced: {}.", list(&replaced)));
+        }
+        if !skipped.is_empty() {
+            parts.push(format!("Skipped, already here: {}.", list(&skipped)));
+        }
+        if !waiting.is_empty() {
+            parts.push(format!(
+                "Written, waiting on Reload or Keep mine (in use or holding changes): {}.",
+                list(&waiting)
+            ));
+        }
+        let playlist_in = playlist_name.is_some();
+        match playlist_name {
+            Some(name) if name.ends_with("(here already)") => {
+                parts.push(format!("The playlist {} is here already.", name.trim_end_matches(" (here already)")));
+            }
+            Some(name) => parts.push(format!("Added the playlist {name}.")),
+            None => {}
+        }
+        if new_themes > 0 {
+            parts.push(format!("Added {} theme{}.", new_themes, if new_themes == 1 { "" } else { "s" }));
+        }
+        let pictures =
+            brought.values().filter(|name| !name.is_empty() && !name.starts_with(pack::MEDIA_PREFIX)).count();
+        let videos = brought.values().filter(|name| name.starts_with(pack::MEDIA_PREFIX)).count();
+        let things: Vec<String> = [(pictures, "picture"), (videos, "video")]
+            .into_iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, what)| format!("{n} {what}{}", if n == 1 { "" } else { "s" }))
+            .collect();
+        if !things.is_empty() {
+            parts.push(format!("Brought {}.", things.join(" and ")));
+        }
+        if lost_actions > 0 {
+            parts.push(if lost_actions == 1 {
+                "1 slide action points at a message, prop, timer or media item this computer doesn't have; kept, shown as missing.".to_owned()
+            } else {
+                format!("{lost_actions} slide actions point at messages, props, timers or media items this computer doesn't have; kept, shown as missing.")
+            });
+        }
+        if !opened.ignored.is_empty() {
+            parts.push(format!("Left out of the pack: {}.", list(&opened.ignored)));
+        }
+        // Nothing usable in the pack (only things left out) is a failure; songs skipped because
+        // they are here already are not.
+        let anything =
+            !added.is_empty() || !replaced.is_empty() || !skipped.is_empty() || !waiting.is_empty() || playlist_in;
+        let said = if parts.is_empty() { "The pack had no songs in it.".to_owned() } else { parts.join(" ") };
+        if anything { Ok(said) } else { Err(said) }
+    }
+
     /// Makes the new song that was asked for, and gives a song the title just typed for it.
     fn handle_songs(&mut self) {
         let Some(running) = self.running.as_mut() else {
@@ -3013,7 +3498,13 @@ impl App {
         let mut decks = Vec::new();
         let mut songs = Vec::new();
         for path in paths {
-            if deck::is_presentation_file(path) {
+            if pack::is_pack(path) {
+                let library = self.running.as_ref().and_then(|r| r.home_state.library_shown);
+                match self.open_pack(path.clone(), None, library, false) {
+                    Ok(said) => decks.push(said),
+                    Err(problem) => problems.push(problem),
+                }
+            } else if deck::is_presentation_file(path) {
                 match convert::program_for(path) {
                     Some(program) => {
                         let source = deck::Source::File(path.clone());
@@ -4753,6 +5244,12 @@ impl App {
         if action == A::ImportSlides {
             return self.choose_slides_to_import();
         }
+        if action == A::ExportSongs {
+            let picked = self.running.as_ref().map(|r| r.home_state.picked_songs.clone()).unwrap_or_default();
+            let songs = if picked.is_empty() { vec![self.show.selected()] } else { picked };
+            self.export_from_window(&songs, None);
+            return;
+        }
         if action == A::ReloadSongs {
             let said = self.reload_all().summary();
             if let Some(running) = self.running.as_mut() {
@@ -4862,7 +5359,7 @@ impl App {
             A::StageLayouts => state.stage_editor_open = true,
             A::NewSong => state.new_song = true,
             // Handled above, before the window's state is borrowed.
-            A::ImportSongs | A::ImportLibraryFolder | A::ImportSlides | A::ReloadSongs => {}
+            A::ImportSongs | A::ImportLibraryFolder | A::ImportSlides | A::ReloadSongs | A::ExportSongs => {}
             A::NewSlide => {
                 let song = match (&state.editing, &state.theme_edit) {
                     (Some(draft), None) => draft.at.presentation,
@@ -5172,6 +5669,10 @@ impl ApplicationHandler<AppEvent> for App {
                 self.handle_decks();
                 return;
             }
+            AppEvent::PackDone => {
+                self.finish_packs();
+                return;
+            }
         };
         // The output thread drew a new live preview: the window shows it.
         if id.is_empty() {
@@ -5469,6 +5970,13 @@ impl ApplicationHandler<AppEvent> for App {
                 {
                     running.home_state.notice = Some(problem);
                 }
+                // Export…, from a song's or a playlist's right-click menu.
+                if let Some(request) = self.running.as_mut().and_then(|r| r.home_state.export_request.take()) {
+                    match request {
+                        home::ExportRequest::Songs(songs) => self.export_from_window(&songs, None),
+                        home::ExportRequest::Playlist(at) => self.export_from_window(&[], Some(at)),
+                    }
+                }
                 // Reload or Keep mine, chosen in the bar for a file changed outside the app.
                 if let Some((what, reload)) = self.running.as_mut().and_then(|r| r.home_state.waiting_choice.take()) {
                     self.choose_outside(what, reload);
@@ -5754,9 +6262,12 @@ fn main() -> ExitCode {
             stamps.note(&file);
         }
     }
+    let (pack_tx, pack_rx) = std::sync::mpsc::channel();
     let mut app = App {
         options,
         waker: Some(event_loop.create_proxy()),
+        pack_tx,
+        pack_rx,
         // Commands from `softpresenter ctl` come in on the control socket. Without it (another
         // copy has it, say) the app runs as usual.
         _control: {

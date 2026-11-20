@@ -164,6 +164,7 @@ of this one copies it to Documents, checks the copy, and keeps the old folder as
 | `Songs/*.sppres` | Songs made or changed in the app (JSON), each named by its id |
 | `Themes/*.sptheme` | Themes (JSON); `themes-in-use.txt` says which theme songs and Bible slides use |
 | `Images/` | Pictures put on slides |
+| `Media/` | Videos brought in by song packs (a slide names one as `Media/<file>`) |
 | `Bibles/` | Downloaded Bibles |
 | `services.json` | Playlists; a song in them is named by its id |
 | `libraries.json` | Libraries, each a list of song ids |

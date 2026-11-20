@@ -769,6 +769,10 @@ fn source_rows(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
                 state.rename_started = true;
                 ui.close();
             }
+            if ui.button("Export…").on_hover_text("Save the playlist and its songs as a song pack").clicked() {
+                state.export_request = Some(crate::home::ExportRequest::Playlist(index));
+                ui.close();
+            }
             if ui.add_enabled(names.len() > 1, egui::Button::new("Delete Playlist")).clicked() {
                 state.services.show(index);
                 delete = true;
@@ -1038,11 +1042,27 @@ pub fn playlist_song(show: &Show, state: &HomeState, key: &str) -> Option<usize>
     let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
     let listed = |index: usize| !hidden.contains(&index) && !state.removed_songs.contains(&index);
     let by_title = key.strip_prefix("title:");
+    // An id finds its song even where the song is known by another key (the built-in sample,
+    // which has no file, is known by its title).
+    let by_id = sp_model::Uuid::parse_str(key).ok();
     state
         .song_keys
         .iter()
         .position(|have| have == key)
-        .or_else(|| by_title.and_then(|title| show.presentations().iter().position(|song| song.title == title)))
+        .filter(|index| listed(*index))
+        .or_else(|| {
+            by_id.and_then(|id| {
+                show.presentations().iter().enumerate().position(|(at, song)| song.id == id && listed(at))
+            })
+        })
+        // A title only when one song has it: with several, which one is meant can't be told.
+        .or_else(|| {
+            let title = by_title?;
+            let mut with_it =
+                (0..show.presentations().len()).filter(|at| listed(*at) && show.presentations()[*at].title == title);
+            let first = with_it.next()?;
+            with_it.next().is_none().then_some(first)
+        })
         .filter(|index| listed(*index))
 }
 
@@ -1261,6 +1281,12 @@ fn song_menu(
     }
     if ui.button("Duplicate").clicked() {
         state.song_request = Some((index, crate::home::SongRequest::Duplicate));
+        ui.close();
+    }
+    // The songs picked out with it, when it is one of them; else this song alone.
+    if ui.button("Export…").on_hover_text("Save as a song pack, to open on another computer").clicked() {
+        let songs = if state.picked_songs.contains(&index) { state.picked_songs.clone() } else { vec![index] };
+        state.export_request = Some(crate::home::ExportRequest::Songs(songs));
         ui.close();
     }
     // Next on the last slide goes back to the first.

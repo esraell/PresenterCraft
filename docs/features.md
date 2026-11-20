@@ -26,6 +26,21 @@ feature changes, this page changes in the same commit.
   the same for one song, and `sp songs` marks a song whose file changed. Quitting with a change
   that couldn't be saved keeps SoftPresenter's version in the library's "Not saved" folder, so
   neither version is lost.
+- **Song packs** (`.sppack`), to carry songs prepared at home to the church computer by
+  AirDrop, email or a USB stick. File › Export Songs… (the songs picked out, or the one shown),
+  a song's or playlist's right-click Export…, or `sp song export SONG… [--playlist NAME] --to
+  FILE.sppack [--no-videos]` makes one: the songs (or a playlist with its songs), the themes
+  they set for themselves, and their pictures and videos (offered with their size, and left out
+  on request). No path or user name from the computer goes in. Opening one (drop it on the
+  window, File › Import Songs…, or `sp song import FILE.sppack`) brings the songs into the library,
+  their pictures into Images and videos into Media, the themes they need as new themes (a song
+  using the main theme takes on this computer's), and the playlist as a new playlist. A song
+  already here (the same id) is replaced, kept beside as a copy, or skipped (the window asks once;
+  `--replace`, `--keep-both`, `--skip`, skipped by default). A slide action that points at a
+  message, prop, timer or media item this computer doesn't have is kept and counted. A pack is
+  untrusted: only its own kinds of entry with plain names are read, within size limits and the
+  free disk space; a picture or video a song names must be one the pack holds; the app names every
+  file it writes; anything else is left out and named.
 - Playlists, libraries, macros, the song that starts with the app and slides' "go to song"
   actions find a library song by the id in its file, so they keep working when the library
   folder moves. A song that can't be found is kept and shown as missing (`sp playlist` and

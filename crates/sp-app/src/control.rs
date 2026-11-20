@@ -246,6 +246,19 @@ pub fn bare(bundle: &Path) -> std::process::ExitCode {
 fn with_full_paths(args: Vec<String>) -> Vec<String> {
     let second = |words: &[&str]| args.get(1).is_some_and(|w| words.iter().any(|word| w.eq_ignore_ascii_case(word)));
     let first = |word: &str| args.first().is_some_and(|w| w.eq_ignore_ascii_case(word));
+    // `song export … --to FILE`: the file isn't there yet, so it is made whole from the
+    // terminal's folder.
+    if first("song") && second(&["export"]) {
+        let mut args = args;
+        if let Some(at) = args.iter().position(|w| w == "--to")
+            && let Some(word) = args.get(at + 1)
+            && Path::new(word).is_relative()
+            && let Ok(here) = std::env::current_dir()
+        {
+            args[at + 1] = here.join(word).to_string_lossy().into_owned();
+        }
+        return args;
+    }
     let names_files = (first("song") && second(&["import", "new", "text"])) || (first("media") && second(&["add"]));
     if !names_files {
         return args;
@@ -466,6 +479,11 @@ Songs, libraries and playlists
                                (all of them, and songs put in the Songs folder, with no SONG);
                                one on screen or being edited waits unless --now
   song keep SONG               save SoftPresenter's version over a file changed outside it
+  song export SONG… [--playlist NAME] --to FILE.sppack [--no-videos]
+                               a song pack of the songs (and the playlist), with the themes
+                               they set, their pictures and videos, to open on another computer
+  song import FILE.sppack [--skip|--replace|--keep-both]
+                               a song pack's songs; ones already here are skipped unless told
 
 Changing a slide (each change is saved, can be undone, and shows on screen at once)
   slide SONG N [--json]        the slide's objects: words, place and look (* = the slide's own)
@@ -677,6 +695,52 @@ impl crate::App {
         let songs = self.listed_songs();
         let names: Vec<String> = songs.iter().map(|(_, title)| title.clone()).collect();
         find("song", &names, typed).map(|at| songs[at].0)
+    }
+
+    /// `song export SONG… [--playlist NAME] --to FILE.sppack [--no-videos]`.
+    fn ctl_song_export(&mut self, args: &[String]) -> Result<Reply, String> {
+        const USAGE: &str = "song export SONG… [--playlist NAME] --to FILE.sppack [--no-videos]";
+        let mut songs = Vec::new();
+        let (mut to, mut playlist, mut videos) = (None, None, true);
+        let mut words = args.iter();
+        while let Some(word) = words.next() {
+            match word.as_str() {
+                "--to" => to = Some(words.next().ok_or(USAGE)?.clone()),
+                "--playlist" => playlist = Some(words.next().ok_or(USAGE)?.clone()),
+                "--no-videos" => videos = false,
+                song => songs.push(song.to_owned()),
+            }
+        }
+        let to = to.ok_or_else(|| format!("Where should the pack go? {USAGE}"))?;
+        let mut to = std::path::PathBuf::from(to);
+        if !crate::pack::is_pack(&to) {
+            to.set_extension(crate::pack::ENDING);
+        }
+        if !to.parent().is_some_and(|dir| dir.as_os_str().is_empty() || dir.is_dir()) {
+            return Err(format!(
+                "There is no folder {}.",
+                to.parent().map_or_else(String::new, |d| d.display().to_string())
+            ));
+        }
+        let names: Vec<String> = self
+            .running
+            .as_ref()
+            .map(|r| r.home_state.services.list.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default();
+        let playlist = playlist.map(|typed| find("playlist", &names, &typed)).transpose()?;
+        if songs.is_empty() && playlist.is_none() {
+            return Err(format!("Which songs? {USAGE}"));
+        }
+        let mut indices = Vec::new();
+        for song in &songs {
+            indices.push(self.find_song(song)?);
+        }
+        let mut export = self.plan_pack(&indices, playlist)?;
+        if !videos {
+            export.leave_out_videos();
+        }
+        let said = self.write_pack(export, to)?;
+        Ok(Reply::done(said))
     }
 
     /// `song reload [SONG [--now]]`.
@@ -1461,10 +1525,45 @@ impl crate::App {
                 crate::applog::event("outside", &format!("kept SoftPresenter's version of {title} (sp song keep)"));
                 Ok(Reply::done(format!("Saved SoftPresenter's version of {title} over its file.")))
             }
+            Some("export") => self.ctl_song_export(&args[2..]),
             Some("import") => {
-                let paths: Vec<std::path::PathBuf> = args[2..].iter().map(std::path::PathBuf::from).collect();
+                // Song packs: what to do with songs the library has already (skip, unless told).
+                let same = if args.iter().any(|w| w == "--replace") {
+                    crate::pack::Same::Replace
+                } else if args.iter().any(|w| w == "--keep-both") {
+                    crate::pack::Same::KeepBoth
+                } else {
+                    crate::pack::Same::Skip
+                };
+                let mut paths: Vec<std::path::PathBuf> = args[2..]
+                    .iter()
+                    .filter(|w| !matches!(w.as_str(), "--skip" | "--replace" | "--keep-both"))
+                    .map(std::path::PathBuf::from)
+                    .collect();
                 if paths.is_empty() {
                     return Err("song import FILE…".to_owned());
+                }
+                // Packs are opened here, and what came in is said; the rest import as songs.
+                let library = self.running.as_ref().and_then(|r| r.home_state.library_shown);
+                let packs: Vec<std::path::PathBuf> = paths.iter().filter(|path| crate::pack::is_pack(path)).cloned().collect();
+                paths.retain(|path| !crate::pack::is_pack(path));
+                let mut said_packs = Vec::new();
+                let mut any_in = false;
+                for path in packs {
+                    if !path.is_file() {
+                        return Err(format!("There is no file {}.", path.display()));
+                    }
+                    match self.open_pack(path, Some(same), library, false) {
+                        Ok(said) => {
+                            any_in = true;
+                            said_packs.push(said);
+                        }
+                        Err(problem) => said_packs.push(problem),
+                    }
+                }
+                if paths.is_empty() {
+                    let text = said_packs.join("\n");
+                    return if any_in { Ok(Reply::done(text)) } else { Err(text) };
                 }
                 let (imported, problems, decks) = self.import_songs(&paths);
                 let making = (!decks.is_empty()).then(|| {

@@ -147,6 +147,7 @@ pub fn import_endings() -> Vec<&'static str> {
     endings.extend(DOCUMENT_ENDINGS);
     endings.extend([RICH_TEXT_ENDING, PRO_ENDING]);
     endings.extend(SONGBOOK_ENDINGS);
+    endings.push(crate::pack::ENDING);
     endings
 }
 

@@ -8,10 +8,24 @@ pub(crate) fn folder() -> Option<PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("Images"))
 }
 
-/// Where a picture object's file is: a whole path as it is, otherwise a name in the Images folder.
+/// Where a picture object's file is: a whole path as it is; `Media/<name>` in the library's
+/// Media folder (a video brought in by a song pack); otherwise a name in the Images folder. A
+/// name that would climb out of those folders (`..`) is nothing.
 pub fn resolve(file: &str) -> Option<PathBuf> {
     let path = Path::new(file);
-    if path.is_absolute() { Some(path.to_path_buf()) } else { folder().map(|dir| dir.join(file)) }
+    if file.is_empty() {
+        return None;
+    }
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+    if !path.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+        return None;
+    }
+    match file.strip_prefix(crate::pack::MEDIA_PREFIX) {
+        Some(name) => crate::bible_store::data_dir().map(|dir| dir.join("Media").join(name)),
+        None => folder().map(|dir| dir.join(file)),
+    }
 }
 
 /// Reads the picture a picture object names, for the renderer.

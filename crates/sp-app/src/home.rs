@@ -91,6 +91,15 @@ pub enum SlideView {
     Table,
 }
 
+/// What a song pack is made of, from a right-click menu.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExportRequest {
+    /// These songs (by their place in the show).
+    Songs(Vec<usize>),
+    /// This playlist and its songs.
+    Playlist(usize),
+}
+
 pub struct HomeState {
     /// How slides are laid out, and how many fit across the grid (2 to 7).
     pub slide_view: SlideView,
@@ -150,6 +159,8 @@ pub struct HomeState {
     /// choice made in the bar that offers them (true for Reload).
     pub waiting: Vec<crate::outside::Waiting>,
     pub waiting_choice: Option<(crate::outside::Waiting, bool)>,
+    /// Export…, chosen on a song's or a playlist's right-click menu.
+    pub export_request: Option<ExportRequest>,
     /// The slide being edited. While this is set the window shows the Edit view.
     pub editing: Option<EditDraft>,
     /// The slide as it was just changed in the Edit view. The app takes this and puts it into
@@ -966,6 +977,7 @@ impl Default for HomeState {
             notice: None,
             waiting: Vec::new(),
             waiting_choice: None,
+            export_request: None,
             editing: None,
             pending_edit: None,
             live_edit: false,
