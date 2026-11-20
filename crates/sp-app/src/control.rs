@@ -653,7 +653,7 @@ Songs, libraries and playlists
   library open NAME | all      show a library's songs, or all songs
   song delete SONG --yes
   playlist open NAME
-  playlist add SONG [to PLAYLIST]
+  playlist add SONG [to PLAYLIST]               (VoxLive names the VoxLive item)
   playlist new NAME | playlist rename OLD to NEW | playlist delete NAME --yes
   playlist remove ITEM [from PLAYLIST]          (ITEM by number or title)
   playlist move ITEM to N [in PLAYLIST]
@@ -1605,7 +1605,10 @@ impl crate::App {
                     Some(at) => (words[..at].join(" "), Some(words[at + 1..].join(" "))),
                     None => (words.join(" "), None),
                 };
-                let song = self.find_song(&song_words)?;
+                // "VoxLive" names the VoxLive item, which isn't among the songs, once it has screens.
+                let voxlive = song_words.trim().eq_ignore_ascii_case("voxlive")
+                    && self.show.presentations().get(self.voxlive_slot).is_some_and(|item| item.slide_count() > 0);
+                let song = if voxlive { self.voxlive_slot } else { self.find_song(&song_words)? };
                 let list = list_words.map(|typed| find("playlist", &names, &typed)).transpose()?;
                 let running = self.running.as_mut().ok_or("The app isn't ready.")?;
                 let state = &mut running.home_state;
@@ -1704,13 +1707,17 @@ impl crate::App {
                     .voxlive
                     .screens
                     .iter()
-                    .map(|screen| format!("{} ({})", screen.label(), screen.kind()))
+                    .map(|screen| {
+                        // A screen whose page isn't at VoxLive's own display can't be shown.
+                        let page = if screen.url.is_empty() { ", no page to show" } else { "" };
+                        format!("{} ({}{page})", screen.label(), screen.kind())
+                    })
                     .collect();
                 let data: Vec<serde_json::Value> = self
                     .voxlive
                     .screens
                     .iter()
-                    .map(|screen| serde_json::json!({"id": screen.id, "name": screen.name, "language": screen.language, "mode": screen.mode}))
+                    .map(|screen| serde_json::json!({"id": screen.id, "name": screen.name, "language": screen.language, "mode": screen.mode, "can_show": !screen.url.is_empty()}))
                     .collect();
                 let text = if lines.is_empty() { "(none found yet)".to_owned() } else { numbered(&lines) };
                 Ok(Reply::with(text, serde_json::json!(data)))
@@ -1724,13 +1731,23 @@ impl crate::App {
             // `voxlive show N|NAME`: that screen's captions on the screens, in place of what is
             // there, as a click in the VoxLive tab does.
             Some("show") => {
-                let item = self.show.presentations().get(self.voxlive_slot).cloned().ok_or("No VoxLive item.")?;
-                let names: Vec<String> = item.groups.iter().map(|group| group.name.clone()).collect();
-                if names.is_empty() {
-                    return Err("VoxLive has no screens to show (sp voxlive screens).".to_owned());
+                // By its number or name among all the screens `voxlive screens` lists; a screen
+                // with no page SoftPresenter can show says so.
+                let screens = self.voxlive.screens.clone();
+                if screens.is_empty() {
+                    return Err("VoxLive has no screens yet (sp voxlive screens).".to_owned());
                 }
+                let names: Vec<String> = screens.iter().map(crate::voxlive::Screen::label).collect();
                 let at = find("VoxLive screen", &names, &rest(args, 2))?;
-                self.apply(vec![Command::GoTo(SlideRef { presentation: self.voxlive_slot, slide: at })]);
+                if screens[at].url.is_empty() {
+                    return Err(format!(
+                        "{} has no page SoftPresenter can show: its address isn't at VoxLive's own display.",
+                        names[at]
+                    ));
+                }
+                // Its slide: the screens before it that have a page.
+                let slide = screens[..at].iter().filter(|screen| !screen.url.is_empty()).count();
+                self.apply(vec![Command::GoTo(SlideRef { presentation: self.voxlive_slot, slide })]);
                 Ok(Reply::done(format!("On screen: VoxLive, {}.", names[at])))
             }
             Some("refresh") => {

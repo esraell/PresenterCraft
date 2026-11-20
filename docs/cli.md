@@ -460,7 +460,7 @@ it and `slide frame` moves it, while `slide text` and `slide style` say "The sli
 | Command | Does |
 |---|---|
 | `playlist open NAME` | Puts a playlist in front |
-| `playlist add SONG [to PLAYLIST]` | Adds a song at the end (of the playlist in front if none is named) |
+| `playlist add SONG [to PLAYLIST]` | Adds a song at the end (of the playlist in front if none is named); `VoxLive` adds the VoxLive item, once VoxLive is connected |
 | `playlist new NAME`, `playlist rename OLD to NEW`, `playlist delete NAME --yes` | Makes, renames or deletes a playlist (the last one stays) |
 | `playlist remove ITEM [from PLAYLIST]`, `playlist move ITEM to N [in PLAYLIST]` | Takes out or moves an item, by number or title |
 | `playlist header TEXT [at N] [in PLAYLIST]` | A header that groups the items after it |
@@ -604,7 +604,9 @@ VoxLive screens.
     On screen: VoxLive, Spanish captions · ES.
 
 The screens also show as the slides of the VoxLive item, under LIBRARY in the window; it isn't
-in `sp songs`. A mode VoxLive adds later shows by its own name in place of captions or
+in `sp songs`, and `playlist add VoxLive` puts it in a playlist. A screen whose page isn't at
+VoxLive's own display is listed with "no page to show" (`"can_show": false` in the JSON), and
+`voxlive show` says so. A mode VoxLive adds later shows by its own name in place of captions or
 Scripture.
 
 The key is kept in the Mac's Keychain, and never appears in the log, a reply or a file. A key
