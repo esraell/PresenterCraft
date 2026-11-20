@@ -991,6 +991,8 @@ struct App {
     /// The media playlists read at the start, handed to the window's state once it is made.
     media_playlists: Vec<media::Playlist>,
     unsaved_since: Option<Instant>,
+    /// Whether the Edit view was open at the last drawing (leaving it writes what was changed).
+    was_editing: bool,
     /// The main theme, which songs and Bible slides are drawn with: a copy of the theme at
     /// `songs_theme` in `themes`. `theme_for_bible` and `bible_theme` are the same theme, kept
     /// apart for the places that ask for Bible slides' theme.
@@ -2797,7 +2799,12 @@ impl App {
         if !self.unsaved.contains(&index) {
             self.unsaved.push(index);
         }
-        self.save_unsaved();
+        // An arrangement's name being typed is written once typing pauses; anything else at once.
+        if renaming {
+            self.unsaved_since = Some(Instant::now());
+        } else {
+            self.save_unsaved();
+        }
         if let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
         }
@@ -3043,13 +3050,9 @@ impl App {
         if changes.slides && live_edit {
             self.refresh_output();
         }
-        // The song is written at once, so nothing is lost if the app stops without warning.
-        // While a box is being dragged it waits for the drag to end.
-        let dragging =
-            self.running.as_ref().is_some_and(|r| r.home_state.editing.as_ref().is_some_and(|d| d.drag.is_some()));
-        if !dragging {
-            self.save_unsaved();
-        }
+        // The song is written once the changes pause for a second (not on every letter typed
+        // or every frame of a drag, each a whole file written on this thread), on leaving the
+        // Edit view, and on quitting.
     }
 
     /// Writes every song changed in the Edit view to its file. The bundled sample has no file.
@@ -4713,13 +4716,8 @@ impl App {
             if bible_template_gone && let Some(running) = self.running.as_mut() {
                 running.home_state.bible.assign_boxes();
             }
-            // A theme is written at once, so nothing is lost if the app stops without
-            // warning. While a box is being dragged it waits for the drag to end.
-            let dragging =
-                self.running.as_ref().is_some_and(|r| r.home_state.editing.as_ref().is_some_and(|d| d.drag.is_some()));
-            if !dragging {
-                self.save_unsaved();
-            }
+            // The theme is written once the changes pause for a second, on leaving the editor,
+            // and on quitting.
         }
         if leave {
             if let Some(running) = self.running.as_mut() {
@@ -6772,9 +6770,10 @@ impl ApplicationHandler<AppEvent> for App {
                 self.sync_panels(el);
                 self.sync_overlay();
                 self.tick_menu();
-                // Leaving the Edit view writes the songs changed there straight away.
+                // Leaving the Edit view writes the songs changed there straight away (other changes
+                // are written once they pause for a second).
                 let editing = self.running.as_ref().is_some_and(|r| r.home_state.editing.is_some());
-                if !editing && !self.unsaved.is_empty() {
+                if std::mem::replace(&mut self.was_editing, editing) && !editing && !self.unsaved.is_empty() {
                     self.save_unsaved();
                 }
                 if self.capture_done {
@@ -7142,6 +7141,7 @@ fn main() -> ExitCode {
         folders_seen: std::collections::HashMap::new(),
         folders_checked: Instant::now(),
         unsaved_since: None,
+        was_editing: false,
         theme: Arc::new(themes[songs_theme].clone()),
         theme_for_bible: Arc::new(themes[bible_theme].clone()),
         theme_arcs: themes.iter().cloned().map(Arc::new).collect(),
