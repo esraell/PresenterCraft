@@ -635,6 +635,8 @@ impl crate::App {
         // said.
         let mut reply = result.unwrap_or_else(Reply::failed);
         for at in self.held_songs.iter().filter(|at| !held_before.contains(at)) {
+            // The change is made in the app but not saved: a script must be able to tell.
+            reply.ok = false;
             let title = self.show.presentations().get(*at).map_or("The song", |song| song.title.as_str());
             reply.text.push_str(&format!(
                 "\nNot saved: {title}'s file was changed outside SoftPresenter. sp song reload {title} --now takes the file's version; sp song keep {title} saves this one."
@@ -699,10 +701,10 @@ impl crate::App {
         let waiting =
             self.running.as_ref().is_some_and(|r| r.home_state.waiting.contains(&crate::outside::Waiting::Song(at)));
         if waiting {
-            return Ok(Reply::done(format!(
-                "{title} is on screen, being edited, or holds changes not saved, so it wasn't read again; the window offers Reload. \
+            return Err(format!(
+                "{title} is on screen, being edited, holds changes not saved, or its file is gone, so it wasn't read again; the window offers Reload. \
                  sp song reload {title} --now takes the file's version; sp song keep {title} saves SoftPresenter's."
-            )));
+            ));
         }
         Ok(Reply::done(format!("{title} is as its file has it.")))
     }
@@ -786,9 +788,18 @@ impl crate::App {
     }
 
     fn ctl_songs(&self) -> Reply {
-        // A song waiting on Reload or Keep mine is marked.
+        // A song whose file changed outside the app (looked at now), or that waits on Reload or
+        // Keep mine, is marked.
         let waiting = |at: usize| {
-            self.running.as_ref().is_some_and(|r| r.home_state.waiting.contains(&crate::outside::Waiting::Song(at)))
+            let file_changed =
+                self.sources.get(at).cloned().flatten().is_some_and(|path| {
+                    self.stamps.check(&crate::load::song_file_for(&path)) != crate::outside::Now::Same
+                });
+            file_changed
+                || self
+                    .running
+                    .as_ref()
+                    .is_some_and(|r| r.home_state.waiting.contains(&crate::outside::Waiting::Song(at)))
         };
         let names: Vec<String> = self
             .listed_songs()
@@ -1444,7 +1455,7 @@ impl crate::App {
                     });
                 let title = self.show.presentations().get(at).map(|s| s.title.clone()).unwrap_or_default();
                 if !waiting {
-                    return Ok(Reply::done(format!("{title} isn't waiting on a choice: its file hasn't changed outside SoftPresenter.")));
+                    return Err(format!("{title} isn't waiting on a choice: its file hasn't changed outside SoftPresenter."));
                 }
                 let title = self.keep_song(at)?;
                 crate::applog::event("outside", &format!("kept SoftPresenter's version of {title} (sp song keep)"));

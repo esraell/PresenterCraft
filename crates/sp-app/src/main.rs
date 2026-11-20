@@ -133,12 +133,18 @@ struct MediaCycle {
 const PICTURE_SECONDS: f32 = 8.0;
 
 /// A song going round on the Announcements layer.
+/// A file's name alone, for the log and replies (no home folder in them).
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
+}
+
 /// What reloading every song from its file did.
 #[derive(Default)]
 struct Reloaded {
     read: Vec<String>,
     added: Vec<String>,
     waiting: Vec<String>,
+    gone: Vec<String>,
     problems: Vec<String>,
 }
 
@@ -158,6 +164,9 @@ impl Reloaded {
                 "Waiting on Reload or Keep mine (in use, or with changes not saved): {}.",
                 list(&self.waiting)
             ));
+        }
+        if !self.gone.is_empty() {
+            parts.push(format!("Their file is gone (Keep mine saves it again): {}.", list(&self.gone)));
         }
         parts.extend(self.problems.iter().cloned());
         if parts.is_empty() { "Every song is as its file has it.".to_owned() } else { parts.join(" ") }
@@ -2530,7 +2539,7 @@ impl App {
             // waits on Reload or Keep mine, holding its changes.
             let target = load::song_file_for(path);
             if self.stamps.check(&target) != outside::Now::Same {
-                applog::event("outside", &format!("did not save over {}: it changed outside", target.display()));
+                applog::event("outside", &format!("did not save over {}: it changed outside", file_name(&target)));
                 if !self.held_songs.contains(&index) {
                     self.held_songs.push(index);
                 }
@@ -2652,7 +2661,8 @@ impl App {
         }
         let (mut loaded, problems) = load::load_songs(std::slice::from_ref(&target));
         let song = loaded.pop().map(|loaded| loaded.song).ok_or_else(|| {
-            format!("{title} could not be read again ({}); SoftPresenter's version is kept.", problems.join(" "))
+            let why = problems.join(" ").replace(&target.display().to_string(), &file_name(&target));
+            format!("{title} could not be read again ({why}); SoftPresenter's version is kept.")
         })?;
         let key = song_ids::key_for(Some(&target), song.id, &song.title);
         let title = song.title.clone();
@@ -2758,6 +2768,48 @@ impl App {
         }
     }
 
+    /// On quitting: the changes held back because their files changed outside the app are
+    /// written to the library's "Not saved" folder (named by title and time), so neither
+    /// version is lost, and the log says where.
+    fn keep_held_aside(&mut self) {
+        let Some(folder) = bible_store::data_dir().map(|dir| dir.join("Not saved")) else { return };
+        let when = chrono::Local::now().format("%Y-%m-%d %H.%M.%S");
+        let plain =
+            |name: &str| name.chars().map(|c| if matches!(c, '/' | '\\' | ':') { '-' } else { c }).collect::<String>();
+        for index in self.held_songs.clone() {
+            let Some(song) = self.show.presentations().get(index) else { continue };
+            let file = folder.join(format!("{} {when}.{}", plain(&song.title), load::SONG_EXTENSION));
+            let kept = std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&file, sp_model::to_json(song)));
+            match kept {
+                Ok(()) => applog::problem(
+                    "outside",
+                    &format!(
+                        "{}: its file changed outside SoftPresenter; SoftPresenter's version is kept in Not saved/{}",
+                        song.title,
+                        file_name(&file)
+                    ),
+                ),
+                Err(e) => applog::problem("outside", &format!("{}: changes not saved ({e})", song.title)),
+            }
+        }
+        for index in self.held_themes.clone() {
+            let Some(theme) = self.themes.get(index) else { continue };
+            let file = folder.join(format!("{} {when}.sptheme", plain(&theme.name)));
+            let kept = std::fs::create_dir_all(&folder).and_then(|()| std::fs::write(&file, theme.to_json()));
+            match kept {
+                Ok(()) => applog::problem(
+                    "outside",
+                    &format!(
+                        "the theme {}: its file changed outside SoftPresenter; SoftPresenter's version is kept in Not saved/{}",
+                        theme.name,
+                        file_name(&file)
+                    ),
+                ),
+                Err(e) => applog::problem("outside", &format!("the theme {}: changes not saved ({e})", theme.name)),
+            }
+        }
+    }
+
     /// Reads again every song (and, with the Theme editor closed, every theme) whose file
     /// changed outside the app, and adds songs put in the Songs folder since. A song in use or
     /// holding changes not saved is offered in the bar instead.
@@ -2772,6 +2824,8 @@ impl App {
             }
             if self.freshen(index, false) {
                 done.read.push(title);
+            } else if before == outside::Now::Gone {
+                done.gone.push(title);
             } else if self
                 .running
                 .as_ref()
@@ -2796,7 +2850,8 @@ impl App {
         for path in new_files {
             let (mut loaded, problems) = load::load_songs(std::slice::from_ref(&path));
             let Some(mut song) = loaded.pop().map(|loaded| loaded.song) else {
-                done.problems.extend(problems);
+                let shown = path.display().to_string();
+                done.problems.extend(problems.into_iter().map(|problem| problem.replace(&shown, &file_name(&path))));
                 continue;
             };
             // A copy of a song already here gets an id of its own, written back to its file.
@@ -4983,10 +5038,7 @@ impl App {
 
     fn quit(&mut self, el: &ActiveEventLoop) {
         self.save_unsaved();
-        for index in &self.held_songs {
-            let title = self.show.presentations().get(*index).map_or("?", |song| song.title.as_str());
-            applog::problem("outside", &format!("{title}: changes not saved, its file changed outside SoftPresenter"));
-        }
+        self.keep_held_aside();
         if let Some(output) = self.running.as_mut().and_then(|r| r.output.take()) {
             output.shutdown();
         }

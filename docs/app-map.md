@@ -172,6 +172,7 @@ of this one copies it to Documents, checks the copy, and keeps the old folder as
 | `screens.json` | The screens and their looks |
 | `preferences.json`, `bible-page.json`, `bible-history.json` | Small choices, how the Bible page was left, and the Bible passages looked up |
 | `.softpresenter-library` | Says the folder is SoftPresenter's library |
+| `Not saved/` | SoftPresenter's version of a song or theme whose file changed outside the app, kept on quitting before Reload or Keep mine was chosen |
 | `Backup before song ids/` | Files as they were before songs were named by id (only where that was done in place) |
 
 The command line's socket, while the app runs, is `~/Library/Caches/SoftPresenter/control/ctl.sock`

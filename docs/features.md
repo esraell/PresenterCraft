@@ -23,7 +23,9 @@ feature changes, this page changes in the same commit.
   unasked; the bar offers it instead. File › Reload Songs from Their Files (`sp song reload`) reads
   every changed song and theme again and adds song files put in the Songs folder (a copy of one
   already there gets an id of its own). `sp song reload SONG [--now]` and `sp song keep SONG` do
-  the same for one song, and `sp songs` marks a song waiting on the choice.
+  the same for one song, and `sp songs` marks a song whose file changed. Quitting with a change
+  that couldn't be saved keeps SoftPresenter's version in the library's "Not saved" folder, so
+  neither version is lost.
 - Playlists, libraries, macros, the song that starts with the app and slides' "go to song"
   actions find a library song by the id in its file, so they keep working when the library
   folder moves. A song that can't be found is kept and shown as missing (`sp playlist` and
