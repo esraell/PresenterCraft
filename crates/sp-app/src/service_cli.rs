@@ -98,14 +98,18 @@ impl crate::App {
                 }
             }
             // `playlist header|media|media-playlist|placeholder NAME [at N] [in PLAYLIST]`
+            // "in" names a playlist only when one is called that, and "at" a place only when a
+            // number follows, so either can be part of the name ("Live at Church.mp4").
             "header" | "media" | "media-playlist" | "placeholder" => {
-                let usage = format!("playlist {word} NAME [at N] [in PLAYLIST]");
-                let (head, list) = split_at_word(words, "in");
-                let (text, at) = split_at_word(head, "at");
-                match at.map(|at| at.parse::<usize>()) {
-                    Some(Err(_)) => Err(usage),
-                    at => self.playlist_put(&word, &text.join(" "), at.and_then(Result::ok), list.as_deref()),
+                let (mut head, mut list) = split_at_word(words, "in");
+                if list.as_deref().is_some_and(|typed| self.playlist_at(Some(typed)).is_err()) {
+                    (head, list) = (words, None);
                 }
+                let (text, at) = match split_at_word(head, "at") {
+                    (text, Some(at)) if at.parse::<usize>().is_ok() => (text, at.parse::<usize>().ok()),
+                    _ => (head, None),
+                };
+                self.playlist_put(&word, &text.join(" "), at, list.as_deref())
             }
             // `playlist fill PLACEHOLDER with SONG | with media ITEM [in PLAYLIST]`
             "fill" => {
@@ -245,7 +249,12 @@ impl crate::App {
     /// ITEM`), as dropping one on it does.
     fn playlist_fill(&mut self, place: &str, with: &str, list: Option<&str>) -> Result<Reply, String> {
         let list = self.playlist_at(list)?;
-        let at = self.playlist_item(list, place)?;
+        let at = {
+            let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+            let items: Vec<String> =
+                state.services.list[list].items.iter().map(|item| item.title().to_owned()).collect();
+            find("placeholder", &items, place)?
+        };
         let item = match with.trim().strip_prefix("media ") {
             Some(media) => {
                 let names: Vec<String> = self.show.media().iter().map(|media| media.name.clone()).collect();

@@ -454,6 +454,11 @@ it and `slide frame` moves it, while `slide text` and `slide style` say "The sli
 | `playlist media-playlist NAME [at N] [in PLAYLIST]` | A media playlist (the announcement loop), to play from the playlist |
 | `playlist placeholder NAME [at N] [in PLAYLIST]` | A place kept for something to come (the sermon slides) |
 | `playlist fill PLACEHOLDER with SONG`, `… with media ITEM` `[in PLAYLIST]` | Puts a song, or a picture or video, in a placeholder's place (a song already in the playlist moves there) |
+
+In `playlist header|media|media-playlist|placeholder`, a last `in` names a playlist only when
+there is one called that, and a last `at` a place only when a number follows, so either word
+can be part of the name: `playlist media Live at Church.mp4`, `playlist placeholder Sermon in
+Romans`.
 | `library open NAME\|all` | Shows a library's songs, or every song, in the song list |
 | `library new NAME`, `library rename OLD to NEW`, `library delete NAME --yes` | Makes, renames or deletes a library (its songs stay) |
 | `library add SONG… to LIBRARY`, `library remove SONG… from LIBRARY` | Puts songs in a library or takes them out (quote each name with spaces) |
@@ -654,6 +659,9 @@ SoftPresenter runs on.
   is there; a placeholder comes as it is). With `--no-videos`, a video in the playlist is left
   out and its item shows as missing. Pictures go into `Images/`, videos into `Media/`; a file
   already there with the same contents is reused.
+- A pack whose playlist holds a picture or video, a media playlist or a placeholder is written
+  as pack version 2, which an older SoftPresenter refuses with "update SoftPresenter to open
+  it"; any other pack is still version 1.
 - A pack holds no file paths or user names. It is checked as it is opened: entries outside its
   folders, links, unknown references and oversized files are left out and named in the reply,
   and a pack from a newer SoftPresenter is refused.

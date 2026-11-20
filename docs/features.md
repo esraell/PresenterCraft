@@ -36,7 +36,8 @@ feature changes, this page changes in the same commit.
   their pictures into Images and videos into Media, the themes they need as new themes (a song
   using the main theme takes on this computer's), and the playlist as a new playlist, with its
   pictures and videos (into the media bin) and its media playlists (with theirs; one this
-  computer has already is used as it is). A song
+  computer has already is used as it is; such a pack is version 2, which an older SoftPresenter
+  asks to be updated to open). A song
   already here (the same id) is replaced, kept beside as a copy, or skipped (the window asks once;
   `--replace`, `--keep-both`, `--skip`, skipped by default). A slide action that points at a
   message, prop, timer or media item this computer doesn't have is kept and counted. A pack is

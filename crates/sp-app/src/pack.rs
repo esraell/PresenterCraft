@@ -33,7 +33,10 @@ use crate::service::Item;
 /// A song pack's file ending.
 pub const ENDING: &str = "sppack";
 const FORMAT: &str = "softpresenter-pack";
-const VERSION: u64 = 1;
+/// The newest pack version: 2, a playlist holding pictures and videos, media playlists or
+/// placeholders (written only then, so an older SoftPresenter, which can't read those, says to
+/// update rather than leaving the playlist out); 1, everything else.
+const VERSION: u64 = 2;
 /// How a song's slide names a video copied into the library: inside its Media folder.
 pub const MEDIA_PREFIX: &str = "Media/";
 /// The most entries a pack may have, and the largest song, theme, manifest or playlist, and
@@ -200,6 +203,16 @@ impl Export {
         export
     }
 
+    /// The pack version this pack needs (see `VERSION`).
+    fn version(&self) -> u64 {
+        let newer = self
+            .playlist
+            .iter()
+            .flat_map(|playlist| &playlist.items)
+            .any(|item| matches!(item, Item::Media { .. } | Item::MediaPlaylist { .. } | Item::Placeholder { .. }));
+        if newer { VERSION } else { 1 }
+    }
+
     /// Puts a media bin item in the pack, once: its file (with the pictures, or the videos) and
     /// its entry in the manifest. False, and counted as missing, if it isn't on this computer.
     fn carry_media(&mut self, id: Uuid, media_of: &MediaOf) -> bool {
@@ -294,7 +307,7 @@ impl Export {
         let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         let manifest = serde_json::json!({
             "format": FORMAT,
-            "version": VERSION,
+            "version": self.version(),
             "app": env!("CARGO_PKG_VERSION"),
             "songs": self.songs.iter().map(|s| serde_json::json!({"id": s.id, "title": s.title})).collect::<Vec<_>>(),
             "themes": self.themes.iter().map(|t| serde_json::json!({"id": t.id, "name": t.name})).collect::<Vec<_>>(),
@@ -834,6 +847,20 @@ mod tests {
         ] {
             assert_eq!(classify(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_pack_whose_playlist_holds_a_video_or_a_placeholder_is_version_2_and_others_1() {
+        let playlist = |items: Vec<Item>| PlaylistFile { name: "Sunday".to_owned(), items };
+        let plan =
+            |items: Vec<Item>| Export::plan(Vec::new(), &[], Some(playlist(items)), |_| None, &|_| None, |_| None);
+        let songs_only = plan(vec![Item::Header { name: "Worship".to_owned() }]);
+        assert_eq!(songs_only.version(), 1, "an older SoftPresenter opens it");
+        let with_placeholder = plan(vec![Item::Placeholder { name: "Sermon slides".to_owned() }]);
+        assert_eq!(with_placeholder.version(), 2);
+        let gone = Uuid::new_v4();
+        let with_video = plan(vec![Item::Media { id: gone, name: "Walk-in.mp4".to_owned() }]);
+        assert_eq!((with_video.version(), with_video.missing), (2, 1), "a video not on this computer is counted");
     }
 
     #[test]

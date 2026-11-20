@@ -3474,7 +3474,10 @@ impl App {
                         new_media_playlists.push(made);
                     }
                 }
-                service::Item::Passage(_) | service::Item::Header { .. } | service::Item::Placeholder { .. } => {}
+                service::Item::Header { name } | service::Item::Placeholder { name } => {
+                    name.retain(|c| !c.is_control());
+                }
+                service::Item::Passage(_) => {}
             }
         }
         if media_seen.added > 0 {
