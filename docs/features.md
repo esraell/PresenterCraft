@@ -377,6 +377,13 @@ feature changes, this page changes in the same commit.
   on|off`, `audio crossfade SECONDS`) and media playlists (`media-playlist new`, `add ITEM… to`,
   `remove ITEM… from`, `follow NAME FOLDER|off`, `delete`). `stage layouts` lists the stage
   layouts and the screens showing each.
+- The Bible page, themes and arrangements from the command line: `bible search WORDS`, `bible
+  rows [BIBLE…]`, `bible options key=value…`, `bible history`, `bibles` (installed and to
+  download), `bible install NAME|FILE`, `bible remove NAME --yes`; `theme templates THEME`, `theme
+  main THEME`, `theme duplicate|rename|delete`, `theme box THEME TEMPLATE BOX key=value…` (the
+  slide style keys and x= y= w= h=), `theme template THEME TEMPLATE for=songs|bible|both|none`;
+  `song arrangements SONG`, `song arrangement SONG use NAME|none`, `set NAME GROUP…`, `delete
+  NAME`.
 - `sp …` (full name `softpresenter`), installed from SoftPresenter › Install Command Line Tool…,
   controls the running app from a terminal, a script or an AI agent (`sp status`, `sp next`):
   what is on screen, the lists, going to slides, clearing, media, messages, props, timers,

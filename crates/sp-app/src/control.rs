@@ -371,6 +371,8 @@ const COMMANDS: &[&str] = &[
     "continuous",
     "video",
     "test",
+    "bibles",
+    "theme",
     "menu",
 ];
 
@@ -515,6 +517,11 @@ Layers and controls
   bible REFERENCE --add [to PLAYLIST]
                                look it up and put it in a playlist, with the page's rows
                                and options, as Add to does
+  bible search WORDS           verses with those words, in the first translation
+  bible rows [BIBLE…]          the translations shown (KJV RST …), first to last
+  bible options [verses=on|off break=on|off translation=on|off reference=verse|passage|last|none]
+  bible history                the passages looked up
+  bibles | bible install NAME|FILE | bible remove NAME --yes
 
 Songs, libraries and playlists
   song new TITLE [FILE.txt]    a new song, its words from a song text file
@@ -536,6 +543,15 @@ Songs, libraries and playlists
   song theme SONG THEME|main | song transition SONG KIND [SECONDS] | none
   song info SONG [artist=… author=… publisher=… year=… ccli=…]
   search WORDS                 songs with those words in their title or slides
+  song arrangements SONG | song arrangement SONG use NAME|none
+  song arrangement SONG set NAME GROUP… | song arrangement SONG delete NAME
+
+Themes
+  themes | theme templates THEME | theme main THEME
+  theme duplicate THEME [as NAME] | theme rename THEME to NAME | theme delete THEME --yes
+  theme box THEME TEMPLATE BOX key=value…   a template box's look (slide style keys) and place
+                               (x= y= w= h=); quote names with spaces
+  theme template THEME TEMPLATE for=songs|bible|both|none
   song text SONG [FILE]        the song as song text, or its words replaced from a file (its
                                slides keep their looks, labels and notes)
   song reload [SONG [--now]]   read songs again from their files, if changed outside the app
@@ -724,6 +740,8 @@ impl crate::App {
             "continuous" => self.ctl_continuous(args),
             "video" => self.ctl_video(args),
             "test" => self.ctl_test(args),
+            "bibles" => self.ctl_bibles(),
+            "theme" => self.ctl_theme(args),
             "undo" => self.ctl_undo(el, false),
             "redo" => self.ctl_undo(el, true),
             "menu" => self.ctl_menu(el, args),
@@ -1080,7 +1098,7 @@ impl crate::App {
             "paused": playing.paused,
             "seconds": playing.position.as_secs(),
             "length": playing.length.map(|l| l.as_secs()),
-            "volume": (state.audio_volume * 100.0).round(),
+            "volume": (state.audio_volume * 100.0).round() as u32,
         })
     }
 
@@ -1753,6 +1771,9 @@ impl crate::App {
     }
 
     fn ctl_bible(&mut self, args: &[String]) -> Result<Reply, String> {
+        if let Some(result) = self.ctl_bible_more(args) {
+            return result;
+        }
         let show_it = args.iter().any(|w| w == "--show");
         // `--add [to PLAYLIST]`: the passage goes into a playlist, as Add to puts it there.
         let (args, add_to) = match args.iter().position(|w| w == "--add") {
@@ -1830,6 +1851,9 @@ impl crate::App {
         if !args.iter().any(|w| w == "--library")
             && let Some(result) = self.ctl_song_change(args)
         {
+            return result;
+        }
+        if let Some(result) = self.ctl_song_arrangement(args) {
             return result;
         }
         // `--library NAME` (or `--library none`): the library new and imported songs go into,

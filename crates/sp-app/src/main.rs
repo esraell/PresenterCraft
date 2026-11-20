@@ -38,6 +38,7 @@ mod song_ids;
 mod stage;
 mod stage_editor;
 mod studio;
+mod theme_cli;
 mod theme_store;
 mod thumbs;
 mod timers;

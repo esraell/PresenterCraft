@@ -176,6 +176,7 @@ impl crate::App {
         })?;
         let rest = &words[at..];
         let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let was = state.timers[index].name.clone();
         let said = match rest[0].to_lowercase().as_str() {
             "overrun" => {
                 let on = match rest.get(1).map(|w| w.to_lowercase()).as_deref() {
@@ -202,7 +203,7 @@ impl crate::App {
             }
         };
         state.timers_changed = true;
-        Ok(Reply::done(format!("The timer {} {said}.", state.timers[index].name)))
+        Ok(Reply::done(format!("The timer {was} {said}.")))
     }
 
     /// `message new|set|delete …` and `message show --text WORDS`; `None` for another word.
@@ -259,6 +260,7 @@ impl crate::App {
             state.messages.iter().map(|m| m.name.clone()).collect()
         })?;
         let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let was = state.messages[index].name.clone();
         let mut said = Vec::new();
         for setting in &words[at..] {
             let (key, value) = setting.split_once('=').ok_or(usage)?;
@@ -293,7 +295,7 @@ impl crate::App {
             }
         }
         state.messages_changed = true;
-        Ok(Reply::done(format!("The message {}: {}.", state.messages[index].name, said.join(", "))))
+        Ok(Reply::done(format!("The message {was}: {}.", said.join(", "))))
     }
 
     fn message_quick(&mut self, text: &str) -> Result<Reply, String> {
@@ -347,6 +349,12 @@ impl crate::App {
         let (name_words, picture) = match words.last() {
             Some(last) if words.len() > 1 && std::path::Path::new(last).is_file() => {
                 (&words[..words.len() - 1], Some(PathBuf::from(last)))
+            }
+            // A last word that names a file that isn't there is a mistake, not part of the name.
+            Some(last)
+                if words.len() > 1 && (last.contains('/') || crate::media::is_media(std::path::Path::new(last))) =>
+            {
+                return Err(format!("There is no file {last}."));
             }
             _ => (words, None),
         };
