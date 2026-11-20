@@ -1,14 +1,28 @@
 //! Which display the output goes on.
 
 /// A connected display, as the window system reports it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DisplayInfo {
     pub index: usize,
+    /// Its name as the system shows it ("3DTV", "HP 27f"); a second display of the same name
+    /// gets " (2)" after it.
     pub name: String,
+    /// The name the window system gave it before SoftPresenter asked macOS ("Monitor #0"),
+    /// which screens set up then are saved under.
+    pub old_name: String,
+    /// The main display, with the menu bar, where the operator works. No screen fills it.
+    pub main: bool,
     pub x: i32,
     pub y: i32,
     pub w: u32,
     pub h: u32,
+}
+
+impl DisplayInfo {
+    /// True when a screen saved with this display name means this display.
+    pub fn is_named(&self, name: &str) -> bool {
+        self.name == name || (!self.old_name.is_empty() && self.old_name == name)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,7 +59,7 @@ pub fn choose_output(
     Ok(displays
         .iter()
         .map(|d| d.index)
-        .filter(|index| !operator.contains(index))
+        .filter(|index| !operator.contains(index) && !displays.iter().any(|d| d.index == *index && d.main))
         .min()
         .map_or(Placement::Windowed, Placement::Fullscreen))
 }
@@ -55,7 +69,9 @@ mod tests {
     use super::*;
 
     fn displays(n: usize) -> Vec<DisplayInfo> {
-        (0..n).map(|index| DisplayInfo { index, name: format!("d{index}"), x: 0, y: 0, w: 1920, h: 1080 }).collect()
+        (0..n)
+            .map(|index| DisplayInfo { index, name: format!("d{index}"), w: 1920, h: 1080, ..Default::default() })
+            .collect()
     }
 
     #[test]

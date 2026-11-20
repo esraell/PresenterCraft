@@ -19,6 +19,8 @@ objc2-core-video = "0.3"
 objc2-core-graphics = "0.3"
 objc2-image-io = "0.3"
 objc2-core-foundation = "0.3"
+# The names macOS gives the displays ("HP 27f", "3DTV"), for the Screens window.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSScreen", "NSGraphics"] }
 
 # Calls into the system's media frameworks need `unsafe`; this crate alone allows it, and only
 # in its macOS module. Every unsafe block says why it is sound.

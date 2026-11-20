@@ -399,18 +399,44 @@ fn operator_displays(
     operator
 }
 
-fn display_list(monitors: impl Iterator<Item = winit::monitor::MonitorHandle>) -> Vec<DisplayInfo> {
-    monitors
-        .enumerate()
-        .map(|(index, m)| DisplayInfo {
+/// The connected displays, named as macOS names them in System Settings, and which is the main
+/// display (`primary`, with the menu bar).
+fn display_list(
+    monitors: impl Iterator<Item = winit::monitor::MonitorHandle>,
+    primary: Option<winit::monitor::MonitorHandle>,
+) -> Vec<DisplayInfo> {
+    let names = sp_video::display_names();
+    let mut list: Vec<DisplayInfo> = Vec::new();
+    for (index, m) in monitors.enumerate() {
+        let old_name = m.name().unwrap_or_else(|| "Display".to_owned());
+        #[cfg(target_os = "macos")]
+        let named = {
+            use winit::platform::macos::MonitorHandleExtMacOS;
+            let id = m.native_id();
+            names.iter().find(|(have, _)| *have == id).map(|(_, name)| name.clone())
+        };
+        #[cfg(not(target_os = "macos"))]
+        let named: Option<String> = {
+            let _ = &names;
+            None
+        };
+        let mut name = named.unwrap_or_else(|| old_name.clone());
+        let alike = list.iter().filter(|d| d.name == name || d.name.starts_with(&format!("{name} ("))).count();
+        if alike > 0 {
+            name = format!("{name} ({})", alike + 1);
+        }
+        list.push(DisplayInfo {
             index,
-            name: m.name().unwrap_or_else(|| "Display".to_owned()),
+            name,
+            old_name,
+            main: primary.as_ref() == Some(&m),
             x: m.position().x,
             y: m.position().y,
             w: m.size().width,
             h: m.size().height,
-        })
-        .collect()
+        });
+    }
+    list
 }
 
 /// Draws the home window's last frame again into a texture and saves it as a PNG.
@@ -749,10 +775,11 @@ struct App {
 impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Option<Running>, String> {
         let monitors: Vec<_> = el.available_monitors().collect();
-        let displays = display_list(monitors.iter().cloned());
+        let displays = display_list(monitors.iter().cloned(), el.primary_monitor());
         if self.options.list_displays {
             for d in &displays {
-                println!("display {}: {} {}x{} at {},{}", d.index, d.name, d.w, d.h, d.x, d.y);
+                let main = if d.main { " (main display)" } else { "" };
+                println!("display {}: {} {}x{} at {},{}{main}", d.index, d.name, d.w, d.h, d.x, d.y);
             }
             return Ok(None);
         }
@@ -2914,8 +2941,43 @@ impl App {
             running.ndi_checked = Some(Instant::now());
         }
         let monitors: Vec<_> = el.available_monitors().collect();
-        let displays = display_list(monitors.iter().cloned());
+        let displays = display_list(monitors.iter().cloned(), el.primary_monitor());
         let operator = operator_displays(&monitors, running.home_window.current_monitor(), el.primary_monitor());
+        // A screen set up as Automatic (no longer offered) is given the first display that isn't
+        // the main one and isn't taken; one saved under a display's old name ("Monitor #0") is
+        // given the name System Settings shows ("3DTV"). Either way it is saved so.
+        let mut given = false;
+        for at in 0..running.home_state.screens.len() {
+            let taken: Vec<String> = running
+                .home_state
+                .screens
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != at)
+                .filter_map(|(_, screen)| match &screen.output {
+                    screens::Output::Display(name) => Some(name.clone()),
+                    _ => None,
+                })
+                .collect();
+            let screen = &mut running.home_state.screens[at];
+            let now = match &screen.output {
+                screens::Output::Automatic => displays
+                    .iter()
+                    .find(|d| !d.main && !taken.iter().any(|name| d.is_named(name)))
+                    .map(|d| d.name.clone()),
+                screens::Output::Display(name) => {
+                    displays.iter().find(|d| d.old_name == *name && d.name != *name).map(|d| d.name.clone())
+                }
+                _ => None,
+            };
+            if let Some(name) = now {
+                screen.output = screens::Output::Display(name);
+                given = true;
+            }
+        }
+        if given {
+            running.home_state.screens_changed = true;
+        }
         if displays != running.home_state.displays {
             running.home_state.displays = displays.clone();
         }
@@ -4278,7 +4340,9 @@ impl ApplicationHandler<AppEvent> for App {
                 running.home_state.actions_to_run.extend(startup);
                 // A display asked for on the command line takes the first screen, this run only.
                 if let Some(index) = self.options.output_display
-                    && let Some(display) = display_list(el.available_monitors()).into_iter().find(|d| d.index == index)
+                    && let Some(display) = display_list(el.available_monitors(), el.primary_monitor())
+                        .into_iter()
+                        .find(|d| d.index == index)
                     && let Some(first) = running.home_state.screens.first_mut()
                 {
                     first.output = screens::Output::Display(display.name);

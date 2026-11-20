@@ -17,3 +17,8 @@ pub fn pdf_pages(
 ) -> Result<usize, String> {
     Err("PDF files can be turned into slides on macOS only, for now. Export the slides as pictures instead.".to_owned())
 }
+
+/// Display names come from the window system on other systems.
+pub fn display_names() -> Vec<(u32, String)> {
+    Vec::new()
+}

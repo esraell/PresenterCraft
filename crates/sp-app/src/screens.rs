@@ -159,7 +159,12 @@ pub fn place_all(screens: &[Screen], displays: &[DisplayInfo], operator: &[usize
                 Ok(Placement::Fullscreen(index)) => Placed::Fullscreen(index),
                 _ => Placed::Window,
             },
-            Output::Display(name) => match displays.iter().find(|display| display.name == *name) {
+            Output::Display(name) => match displays.iter().find(|display| display.is_named(name)) {
+                // The main display is where the operator works; a screen never covers it.
+                Some(display) if display.main => Placed::Nothing(format!(
+                    "\"{}\" is the main display, where SoftPresenter's own window is. Choose another display.",
+                    display.name
+                )),
                 Some(display) => Placed::Fullscreen(display.index),
                 None => Placed::Nothing(format!("Disconnected: \"{name}\" is not plugged in.")),
             },
@@ -264,7 +269,13 @@ mod tests {
         names
             .iter()
             .enumerate()
-            .map(|(index, name)| DisplayInfo { index, name: (*name).to_owned(), x: 0, y: 0, w: 1920, h: 1080 })
+            .map(|(index, name)| DisplayInfo {
+                index,
+                name: (*name).to_owned(),
+                w: 1920,
+                h: 1080,
+                ..Default::default()
+            })
             .collect()
     }
 
@@ -278,6 +289,28 @@ mod tests {
         assert_eq!(place_all(&one, &displays(&["Built-in"]), &[0]), [Placed::Window]);
         assert_eq!(place_all(&one, &displays(&["Built-in", "Projector"]), &[0]), [Placed::Fullscreen(1)]);
         assert_eq!(place_all(&one, &displays(&["Built-in", "Projector"]), &[1]), [Placed::Fullscreen(0)]);
+    }
+
+    #[test]
+    fn no_screen_fills_the_main_display_and_old_display_names_still_match() {
+        let displays = vec![
+            DisplayInfo {
+                index: 0,
+                name: "HP 27f".into(),
+                old_name: "Monitor #13643".into(),
+                main: true,
+                ..Default::default()
+            },
+            DisplayInfo { index: 1, name: "3DTV".into(), old_name: "Monitor #0".into(), ..Default::default() },
+        ];
+        let on_main = [screen("A", Output::Display("Monitor #13643".to_owned()))];
+        let placed = place_all(&on_main, &displays, &[0]);
+        assert!(matches!(&placed[0], Placed::Nothing(why) if why.contains("main display")), "{placed:?}");
+        let on_tv = [screen("A", Output::Display("Monitor #0".to_owned()))];
+        assert_eq!(place_all(&on_tv, &displays, &[0]), [Placed::Fullscreen(1)], "saved under its old name");
+        let automatic = [screen("A", Output::Automatic)];
+        assert_eq!(place_all(&automatic, &displays, &[]), [Placed::Window], "not knowing the operator's display");
+        assert_eq!(place_all(&automatic, &displays, &[0]), [Placed::Fullscreen(1)]);
     }
 
     #[test]

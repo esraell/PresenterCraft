@@ -400,3 +400,18 @@ fn draw_page(page: &CGPDFPage, max_width: u32, max_height: u32, space: &CGColorS
     CGContext::draw_pdf_page(context, Some(page));
     Some(Frame { width: width as u32, height: height as u32, rgba })
 }
+
+/// The names macOS gives the connected displays ("HP 27f", "3DTV"), as System Settings shows
+/// them, each with its display id. Only the main thread may ask; elsewhere there are none.
+pub fn display_names() -> Vec<(u32, String)> {
+    let Some(main_thread) = MainThreadMarker::new() else { return Vec::new() };
+    let key = NSString::from_str("NSScreenNumber");
+    objc2_app_kit::NSScreen::screens(main_thread)
+        .iter()
+        .filter_map(|screen| {
+            let description = screen.deviceDescription();
+            let number = description.objectForKey(&key)?.downcast::<NSNumber>().ok()?;
+            Some((number.unsignedIntValue(), screen.localizedName().to_string()))
+        })
+        .collect()
+}

@@ -214,9 +214,10 @@ feature changes, this page changes in the same commit.
   all showing the same picture, set up in the Screens window (**Option-Command-1**).
 - Stage screens for the people on stage: the words on screen now, the next slide's words, the
   time, a running timer and the stage message.
-- A screen set to Automatic fills a display the operator doesn't work on: never the one with
-  the main window or the menu bar. With one display, or before it is known which display is
-  the operator's, it opens in a window, so an output never covers the operator's screen.
+- Screens fill displays by the names System Settings shows ("3DTV", "HP 27f"). The main
+  display, with the menu bar, is never offered and never filled: it is where SoftPresenter's
+  own window is. A fresh start puts the first screen on the first other display, or in a
+  window on a Mac with one display.
 - Switching the audience (or stage) screens off closes their windows, so the display shows
   what is behind them, not black; NDI goes on sending black, so a stream keeps its source. A
   screen in a window opens on a display the operator doesn't work on when there is one.

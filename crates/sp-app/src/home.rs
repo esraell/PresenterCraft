@@ -2382,8 +2382,9 @@ fn edit_view(
 /// What an output is called in the Screens window's menus.
 fn output_label(output: &Output, displays: &[DisplayInfo]) -> String {
     match output {
-        Output::Automatic => "Automatic".to_owned(),
-        Output::Display(name) => match displays.iter().find(|display| display.name == *name) {
+        Output::Automatic => "Not chosen yet".to_owned(),
+        Output::Display(name) => match displays.iter().find(|display| display.is_named(name)) {
+            Some(display) if display.main => format!("{}   (main display)", display.name),
             Some(display) => format!("{}   {} x {}", display.name, display.w, display.h),
             None => format!("{name}   (disconnected)"),
         },
@@ -2393,10 +2394,11 @@ fn output_label(output: &Output, displays: &[DisplayInfo]) -> String {
     }
 }
 
-/// The outputs a screen can be given: automatic, each connected display, a window, NDI, off.
+/// The outputs a screen can be given: each connected display but the main one (where the
+/// operator works), a window, NDI, off.
 fn output_choices(current: &Output, screen_name: &str, displays: &[DisplayInfo]) -> Vec<Output> {
-    let mut choices = vec![Output::Automatic];
-    choices.extend(displays.iter().map(|display| Output::Display(display.name.clone())));
+    let mut choices: Vec<Output> =
+        displays.iter().filter(|display| !display.main).map(|display| Output::Display(display.name.clone())).collect();
     choices.push(Output::Window);
     // Choosing NDI again keeps the name already given.
     choices.push(match current {
@@ -3215,7 +3217,7 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
         });
         ui.add_space(10.0);
         let about = match &screen.output {
-            Output::Automatic => "Automatic fills a display you don't work on: never the one with the main window or the menu bar. With one display it uses a window.",
+            Output::Automatic => "Choose the display this screen fills. The main display, with the menu bar, is kept for SoftPresenter's own window.",
             Output::Display(_) => {
                 "If this display is unplugged the screen shows nowhere until it is back; it never moves to another display."
             }
@@ -5796,8 +5798,15 @@ mod tests {
                 screen_selected: selected,
                 screens: screens.clone(),
                 displays: vec![
-                    DisplayInfo { index: 0, name: "Built-in".into(), x: 0, y: 0, w: 3024, h: 1964 },
-                    DisplayInfo { index: 1, name: "Projector".into(), x: 3024, y: 0, w: 1920, h: 1080 },
+                    DisplayInfo {
+                        index: 0,
+                        name: "Built-in".into(),
+                        w: 3024,
+                        h: 1964,
+                        main: true,
+                        ..Default::default()
+                    },
+                    DisplayInfo { index: 1, name: "Projector".into(), x: 3024, w: 1920, h: 1080, ..Default::default() },
                 ],
                 ..HomeState::default()
             };
