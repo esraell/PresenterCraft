@@ -204,7 +204,7 @@ fn draw_objects(
                 Some(look) if look.scaling == Scaling::ContainerUpOrDown => fitted_container(fonts, text, &look, rect),
                 _ => rect,
             },
-            ObjectKind::Shape { .. } | ObjectKind::Image { .. } => rect,
+            ObjectKind::Shape { .. } | ObjectKind::Image { .. } | ObjectKind::Web { .. } => rect,
         };
         // Turn the object about its own centre.
         let centre = (f64::from(rect.x + rect.w / 2.0), f64::from(rect.y + rect.h / 2.0));
@@ -220,7 +220,7 @@ fn draw_objects(
         // The object's outline: its shape, or the box a text object sits in.
         let outline = match &object.kind {
             ObjectKind::Shape { shape } => shape_path(*shape, rect),
-            ObjectKind::Text { .. } | ObjectKind::Image { .. } => {
+            ObjectKind::Text { .. } | ObjectKind::Image { .. } | ObjectKind::Web { .. } => {
                 let (x, y) = (f64::from(rect.x), f64::from(rect.y));
                 Rect::new(x, y, x + f64::from(rect.w), y + f64::from(rect.h)).to_path(0.1)
             }
@@ -258,6 +258,9 @@ fn draw_objects(
         if let ObjectKind::Image { file, fit } = &object.kind {
             draw_picture(scene, placed, file, *fit, rect, &outline);
         }
+        if let ObjectKind::Web { .. } = &object.kind {
+            draw_web(scene, placed, &crate::web_key(object_web_url(object), rect.w, rect.h), rect, &outline);
+        }
         if let ObjectKind::Text { text, style } = &object.kind {
             // The theme's style for the object's role, with the object's own settings over it.
             let Some(style) = template.text_style(object.role.as_ref(), style) else { continue };
@@ -268,6 +271,52 @@ fn draw_objects(
         }
     }
     overflow
+}
+
+thread_local! {
+    /// Whether a web page box with no picture yet is drawn as a placeholder, on this thread.
+    static PLACEHOLDERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Says whether this thread draws a placeholder for a web page box whose page has no picture
+/// yet: the operator's window (thumbnails, the editor) does; the screens never do, so the
+/// audience sees nothing until the page has loaded and drawn.
+pub fn show_placeholders(on: bool) {
+    PLACEHOLDERS.with(|placeholders| placeholders.set(on));
+}
+
+fn object_web_url(object: &sp_model::Object) -> &str {
+    match &object.kind {
+        ObjectKind::Web { url } => url,
+        _ => "",
+    }
+}
+
+/// A web page box: the page's newest picture, laid out at the box's size so it fills it; before
+/// there is one, nothing on the screens and a placeholder (a see-through panel with a globe, so
+/// what is under the box still shows) in the operator's window.
+fn draw_web(scene: &mut Scene, placed: Affine, key: &str, rect: SlideRect, outline: &BezPath) {
+    if let Some(picture) = crate::pictures::shown(key) {
+        paint_picture(scene, placed, &picture, ImageFit::Stretch, rect, outline);
+        return;
+    }
+    if !PLACEHOLDERS.with(std::cell::Cell::get) {
+        return;
+    }
+    let (x, y, w, h) = (f64::from(rect.x), f64::from(rect.y), f64::from(rect.w), f64::from(rect.h));
+    scene.fill(Fill::NonZero, placed, Color::from_rgba8(40, 56, 84, 110), None, outline);
+    scene.stroke(&Stroke::new(3.0), placed, Color::from_rgba8(90, 110, 140, 255), None, outline);
+    // A globe in the middle: a circle, its equator and a meridian.
+    let radius = (w.min(h) * 0.18).clamp(12.0, 120.0);
+    let centre = (x + w / 2.0, y + h / 2.0);
+    let ink = Color::from_rgba8(120, 150, 190, 255);
+    let line = Stroke::new((radius / 10.0).max(2.0));
+    scene.stroke(&line, placed, ink, None, &vello::kurbo::Circle::new(centre, radius));
+    scene.stroke(&line, placed, ink, None, &Ellipse::new(centre, (radius * 0.45, radius), 0.0));
+    let mut equator = BezPath::new();
+    equator.move_to((centre.0 - radius, centre.1));
+    equator.line_to((centre.0 + radius, centre.1));
+    scene.stroke(&line, placed, ink, None, &equator);
 }
 
 /// A picture object's picture in its place, fitted as it says. A picture that can't be read is
@@ -287,6 +336,19 @@ fn draw_picture(scene: &mut Scene, placed: Affine, file: &str, fit: ImageFit, re
         scene.stroke(&Stroke::new(4.0), placed, Color::from_rgba8(150, 150, 156, 255), None, &cross);
         return;
     };
+    paint_picture(scene, placed, &picture, fit, rect, outline);
+}
+
+/// A picture drawn in a place, fitted as asked and clipped to the outline.
+fn paint_picture(
+    scene: &mut Scene,
+    placed: Affine,
+    picture: &Picture,
+    fit: ImageFit,
+    rect: SlideRect,
+    outline: &BezPath,
+) {
+    let (x, y, w, h) = (f64::from(rect.x), f64::from(rect.y), f64::from(rect.w), f64::from(rect.h));
     let (pic_w, pic_h) = (f64::from(picture.width()), f64::from(picture.height()));
     let (scale_x, scale_y) = match fit {
         ImageFit::Fit => {

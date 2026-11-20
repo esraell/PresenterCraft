@@ -807,6 +807,9 @@ fn bring_objects(objects: &mut Vec<sp_model::Object>, opened: &Opened, library: 
             }
             None => false,
         },
+        // A web page box from another computer comes only with an address SoftPresenter would
+        // open anyway (https), so nothing else is ever loaded from a pack.
+        ObjectKind::Web { url } => sp_video::web::allowed(url),
         _ => true,
     });
 }

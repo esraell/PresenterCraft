@@ -82,6 +82,9 @@ pub enum ObjectKind {
         #[serde(default)]
         fit: ImageFit,
     },
+    /// A live web page in the object's place, laid out at the object's size. `url` is an
+    /// `https` address (the app opens nothing else).
+    Web { url: String },
 }
 
 /// How a picture sits in its object's place.
@@ -347,11 +350,24 @@ impl Object {
         }
     }
 
+    /// A web page box, two thirds of the slide, in the middle. With an empty address it shows
+    /// nothing until one is typed.
+    pub fn web(url: String) -> Object {
+        let (w, h) = (crate::SLIDE_WIDTH * 2.0 / 3.0, crate::SLIDE_HEIGHT * 2.0 / 3.0);
+        Object {
+            name: "Web page".to_owned(),
+            frame: Some(SlideRect { x: (crate::SLIDE_WIDTH - w) / 2.0, y: (crate::SLIDE_HEIGHT - h) / 2.0, w, h }),
+            fill: None,
+            kind: ObjectKind::Web { url },
+            ..Object::shape(Shape::Rectangle)
+        }
+    }
+
     /// The object's own text settings, over its theme box.
     pub fn text_style(&self) -> Option<&crate::TextStyle> {
         match &self.kind {
             ObjectKind::Text { style, .. } => Some(style),
-            ObjectKind::Shape { .. } | ObjectKind::Image { .. } => None,
+            ObjectKind::Shape { .. } | ObjectKind::Image { .. } | ObjectKind::Web { .. } => None,
         }
     }
 
@@ -359,14 +375,14 @@ impl Object {
     pub fn text_style_mut(&mut self) -> Option<&mut crate::TextStyle> {
         match &mut self.kind {
             ObjectKind::Text { style, .. } => Some(style),
-            ObjectKind::Shape { .. } | ObjectKind::Image { .. } => None,
+            ObjectKind::Shape { .. } | ObjectKind::Image { .. } | ObjectKind::Web { .. } => None,
         }
     }
 
     pub fn as_text(&self) -> Option<&str> {
         match &self.kind {
             ObjectKind::Text { text, .. } => Some(text),
-            ObjectKind::Shape { .. } | ObjectKind::Image { .. } => None,
+            ObjectKind::Shape { .. } | ObjectKind::Image { .. } | ObjectKind::Web { .. } => None,
         }
     }
 }
@@ -815,12 +831,14 @@ impl Presentation {
                     .objects
                     .iter()
                     .map(|object| {
-                        // Text boxes come empty; shapes come as they are.
+                        // Text boxes come empty; shapes, pictures and web pages come as they are.
                         let kind = match &object.kind {
                             ObjectKind::Text { style, .. } => {
                                 ObjectKind::Text { text: String::new(), style: style.clone() }
                             }
-                            other @ (ObjectKind::Shape { .. } | ObjectKind::Image { .. }) => other.clone(),
+                            other @ (ObjectKind::Shape { .. } | ObjectKind::Image { .. } | ObjectKind::Web { .. }) => {
+                                other.clone()
+                            }
                         };
                         Object { id: Uuid::new_v4(), kind, ..object.clone() }
                     })

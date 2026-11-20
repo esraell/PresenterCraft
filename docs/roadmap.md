@@ -62,7 +62,6 @@ rather than a feature, but no church on Windows can use the app without them.
 - **Background colour for one slide**, and a setting to ignore slide background colours. (started: a background colour and picture for a whole theme) · S · Low
 - **A text style applied to all slides at once.** (started: Copy and Paste Text Style) · S · Low
 - **More fills.** Text as a cut-out, a media fill, background invert or blur; shapes filled with a picture, a video, a web page, a live camera, a background effect or another object on the slide. (started: colour, and linear and radial gradients) · M–L · Low
-- **Web page on a slide.** A box that shows a live web page. · M · Low
 - **Custom shapes and shape settings.** Draw shapes of your own with a pen; set a star's points and a polygon's sides; Option-drag to duplicate; Shift keeps proportions. (started: ten fixed shapes, and ⌘D duplicates) · M · Low
 - **Showing a slide from the editor.** Send the slide being edited to the screens. (started: Live Edit sends edits to the screens; Show in the editor goes back to the Show view) · S · Low
 - **Outline and text details.** Dashed outlines, an underline colour, and for scrolling text its speed, start point, edge fade and gap. (started: outline width and colour, and scroll direction) · S · Low
@@ -81,6 +80,7 @@ rather than a feature, but no church on Windows can use the app without them.
 
 ## Media and video
 
+- **A smoother web page engine.** Web pages on slides are drawn by macOS's web view, copied about 30 times a second, which shows moving content (a scrolling ticker, an animation) unevenly. Chromium drawn off-screen, frame by frame with the screens (as broadcast software does it), makes them smooth at 60 frames a second and brings web pages to Windows and Linux; it adds about 200 MB to the app. (started: web pages on slides through macOS's web view) · L · Medium
 - **Video on Windows and Linux, and AV1 on older Macs.** Every video format plays without installing anything there too; the other systems are L, and AV1 on Macs before M3 needs the dav1d decoder in the FFmpeg build (S). (started: macOS's own player and an LGPL FFmpeg inside the Mac app) · L · High
 - **What follows a video, and timing per item.** What comes after a video (the next, a random, the first or a chosen item), how it ends (stop, hold the last frame, black, clear, fade), looping for a count or a time, how long a picture stays, and whether clicking it again starts it over. (started: Loop on or off per item, and Play This Playlist, which goes round a media playlist with pictures for 8 seconds) · S–M · Medium
 - **In and out points, duration and start delay.** · M · Medium

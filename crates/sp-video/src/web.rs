@@ -126,7 +126,8 @@ impl WebPage {
         self.size
     }
 
-    /// Asks for a new picture of the page, unless one is on its way.
+    /// Asks for a new picture of the page, unless one is on its way or the page hasn't loaded
+    /// yet (so a half-drawn page is never shown).
     pub fn capture(&self) {
         #[cfg(target_os = "macos")]
         self.page.capture();

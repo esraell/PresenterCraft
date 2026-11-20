@@ -98,7 +98,7 @@ Every menu bar item, with its shortcut, is listed by `sp menu`; any of them can 
 ```
 ┌──────────────────┬─────────────────────────────────────────────┬───────────────────────────┐
 │ Song title       │ ruler ─────────────────────────────────────  │ [Shape] [Text] [Build]   │
-│ ┌──────────────┐ │        [Add Text] [Shapes ▾] [Media…]        │  (the open tab is light) │
+│ ┌──────────────┐ │  [Add Text] [Shapes ▾] [Media…] [Web Page]   │  (the open tab is light) │
 │ │ slide 1      │ │ ┌───────────────────────────────────────┐    │  font, size, colour,     │
 │ ├──────────────┤ │ │                                       │    │  outline, shadow, fill,  │
 │ │ slide 2      │ │ │         the slide, full size          │    │  gradient, spacing,      │
@@ -112,7 +112,8 @@ Every menu bar item, with its shortcut, is listed by `sp menu`; any of them can 
 - **Left**: the song's slides (click to edit another), then the slide's objects, front first
   (lock, hide, rename, drag to reorder).
 - **Canvas**: Add Text, Shapes, Media… (a picture or a video, which plays in its box when the
-  slide is on screen); pictures and videos can be dropped on it from the Finder. Double-click a
+  slide is on screen), Web Page (a box showing a live web page; its address is typed in the
+  Shape tab); pictures and videos can be dropped on it from the Finder. Double-click a
   text box to type in it. The letter keys add objects (T for a text box, one key per shape).
 - **Inspector**: Shape (place, fill, outline, shadow, flip), Text (words, font, size, colour,
   alignment, spacing, outline, shadow, gradient, linked text such as a clock or a timer), Build

@@ -397,6 +397,7 @@ the background. Anything else is refused, with the list of what is read.
 | `slide label SONG N LABEL\|none`, `slide notes SONG N TEXT\|none`, `slide hotkey SONG N KEY\|none` | A slide's label, operator notes and hot key (one letter or digit) |
 | `slide enable\|disable SONG N` | A switched-off slide is passed over by Next |
 | `slide transition SONG N KIND [SECONDS]\|none`, `slide template SONG N TEMPLATE\|auto`, `slide media SONG N ITEM\|none` | A slide's own transition, template, and the media it puts behind the words |
+| `slide web SONG N URL\|off` | A live web page on the slide: the address of its web page box, or a new box filling the slide, behind the words, if it has none (`off` takes it away). Only `https://` addresses (a bare name gets `https://` in front); `sp slide SONG N` lists the box as `Web page: URL`, and its JSON has `"kind": "web"` and `"url"` |
 
 Every change is saved at once, can be undone step by step, redraws the slide's picture, reloads
 it in an editor that has it open, and shows at once on a slide that is on screen.

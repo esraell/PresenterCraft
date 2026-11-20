@@ -82,6 +82,23 @@ pub(crate) fn picture_at(file: &str, drawn_side: f64) -> Option<Picture> {
     read
 }
 
+/// A picture put in place by [`show_picture`] (a web page's newest frame), and nothing else:
+/// never read from a file.
+pub(crate) fn shown(name: &str) -> Option<Picture> {
+    let kept = KEPT.get_or_init(|| Mutex::new(Kept::new(KEEP_BYTES)));
+    let mut kept = kept.lock().ok()?;
+    if !kept.live.contains(name) {
+        return None;
+    }
+    kept.get(name).flatten()
+}
+
+/// The name a web page box's frames are shown under: its address and its size in slide units
+/// (a page is laid out at its box's size, so two boxes of different sizes are two pages).
+pub fn web_key(url: &str, width: f32, height: f32) -> String {
+    format!("web:{}x{}:{url}", width.round() as i64, height.round() as i64)
+}
+
 /// Puts a picture in place of a file's, until it is forgotten: how a video on a slide shows its
 /// newest frame where its still would be.
 pub fn show_picture(file: &str, picture: Picture) {

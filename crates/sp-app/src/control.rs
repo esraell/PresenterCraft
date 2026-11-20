@@ -675,6 +675,8 @@ Changing a slide (each change is saved, can be undone, and shows on screen at on
   slide enable SONG N | slide disable SONG N     (a disabled slide is passed over)
   slide hotkey SONG N KEY|none | slide transition SONG N KIND [SECONDS] | none
   slide template SONG N TEMPLATE|auto | slide media SONG N MEDIA-ITEM|none
+  slide web SONG N URL|off     a live web page on the slide (a box filling it, behind the
+                               words, if it has none)
 
   Put a song name with spaces in quotes: slide style \"Blessed Assurance\" all size=90
 

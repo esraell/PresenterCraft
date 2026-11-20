@@ -658,6 +658,7 @@ impl crate::App {
             },
             "template" => self.slide_template(words),
             "media" => self.slide_media(words),
+            "web" => self.slide_web(words),
             _ => return None,
         };
         Some(result)
@@ -855,6 +856,46 @@ impl crate::App {
             let said =
                 item.as_ref().map_or_else(|| "no media".to_owned(), |(_, name)| format!("shows {name} behind it"));
             song.with_slide(index, changed).map(|song| (song, format!("slide {} {said}", index + 1)))
+        })
+    }
+
+    /// `slide web SONG N URL|off`: the address of the slide's web page box (one filling the slide,
+    /// behind its words, is made if it has none), or the box taken off.
+    fn slide_web(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "slide web SONG N URL|off   (an https:// address)";
+        let [song, number, address] = words else { return Err(usage.to_owned()) };
+        let off = address.eq_ignore_ascii_case("off") || address.eq_ignore_ascii_case("none");
+        let address = address.trim().to_owned();
+        let address = if !off && !address.contains("://") { format!("https://{address}") } else { address };
+        if !off && !sp_video::web::allowed(&address) {
+            return Err(format!("{address} isn't an address SoftPresenter shows: it must start with https://."));
+        }
+        self.slide_edit(&[song.clone(), number.clone()], false, move |song, index, _| {
+            let (_, slide) = song.slide(index)?;
+            let mut changed = slide.clone();
+            let said = if off {
+                changed.objects.retain(|object| !matches!(object.kind, ObjectKind::Web { .. }));
+                format!("slide {} has no web page", index + 1)
+            } else {
+                match changed.objects.iter_mut().find_map(|object| match &mut object.kind {
+                    ObjectKind::Web { url } => Some(url),
+                    _ => None,
+                }) {
+                    Some(url) => *url = address.clone(),
+                    None => {
+                        let mut web = sp_model::Object::web(address.clone());
+                        web.frame = Some(sp_model::SlideRect {
+                            x: 0.0,
+                            y: 0.0,
+                            w: sp_model::SLIDE_WIDTH,
+                            h: sp_model::SLIDE_HEIGHT,
+                        });
+                        changed.objects.insert(0, web);
+                    }
+                }
+                format!("slide {} shows the web page {address}", index + 1)
+            };
+            song.with_slide(index, changed).map(|song| (song, said))
         })
     }
 

@@ -573,6 +573,41 @@ fn nothing_selected(ui: &mut egui::Ui) {
     );
 }
 
+/// A web page box's address: what is typed is kept while the field has the keyboard, and taken
+/// when it is left (with https:// put in front of a bare name). An address that isn't https is
+/// refused, and says so.
+fn web_address(ui: &mut egui::Ui, object: sp_model::Uuid, url: &mut String) {
+    ui.label(egui::RichText::new("Web Page").size(12.5).strong().color(INK));
+    ui.add_space(2.0);
+    let id = ui.make_persistent_id(("web address", object));
+    let bad_id = id.with("refused");
+    let mut typed = ui.data_mut(|data| data.get_temp::<String>(id)).unwrap_or_else(|| url.clone());
+    let field = ui.add(egui::TextEdit::singleline(&mut typed).hint_text("https://…").desired_width(INNER));
+    if ui.data_mut(|data| data.remove_temp::<bool>(egui::Id::unique("web address focus"))).is_some() {
+        field.request_focus();
+    }
+    if field.has_focus() {
+        ui.data_mut(|data| data.insert_temp(id, typed));
+    } else if field.lost_focus() {
+        ui.data_mut(|data| data.remove::<String>(id));
+        let typed = typed.trim();
+        let typed =
+            if !typed.is_empty() && !typed.contains("://") { format!("https://{typed}") } else { typed.to_owned() };
+        let refused = !typed.is_empty() && !sp_video::web::allowed(&typed);
+        if !refused {
+            *url = typed;
+        }
+        ui.data_mut(|data| data.insert_temp(bad_id, refused));
+    }
+    let words = if ui.data_mut(|data| data.get_temp::<bool>(bad_id)).unwrap_or(false) {
+        egui::RichText::new("Only web pages whose address starts with https:// can be shown.")
+            .color(crate::studio::TALLY)
+    } else {
+        egui::RichText::new("The page shows, live, while the slide is on screen.").color(crate::studio::TEXT_DIM)
+    };
+    ui.label(words.size(11.5));
+}
+
 fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
     let for_theme = state.theme_edit.is_some();
     let lock_shape = &mut state.inspector.lock_shape;
@@ -688,6 +723,13 @@ fn shape_tab(ui: &mut egui::Ui, state: &mut HomeState, theme: &Theme) {
         object.frame = Some(edited);
     }
     rule(ui);
+
+    // A web page: its address. The page is laid out at the box's size.
+    let object_id = object.id;
+    if let sp_model::ObjectKind::Web { url } = &mut object.kind {
+        web_address(ui, object_id, url);
+        rule(ui);
+    }
 
     // A picture: how it sits in its place.
     if let sp_model::ObjectKind::Image { fit, .. } = &mut object.kind {

@@ -25,15 +25,26 @@ fn main() {
     let started = std::time::Instant::now();
     let mut pictures = 0;
     let mut last = None;
+    let mut marks: Vec<u32> = Vec::new();
     while started.elapsed().as_secs_f64() < 5.0 {
         page.capture();
         sp_video::web::pump(1.0 / 30.0);
         if let Some(frame) = frames.next() {
             pictures += 1;
+            // The test page writes its frame number into the colour of its top-left corner.
+            let mark = u32::from(frame.rgba[4 * (4 * frame.width as usize + 4)])
+                + 256 * u32::from(frame.rgba[4 * (4 * frame.width as usize + 4) + 1]);
+            marks.push(mark);
             last = Some(frame);
         }
     }
     println!("loading: {:?}; pictures in 5 s: {pictures}", page.loading());
+    let distinct = {
+        let mut seen = marks.clone();
+        seen.dedup();
+        seen.len()
+    };
+    println!("page frames seen: first {:?}, last {:?}, {distinct} different pictures", marks.first(), marks.last());
     if let Some(frame) = &last {
         let alpha = |x: usize, y: usize| frame.rgba[(y * frame.width as usize + x) * 4 + 3];
         println!(

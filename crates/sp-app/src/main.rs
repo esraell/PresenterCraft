@@ -417,6 +417,46 @@ enum AppEvent {
     PackDone,
 }
 
+/// The most web pages kept running at once: those on screen, then those loaded ahead. Each is a
+/// web process of its own (about 40 MB).
+const MOST_WEB_PAGES: usize = 6;
+/// How often a web page on screen is asked for a new picture: as often as the screens draw.
+const WEB_LIVE_EVERY: Duration = Duration::from_millis(33);
+/// How often a web page loaded ahead is asked for one: enough to have a fresh picture ready,
+/// and to show it in the editor.
+const WEB_AHEAD_EVERY: Duration = Duration::from_millis(500);
+
+/// The page of a web page box, kept running while it is wanted.
+struct WebBox {
+    /// What its pictures are shown under (`sp_render::web_key`).
+    key: String,
+    page: sp_video::WebPage,
+    /// On the screens now (they take its pictures); otherwise loaded ahead, for a slide that
+    /// may come next.
+    live: bool,
+    /// When a picture was last asked for.
+    asked: Option<Instant>,
+    /// How many of its pictures went to the operator's window (for SOFTPRESENTER_TRACE_WEB).
+    pictures: u32,
+}
+
+/// The host part of a web address, for the log (the rest may hold a key or a name).
+fn web_host(url: &str) -> &str {
+    url.split_once("://").map_or("", |(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
+}
+
+/// True for a web address that costs money when it is open: a VoxLive screen's live display,
+/// which joins the captions and can start a translation. Its test pattern (`demo=1`) and
+/// preview (`preview=1`) cost nothing.
+fn web_costs(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let host = web_host(&lower);
+    (host == "voxlive.app" || host.ends_with(".voxlive.app"))
+        && lower.contains("/screen/")
+        && !lower.contains("demo=1")
+        && !lower.contains("preview=1")
+}
+
 /// Media bin items a pack brings in, as they come: the id each had where the pack was made, and
 /// its id in this bin (`None` when the pack didn't have it); and how many were added to the bin.
 #[derive(Default)]
@@ -873,6 +913,12 @@ struct App {
     video: Option<(Uuid, sp_video::Player)>,
     /// A video in a box on the slide on screen, by the file the box names, playing.
     slide_videos: Vec<(String, sp_video::Player)>,
+    /// The pages of web page boxes: those on screen, and those loaded ahead (see `WebBox`).
+    web_pages: Vec<WebBox>,
+    /// Web page boxes whose page couldn't be opened, not tried again until they change.
+    web_refused: Vec<String>,
+    /// Testing aid: when the web pages' state was last logged (SOFTPRESENTER_TRACE_WEB).
+    web_traced: Option<Instant>,
     /// The song on the Announcements layer: which, the slide shown, since when, and what was
     /// sent to the screens.
     announcing: Option<Announcing>,
@@ -1508,6 +1554,150 @@ impl App {
         }
     }
 
+    /// Opens the pages web page boxes want, and closes the rest. The boxes on the slide on screen
+    /// (and in the layout behind it) are on screen; the boxes of the song open in the window and
+    /// of the slide being edited are loaded ahead, so a page has loaded and drawn by the time its
+    /// slide is shown, rather than flashing in as it loads. A page is kept while it is wanted,
+    /// and never loaded again only because its slide is shown again. A VoxLive screen's live
+    /// address (it starts a paid translation) is never loaded ahead.
+    fn sync_web_pages(&mut self) {
+        fn boxes_in(objects: &[sp_model::Object], live: bool, into: &mut Vec<(String, String, u32, u32, bool)>) {
+            for object in objects.iter().filter(|object| !object.hidden) {
+                let sp_model::ObjectKind::Web { url } = &object.kind else { continue };
+                if !sp_video::web::allowed(url) || (!live && web_costs(url)) {
+                    continue;
+                }
+                let place = object.frame.unwrap_or(sp_model::SlideRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: sp_model::SLIDE_WIDTH,
+                    h: sp_model::SLIDE_HEIGHT,
+                });
+                let key = sp_render::web_key(url, place.w, place.h);
+                match into.iter_mut().find(|(have, ..)| *have == key) {
+                    Some(found) => found.4 |= live,
+                    None => into.push((key, url.clone(), place.w.round() as u32, place.h.round() as u32, live)),
+                }
+            }
+        }
+        let mut wanted = Vec::new();
+        if let (Some(at), Some((_, slide))) = (self.show.live(), self.show.live_slide()) {
+            boxes_in(&slide.objects, true, &mut wanted);
+            if let Some(behind) = sp_render::layout_objects(slide, self.theme_of(at.presentation)) {
+                boxes_in(&behind.objects, true, &mut wanted);
+            }
+        }
+        if let Some(song) = self.show.presentations().get(self.show.selected()) {
+            for (_, slide) in song.slides() {
+                boxes_in(&slide.objects, false, &mut wanted);
+            }
+        }
+        if let Some(draft) = self.running.as_ref().and_then(|running| running.home_state.editing.as_ref()) {
+            boxes_in(&draft.slide.objects, false, &mut wanted);
+        }
+        // Those on screen first, then as many loaded ahead as there is room for.
+        wanted.sort_by_key(|(.., live)| !*live);
+        wanted.truncate(MOST_WEB_PAGES);
+        let unchanged = wanted.len() == self.web_pages.len()
+            && wanted.iter().zip(&self.web_pages).all(|((key, .., live), web)| *key == web.key && *live == web.live);
+        if unchanged {
+            return;
+        }
+        let mut kept = std::mem::take(&mut self.web_pages);
+        for (key, url, width, height, live) in wanted {
+            if let Some(at) = kept.iter().position(|web| web.key == key) {
+                let mut web = kept.remove(at);
+                web.live = live;
+                self.web_pages.push(web);
+                continue;
+            }
+            if self.web_refused.contains(&key) {
+                continue;
+            }
+            match sp_video::WebPage::open(&url, width, height) {
+                Ok(page) => {
+                    applog::event("web", &format!("opened a web page box ({})", web_host(&url)));
+                    self.web_pages.push(WebBox { key, page, live, asked: None, pictures: 0 });
+                }
+                Err(problem) => {
+                    applog::problem("web", &problem);
+                    self.web_refused.push(key);
+                }
+            }
+        }
+        for gone in kept {
+            applog::event("web", &format!("closed a web page box ({})", web_host(gone.page.address())));
+            sp_render::forget_picture(&gone.key);
+        }
+    }
+
+    /// Keeps the pages of web page boxes drawing: one on screen asks for a new picture as often
+    /// as the screens can show one, one loaded ahead twice a second (its picture goes to the
+    /// operator's window: the editor and thumbnails). Says when to look again.
+    fn tick_web(&mut self) -> Option<Instant> {
+        self.sync_web_pages();
+        if self.web_pages.is_empty() {
+            return None;
+        }
+        let now = Instant::now();
+        let mut fresh = false;
+        let mut first = false;
+        for web in &mut self.web_pages {
+            let every = if web.live { WEB_LIVE_EVERY } else { WEB_AHEAD_EVERY };
+            if web.asked.is_none_or(|asked| now.duration_since(asked) >= every) {
+                web.page.capture();
+                web.asked = Some(now);
+            }
+            if !web.live
+                && let Some(frame) = web.page.frames().next()
+                && let Some(picture) = sp_render::Picture::from_rgba(frame.width, frame.height, frame.rgba)
+            {
+                sp_render::show_picture(&web.key, picture);
+                web.pictures += 1;
+                first |= web.pictures == 1;
+                fresh = true;
+            }
+        }
+        if let Some(running) = self.running.as_mut() {
+            // A page's first picture replaces its placeholder in the thumbnails, drawn again.
+            if first {
+                running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
+                running.home_window.request_redraw();
+            }
+            // The Edit view's picture of the slide is drawn again with each new one.
+            if fresh && running.home_state.editing.is_some() {
+                running.canvas_for = None;
+                running.home_window.request_redraw();
+            }
+        }
+        // Testing aid: SOFTPRESENTER_TRACE_WEB logs, once a second, each page's state: whether
+        // it is on screen, how far it has loaded, and whether the page thinks it can be seen.
+        if std::env::var_os("SOFTPRESENTER_TRACE_WEB").is_some()
+            && self.web_traced.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1))
+        {
+            self.web_traced = Some(now);
+            for web in &self.web_pages {
+                let (live, loading, pictures) = (web.live, web.page.loading(), web.pictures);
+                web.page.ask(
+                    "JSON.stringify([document.visibilityState, Math.round(performance.now()), window.raf || 0])",
+                    move |text| {
+                        applog::event(
+                            "web",
+                            &format!(
+                                "on screen {live}, {loading:?}, {pictures} pictures for the window, page says {}",
+                                text.unwrap_or_default()
+                            ),
+                        );
+                    },
+                );
+            }
+        }
+        self.web_pages
+            .iter()
+            .map(|web| web.asked.unwrap_or(now) + if web.live { WEB_LIVE_EVERY } else { WEB_AHEAD_EVERY })
+            .min()
+    }
+
     /// Keeps the videos in boxes on the slide going; if the system's player can't play one,
     /// FFmpeg takes it over. Says when to look again.
     fn tick_slide_video(&mut self) -> Option<Instant> {
@@ -1784,9 +1974,16 @@ impl App {
     fn refresh_output(&mut self) {
         self.sync_video();
         self.sync_slide_video();
+        self.sync_web_pages();
         let video = self.video.as_ref().map(|(_, player)| player.frames());
-        let slide_video: Vec<(String, sp_video::Frames)> =
-            self.slide_videos.iter().map(|(file, player)| (file.clone(), player.frames())).collect();
+        // Videos in boxes, and the pages of web page boxes on screen: the screens take each
+        // one's newest picture as it comes.
+        let slide_video: Vec<(String, sp_video::Frames)> = self
+            .slide_videos
+            .iter()
+            .map(|(file, player)| (file.clone(), player.frames()))
+            .chain(self.web_pages.iter().filter(|web| web.live).map(|web| (web.key.clone(), web.page.frames())))
+            .collect();
         let media_fit = self.live_media_fit();
         let theme = self.show.live().map_or(&self.theme, |at| self.theme_of(at.presentation)).clone();
         let about = self.stage_about();
@@ -4984,11 +5181,22 @@ impl App {
                 running.home_state.renaming_template = Some((0, template));
             }
             // Testing aid: also open the slide editor, to check how it looks.
-            if running.frames == GO_LIVE_AT + 2 && std::env::var_os("SOFTPRESENTER_CAPTURE_EDITOR").is_some() {
-                let at = sp_engine::SlideRef { presentation: 0, slide: 2 };
+            // Testing aid: `selected` edits the first slide of the song open in the window (once
+            // SOFTPRESENTER_OPEN_ITEM has opened it), with its top object selected; otherwise the
+            // first song's third slide.
+            let picked = std::env::var("SOFTPRESENTER_CAPTURE_EDITOR").as_deref() == Ok("selected");
+            if running.frames == GO_LIVE_AT + if picked { 6 } else { 2 }
+                && std::env::var_os("SOFTPRESENTER_CAPTURE_EDITOR").is_some()
+            {
+                let at = if picked {
+                    sp_engine::SlideRef { presentation: self.show.selected(), slide: 0 }
+                } else {
+                    sp_engine::SlideRef { presentation: 0, slide: 2 }
+                };
                 running.home_state.editing = EditDraft::of(&self.show, at);
                 if let Some(draft) = running.home_state.editing.as_mut() {
-                    draft.selected = draft.slide.objects.first().map(|object| object.id);
+                    draft.selected = if picked { draft.slide.objects.last() } else { draft.slide.objects.first() }
+                        .map(|object| object.id);
                     // Testing aid: as if the box had been double-clicked.
                     if std::env::var("SOFTPRESENTER_CAPTURE_EDITOR").as_deref() == Ok("typing") {
                         draft.typing = draft.selected;
@@ -6239,6 +6447,7 @@ impl ApplicationHandler<AppEvent> for App {
         self.sync_overlay();
         let video_at = self.tick_video();
         let box_video_at = self.tick_slide_video();
+        let web_at = self.tick_web();
         let audio_at = self.tick_audio();
         let announce_at = self.tick_announcements();
         let cycle_at = self.tick_media_cycle();
@@ -6278,6 +6487,7 @@ impl ApplicationHandler<AppEvent> for App {
             save_at,
             video_at,
             box_video_at,
+            web_at,
             audio_at,
             announce_at,
             cycle_at,
@@ -6385,6 +6595,9 @@ fn main() -> ExitCode {
     }
     // Picture objects on slides are read from the app's Images folder.
     sp_render::set_picture_loader(images::load);
+    // The operator's window draws a placeholder for a web page box with no picture yet; the
+    // screens, on their own threads, never do.
+    sp_render::show_placeholders(true);
 
     let (media_paths, song_paths): (Vec<PathBuf>, Vec<PathBuf>) =
         options.paths.iter().cloned().partition(|path| media::is_media(path));
@@ -6542,6 +6755,9 @@ fn main() -> ExitCode {
         started: Instant::now(),
         video: None,
         slide_videos: Vec::new(),
+        web_pages: Vec::new(),
+        web_refused: Vec::new(),
+        web_traced: None,
         media_playlists: Vec::new(),
         announcing: None,
         stamps,
@@ -6618,6 +6834,17 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_voxlive_screens_live_address_counts_as_costing_and_its_test_pattern_doesnt() {
+        assert!(super::web_costs("https://voxlive.app/listen/grace/screen/abc2345"));
+        assert!(super::web_costs("https://VoxLive.app/listen/grace/screen/abc2345?x=1"));
+        assert!(!super::web_costs("https://voxlive.app/listen/grace/screen/abc2345?demo=1"));
+        assert!(!super::web_costs("https://voxlive.app/listen/grace/screen/abc2345?preview=1&host=app"));
+        assert!(!super::web_costs("https://example.com/listen/grace/screen/abc2345"));
+        assert!(!super::web_costs("https://voxlive.app/pricing"));
+        assert_eq!(super::web_host("https://example.com:8443/a?b#c"), "example.com:8443");
+    }
+
     use super::*;
 
     fn args(list: &[&str]) -> Result<Option<Options>, String> {

@@ -317,6 +317,7 @@ fn object_name(object: &Object) -> String {
     match (&object.role, &object.kind) {
         (Some(role), _) => role.label(),
         (None, ObjectKind::Text { .. }) => "Text".to_owned(),
+        (None, ObjectKind::Web { .. }) => "Web page".to_owned(),
         (None, _) => "Object".to_owned(),
     }
 }
@@ -559,6 +560,14 @@ fn describe(slide: &Slide, number: usize, object: &Object, theme: &Theme) -> (St
                 data["style"] = own;
                 data["look"] = serde_json::to_value(&look).unwrap_or_default();
             }
+        }
+        ObjectKind::Web { url } => {
+            text.push_str(&format!(
+                ": {url}\n    at x={:.0} y={:.0} w={:.0} h={:.0} ({whose_place})",
+                place.x, place.y, place.w, place.h
+            ));
+            data["kind"] = serde_json::json!("web");
+            data["url"] = serde_json::json!(url);
         }
         _ => {
             text.push_str(&format!(

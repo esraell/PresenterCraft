@@ -282,7 +282,8 @@ impl Page {
     }
 
     pub fn capture(&self) {
-        if self.asked.get().is_some_and(|at| at.elapsed() < GIVE_UP) {
+        // Nothing until the page has loaded, so a half-drawn page is never shown.
+        if self.loading() != Loading::Loaded || self.asked.get().is_some_and(|at| at.elapsed() < GIVE_UP) {
             return;
         }
         let Some(mtm) = MainThreadMarker::new() else { return };

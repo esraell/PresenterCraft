@@ -453,6 +453,8 @@ fn run(
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(msg) => Some(msg),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // With a video's (or web page's) newest picture, as the screens show it.
+                    output.take_video_picture();
                     output.draw(false);
                     continue;
                 }

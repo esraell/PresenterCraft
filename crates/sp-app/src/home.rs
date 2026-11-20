@@ -1749,11 +1749,12 @@ fn edit_view(
                                 }
                                 // A hidden object's row is greyed.
                                 let ink = if object.hidden { Color32::from_gray(120) } else { Color32::from_gray(230) };
-                                // T for text, a diamond for a shape.
+                                // T for text, a diamond for a shape, a globe for a web page.
                                 let mark = match object.kind {
                                     sp_model::ObjectKind::Text { .. } => "T",
                                     sp_model::ObjectKind::Image { .. } => "▣",
                                     sp_model::ObjectKind::Shape { .. } => "◆",
+                                    sp_model::ObjectKind::Web { .. } => "🌐",
                                 };
                                 ui.painter().text(
                                     row.left_center() + vec2(12.0, 0.0),
@@ -2748,6 +2749,20 @@ fn edit_view(
             .clicked()
         {
             state.picture_request = true;
+        }
+        // A live web page, in a box.
+        let web_bar = Rect::from_center_size(pos2(inner.center().x + 208.0, inner.min.y + 22.0), vec2(96.0, 28.0));
+        let web = ui.interact(web_bar, ui.scope_id().with("add web page"), Sense::click());
+        crate::studio::paint_button(ui.painter(), web_bar, web.hovered());
+        ui.painter().text(web_bar.center(), Align2::CENTER_CENTER, "Web Page", crate::studio::semibold(12.5), crate::studio::TEXT);
+        if web
+            .on_hover_text("Put a live web page on the slide, in a box (it shows while the slide is on screen)")
+            .clicked()
+            && let Some(draft) = state.editing.as_mut()
+        {
+            draft.add_web();
+            // The inspector's address field takes the keyboard, ready for the address.
+            ui.data_mut(|data| data.insert_temp(egui::Id::unique("web address focus"), true));
         }
         let shapes_bar = Rect::from_center_size(pos2(inner.center().x, inner.min.y + 22.0), vec2(96.0, 28.0));
         let shapes = ui.interact(shapes_bar, ui.scope_id().with("add shape"), Sense::click());

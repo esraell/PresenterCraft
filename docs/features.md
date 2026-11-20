@@ -281,6 +281,18 @@ feature changes, this page changes in the same commit.
   looping with its sound, while the slide is on screen (several videos on one slide all play); each can fit, fill or stretch to its
   box. The Insert
   menu also adds a text box or any shape.
+- **Web pages** on slides (Web Page above the slide, or `sp slide web SONG N URL`): a box that
+  shows a live web page, laid out at the box's size and see-through where the page has no
+  background, so it can sit over the slide's background or under its words. Only addresses
+  starting with https:// open. The page of a song open in the window is loaded ahead, so it has
+  loaded and drawn by the time its slide goes on screen; nothing shows on the screens until it
+  has, and a page shown again isn't loaded again. The editor and the slide thumbnails show it
+  too (a see-through globe until it has loaded). A page can't download anything, open a window,
+  use the camera or microphone, or keep anything between pages; one whose own process stops is
+  loaded again. Songs with a web page are saved as version 3 of the song file; older
+  SoftPresenters say to update. Pages are drawn by macOS's own web view on the Mac (moving
+  content such as a scrolling ticker can look uneven; a smoother engine is planned), and not
+  yet on other systems.
 - **Builds** (the inspector's Build tab): an object can come on with a Dissolve, Fly In from
   any side, or Zoom, with the slide (after its transition and a delay) or on a click of Next,
   and leave with a Dissolve, Fly Out or Zoom on a click. Next sets a slide's click builds going

@@ -12,9 +12,10 @@ const FORMAT_NAME: &str = "softpresenter-presentation";
 /// What songs saved before the project was renamed say they are; they still open.
 const OLD_FORMAT_NAME: &str = "presentercraft-presentation";
 /// The newest version of the format this build writes and understands. A song is written as
-/// version 2 only when a slide has a "go to song" action, which since version 2 names the song by
-/// its id; any other song is still written as version 1, which older builds read.
-pub const FORMAT_VERSION: u32 = 2;
+/// version 3 only when a slide has a web page box (version 3 added them); as version 2 when a
+/// slide has a "go to song" action, which since version 2 names the song by its id; any other
+/// song is still written as version 1, which older builds read.
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize)]
 struct File {
@@ -29,7 +30,16 @@ pub fn to_json(presentation: &Presentation) -> String {
     let goes_to_songs = presentation
         .slides()
         .any(|(_, slide)| slide.actions.iter().any(|action| matches!(action, crate::ShowAction::Song { .. })));
-    let version = if goes_to_songs { FORMAT_VERSION } else { 1 };
+    let shows_web = presentation
+        .slides()
+        .any(|(_, slide)| slide.objects.iter().any(|object| matches!(object.kind, crate::ObjectKind::Web { .. })));
+    let version = if shows_web {
+        3
+    } else if goes_to_songs {
+        2
+    } else {
+        1
+    };
     let file = File { format: FORMAT_NAME.to_owned(), version, presentation: presentation.clone() };
     // A presentation has no value that JSON cannot hold, so this cannot fail.
     let mut text = serde_json::to_string_pretty(&file).unwrap_or_default();
@@ -123,8 +133,18 @@ mod tests {
 
     #[test]
     fn a_newer_file_is_refused_not_half_read() {
-        let text = to_json(&song()).replace(r#""version": 1"#, r#""version": 3"#);
+        let newer = format!(r#""version": {}"#, FORMAT_VERSION + 1);
+        let text = to_json(&song()).replace(r#""version": 1"#, &newer);
         assert!(from_json(&text).unwrap_err().contains("newer SoftPresenter"));
+    }
+
+    #[test]
+    fn a_song_with_a_web_page_box_is_written_as_version_3() {
+        let mut web = song();
+        web.groups[0].slides[0].objects.push(crate::Object::web("https://example.com".to_owned()));
+        let text = to_json(&web);
+        assert!(text.contains(r#""version": 3"#) && text.contains(r#""kind": "web""#), "{text}");
+        assert_eq!(from_json(&text).unwrap(), web);
     }
 
     #[test]

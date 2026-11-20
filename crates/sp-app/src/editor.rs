@@ -515,6 +515,19 @@ impl EditDraft {
         self.slide.objects.push(object);
     }
 
+    /// Puts a web page box on the slide, selected, its address to be typed.
+    pub fn add_web(&mut self) {
+        self.record();
+        let same = self.slide.objects.iter().filter(|o| matches!(o.kind, ObjectKind::Web { .. })).count();
+        let mut object = Object::web(String::new());
+        if same > 0 {
+            object.name = format!("Web page {}", same + 1);
+        }
+        self.selected = Some(object.id);
+        self.also.clear();
+        self.slide.objects.push(object);
+    }
+
     /// Every selected object: the first selected, then the rest.
     pub fn selection(&self) -> Vec<Uuid> {
         self.selected.into_iter().chain(self.also.iter().copied()).collect()

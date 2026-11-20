@@ -216,7 +216,10 @@ impl Thumbs {
         layers: &Layers,
         theme: &Theme,
     ) -> (Option<egui::TextureId>, Option<egui::TextureId>) {
+        // The preview is what the audience sees: no placeholder for a web page not drawn yet.
+        sp_render::show_placeholders(false);
         let built = build_layers(&mut self.fonts, layers, theme, PREVIEW_W, PREVIEW_H);
+        sp_render::show_placeholders(true);
         let before = self.previews[self.preview_front].as_ref().map(|(_, id)| *id);
         // Draw into the picture that is not in front, then bring it to the front.
         let back = 1 - self.preview_front;
