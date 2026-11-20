@@ -424,6 +424,10 @@ enum AppEvent {
 const MOST_WEB_PAGES: usize = 6;
 /// How often a web page on screen is asked for a new picture: as often as the screens draw.
 const WEB_LIVE_EVERY: Duration = Duration::from_millis(33);
+/// How often a page on the screens that has looked the same for a second is asked for a new
+/// picture: a change (new caption words) shows at most this late, then pictures come at the
+/// screens' pace again.
+const WEB_LIVE_STILL_EVERY: Duration = Duration::from_millis(100);
 /// How often a web page loaded ahead is asked for one: enough to have a fresh picture ready,
 /// and to show it in the editor.
 const WEB_AHEAD_EVERY: Duration = Duration::from_millis(500);
@@ -465,7 +469,7 @@ impl WebBox {
     /// them, twice a second while it runs ahead, and every few seconds while it rests.
     fn every(&self) -> Duration {
         if self.live {
-            WEB_LIVE_EVERY
+            if self.page.still_for() >= Duration::from_secs(1) { WEB_LIVE_STILL_EVERY } else { WEB_LIVE_EVERY }
         } else if self.shown {
             WEB_AHEAD_EVERY
         } else {
@@ -6839,7 +6843,21 @@ impl ApplicationHandler<AppEvent> for App {
             folders_at,
         ];
         match wake.into_iter().flatten().min() {
-            Some(at) => el.set_control_flow(ControlFlow::WaitUntil(at)),
+            Some(at) => {
+                // Everything due has just been done, so a time already past is a mistake in
+                // one of the clocks above; waiting for it would wake the loop again at once,
+                // round and round at full speed. A short wait keeps that from running away.
+                let now = Instant::now();
+                let at = if at <= now {
+                    if std::env::var_os("SOFTPRESENTER_TRACE_REPAINT").is_some() {
+                        applog::event("wake", "a clock asked for a wake-up already past");
+                    }
+                    now + Duration::from_millis(15)
+                } else {
+                    at
+                };
+                el.set_control_flow(ControlFlow::WaitUntil(at));
+            }
             None => el.set_control_flow(ControlFlow::Wait),
         }
     }

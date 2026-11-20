@@ -13,6 +13,9 @@ use sp_render::{Fonts, Layers, Painter, Picture, build_layers, read_pixels, targ
 /// How often a playing video is looked at for a new picture: more often than any video's
 /// frame rate.
 const VIDEO_POLL: Duration = Duration::from_millis(8);
+/// How often a video that has given no new picture for a second (paused, or ended and left on
+/// screen) is looked at: a picture after it starts again is at most this late.
+const VIDEO_IDLE_POLL: Duration = Duration::from_millis(50);
 
 /// Everything the output needs to draw one picture. Immutable once sent.
 #[derive(Clone)]
@@ -355,6 +358,9 @@ struct Output {
     waker: Option<Waker>,
     preview_targets: Vec<wgpu::Texture>,
     previewed_at: Instant,
+    /// When a video last gave a new picture, or a message last came (so a video just shown is
+    /// looked at often from the start).
+    video_moved_at: Instant,
     /// The live preview's whole picture, and a fade under way in it: from, to.
     preview_shown: Option<vello::Scene>,
     preview_fade: Option<(vello::Scene, vello::Scene)>,
@@ -417,6 +423,7 @@ fn run(
         waker,
         preview_targets: Vec::new(),
         previewed_at: Instant::now(),
+        video_moved_at: Instant::now(),
         preview_shown: None,
         preview_fade: None,
         device,
@@ -467,7 +474,7 @@ fn run(
                 .map_or(Duration::ZERO, |since| Duration::from_nanos(u64::from(since.subsec_nanos())));
             // A playing video is looked at for a new picture far more often.
             let wait = if output.frame.plays_video() {
-                VIDEO_POLL
+                output.video_poll()
             } else {
                 Duration::from_secs(1).saturating_sub(into_second) + Duration::from_millis(5)
             };
@@ -479,8 +486,10 @@ fn run(
                         output.draw(false);
                         continue;
                     }
-                    // Otherwise the time changes only as a second begins.
-                    let new_second = output.frame.video.is_none() || into_second + VIDEO_POLL >= Duration::from_secs(1);
+                    // Otherwise the time changes only as a second begins (a video, or a web page
+                    // or video in a box, wakes this far more often than that).
+                    let new_second =
+                        !output.frame.plays_video() || into_second + output.video_poll() >= Duration::from_secs(1);
                     if !new_second {
                         continue;
                     }
@@ -496,7 +505,7 @@ fn run(
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
         } else if output.frame.plays_video() {
-            match rx.recv_timeout(VIDEO_POLL) {
+            match rx.recv_timeout(output.video_poll()) {
                 Ok(msg) => Some(msg),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if output.take_video_picture() {
@@ -526,6 +535,7 @@ fn run(
             }
             continue;
         };
+        output.video_moved_at = Instant::now();
         // Take everything that has queued up, so a burst of changes costs one draw.
         let mut next = Some(first);
         let mut new_picture = false;
@@ -1107,6 +1117,12 @@ impl Output {
     }
 
     /// Takes the playing video's newest picture, if a new one has come. True when it has.
+    /// How long to wait before looking at a playing video for a new picture: a refresh's
+    /// worth while pictures come, longer once none has come for a second.
+    fn video_poll(&self) -> Duration {
+        if self.video_moved_at.elapsed() < Duration::from_secs(1) { VIDEO_POLL } else { VIDEO_IDLE_POLL }
+    }
+
     fn take_video_picture(&mut self) -> bool {
         let mut new = false;
         if let Some(frame) = self.frame.video.as_ref().and_then(sp_video::Frames::next) {
@@ -1123,6 +1139,9 @@ impl Output {
                 self.video_pictures += 1;
                 new = true;
             }
+        }
+        if new {
+            self.video_moved_at = Instant::now();
         }
         new
     }

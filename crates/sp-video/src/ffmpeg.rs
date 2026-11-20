@@ -167,6 +167,11 @@ impl Clock {
         }
     }
 
+    /// True while paused.
+    fn paused(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.paused)
+    }
+
     /// Seconds played, or `None` before it starts.
     fn elapsed(&self) -> Option<f64> {
         let state = self.state.lock().ok()?;
@@ -440,6 +445,8 @@ impl Player {
                     }
                     match clock_v.elapsed() {
                         Some(now) if now + 0.002 >= due => break,
+                        // Paused: nothing is due; look again a little later.
+                        Some(_) if clock_v.paused() => std::thread::sleep(Duration::from_millis(30)),
                         Some(now) => std::thread::sleep(Duration::from_secs_f64((due - now).min(0.01))),
                         None => std::thread::sleep(Duration::from_millis(5)),
                     }

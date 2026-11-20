@@ -186,6 +186,10 @@ impl Player {
             }
             return Duration::from_millis(50);
         }
+        // Paused, or ended and left on screen, nothing is due.
+        if !self.playing() {
+            return Duration::from_millis(500);
+        }
         Duration::from_secs_f64(left.clamp(0.01, 0.5))
     }
 }

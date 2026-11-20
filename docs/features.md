@@ -289,7 +289,10 @@ feature changes, this page changes in the same commit.
   has, and a page shown again isn't loaded again. Once loaded and drawn for the thumbnails, a
   page off the screens rests (no animation, next to no work) until its slide goes on screen,
   when it runs again at once; it keeps running while a slide is being edited, and a VoxLive
-  display kept warm after leaving the screens keeps running too. The editor and the slide thumbnails show it
+  display kept warm after leaving the screens keeps running too. On the screens, a page is
+  copied as often as the screens show a picture while it moves, ten times a second once it has
+  looked the same for a second (a caption page between lines), and a copy the same as the last
+  doesn't make the screens draw again. The editor and the slide thumbnails show it
   too (a see-through globe until it has loaded). A page can't download anything, open a window,
   use the camera or microphone, or keep anything between pages; one whose own process stops is
   loaded again. Songs with a web page are saved as version 3 of the song file; older

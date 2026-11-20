@@ -16,6 +16,7 @@
 //! Other systems have no web pages yet: [`WebPage::open`] says so.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::Frame;
 
@@ -26,14 +27,29 @@ pub struct WebFrames(Arc<Mutex<Newest>>);
 #[derive(Default)]
 struct Newest {
     frame: Option<Frame>,
+    /// The last picture kept, by its size and a fingerprint of its pixels, and when it came.
+    last: Option<(u32, u32, u64)>,
+    changed_at: Option<Instant>,
 }
 
 impl WebFrames {
-    /// Keeps a new picture, in place of one not yet taken.
+    /// Keeps a new picture, in place of one not yet taken; one the same as the last is let go,
+    /// so a page that isn't moving (most caption pages, most of the time) isn't drawn again on
+    /// every screen thirty times a second.
     pub(crate) fn put(&self, frame: Frame) {
-        if let Ok(mut newest) = self.0.lock() {
+        let seen = (frame.width, frame.height, fingerprint(&frame.rgba));
+        if let Ok(mut newest) = self.0.lock()
+            && newest.last != Some(seen)
+        {
+            newest.last = Some(seen);
             newest.frame = Some(frame);
+            newest.changed_at = Some(Instant::now());
         }
+    }
+
+    /// How long the page's picture has stayed the same (zero before the first).
+    pub fn still_for(&self) -> Duration {
+        self.0.lock().ok().and_then(|newest| newest.changed_at).map_or(Duration::ZERO, |at| at.elapsed())
     }
 
     /// The newest picture, if one has come since the last was taken.
@@ -45,6 +61,22 @@ impl WebFrames {
     pub fn same(&self, other: &WebFrames) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
+}
+
+/// A fingerprint of a picture's pixels (FNV-1a over eight bytes at a time): fast, and two
+/// different pictures all but never share one.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut words = bytes.chunks_exact(8);
+    for word in &mut words {
+        hash ^= u64::from_le_bytes(word.try_into().unwrap_or_default());
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    for &byte in words.remainder() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// How far a page has got.
@@ -109,6 +141,12 @@ impl WebPage {
             let _ = frames;
             Err("Web pages on slides need macOS for now.".to_owned())
         }
+    }
+
+    /// How long the page has looked the same: a page that isn't moving can be looked at less
+    /// often.
+    pub fn still_for(&self) -> Duration {
+        self.frames.still_for()
     }
 
     /// Where the page's pictures are taken from.
@@ -216,5 +254,19 @@ mod tests {
         assert_eq!(frames.next().map(|frame| frame.rgba), Some(vec![5, 6, 7, 8]));
         assert!(frames.next().is_none(), "taken once");
         assert!(frames.same(&frames.clone()) && !frames.same(&WebFrames::default()));
+    }
+
+    #[test]
+    fn a_picture_the_same_as_the_last_is_let_go() {
+        let frames = WebFrames::default();
+        let picture = |byte: u8| Frame { width: 3, height: 1, rgba: vec![byte; 12] };
+        frames.put(picture(1));
+        assert!(frames.next().is_some());
+        frames.put(picture(1));
+        assert!(frames.next().is_none(), "the same picture again isn't drawn again");
+        frames.put(picture(2));
+        frames.put(picture(1));
+        assert_eq!(frames.next().map(|frame| frame.rgba[0]), Some(1), "a change, and a change back, each count");
+        assert_ne!(fingerprint(&[0; 9]), fingerprint(&[0, 0, 0, 0, 0, 0, 0, 0, 1]));
     }
 }
