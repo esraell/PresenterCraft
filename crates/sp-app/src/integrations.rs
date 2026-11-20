@@ -22,11 +22,19 @@ pub enum Request {
     Disconnect,
     /// Find the screens again now.
     Refresh,
+    /// Open a screen's look to change it, by the screen's id.
+    OpenLook(String),
+    /// Save the look's changes to VoxLive; `anyway` even if the screen changed there since.
+    SaveLook { anyway: bool },
+    /// Close the look (changes not saved are let go).
+    CloseLook,
 }
 
-/// The pane: the list of services, or the page of the one open.
+/// The pane: the list of services, or the page of the one open, or a screen's look.
 pub fn pane(ui: &mut egui::Ui, view: &mut View) {
-    if view.open {
+    if view.look.is_some() {
+        look_page(ui, view);
+    } else if view.open {
         voxlive_page(ui, view);
     } else {
         list(ui, view);
@@ -199,7 +207,7 @@ fn connect_form(ui: &mut egui::Ui, view: &mut View) {
 }
 
 /// The church's VoxLive screens, as last found.
-fn screens(ui: &mut egui::Ui, view: &View) {
+fn screens(ui: &mut egui::Ui, view: &mut View) {
     crate::studio::caption(ui, "YOUR VOXLIVE SCREENS");
     if view.screens.is_empty() {
         let words = match view.status {
@@ -209,8 +217,15 @@ fn screens(ui: &mut egui::Ui, view: &View) {
         ui.label(egui::RichText::new(words).size(12.0).color(TEXT_FAINT));
         return;
     }
+    let mut open = None;
     for screen in &view.screens {
-        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+        // A screen with a page can have its look changed: a click opens it.
+        let can_open = !screen.url.is_empty() && !view.schema.is_empty();
+        let sense = if can_open { Sense::click() } else { Sense::hover() };
+        let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), sense);
+        if response.hovered() && can_open {
+            ui.painter().rect_filled(row, 5.0, HOVER);
+        }
         ui.painter().text(
             row.left_center() + vec2(4.0, 0.0),
             Align2::LEFT_CENTER,
@@ -222,6 +237,7 @@ fn screens(ui: &mut egui::Ui, view: &View) {
             "captions" => "Captions",
             other => other,
         };
+        let kind = if can_open { format!("{kind}   Change Look ›") } else { kind.to_owned() };
         ui.painter().text(
             row.right_center() - vec2(4.0, 0.0),
             Align2::RIGHT_CENTER,
@@ -230,6 +246,12 @@ fn screens(ui: &mut egui::Ui, view: &View) {
             VOXLIVE_LIGHT,
         );
         ui.painter().hline(row.x_range(), row.max.y, Stroke::new(1.0, LINE));
+        if response.on_hover_text("Change how this screen looks, here; it is saved to VoxLive").clicked() {
+            open = Some(screen.id.clone());
+        }
+    }
+    if let Some(screen) = open {
+        view.request = Some(Request::OpenLook(screen));
     }
     ui.add_space(6.0);
     ui.label(
@@ -240,4 +262,247 @@ fn screens(ui: &mut egui::Ui, view: &View) {
         .size(11.5)
         .color(TEXT_FAINT),
     );
+}
+
+/// A screen's look: a preview, a control for each setting of its mode, and Save to VoxLive.
+fn look_page(ui: &mut egui::Ui, view: &mut View) {
+    let schema = view.schema.clone();
+    let Some(look) = view.look.as_mut() else { return };
+    let mut request = None;
+    if ui.add(egui::Button::new(egui::RichText::new("‹ VoxLive").color(TEXT_DIM)).frame(false)).clicked() {
+        request = Some(Request::CloseLook);
+    }
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(look.label.as_str()).font(crate::studio::semibold(18.0)).color(TEXT));
+    ui.add_space(8.0);
+    // The preview: VoxLive's own display page drawing this look, on a dark ground (a see-through
+    // look shows it), never connected to the captions.
+    if look.fresh
+        && let Some(frame) = &look.preview
+    {
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &frame.rgba);
+        match look.texture.as_mut() {
+            Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+            None => look.texture = Some(ui.ctx().load_texture("voxlive look", image, egui::TextureOptions::LINEAR)),
+        }
+        look.fresh = false;
+    }
+    let width = ui.available_width().min(480.0);
+    let (place, _) = ui.allocate_exact_size(vec2(width, width * 9.0 / 16.0), Sense::hover());
+    ui.painter().rect_filled(place, 6.0, Color32::from_rgb(20, 22, 26));
+    match &look.texture {
+        Some(texture) => {
+            egui::Image::new((texture.id(), place.size())).corner_radius(6.0).paint_at(ui, place);
+        }
+        None => {
+            ui.painter().text(
+                place.center(),
+                Align2::CENTER_CENTER,
+                "Preview loading…",
+                FontId::proportional(12.0),
+                TEXT_FAINT,
+            );
+            ui.ctx().request_repaint();
+        }
+    }
+    ui.painter().rect_stroke(place, 6.0, Stroke::new(1.0, LINE), egui::StrokeKind::Outside);
+    ui.label(
+        egui::RichText::new("Preview, with sample words. Nothing changes on your screens until you save.")
+            .size(11.5)
+            .color(TEXT_FAINT),
+    );
+    ui.add_space(10.0);
+    // A control for each setting that applies to the screen's mode.
+    let mode = look.style.get("mode").and_then(serde_json::Value::as_str).unwrap_or("captions").to_owned();
+    egui::Grid::new("voxlive look").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+        for (key, field) in &schema {
+            let applies = field.get("applies_to").and_then(serde_json::Value::as_str).unwrap_or("both");
+            if !(applies == "both" || applies == mode) {
+                continue;
+            }
+            let label = ui.label(egui::RichText::new(setting_name(key)).color(TEXT_DIM));
+            if let Some(about) = field.get("description").and_then(serde_json::Value::as_str) {
+                label.on_hover_text(about);
+            }
+            let current = look.style.get(key).cloned().or_else(|| field.get("default").cloned()).unwrap_or_default();
+            if let Some(changed) = setting_control(ui, key, field, &current)
+                && changed != current
+            {
+                look.style.insert(key.clone(), changed);
+            }
+            ui.end_row();
+        }
+    });
+    ui.add_space(12.0);
+    let changes = look.changes().len();
+    ui.horizontal(|ui| {
+        let save = egui::Button::new(if look.saving { "Saving…" } else { "Save to VoxLive" });
+        if ui
+            .add_enabled(changes > 0 && !look.saving, save)
+            .on_hover_text("The screen changes at once, wherever it is showing")
+            .clicked()
+        {
+            request = Some(Request::SaveLook { anyway: false });
+        }
+        if ui.add_enabled(changes > 0 && !look.saving, egui::Button::new("Revert")).clicked() {
+            look.style = look.base.clone();
+            look.outcome = None;
+        }
+        let words = match changes {
+            0 => "No changes".to_owned(),
+            1 => "1 setting changed".to_owned(),
+            n => format!("{n} settings changed"),
+        };
+        ui.label(egui::RichText::new(words).size(12.0).color(TEXT_FAINT));
+    });
+    if let Some(outcome) = &look.outcome {
+        ui.label(egui::RichText::new(outcome.as_str()).size(12.0).color(TEXT_DIM));
+    }
+    if look.changed_there.is_some() {
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("This screen's look was changed in VoxLive since you opened it.")
+                .color(crate::studio::TALLY),
+        );
+        ui.horizontal(|ui| {
+            if ui
+                .button("Use VoxLive's")
+                .on_hover_text("Let your changes go and start from the look VoxLive has now")
+                .clicked()
+                && let Some(now) = look.changed_there.clone()
+            {
+                look.take(&now);
+                look.outcome = None;
+            }
+            if ui.button("Save Mine Anyway").on_hover_text("Your changed settings go over VoxLive's").clicked() {
+                request = Some(Request::SaveLook { anyway: true });
+            }
+        });
+    }
+    if request.is_some() {
+        view.request = request;
+    }
+}
+
+/// A setting's name from VoxLive's key: "maxLines" is "Lines", "letterSpacing" "Letter spacing".
+fn setting_name(key: &str) -> String {
+    let named = match key {
+        "bg" => "Background",
+        "text" => "Text colour",
+        "transparent" => "See-through",
+        "valign" => "Up and down",
+        "align" => "Across",
+        "refPosition" => "Reference",
+        "fitHeight" => "Height used",
+        "maxWidth" => "Width used",
+        "maxLines" => "Lines",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.to_owned();
+    }
+    let mut out = String::new();
+    for (index, c) in key.chars().enumerate() {
+        if index == 0 {
+            out.extend(c.to_uppercase());
+        } else if c.is_uppercase() {
+            out.push(' ');
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The control for one setting, as VoxLive describes it: a menu of its values, a colour, a tick,
+/// or a slider within its range. Returns the value it now has.
+fn setting_control(
+    ui: &mut egui::Ui,
+    key: &str,
+    field: &serde_json::Value,
+    current: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    match field.get("type").and_then(serde_json::Value::as_str).unwrap_or("") {
+        "enum" => {
+            let values = field.get("values").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+            let labels = field.get("labels").and_then(serde_json::Value::as_object).cloned().unwrap_or_default();
+            let words = |value: &serde_json::Value| {
+                let raw = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+                labels.get(&raw).and_then(serde_json::Value::as_str).map_or(raw, str::to_owned)
+            };
+            let mut chosen = current.clone();
+            egui::ComboBox::from_id_salt(("voxlive look", key)).selected_text(words(current)).width(180.0).show_ui(
+                ui,
+                |ui| {
+                    for value in &values {
+                        ui.selectable_value(&mut chosen, value.clone(), words(value));
+                    }
+                },
+            );
+            Some(chosen)
+        }
+        "color" => {
+            let hex = current.as_str().unwrap_or("#000000");
+            let mut colour = colour_of(hex);
+            ui.color_edit_button_srgba(&mut colour);
+            Some(serde_json::Value::String(hex_of(colour, hex.len() > 7)))
+        }
+        "boolean" => {
+            let mut on = current.as_bool().unwrap_or(false);
+            ui.checkbox(&mut on, "");
+            Some(serde_json::Value::Bool(on))
+        }
+        "number" => {
+            let min = field.get("min").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+            let max = field.get("max").and_then(serde_json::Value::as_f64).unwrap_or(100.0).max(min);
+            let step = field.get("step").and_then(serde_json::Value::as_f64).unwrap_or(1.0);
+            let unit = field.get("unit").and_then(serde_json::Value::as_str).unwrap_or("");
+            let mut number = current.as_f64().unwrap_or(min).clamp(min, max);
+            let suffix = if unit.is_empty() { String::new() } else { format!(" {unit}") };
+            ui.add(egui::Slider::new(&mut number, min..=max).step_by(step).suffix(suffix));
+            // A whole number stays whole, as VoxLive gave it.
+            if number.fract() == 0.0 && current.is_i64() {
+                return Some(serde_json::Value::from(number as i64));
+            }
+            serde_json::Number::from_f64(number).map(serde_json::Value::Number)
+        }
+        _ => {
+            ui.label(egui::RichText::new(current.to_string()).color(TEXT_FAINT));
+            None
+        }
+    }
+}
+
+/// A colour from VoxLive's "#RGB" … "#RRGGBBAA".
+fn colour_of(hex: &str) -> Color32 {
+    let digits = hex.trim_start_matches('#');
+    let full: String = if digits.len() == 3 || digits.len() == 4 {
+        digits.chars().flat_map(|c| [c, c]).collect()
+    } else {
+        digits.to_owned()
+    };
+    let part = |at: usize| u8::from_str_radix(full.get(at..at + 2).unwrap_or("ff"), 16).unwrap_or(255);
+    Color32::from_rgba_unmultiplied(part(0), part(2), part(4), if full.len() >= 8 { part(6) } else { 255 })
+}
+
+/// A colour as "#RRGGBB" (or "#RRGGBBAA" when it had or now has some see-through).
+fn hex_of(colour: Color32, with_alpha: bool) -> String {
+    let [r, g, b, a] = colour.to_srgba_unmultiplied();
+    if with_alpha || a < 255 { format!("#{r:02X}{g:02X}{b:02X}{a:02X}") } else { format!("#{r:02X}{g:02X}{b:02X}") }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colours_go_to_and_from_voxlives_hex() {
+        assert_eq!(hex_of(colour_of("#FFE14D"), false), "#FFE14D");
+        assert_eq!(hex_of(colour_of("#fff"), false), "#FFFFFF");
+        assert_eq!(hex_of(colour_of("#00000080"), true), "#00000080");
+        assert_eq!(setting_name("letterSpacing"), "Letter spacing");
+        assert_eq!(setting_name("maxLines"), "Lines");
+    }
 }

@@ -394,6 +394,14 @@ feature changes, this page changes in the same commit.
   key VoxLive refuses stops the asking until another is given, so the church's other devices
   aren't locked out, and a "wait" answer is waited out. Disconnect forgets the key on this
   computer.
+- **A VoxLive screen's look**, changed from Settings › Integrations › VoxLive: clicking a screen
+  opens its look, with a control for each setting VoxLive describes (a menu, a colour, a tick or
+  a slider within VoxLive's range; only those that apply to the screen's mode) and a preview drawn
+  by VoxLive's own display page in its free preview mode, so nothing reaches the projector or
+  starts a translation while adjusting. **Save to VoxLive** sends only the settings changed, and
+  the screen changes at once wherever it is showing. If the screen was changed in VoxLive since
+  its look was opened, nothing is written: the page says so and offers VoxLive's look or saving
+  over it. Revert lets the changes go; leaving the page or closing Settings closes the preview.
 - **The VoxLive item**: once VoxLive is connected and has screens, a VoxLive row under LIBRARY
   (in VoxLive's colour, with how many screens) opens the church's VoxLive screens as slides, one
   a screen, named after it; it follows VoxLive's list as screens are made, renamed or deleted

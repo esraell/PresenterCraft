@@ -3365,10 +3365,12 @@ const SHAPE_KEYS: [char; 10] = ['O', 'R', 'E', 'G', 'L', 'H', 'P', 'S', 'D', 'A'
 /// Room after a song's title, for the field it turns into when renamed to fit in.
 const TITLE_ROOM: f32 = 12.0;
 
+/// The Settings window's panes, in order (`preferences_pane` is a place in it).
+pub const PANES: [&str; 5] = ["General", "Screens", "Groups", "Key Mappings", "Integrations"];
+
 /// The Settings window's contents: its panes down the left, the chosen one on the right.
 pub fn settings_ui(ui: &mut egui::Ui, state: &mut HomeState) {
     use crate::studio::{ACCENT, HOVER, PANEL, TEXT, TEXT_DIM};
-    const PANES: [&str; 5] = ["General", "Screens", "Groups", "Key Mappings", "Integrations"];
     egui::Panel::left("settings panes")
         .resizable(false)
         .exact_size(180.0)

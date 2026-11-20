@@ -428,6 +428,17 @@ const WEB_LIVE_EVERY: Duration = Duration::from_millis(33);
 /// and to show it in the editor.
 const WEB_AHEAD_EVERY: Duration = Duration::from_millis(500);
 
+/// The preview of a VoxLive screen's look: its display page in preview mode, the look last
+/// painted in it and when, and when a picture was last asked for.
+struct LookPreview {
+    page: sp_video::WebPage,
+    painted: String,
+    painted_at: Option<Instant>,
+    /// When the look last changed (pictures come faster for a moment after).
+    changed_at: Option<Instant>,
+    asked: Option<Instant>,
+}
+
 /// The page of a web page box, kept running while it is wanted.
 struct WebBox {
     /// What its pictures are shown under (`sp_render::web_key`).
@@ -832,6 +843,8 @@ struct Running {
     output: Option<OutputHandle>,
     /// The Screens and Settings windows, while they are open.
     panels: Vec<PanelWindow>,
+    /// Testing aid: the first VoxLive look has been opened for a capture.
+    capture_look_opened: bool,
     gpu: Gpu,
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
@@ -940,6 +953,10 @@ struct App {
     web_traced: Option<Instant>,
     /// The connection to the church's VoxLive account.
     voxlive: voxlive::Client,
+    /// The preview of a VoxLive screen's look being changed, while its page is open.
+    voxlive_preview: Option<LookPreview>,
+    /// How the last save of a VoxLive look went, for `sp voxlive`.
+    voxlive_said: Option<String>,
     /// The song on the Announcements layer: which, the slide shown, since when, and what was
     /// sent to the screens.
     announcing: Option<Announcing>,
@@ -1125,6 +1142,7 @@ impl App {
             overlay_sent: None,
             output: Some(output),
             panels: Vec::new(),
+            capture_look_opened: false,
             gpu,
             egui_ctx,
             egui_state,
@@ -1756,6 +1774,18 @@ impl App {
     /// Does what Settings › Integrations asked of VoxLive, keeps the connection going, and shows
     /// its state in the window. Says when to look again.
     fn tick_voxlive(&mut self) -> Option<Instant> {
+        // Testing aid: SOFTPRESENTER_CAPTURE_PREFERENCES=voxlive-look opens the first screen's look
+        // once the screens and the look settings have come.
+        if let Some(running) = self.running.as_mut()
+            && running.home_state.voxlive.look.is_none()
+            && running.home_state.voxlive.request.is_none()
+            && !self.voxlive.schema.is_empty()
+            && std::env::var("SOFTPRESENTER_CAPTURE_PREFERENCES").as_deref() == Ok("voxlive-look")
+            && let Some(first) = self.voxlive.screens.iter().find(|screen| !screen.url.is_empty())
+            && !std::mem::replace(&mut running.capture_look_opened, true)
+        {
+            running.home_state.voxlive.request = Some(integrations::Request::OpenLook(first.id.clone()));
+        }
         if let Some(running) = self.running.as_mut()
             && let Some(request) = running.home_state.voxlive.request.take()
         {
@@ -1770,9 +1800,117 @@ impl App {
                     applog::event("voxlive", "the key was forgotten on this computer");
                 }
                 integrations::Request::Refresh => self.voxlive.refresh(),
+                // A screen's look opens with a preview: its display page in the preview mode for
+                // an app, which connects to nothing and costs nothing.
+                integrations::Request::OpenLook(screen) => {
+                    if let Some(screen) = self.voxlive.screens.iter().find(|have| have.id == screen).cloned() {
+                        running.home_state.voxlive.look = Some(voxlive::LookEdit::of(&screen));
+                        self.voxlive_preview =
+                            match sp_video::WebPage::open(&voxlive::preview_address(&screen.url), 960, 540) {
+                                Ok(page) => Some(LookPreview {
+                                    page,
+                                    painted: String::new(),
+                                    painted_at: None,
+                                    changed_at: None,
+                                    asked: None,
+                                }),
+                                Err(problem) => {
+                                    applog::problem("voxlive", &problem);
+                                    None
+                                }
+                            };
+                    }
+                }
+                integrations::Request::SaveLook { anyway } => {
+                    if let Some(look) = running.home_state.voxlive.look.as_mut() {
+                        let version = (!anyway && !look.version.is_empty()).then(|| look.version.clone());
+                        match self.voxlive.save_look(&look.screen, version, look.changes()) {
+                            Ok(()) => {
+                                look.saving = true;
+                                look.outcome = None;
+                            }
+                            Err(problem) => look.outcome = Some(problem),
+                        }
+                    }
+                }
+                integrations::Request::CloseLook => {
+                    running.home_state.voxlive.look = None;
+                    self.voxlive_preview = None;
+                }
             }
         }
-        let at = self.voxlive.tick();
+        // A look closes with Settings, or when Settings shows another pane: its page goes with it.
+        if let Some(running) = self.running.as_mut() {
+            let state = &mut running.home_state;
+            let showing = state.preferences_open && home::PANES.get(state.preferences_pane) == Some(&"Integrations");
+            if !showing && state.voxlive.look.is_some() {
+                state.voxlive.look = None;
+            }
+            if state.voxlive.look.is_none() {
+                self.voxlive_preview = None;
+            }
+        }
+        let mut at = self.voxlive.tick();
+        // How a save went: in the look, if it is open, and for `sp voxlive`.
+        if let Some((screen, outcome)) = self.voxlive.saved.take() {
+            let said = match &outcome {
+                Ok(saved) => format!("Saved the look of {} to VoxLive.", saved.label()),
+                Err(voxlive::Saving::Changed(now)) => {
+                    format!("The look of {} wasn't saved: it changed in VoxLive since it was opened.", now.label())
+                }
+                Err(voxlive::Saving::Failed(why)) => format!("The look wasn't saved: {why}"),
+            };
+            if let Some(look) =
+                self.running.as_mut().and_then(|r| r.home_state.voxlive.look.as_mut()).filter(|l| l.screen == screen)
+            {
+                look.saving = false;
+                match outcome {
+                    Ok(saved) => {
+                        look.take(&saved);
+                        look.outcome = Some("Saved to VoxLive.".to_owned());
+                    }
+                    Err(voxlive::Saving::Changed(now)) => look.changed_there = Some(*now),
+                    Err(voxlive::Saving::Failed(why)) => look.outcome = Some(why),
+                }
+            }
+            self.voxlive_said = Some(said);
+        }
+        // The preview paints the look as it is changed (and again each second, in case the page
+        // wasn't ready), and its pictures go to the look's page, about ten a second.
+        if let (Some(preview), Some(running)) = (self.voxlive_preview.as_mut(), self.running.as_mut())
+            && let Some(look) = running.home_state.voxlive.look.as_mut()
+            && preview.page.loading() == sp_video::web::Loading::Loaded
+        {
+            let script = voxlive::apply_script(&look.style, &look.language);
+            let now = Instant::now();
+            if preview.painted != script {
+                preview.changed_at = Some(now);
+            }
+            if preview.painted != script
+                || preview.painted_at.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1))
+            {
+                preview.page.ask(&script, |_| {});
+                preview.painted = script;
+                preview.painted_at = Some(now);
+            }
+            // Ten pictures a second for two seconds after a change (and while the page first
+            // settles), one a second otherwise.
+            let settling = preview.changed_at.is_none_or(|at| now.duration_since(at) < Duration::from_secs(2));
+            let every = if settling { Duration::from_millis(100) } else { Duration::from_secs(1) };
+            if preview.asked.is_none_or(|asked| now.duration_since(asked) >= every) {
+                preview.page.capture();
+                preview.asked = Some(now);
+            }
+            if let Some(frame) = preview.page.frames().next() {
+                look.preview = Some(frame);
+                look.fresh = true;
+                for panel in &running.panels {
+                    panel.window.request_redraw();
+                }
+            }
+            let next = if settling { Duration::from_millis(100) } else { Duration::from_secs(1) };
+            at = [at, Some(now + next)].into_iter().flatten().min();
+        }
         // The VoxLive item follows the screens VoxLive lists.
         let item = Arc::new(voxlive::item(&self.voxlive.screens));
         if self.show.presentations().get(self.voxlive_slot).is_some_and(|have| **have != *item) {
@@ -1792,6 +1930,9 @@ impl App {
         if let Some(running) = self.running.as_mut() {
             let view = &mut running.home_state.voxlive;
             let hint = self.voxlive.key_hint();
+            if view.schema != self.voxlive.schema {
+                view.schema = self.voxlive.schema.clone();
+            }
             if view.status != self.voxlive.status || view.screens != self.voxlive.screens || view.key_hint != hint {
                 view.status = self.voxlive.status.clone();
                 view.screens = self.voxlive.screens.clone();
@@ -5103,7 +5244,7 @@ impl App {
                 // Testing aid: a pane by name (integrations, or voxlive for VoxLive's own page).
                 match pane.as_str() {
                     "integrations" => running.home_state.preferences_pane = 4,
-                    "voxlive" => {
+                    "voxlive" | "voxlive-look" => {
                         running.home_state.preferences_pane = 4;
                         running.home_state.voxlive.open = true;
                     }
@@ -6938,6 +7079,8 @@ fn main() -> ExitCode {
         web_refused: Vec::new(),
         web_traced: None,
         voxlive: voxlive::Client::new(),
+        voxlive_preview: None,
+        voxlive_said: None,
         media_playlists: Vec::new(),
         announcing: None,
         stamps,

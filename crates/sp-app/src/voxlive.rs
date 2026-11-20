@@ -119,6 +119,84 @@ pub struct View {
     /// Why the key given wasn't taken.
     pub problem: Option<String>,
     pub request: Option<crate::integrations::Request>,
+    /// Every look setting, as VoxLive describes it.
+    pub schema: Vec<(String, serde_json::Value)>,
+    /// A screen's look being changed, if one is open.
+    pub look: Option<LookEdit>,
+}
+
+/// A VoxLive screen's look, open to change: what VoxLive has, what is being made of it, and a
+/// preview of it drawn by VoxLive's own display page in its preview mode (no connection, free).
+pub struct LookEdit {
+    pub screen: String,
+    pub label: String,
+    pub language: String,
+    /// The look as VoxLive has it (when opened, or last saved).
+    pub base: serde_json::Map<String, serde_json::Value>,
+    /// The look as it is being changed.
+    pub style: serde_json::Map<String, serde_json::Value>,
+    /// VoxLive's version of the screen the changes were made from.
+    pub version: String,
+    /// The preview's newest picture, and whether it is still to be shown.
+    pub preview: Option<sp_video::Frame>,
+    pub fresh: bool,
+    pub texture: Option<egui::TextureHandle>,
+    pub saving: bool,
+    /// How the last save went, in words.
+    pub outcome: Option<String>,
+    /// The screen as VoxLive has it now, when it changed there since the look was opened.
+    pub changed_there: Option<Screen>,
+}
+
+impl LookEdit {
+    /// Opens a screen's look.
+    pub fn of(screen: &Screen) -> LookEdit {
+        let style = screen.style.as_object().cloned().unwrap_or_default();
+        LookEdit {
+            screen: screen.id.clone(),
+            label: screen.label(),
+            language: screen.language.clone(),
+            base: style.clone(),
+            style,
+            version: screen.version.clone(),
+            preview: None,
+            fresh: false,
+            texture: None,
+            saving: false,
+            outcome: None,
+            changed_there: None,
+        }
+    }
+
+    /// The settings changed from what VoxLive has.
+    pub fn changes(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.style
+            .iter()
+            .filter(|(key, value)| self.base.get(*key) != Some(value))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// Takes the screen as VoxLive stored it (after a save, or to start again from its look).
+    pub fn take(&mut self, screen: &Screen) {
+        self.base = screen.style.as_object().cloned().unwrap_or_default();
+        self.style = self.base.clone();
+        self.version = screen.version.clone();
+        self.changed_there = None;
+    }
+}
+
+/// The address of a screen's preview: its display page in the preview mode for an app, which
+/// connects to nothing (so it costs nothing) and draws whatever look it is given.
+pub fn preview_address(url: &str) -> String {
+    format!("{url}{}preview=1&host=app", if url.contains('?') { '&' } else { '?' })
+}
+
+/// The script that paints a look in the preview page: its own `vxApplyStyle`, given the whole
+/// look and the screen's language (as JSON, so nothing in them can break out of the script).
+pub fn apply_script(style: &serde_json::Map<String, serde_json::Value>, language: &str) -> String {
+    let look = serde_json::json!({ "style": style, "lang": language });
+    format!("(function(){{try{{window.vxApplyStyle({look});return 'painted'}}catch(e){{return 'not yet'}}}})()")
 }
 
 /// How a playlist names the VoxLive item.
@@ -217,7 +295,46 @@ enum Problem {
 /// What a finished request found.
 enum Answer {
     Screens(Result<Vec<Screen>, Problem>),
+    /// The style schema: every look setting, as VoxLive describes it.
+    Schema(Result<Vec<(String, serde_json::Value)>, Problem>),
+    /// A look saved (the screen as VoxLive stored it), or why not.
+    Saved(String, Result<Screen, Saving>),
 }
+
+/// Why a look wasn't saved.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Saving {
+    /// The screen changed in VoxLive since its look was opened: nothing was written; this is
+    /// the screen as it is now.
+    Changed(Box<Screen>),
+    Failed(String),
+}
+
+/// The order look settings are offered in; any VoxLive adds later come after, by name.
+const SETTING_ORDER: [&str; 22] = [
+    "mode",
+    "bg",
+    "transparent",
+    "text",
+    "font",
+    "size",
+    "weight",
+    "align",
+    "valign",
+    "padding",
+    "maxLines",
+    "lineHeight",
+    "maxWidth",
+    "letterSpacing",
+    "uppercase",
+    "shadow",
+    "edgeSize",
+    "boxOpacity",
+    "fade",
+    "refPosition",
+    "fitHeight",
+    "passage",
+];
 
 /// The connection to VoxLive: the key, the screens last found, and requests under way.
 pub struct Client {
@@ -229,6 +346,13 @@ pub struct Client {
     /// When to ask again.
     next: Option<Instant>,
     busy: bool,
+    /// Every look setting, as VoxLive describes it (asked for once, when first connected).
+    pub schema: Vec<(String, serde_json::Value)>,
+    schema_asked: bool,
+    /// A look being saved, by its screen.
+    pub saving: Option<String>,
+    /// The last look saved or refused: its screen, and how it went.
+    pub saved: Option<(String, Result<Screen, Saving>)>,
     tx: Sender<Answer>,
     rx: Receiver<Answer>,
 }
@@ -240,7 +364,20 @@ impl Client {
         let key = store::load();
         let status = if key.is_some() { Status::Checking } else { Status::NoKey };
         let next = key.as_ref().map(|_| Instant::now());
-        Client { key, status, screens: Vec::new(), found_at: None, next, busy: false, tx, rx }
+        Client {
+            key,
+            status,
+            screens: Vec::new(),
+            found_at: None,
+            next,
+            busy: false,
+            schema: Vec::new(),
+            schema_asked: false,
+            saving: None,
+            saved: None,
+            tx,
+            rx,
+        }
     }
 
     /// True when a key is kept.
@@ -288,10 +425,65 @@ impl Client {
         }
     }
 
+    /// Saves changes to a screen's look in VoxLive (live at once, wherever the screen shows):
+    /// only the settings changed, merged into what VoxLive has. With `version`, only if the
+    /// screen hasn't changed since (otherwise it is handed back as it is now); without, whatever
+    /// changed. The outcome comes in `saved`. The error is a sentence.
+    pub fn save_look(
+        &mut self,
+        screen: &str,
+        version: Option<String>,
+        changes: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let key = self.key.clone().ok_or("VoxLive isn't connected.")?;
+        if !screen.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || screen.is_empty() {
+            return Err("That isn't a VoxLive screen.".to_owned());
+        }
+        if self.saving.is_some() {
+            return Err("A look is being saved already.".to_owned());
+        }
+        self.saving = Some(screen.to_owned());
+        self.saved = None;
+        let (tx, base, screen) = (self.tx.clone(), api_base(), screen.to_owned());
+        std::thread::spawn(move || {
+            let outcome = patch_look(&base, &key, &screen, version.as_deref(), changes);
+            let _ = tx.send(Answer::Saved(screen, outcome));
+        });
+        Ok(())
+    }
+
     /// Takes in finished requests and starts those due. Says when to look again.
     pub fn tick(&mut self) -> Option<Instant> {
         while let Ok(answer) = self.rx.try_recv() {
-            self.busy = false;
+            match answer {
+                Answer::Schema(Ok(schema)) => {
+                    self.schema = schema;
+                    continue;
+                }
+                Answer::Schema(Err(_)) => {
+                    // Asked again on the next connection; the editor waits for it meanwhile.
+                    self.schema_asked = false;
+                    continue;
+                }
+                Answer::Saved(screen, outcome) => {
+                    self.saving = None;
+                    match &outcome {
+                        Ok(saved) => {
+                            crate::applog::event("voxlive", &format!("saved the look of {}", saved.label()));
+                            if let Some(have) = self.screens.iter_mut().find(|have| have.id == saved.id) {
+                                *have = saved.clone();
+                            }
+                        }
+                        Err(Saving::Changed(_)) => {
+                            crate::applog::event("voxlive", "a look wasn't saved: the screen changed in VoxLive")
+                        }
+                        Err(Saving::Failed(why)) => crate::applog::problem("voxlive", why),
+                    }
+                    self.saved = Some((screen, outcome));
+                    continue;
+                }
+                Answer::Screens(_) => self.busy = false,
+            }
             match answer {
                 Answer::Screens(Ok(screens)) => {
                     self.screens = screens;
@@ -313,7 +505,19 @@ impl Client {
                     self.status = Status::Trouble(why);
                     self.next = Some(Instant::now() + POLL_EVERY);
                 }
+                Answer::Schema(_) | Answer::Saved(..) => {}
             }
+        }
+        // The look settings, once connected.
+        if self.status == Status::Connected
+            && !self.schema_asked
+            && let Some(key) = self.key.clone()
+        {
+            self.schema_asked = true;
+            let (tx, base) = (self.tx.clone(), api_base());
+            std::thread::spawn(move || {
+                let _ = tx.send(Answer::Schema(get_schema(&base, &key)));
+            });
         }
         let due = self.next.is_some_and(|at| at <= Instant::now());
         if due
@@ -328,7 +532,11 @@ impl Client {
                 let _ = tx.send(Answer::Screens(get_screens(&base, &key)));
             });
         }
-        if self.busy { Some(Instant::now() + Duration::from_millis(250)) } else { self.next }
+        if self.busy || self.saving.is_some() || (self.schema_asked && self.schema.is_empty()) {
+            Some(Instant::now() + Duration::from_millis(250))
+        } else {
+            self.next
+        }
     }
 }
 
@@ -339,8 +547,16 @@ pub fn looks_like_key(key: &str) -> bool {
     })
 }
 
-/// The church's screens, as `GET /screens` gives them.
-fn get_screens(base: &str, key: &str) -> Result<Vec<Screen>, Problem> {
+/// A request to VoxLive's API with the key: its status, its answer as JSON, and how long it
+/// asked to wait (on a 429 or 503). Redirects are off, so the key never follows one elsewhere.
+fn call(
+    base: &str,
+    key: &str,
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+    if_match: Option<&str>,
+) -> Result<(u16, serde_json::Value, Option<Duration>), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .max_redirects(0)
@@ -348,12 +564,20 @@ fn get_screens(base: &str, key: &str) -> Result<Vec<Screen>, Problem> {
         .timeout_global(Some(Duration::from_secs(15)))
         .build()
         .into();
-    let mut response = agent
-        .get(format!("{base}/screens"))
-        .header("Authorization", format!("Bearer {key}"))
-        .header("Accept", "application/json")
-        .call()
-        .map_err(|e| Problem::Other(format!("VoxLive couldn't be reached ({e}).")))?;
+    let url = format!("{base}{path}");
+    let auth = format!("Bearer {key}");
+    let sent = match (method, body) {
+        ("PATCH", Some(body)) => {
+            let mut request =
+                agent.patch(&url).header("Authorization", &auth).header("Content-Type", "application/json");
+            if let Some(version) = if_match {
+                request = request.header("If-Match", version);
+            }
+            request.send(body.to_string())
+        }
+        _ => agent.get(&url).header("Authorization", &auth).header("Accept", "application/json").call(),
+    };
+    let mut response = sent.map_err(|e| format!("VoxLive couldn't be reached ({e})."))?;
     let status = response.status().as_u16();
     let wait = response
         .headers()
@@ -362,7 +586,12 @@ fn get_screens(base: &str, key: &str) -> Result<Vec<Screen>, Problem> {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(|seconds| Duration::from_secs(seconds.clamp(2, 3600)));
     let body = response.body_mut().with_config().limit(LARGEST_REPLY).read_to_string().unwrap_or_default();
-    let reply: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    Ok((status, serde_json::from_str(&body).unwrap_or_default(), wait))
+}
+
+/// The church's screens, as `GET /screens` gives them.
+fn get_screens(base: &str, key: &str) -> Result<Vec<Screen>, Problem> {
+    let (status, reply, wait) = call(base, key, "GET", "/screens", None, None).map_err(Problem::Other)?;
     let error = reply.get("error").and_then(serde_json::Value::as_str).unwrap_or("");
     match status {
         200 => {
@@ -378,6 +607,64 @@ fn get_screens(base: &str, key: &str) -> Result<Vec<Screen>, Problem> {
             Err(Problem::Wait(wait.unwrap_or(Duration::from_secs(60)), "VoxLive asked to wait a moment.".to_owned()))
         }
         other => Err(Problem::Other(format!("VoxLive answered with a problem ({other})."))),
+    }
+}
+
+/// Every look setting, as `GET /screen-style` describes them, in the order they are offered.
+fn get_schema(base: &str, key: &str) -> Result<Vec<(String, serde_json::Value)>, Problem> {
+    let (status, reply, _) = call(base, key, "GET", "/screen-style", None, None).map_err(Problem::Other)?;
+    if status != 200 {
+        return Err(Problem::Other(format!("VoxLive didn't describe the look settings ({status}).")));
+    }
+    let fields = reply.get("fields").and_then(serde_json::Value::as_object).cloned().unwrap_or_default();
+    Ok(ordered(fields))
+}
+
+/// Look settings in the order they are offered: the known ones first, then any others by name.
+fn ordered(fields: serde_json::Map<String, serde_json::Value>) -> Vec<(String, serde_json::Value)> {
+    let mut out: Vec<(String, serde_json::Value)> = SETTING_ORDER
+        .iter()
+        .filter_map(|name| fields.get(*name).map(|field| ((*name).to_owned(), field.clone())))
+        .collect();
+    let mut rest: Vec<(String, serde_json::Value)> =
+        fields.into_iter().filter(|(name, _)| !SETTING_ORDER.contains(&name.as_str())).collect();
+    rest.sort_by(|a, b| a.0.cmp(&b.0));
+    out.extend(rest.into_iter().filter(|(name, _)| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')));
+    out
+}
+
+/// Saves changed look settings with `PATCH /screens/:id` (the style merges field by field).
+fn patch_look(
+    base: &str,
+    key: &str,
+    screen: &str,
+    version: Option<&str>,
+    changes: serde_json::Map<String, serde_json::Value>,
+) -> Result<Screen, Saving> {
+    let body = serde_json::json!({ "style": changes });
+    let (status, reply, _) =
+        call(base, key, "PATCH", &format!("/screens/{screen}"), Some(body), version).map_err(Saving::Failed)?;
+    let screen_in = |reply: &serde_json::Value| {
+        reply
+            .get("screen")
+            .and_then(|screen| serde_json::from_value::<Screen>(screen.clone()).ok())
+            .map(|s| s.cleaned(base))
+    };
+    let error = reply.get("error").and_then(serde_json::Value::as_str).unwrap_or("");
+    match status {
+        200 => screen_in(&reply).ok_or_else(|| Saving::Failed("VoxLive's answer didn't have the screen.".to_owned())),
+        412 => screen_in(&reply)
+            .map(|now| Saving::Changed(Box::new(now)))
+            .ok_or_else(|| Saving::Failed("The screen changed in VoxLive since it was opened.".to_owned()))
+            .and_then(Err),
+        400 => {
+            let field = reply.get("field").and_then(serde_json::Value::as_str).unwrap_or("a setting");
+            Err(Saving::Failed(format!("VoxLive didn't take {field} ({error}).")))
+        }
+        401 | 403 => Err(Saving::Failed(refused_words(error))),
+        404 => Err(Saving::Failed("That screen is no longer in VoxLive.".to_owned())),
+        429 | 503 => Err(Saving::Failed("VoxLive asked to wait a moment; try again.".to_owned())),
+        other => Err(Saving::Failed(format!("VoxLive answered with a problem ({other})."))),
     }
 }
 
@@ -515,5 +802,37 @@ mod tests {
     fn the_api_is_voxlives_unless_a_stand_in_on_this_computer_is_named() {
         assert_eq!(LIVE_API, "https://voxlive.app/api/v1");
         assert_eq!(display_prefix(LIVE_API), "https://voxlive.app/listen/");
+    }
+
+    #[test]
+    fn a_look_previews_free_and_sends_only_what_changed() {
+        assert_eq!(preview_address("https://voxlive.app/listen/x"), "https://voxlive.app/listen/x?preview=1&host=app");
+        assert_eq!(preview_address("https://voxlive.app/s/x?a=1"), "https://voxlive.app/s/x?a=1&preview=1&host=app");
+        let screen = Screen {
+            id: "abc".into(),
+            version: "v3".into(),
+            language: "es".into(),
+            style: serde_json::json!({"size": 64, "text": "#FFFFFF"}),
+            ..Screen::default()
+        };
+        let mut look = LookEdit::of(&screen);
+        assert!(look.changes().is_empty());
+        look.style.insert("size".into(), serde_json::json!(72));
+        look.style.insert("shadow".into(), serde_json::json!("soft"));
+        let changes = look.changes();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes.get("size"), Some(&serde_json::json!(72)));
+        // The look goes into the page as JSON, so a quote in it can't end the script.
+        look.style.insert("font".into(), serde_json::json!("x'});alert(1);({'"));
+        let script = apply_script(&look.style, "es\"");
+        assert!(script.contains(r#""x'});alert(1);({'""#) && script.contains(r#""lang":"es\"""#));
+    }
+
+    #[test]
+    fn look_settings_come_in_a_steady_order_with_odd_names_left_out() {
+        let fields = serde_json::json!({"zeta": {}, "size": {}, "mode": {}, "alpha": {}, "bad name": {}});
+        let names: Vec<String> =
+            ordered(fields.as_object().cloned().unwrap()).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["mode", "size", "alpha", "zeta"]);
     }
 }

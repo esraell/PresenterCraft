@@ -633,6 +633,7 @@ Layers and controls
   voxlive connect              connect with an API key read from the standard input
                                (paste it, or pipe it in; never as an argument)
   voxlive show N|NAME          that VoxLive screen's captions on screen, in place of a verse
+  voxlive look N|NAME [setting=value …]   a screen's look, or settings of it saved to VoxLive
   voxlive refresh | voxlive disconnect --yes      find the screens again | forget the key
   bible REFERENCE [--show]     look a passage up (and put its first verse on screen)
   bible REFERENCE --add [to PLAYLIST]
@@ -1705,6 +1706,10 @@ impl crate::App {
                 if connected {
                     text.push_str(&format!(", {count} screen{}", if count == 1 { "" } else { "s" }));
                 }
+                // How the last look saved went, once one has been.
+                if let Some(said) = &self.voxlive_said {
+                    text.push_str(&format!(". {}", said.trim_end_matches('.')));
+                }
                 Ok(Reply::with(
                     format!("{text}."),
                     serde_json::json!({"connected": connected, "status": self.voxlive.status.words(), "key": hint, "screens": count}),
@@ -1761,6 +1766,9 @@ impl crate::App {
                 self.apply(vec![Command::GoTo(SlideRef { presentation: self.voxlive_slot, slide })]);
                 Ok(Reply::done(format!("On screen: VoxLive, {}.", names[at])))
             }
+            // `voxlive look N|NAME [setting=value …]`: a screen's look, or settings of it saved
+            // to VoxLive (checked against VoxLive's own description of each setting first).
+            Some("look") => self.voxlive_look(&args[2..]),
             Some("refresh") => {
                 if !self.voxlive.has_key() {
                     return Err("VoxLive isn't connected.".to_owned());
@@ -1778,6 +1786,58 @@ impl crate::App {
             }
             _ => Err(usage.to_owned()),
         }
+    }
+
+    fn voxlive_look(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "voxlive look N|NAME [setting=value …]   (sp voxlive look N lists the settings)";
+        let split = words.iter().position(|word| word.contains('=')).unwrap_or(words.len());
+        let (name, settings) = words.split_at(split);
+        if name.is_empty() {
+            return Err(usage.to_owned());
+        }
+        let screens = self.voxlive.screens.clone();
+        let names: Vec<String> = screens.iter().map(crate::voxlive::Screen::label).collect();
+        let screen = &screens[find("VoxLive screen", &names, &name.join(" "))?];
+        let style = screen.style.as_object().cloned().unwrap_or_default();
+        if settings.is_empty() {
+            // Every setting VoxLive describes, with the screen's value (or its default).
+            let schema = &self.voxlive.schema;
+            let lines: Vec<String> = if schema.is_empty() {
+                style.iter().map(|(key, value)| format!("{key} = {value}")).collect()
+            } else {
+                schema
+                    .iter()
+                    .map(|(key, field)| {
+                        let value = style.get(key).or_else(|| field.get("default")).cloned().unwrap_or_default();
+                        let mut line = format!("{key} = {value}");
+                        if let Some(values) = field.get("values").and_then(serde_json::Value::as_array) {
+                            let choices: Vec<String> = values
+                                .iter()
+                                .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
+                                .collect();
+                            line.push_str(&format!("   ({})", choices.join(", ")));
+                        } else if let (Some(min), Some(max)) = (field.get("min"), field.get("max")) {
+                            line.push_str(&format!("   ({min} to {max})"));
+                        }
+                        line
+                    })
+                    .collect()
+            };
+            return Ok(Reply::with(format!("{}\n{}", screen.label(), lines.join("\n")), serde_json::json!(style)));
+        }
+        let mut changes = serde_json::Map::new();
+        for setting in settings {
+            let (key, typed) = setting.split_once('=').ok_or(usage)?;
+            let field = self.voxlive.schema.iter().find(|(name, _)| name == key).map(|(_, field)| field.clone());
+            let Some(field) = field else {
+                let known: Vec<&str> = self.voxlive.schema.iter().map(|(name, _)| name.as_str()).collect();
+                return Err(format!("VoxLive has no setting {key}: {}.", known.join(", ")));
+            };
+            changes.insert(key.to_owned(), setting_value(&field, key, typed)?);
+        }
+        let version = (!screen.version.is_empty()).then(|| screen.version.clone());
+        self.voxlive.save_look(&screen.id, version, changes)?;
+        Ok(Reply::done(format!("Saving the look of {} to VoxLive; sp voxlive says how it went.", screen.label())))
     }
 
     fn media_names(&self) -> Vec<String> {
@@ -2375,6 +2435,58 @@ impl crate::App {
     }
 }
 
+/// A look setting's value as typed, checked against VoxLive's description of the setting: one of
+/// its values, a colour (#RGB to #RRGGBBAA), on or off, or a number in its range.
+fn setting_value(field: &serde_json::Value, key: &str, typed: &str) -> Result<serde_json::Value, String> {
+    let typed = typed.trim();
+    match field.get("type").and_then(serde_json::Value::as_str).unwrap_or("") {
+        "enum" => {
+            let values = field.get("values").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+            values
+                .iter()
+                .find(|value| {
+                    value.as_str().map_or_else(|| value.to_string(), str::to_owned).eq_ignore_ascii_case(typed)
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    let choices: Vec<String> =
+                        values.iter().map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned)).collect();
+                    format!("{key} is one of {}.", choices.join(", "))
+                })
+        }
+        "color" => {
+            let digits = typed.trim_start_matches('#');
+            let ok = matches!(digits.len(), 3 | 4 | 6 | 8) && digits.chars().all(|c| c.is_ascii_hexdigit());
+            if ok {
+                Ok(serde_json::Value::String(format!("#{}", digits.to_uppercase())))
+            } else {
+                Err(format!("{key} is a colour such as #FFE14D."))
+            }
+        }
+        "boolean" => match typed.to_lowercase().as_str() {
+            "on" | "yes" | "true" => Ok(serde_json::Value::Bool(true)),
+            "off" | "no" | "false" => Ok(serde_json::Value::Bool(false)),
+            _ => Err(format!("{key} is on or off.")),
+        },
+        "number" => {
+            let number: f64 = typed.parse().map_err(|_| format!("{key} is a number."))?;
+            let min = field.get("min").and_then(serde_json::Value::as_f64).unwrap_or(f64::MIN);
+            let max = field.get("max").and_then(serde_json::Value::as_f64).unwrap_or(f64::MAX);
+            if !(min..=max).contains(&number) {
+                return Err(format!("{key} is {min} to {max}."));
+            }
+            if number.fract() == 0.0 {
+                Ok(serde_json::Value::from(number as i64))
+            } else {
+                serde_json::Number::from_f64(number)
+                    .map(serde_json::Value::Number)
+                    .ok_or_else(|| format!("{key} is a number."))
+            }
+        }
+        _ => Err(format!("{key} can't be set from here.")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -2436,5 +2548,22 @@ mod tests {
         let reply = Reply::done("On screen.");
         let back: Reply = serde_json::from_str(&serde_json::to_string(&reply).unwrap()).unwrap();
         assert!(back.ok && back.text == "On screen.");
+    }
+
+    #[test]
+    fn look_settings_are_checked_against_voxlives_description() {
+        let size = serde_json::json!({"type": "number", "min": 20, "max": 160});
+        assert_eq!(setting_value(&size, "size", "72"), Ok(serde_json::json!(72)));
+        assert_eq!(setting_value(&size, "size", "1.5e1").unwrap_err(), "size is 20 to 160.");
+        assert!(setting_value(&size, "size", "big").is_err());
+        let shadow = serde_json::json!({"type": "enum", "values": ["none", "soft"]});
+        assert_eq!(setting_value(&shadow, "shadow", "Soft"), Ok(serde_json::json!("soft")));
+        assert!(setting_value(&shadow, "shadow", "glow").is_err());
+        let colour = serde_json::json!({"type": "color"});
+        assert_eq!(setting_value(&colour, "text", "ffe14d"), Ok(serde_json::json!("#FFE14D")));
+        assert!(setting_value(&colour, "text", "#ffe14\"").is_err());
+        let on = serde_json::json!({"type": "boolean"});
+        assert_eq!(setting_value(&on, "transparent", "on"), Ok(serde_json::json!(true)));
+        assert!(setting_value(&serde_json::json!({"type": "list"}), "x", "1").is_err());
     }
 }

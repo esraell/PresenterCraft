@@ -152,7 +152,7 @@ Every menu bar item, with its shortcut, is listed by `sp menu`; any of them can 
 | Window | Opened from | Holds |
 |---|---|---|
 | Screens | Settings, Screens; or Screens, Configure Screens… | Audience and stage screens: where each goes (a display, a window, NDI, off), its name, its look (which layers, colour, covered edges); Identify |
-| Settings | ⚙ or Command-comma | General (copyright line, start-up choices), Screens, Groups (names and colours), Key Mappings, Integrations (VoxLive: its API key, its state, the church's screens; `voxlive …`) |
+| Settings | ⚙ or Command-comma | General (copyright line, start-up choices), Screens, Groups (names and colours), Key Mappings, Integrations (VoxLive: its API key, its state, the church's screens; click a screen to change its look, with a preview, and save it to VoxLive; `voxlive …`, `voxlive look`) |
 | Stage Layouts | Screens, Edit Stage Layouts… | Layouts for the stage screens: now, next, notes, clock, timer, message |
 
 ## Where the app keeps things
