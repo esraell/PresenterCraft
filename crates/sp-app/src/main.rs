@@ -2992,7 +2992,14 @@ impl App {
         if songs.is_empty() && playlist_file.is_none() {
             return Err("No songs to pack.".to_owned());
         }
-        Ok(pack::Export::plan(songs, &self.themes, playlist_file, |key| self.song_id_for_key(key)))
+        let media_of = |id: Uuid| {
+            self.show
+                .media()
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| (item.name.clone(), item.path.clone(), item.fit, item.looping))
+        };
+        Ok(pack::Export::plan(songs, &self.themes, playlist_file, |key| self.song_id_for_key(key), media_of))
     }
 
     /// Writes a planned pack: at once when it holds no videos, else on a thread of its own (the
@@ -3254,7 +3261,10 @@ impl App {
                     state.props.iter().map(|p| p.id).collect(),
                 )
             });
-        let media: Vec<Uuid> = self.show.media().iter().map(|item| item.id).collect();
+        let mut media: Vec<Uuid> = self.show.media().iter().map(|item| item.id).collect();
+        // Media bin items the pack's slides show, as they come into this bin: the pack's id to this one's.
+        let mut media_in: HashMap<Uuid, Option<Uuid>> = HashMap::new();
+        let mut media_added = 0;
         let mut brought = pack::Brought::default();
         let mut themes_in: HashMap<Uuid, Uuid> = HashMap::new();
         let mut new_themes = 0;
@@ -3280,7 +3290,46 @@ impl App {
                             ShowAction::Timer { id, .. } => timers.contains(id),
                             ShowAction::Message { id, .. } => messages.contains(id),
                             ShowAction::Prop { id, .. } => props.contains(id),
-                            ShowAction::Media { id } => media.contains(id),
+                            ShowAction::Media { id } => {
+                                if !media.contains(id) {
+                                    let here = match media_in.get(id) {
+                                        Some(known) => *known,
+                                        None => {
+                                            let known =
+                                                opened.media_items.iter().find(|entry| entry.id == *id).and_then(
+                                                    |entry| {
+                                                        let path =
+                                                            pack::bring_media_item(entry, &opened, &dir, &mut brought)?;
+                                                        // The same file in the bin already: that item.
+                                                        if let Some(have) =
+                                                            self.show.media().iter().find(|item| item.path == path)
+                                                        {
+                                                            return Some(have.id);
+                                                        }
+                                                        let picture = media::load_picture(&path).ok()?;
+                                                        let mut item = MediaItem::new(entry.name.clone(), path);
+                                                        item.fit = entry.fit;
+                                                        item.looping = entry.looping;
+                                                        let new = item.id;
+                                                        self.show.add_media(item);
+                                                        self.pictures.push(media::MediaPicture::of(picture));
+                                                        media_added += 1;
+                                                        Some(new)
+                                                    },
+                                                );
+                                            media_in.insert(*id, known);
+                                            if let Some(new) = known {
+                                                media.push(new);
+                                            }
+                                            known
+                                        }
+                                    };
+                                    if let Some(new) = here {
+                                        *id = new;
+                                    }
+                                }
+                                media.contains(id)
+                            }
                             _ => true,
                         };
                         lost_actions += usize::from(!found);
@@ -3353,6 +3402,9 @@ impl App {
         }
         if new_themes > 0 {
             self.themes_changed();
+        }
+        if media_added > 0 {
+            self.save_media_list();
         }
         self.save_unsaved();
         // The playlist, as a new playlist.
@@ -3581,11 +3633,15 @@ impl App {
         let files = load::files_to_import(&songs);
         // What the library has, looked up once rather than song by song.
         let mut ids: std::collections::HashSet<Uuid> = self.show.presentations().iter().map(|s| s.id).collect();
+        // A song deleted in the app (or a Bible page) isn't "already here": its file can be
+        // imported again. Its id stays taken, so the one imported gets an id of its own.
+        let removed = self.running.as_ref().map(|r| r.home_state.removed_songs.clone()).unwrap_or_default();
         let mut have: std::collections::HashMap<(String, String), usize> = self
             .show
             .presentations()
             .iter()
             .enumerate()
+            .filter(|(at, _)| !removed.contains(at) && !self.bible_slots.contains(at))
             .map(|(at, s)| ((s.title.trim().to_lowercase(), sp_model::to_song_text(s)), at))
             .collect();
         let mut libraries_used: Vec<String> = Vec::new();

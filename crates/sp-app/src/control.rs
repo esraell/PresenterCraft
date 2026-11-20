@@ -182,6 +182,23 @@ fn answer(stream: std::os::unix::net::UnixStream, deliver: &impl Fn(Incoming)) {
 
 /// The command line: sends the words to the running app and prints its reply. `--json` prints
 /// the reply as JSON. Returns the process's exit code.
+/// Prints a reply as println! does, but a reader that stops early (sp … | head) ends the
+/// printing quietly rather than with a "broken pipe" panic.
+macro_rules! say {
+    ($($words:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($words)*);
+    }};
+}
+
+/// The same, for the error stream.
+macro_rules! say_err {
+    ($($words:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($words)*);
+    }};
+}
+
 pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     let json = args.iter().any(|a| a == "--json");
     let wait = args.iter().any(|a| a == "--wait");
@@ -215,11 +232,11 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     let reply =
         if reply.ok && reply.text.trim().is_empty() { Reply { text: "Done.".to_owned(), ..reply } } else { reply };
     if json {
-        println!("{}", serde_json::to_string_pretty(&reply).unwrap_or_default());
+        say!("{}", serde_json::to_string_pretty(&reply).unwrap_or_default());
     } else if reply.ok {
-        println!("{}", reply.text);
+        say!("{}", reply.text);
     } else {
-        eprintln!("{}", reply.text);
+        say_err!("{}", reply.text);
     }
     if reply.ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::from(1) }
 }
@@ -248,29 +265,29 @@ pub fn bare(bundle: Option<&Path>) -> Option<std::process::ExitCode> {
     if answers {
         return Some(match send(&["status".to_owned()]) {
             Ok(reply) if reply.ok => {
-                println!("{}\n\n{MORE}", reply.text);
+                say!("{}\n\n{MORE}", reply.text);
                 std::process::ExitCode::SUCCESS
             }
             Ok(reply) => {
-                eprintln!("{}", reply.text);
+                say_err!("{}", reply.text);
                 std::process::ExitCode::from(1)
             }
             Err(problem) => {
-                eprintln!("{problem}");
+                say_err!("{problem}");
                 std::process::ExitCode::from(1)
             }
         });
     }
     if let Some(own) = std::env::var_os("SOFTPRESENTER_CONTROL_SOCKET").filter(|p| !p.is_empty()) {
-        eprintln!("Nothing answers at {} (SOFTPRESENTER_CONTROL_SOCKET). {MORE}", Path::new(&own).display());
+        say_err!("Nothing answers at {} (SOFTPRESENTER_CONTROL_SOCKET). {MORE}", Path::new(&own).display());
         return Some(std::process::ExitCode::from(1));
     }
-    println!("SoftPresenter isn't running; starting it. {MORE}");
+    say!("SoftPresenter isn't running; starting it. {MORE}");
     let bundle = bundle?;
     Some(match std::process::Command::new("/usr/bin/open").arg(bundle).status() {
         Ok(status) if status.success() => std::process::ExitCode::SUCCESS,
         _ => {
-            eprintln!("Could not start {}.", bundle.display());
+            say_err!("Could not start {}.", bundle.display());
             std::process::ExitCode::from(1)
         }
     })

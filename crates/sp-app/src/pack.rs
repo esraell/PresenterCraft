@@ -57,6 +57,18 @@ pub struct PlaylistFile {
     pub items: Vec<Item>,
 }
 
+/// A picture or video from the media bin that a slide shows behind its words (a slide's Media
+/// action names it by its id), as a pack lists it: its file in the pack and how it is shown.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MediaEntry {
+    pub id: Uuid,
+    pub name: String,
+    /// `images/<file>` or `media/<file>`, in the pack.
+    pub file: String,
+    pub fit: sp_model::ImageFit,
+    pub looping: bool,
+}
+
 /// A pack ready to write: copies of the songs and themes, pointing at the pictures and videos by
 /// the names the pack gives them.
 pub struct Export {
@@ -68,6 +80,8 @@ pub struct Export {
     /// Videos the songs use, left out when they aren't wanted.
     pub videos_left_out: Vec<(String, PathBuf)>,
     pub playlist: Option<PlaylistFile>,
+    /// Media bin items the songs' slides show behind their words.
+    pub media_items: Vec<MediaEntry>,
     /// Pictures and videos the songs use that aren't on this computer.
     pub missing: usize,
 }
@@ -82,6 +96,7 @@ impl Export {
         themes: &[Theme],
         playlist: Option<PlaylistFile>,
         id_for: impl Fn(&str) -> Option<Uuid>,
+        media_of: impl Fn(Uuid) -> Option<(String, PathBuf, sp_model::ImageFit, bool)>,
     ) -> Export {
         let mut export = Export {
             songs: Vec::new(),
@@ -90,6 +105,7 @@ impl Export {
             videos: Vec::new(),
             videos_left_out: Vec::new(),
             playlist: None,
+            media_items: Vec::new(),
             missing: 0,
         };
         let mut named: HashMap<PathBuf, String> = HashMap::new();
@@ -109,8 +125,31 @@ impl Export {
                         }
                     }
                     for action in &mut slide.actions {
-                        if let ShowAction::Song { key } = action {
-                            *key = key_out(key);
+                        match action {
+                            ShowAction::Song { key } => *key = key_out(key),
+                            // The media bin item a slide shows behind it goes in the pack too.
+                            ShowAction::Media { id } if !export.media_items.iter().any(|m| m.id == *id) => {
+                                match media_of(*id) {
+                                    Some((name, path, fit, looping))
+                                        if path.is_file() && crate::media::is_media(&path) =>
+                                    {
+                                        let ending = path.extension().map_or_else(String::new, |e| {
+                                            format!(".{}", e.to_string_lossy().to_lowercase())
+                                        });
+                                        let packed = format!("{}{ending}", Uuid::new_v4());
+                                        let file = if crate::media::is_video(&path) {
+                                            export.videos.push((packed.clone(), path));
+                                            format!("media/{packed}")
+                                        } else {
+                                            export.pictures.push((packed.clone(), path));
+                                            format!("images/{packed}")
+                                        };
+                                        export.media_items.push(MediaEntry { id: *id, name, file, fit, looping });
+                                    }
+                                    _ => export.missing += 1,
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -218,6 +257,7 @@ impl Export {
             "pictures": self.pictures.iter().map(|(name, _)| name).collect::<Vec<_>>(),
             "videos": self.videos.iter().map(|(name, _)| name).collect::<Vec<_>>(),
             "playlist": self.playlist.as_ref().map(|playlist| playlist.name.clone()),
+            "media_items": self.media_items,
         });
         let mut put = |name: String, text: String| -> Result<(), String> {
             zip.start_file(name, words).map_err(|e| e.to_string())?;
@@ -342,6 +382,8 @@ pub struct Opened {
     pub pictures: HashMap<String, PathBuf>,
     pub videos: HashMap<String, PathBuf>,
     pub playlist: Option<PlaylistFile>,
+    /// Media bin items the songs' slides show behind their words, as the manifest lists them.
+    pub media_items: Vec<MediaEntry>,
     /// What was left out, and why.
     pub ignored: Vec<String>,
     /// The folder the pictures and videos were put in, removed once the pack is in.
@@ -406,6 +448,7 @@ pub fn open(path: &Path, staging: &Path) -> Result<Opened, String> {
         pictures: HashMap::new(),
         videos: HashMap::new(),
         playlist: None,
+        media_items: Vec::new(),
         ignored,
         staging: staging.to_path_buf(),
     };
@@ -476,6 +519,10 @@ pub fn open(path: &Path, staging: &Path) -> Result<Opened, String> {
             "{name} was made by a newer SoftPresenter (pack version {version}); update SoftPresenter to open it."
         ));
     }
+    opened.media_items = manifest
+        .get("media_items")
+        .and_then(|items| serde_json::from_value::<Vec<MediaEntry>>(items.clone()).ok())
+        .unwrap_or_default();
     Ok(opened)
 }
 
@@ -652,6 +699,20 @@ fn fill(from: &mut impl Read, buffer: &mut [u8]) -> Option<usize> {
     Some(filled)
 }
 
+/// A media bin item from a pack: its file (only one the pack holds) put in the library's Media
+/// folder, or the file there with the same contents. Returns where it is.
+pub fn bring_media_item(entry: &MediaEntry, opened: &Opened, library: &Path, brought: &mut Brought) -> Option<PathBuf> {
+    let (folder, name) = entry.file.split_once('/')?;
+    let name = plain(name)?;
+    let (from, video) = match folder {
+        "images" => (opened.pictures.get(name)?, false),
+        "media" => (opened.videos.get(name)?, true),
+        _ => return None,
+    };
+    let dir = library.join("Media");
+    place(from, name, &dir, brought, video).map(|placed| dir.join(placed))
+}
+
 /// Points every picture and video of a song from a pack at the library's copies (see
 /// `bring_file`); an object naming anything else is taken off its slide.
 pub fn bring_song_files(song: &mut Presentation, opened: &Opened, library: &Path, brought: &mut Brought) {
@@ -737,6 +798,7 @@ mod tests {
             pictures: HashMap::from([("a.png".to_owned(), staging.join("p"))]),
             videos: HashMap::from([("b.mp4".to_owned(), staging.join("v"))]),
             playlist: None,
+            media_items: Vec::new(),
             ignored: Vec::new(),
             staging: staging.clone(),
         };
@@ -778,6 +840,7 @@ mod tests {
             pictures: HashMap::from([("x.png".to_owned(), staging.join("p"))]),
             videos: HashMap::new(),
             playlist: None,
+            media_items: Vec::new(),
             ignored: Vec::new(),
             staging,
         };
@@ -825,6 +888,7 @@ mod tests {
                 name: "Sunday".to_owned(),
                 items: vec![Item::Song { key: song.id.to_string(), title: song.title.clone() }],
             }),
+            media_items: Vec::new(),
             missing: 0,
         };
         let pack = dir.join("Sunday.sppack");
