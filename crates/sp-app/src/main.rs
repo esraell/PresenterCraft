@@ -678,6 +678,8 @@ struct Running {
     looks_sent: Vec<(Uuid, screens::Look)>,
     /// The stage screens the output was last told of, and whether they were on.
     stage_sent: Option<(Vec<(Uuid, sp_model::ThemeTemplate)>, bool)>,
+    /// The audience screens' own themes last sent to the output.
+    themes_sent: Vec<(Uuid, Arc<Theme>)>,
     /// What the output was last told to show over the slides.
     overlay_sent: Option<output::Overlay>,
     output: Option<OutputHandle>,
@@ -939,6 +941,7 @@ impl App {
             identify_sent: None,
             looks_sent: Vec::new(),
             stage_sent: None,
+            themes_sent: Vec::new(),
             overlay_sent: None,
             output: Some(output),
             panels: Vec::new(),
@@ -3262,8 +3265,25 @@ impl App {
             running.home_window.focus_window();
         }
         let Some(running) = self.running.as_mut() else { return };
-        let Running { output, ndi_sent, identify_sent, home_state, looks_sent, .. } = running;
+        let Running { output, ndi_sent, identify_sent, home_state, looks_sent, themes_sent, .. } = running;
         let Some(output) = output.as_ref() else { return };
+
+        // Themes: the audience screens drawn with a theme of their own (one that still exists).
+        let themes: Vec<(Uuid, Arc<Theme>)> = list
+            .iter()
+            .filter(|screen| screen.kind == screens::Kind::Audience)
+            .filter_map(|screen| {
+                let theme = self.theme_arcs.iter().find(|theme| Some(theme.id) == screen.theme)?;
+                Some((screen.id, theme.clone()))
+            })
+            .collect();
+        let same = themes.len() == themes_sent.len()
+            && themes.iter().zip(themes_sent.iter()).all(|(a, b)| a.0 == b.0 && Arc::ptr_eq(&a.1, &b.1));
+        if !same {
+            output.send(OutputMsg::Themes(themes.clone()));
+            output.send(OutputMsg::Redraw);
+            *themes_sent = themes;
+        }
 
         // Looks: the audience screens that show the show their own way.
         let looks: Vec<(Uuid, screens::Look)> = list

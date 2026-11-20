@@ -97,6 +97,8 @@ pub enum OutputMsg {
     Overlay(Overlay),
     /// How each audience screen that has a look of its own shows the show.
     Looks(Vec<(Uuid, crate::screens::Look)>),
+    /// The audience screens drawn with a theme of their own, and the theme.
+    Themes(Vec<(Uuid, Arc<Theme>)>),
     /// Which screens are stage screens and the layout each is drawn with, and whether stage
     /// screens are on.
     Stage {
@@ -328,6 +330,7 @@ struct Output {
     identify_theme: Arc<Theme>,
     /// The audience screens with a look of their own.
     looks: Vec<(Uuid, crate::screens::Look)>,
+    themes: Vec<(Uuid, Arc<Theme>)>,
     /// The stage screens with the layout each is drawn with, and whether they are on.
     stage: Vec<(Uuid, Arc<Theme>)>,
     stage_on: bool,
@@ -401,6 +404,7 @@ fn run(
         stage: Vec::new(),
         stage_on: true,
         looks: Vec::new(),
+        themes: Vec::new(),
         slide_on: Instant::now(),
         step_at: Instant::now(),
         overlay: Overlay::default(),
@@ -572,6 +576,7 @@ fn run(
                 }
                 OutputMsg::Overlay(overlay) => output.overlay = overlay,
                 OutputMsg::Looks(looks) => output.looks = looks,
+                OutputMsg::Themes(themes) => output.themes = themes,
                 OutputMsg::Stage { screens, on } => {
                     output.stage = screens;
                     output.stage_on = on;
@@ -693,8 +698,9 @@ impl Output {
         if !frame.enabled {
             return (None, None, None, frame.theme.clone(), None);
         }
-        // A screen's look can leave layers out.
+        // A screen's look can leave layers out, and its own theme lays the words out its way.
         let look = self.look_of(id);
+        let theme = screen_theme(&self.themes, id, &frame.theme);
         // A message shows over whatever is on the audience screens.
         let message = self.overlay.message.as_ref().filter(|_| look.messages).map(|(text, look)| {
             let words =
@@ -721,12 +727,12 @@ impl Output {
         let over = crate::props::overlay(&under, message.as_ref()).map(Arc::new);
         // The slide as far as its builds have got, with its linked text filled in.
         let slide = frame.slide.as_ref().filter(|_| look.slides).map(|slide| {
-            let (built, _) = slide.built(&frame.theme, self.build_clock());
+            let (built, _) = slide.built(&theme, self.build_clock());
             Arc::new(crate::links::fill(&built, &values).into_owned())
         });
         let media = self.video_picture.clone().or_else(|| frame.media.clone());
         let announcement = self.announcement.clone().filter(|_| look.announcements);
-        (media.filter(|_| look.media), slide, over, frame.theme.clone(), announcement)
+        (media.filter(|_| look.media), slide, over, theme, announcement)
     }
 
     /// How an audience screen shows the show: its own look, or every layer.
@@ -820,7 +826,8 @@ impl Output {
             }
             let alone = self.identify.iter().any(|(have, ..)| have == id)
                 || self.is_stage(*id)
-                || self.looks.iter().any(|(have, _)| have == id);
+                || self.looks.iter().any(|(have, _)| have == id)
+                || self.themes.iter().any(|(have, _)| have == id);
             if alone { own.push(*id) } else { shared.push(*id) }
         }
         let mut groups: Vec<Vec<Uuid>> = own.into_iter().map(|id| vec![id]).collect();
@@ -1277,4 +1284,28 @@ fn identify_marks(scene: &mut vello::Scene, color: sp_model::Rgba, strength: f32
     let border = (h / 1080.0 * 16.0).max(6.0);
     let half = border / 2.0;
     scene.stroke(&Stroke::new(border), Affine::IDENTITY, solid, None, &Rect::new(half, half, w - half, h - half));
+}
+
+/// The theme a screen's slides are drawn with: its own, if it has one, or the one the slide
+/// came with (the main theme, or a song's own).
+fn screen_theme(themes: &[(Uuid, Arc<Theme>)], screen: Uuid, slide_theme: &Arc<Theme>) -> Arc<Theme> {
+    themes.iter().find(|(have, _)| *have == screen).map_or_else(|| slide_theme.clone(), |(_, own)| own.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_screen_with_a_theme_of_its_own_draws_with_it_and_the_rest_with_the_slides() {
+        let main = Arc::new(Theme::builtin());
+        let mut lower = Theme::builtin();
+        lower.id = Uuid::new_v4();
+        lower.name = "Lower third".to_owned();
+        let lower = Arc::new(lower);
+        let (stream, audience) = (Uuid::new_v4(), Uuid::new_v4());
+        let themes = vec![(stream, lower.clone())];
+        assert_eq!(screen_theme(&themes, stream, &main).name, "Lower third");
+        assert_eq!(screen_theme(&themes, audience, &main).name, "Built-in");
+    }
 }

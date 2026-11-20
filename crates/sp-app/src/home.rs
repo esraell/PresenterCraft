@@ -3461,6 +3461,37 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
             ui.add_space(14.0);
             crate::studio::caption(ui, "LOOK");
             ui.add_space(4.0);
+            // The theme its slides are drawn with: the main theme, or one of its own.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Theme").color(TEXT_DIM))
+                    .on_hover_text("The same words, laid out by this theme on this screen");
+                ui.add_space(8.0);
+                let main_name = state.theme_names.get(state.theme_for_songs).cloned().unwrap_or_default();
+                let own = state.screens[index].theme;
+                let own_name = own
+                    .and_then(|id| state.theme_ids.iter().position(|have| *have == id))
+                    .and_then(|at| state.theme_names.get(at).cloned());
+                let shown = own_name.unwrap_or_else(|| format!("Main theme ({main_name})"));
+                let mut picked = None;
+                egui::ComboBox::from_id_salt(("screen theme", index)).selected_text(shown).width(220.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(own.is_none(), format!("Main theme ({main_name})")).clicked() {
+                        picked = Some(None);
+                    }
+                    ui.separator();
+                    for (id, name) in state.theme_ids.iter().zip(&state.theme_names) {
+                        if ui.selectable_label(own == Some(*id), name.as_str()).clicked() {
+                            picked = Some(Some(*id));
+                        }
+                    }
+                });
+                if let Some(theme) = picked
+                    && theme != own
+                {
+                    state.screens[index].theme = theme;
+                    changed = true;
+                }
+            });
+            ui.add_space(4.0);
             let look = &mut state.screens[index].look;
             let before = *look;
             ui.horizontal(|ui| {
@@ -3812,7 +3843,17 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                     }
                     // Tags at the right say what uses this theme.
                     let mut right = row.max.x - 6.0;
-                    for (used, tag) in [(state.theme_for_songs == index, "Main")] {
+                    // Main for the main theme; the names of the screens set to any other.
+                    let id = state.theme_ids.get(index).copied();
+                    let mut tags: Vec<(bool, &str)> = vec![(state.theme_for_songs == index, "Main")];
+                    tags.extend(
+                        state
+                            .screens
+                            .iter()
+                            .filter(|screen| screen.theme.is_some() && screen.theme == id)
+                            .map(|screen| (true, screen.name.as_str())),
+                    );
+                    for (used, tag) in tags {
                         if !used {
                             continue;
                         }
@@ -3883,6 +3924,27 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                         {
                             state.theme_request = Some(ThemeRequest::UseForSongs(index));
                             ui.close();
+                        }
+                        // Which audience screens draw with it: those set to it, and, for the main
+                        // theme, those left on the main theme.
+                        let id = state.theme_ids.get(index).copied();
+                        let main = state.theme_for_songs == index;
+                        let audience: Vec<usize> = (0..state.screens.len())
+                            .filter(|at| state.screens[*at].kind == crate::screens::Kind::Audience)
+                            .collect();
+                        if !audience.is_empty() {
+                            ui.menu_button("Use on", |ui| {
+                                for at in audience {
+                                    let screen = &mut state.screens[at];
+                                    let mut on = screen.theme == id || (main && screen.theme.is_none());
+                                    if ui.checkbox(&mut on, screen.name.as_str()).clicked() {
+                                        // On: this theme (the main one needs nothing of its own).
+                                        // Off: back to the main theme.
+                                        screen.theme = if on && !main { id } else { None };
+                                        state.screens_changed = true;
+                                    }
+                                }
+                            });
                         }
                         if ui.button("Duplicate").clicked() {
                             state.theme_request = Some(ThemeRequest::Duplicate(index));

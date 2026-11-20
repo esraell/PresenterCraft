@@ -227,6 +227,11 @@ feature changes, this page changes in the same commit.
   change what it is for.
 - Songs and Bible slides are drawn with the **main theme**, tagged Main in the list;
   right-click a theme to make it the main one, or to duplicate it.
+- **A theme for each screen.** An audience screen (a display, a window or NDI) can draw with a
+  theme of its own: the same words, laid out its way (a lower third for the stream, say), with
+  that theme's Bible template for Bible slides. Set it in Settings › Screens › Theme, or
+  right-click a theme › Use on. A theme is tagged with the screens set to it; the others use
+  the main theme (or a song's own).
 - The built-in theme has a template for each: two languages and one for songs, and one for
   Bible slides (the Russian Synodal verse and its reference on top, the King James Version and
   its reference below, in Linux Biolinum on black; its settings live in

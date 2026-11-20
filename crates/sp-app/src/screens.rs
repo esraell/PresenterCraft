@@ -46,6 +46,11 @@ pub struct Screen {
     /// For an audience screen, which layers it shows, its colour, and its covered edges.
     #[serde(default, skip_serializing_if = "Look::is_default")]
     pub look: Look,
+    /// For an audience screen, the theme its slides are drawn with, by its id: the same words
+    /// laid out another way (a lower third for the stream, say). `None` uses the main theme, or
+    /// a song's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<Uuid>,
 }
 
 /// How an audience screen shows the show: which layers (a lobby screen might show only the
@@ -97,7 +102,15 @@ pub enum Placed {
 
 impl Screen {
     pub fn new(name: String, output: Output) -> Screen {
-        Screen { id: Uuid::new_v4(), name, output, kind: Kind::Audience, stage_layout: None, look: Look::default() }
+        Screen {
+            id: Uuid::new_v4(),
+            name,
+            output,
+            kind: Kind::Audience,
+            stage_layout: None,
+            look: Look::default(),
+            theme: None,
+        }
     }
 
     pub fn stage(name: String, output: Output) -> Screen {
@@ -248,6 +261,19 @@ pub fn save(screens: &[Screen]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_screens_own_theme_is_saved_and_one_without_says_nothing() {
+        let mut stream = Screen::new("Stream".to_owned(), Output::Window);
+        let plain = serde_json::to_string(&stream).unwrap();
+        assert!(!plain.contains("theme"), "no theme of its own is not written");
+        stream.theme = Some(Uuid::from_u128(7));
+        let back: Screen = serde_json::from_str(&serde_json::to_string(&stream).unwrap()).unwrap();
+        assert_eq!(back.theme, Some(Uuid::from_u128(7)));
+        let old: Screen = serde_json::from_str(&plain).unwrap();
+        assert_eq!(old.theme, None);
+    }
+
     use super::*;
 
     #[test]
