@@ -764,21 +764,29 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
     let scroll = std::mem::take(&mut page.list_scroll);
     let new_testament = sp_bible::BOOKS.iter().position(|book| book.code == "MAT").unwrap_or(39);
     let mut chosen: Option<String> = None;
+    let mut go_live: Option<usize> = None;
     let shift = ui.input(|input| input.modifiers.shift);
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-    Frame::new().fill(Color32::from_rgb(34, 34, 36)).show(ui, |ui| {
+    Frame::new().fill(LIST_COLUMNS[0].1).show(ui, |ui| {
         // Along the top, a way to put the lists away for those who would rather type; Books
         // brings them back, and the choice is kept.
         let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), LISTS_BAR), Sense::hover());
-        ui.painter().text(
-            pos2(bar.min.x + 12.0, bar.center().y),
-            Align2::LEFT_CENTER,
-            "BOOKS",
-            FontId::proportional(10.5),
-            Color32::from_gray(120),
-        );
+        // Each column has its heading over it, in its own shade.
+        let mut left = bar.min.x;
+        for (width, fill, heading) in LIST_COLUMNS {
+            let column = Rect::from_min_size(pos2(left, bar.min.y), vec2(width, bar.height()));
+            ui.painter().rect_filled(column, 0.0, fill);
+            let (at, anchor) = if heading == "BOOK" {
+                (pos2(column.min.x + 12.0, column.center().y), Align2::LEFT_CENTER)
+            } else {
+                (column.center(), Align2::CENTER_CENTER)
+            };
+            ui.painter().text(at, anchor, heading, FontId::proportional(10.0), Color32::from_gray(135));
+            left += width;
+        }
+        let book_right = bar.min.x + LIST_COLUMNS[0].0;
         let hide_rect =
-            Rect::from_min_max(pos2(bar.max.x - 64.0, bar.min.y + 4.0), pos2(bar.max.x - 6.0, bar.max.y - 4.0));
+            Rect::from_min_max(pos2(book_right - 54.0, bar.min.y + 4.0), pos2(book_right - 6.0, bar.max.y - 4.0));
         let hide = ui.interact(hide_rect, list_row_id("hide"), Sense::click());
         if hide.hovered() {
             ui.painter().rect_filled(hide_rect, 5.0, Color32::from_white_alpha(14));
@@ -794,9 +802,11 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
             page.lists_open = false;
         }
         let height = ui.available_height();
+        let columns_top = ui.cursor().min.y;
+        let [(book_width, book_fill, _), (chapter_width, chapter_fill, _), (verse_width, verse_fill, _)] = LIST_COLUMNS;
         ui.horizontal_top(|ui| {
-            // Books.
-            list_column(ui, "bible books", 176.0, height, |ui| {
+            // Books: a click opens one at its first chapter, a double-click looks that chapter up.
+            list_column(ui, "bible books", book_width, height, book_fill, |ui| {
                 for book in 0..sp_bible::BOOKS.len() {
                     let chapters = bible.chapter_count(book);
                     if chapters == 0 {
@@ -816,14 +826,17 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
                     }
                     if row.clicked() {
                         page.list_book = book;
-                        page.list_chapter = if chapters == 1 { 1 } else { 0 };
+                        page.list_chapter = 1;
                         page.list_from = None;
+                    }
+                    if row.double_clicked() {
+                        chosen = Some(format!("{} 1", bible.book_name(book)));
                     }
                 }
             });
-            // Chapters of the book open.
+            // Chapters of the book open: a double-click looks the whole chapter up.
             let chapters = bible.chapter_count(page.list_book);
-            list_column(ui, "bible chapters", 58.0, height, |ui| {
+            list_column(ui, "bible chapters", chapter_width, height, chapter_fill, |ui| {
                 ui.add_space(6.0);
                 for chapter in 1..=chapters {
                     let open = page.list_chapter == chapter;
@@ -838,10 +851,15 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
                         page.list_chapter = chapter;
                         page.list_from = None;
                     }
+                    if row.double_clicked() {
+                        chosen = Some(format!("{} {chapter}", bible.book_name(page.list_book)));
+                    }
                 }
             });
-            // Verses of the chapter open.
-            list_column(ui, "bible verses", LISTS_WIDTH - 176.0 - 58.0, height, |ui| {
+            // Verses of the chapter open: a click looks the verse up, Shift-click a passage from
+            // the verse before, and a double-click looks the whole chapter up and puts the verse
+            // on screen, so Next goes on through the chapter.
+            list_column(ui, "bible verses", verse_width, height, verse_fill, |ui| {
                 ui.add_space(6.0);
                 let (book, chapter) = (page.list_book, page.list_chapter);
                 if chapter == 0 || chapter > chapters {
@@ -866,8 +884,13 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
                     if lit(book, chapter, verse) && scroll {
                         row.scroll_to_me(Some(Align::Center));
                     }
-                    if row.clicked() {
-                        let place = |verse| VerseRef { book, chapter, verse };
+                    let place = |verse| VerseRef { book, chapter, verse };
+                    if row.double_clicked() {
+                        chosen = Some(format!("{name} {chapter}"));
+                        // Its slide in the chapter: the verses before it, with one a slide.
+                        let before = bible.verses(sp_bible::Range { start: place(1), end: place(verse) }).len();
+                        go_live = Some(if page.options.break_on_new_verse { before.saturating_sub(1) } else { 0 });
+                    } else if row.clicked() {
                         chosen = Some(match page.list_from.filter(|_| shift) {
                             Some(from) => bible.label(place(from.min(verse)), place(from.max(verse))),
                             None => bible.label(place(verse), place(verse)),
@@ -879,17 +902,36 @@ pub fn lists(ui: &mut egui::Ui, page: &mut crate::home::BiblePage, live: Option<
                 }
             });
         });
+        // Lines in colour between the book, chapter and verse columns.
+        let mut x = ui.min_rect().min.x;
+        for (width, _, _) in &LIST_COLUMNS[..2] {
+            x += width;
+            ui.painter().vline(x, columns_top - LISTS_BAR..=columns_top + height, Stroke::new(1.5, LIST_LINE));
+        }
     });
     if let Some(reference) = chosen {
         page.lookup = reference;
         page.look_up(live);
+        // Put on screen once the chapter is made; nothing if it couldn't be.
+        page.go_live = go_live.filter(|_| page.pending.is_some());
     }
 }
 
-/// One of the lists: a column of its width, scrolling on its own.
-fn list_column(ui: &mut egui::Ui, id: &str, width: f32, height: f32, add: impl FnOnce(&mut egui::Ui)) {
+/// The book, chapter and verse columns: each one's width, its shade, and its heading.
+const LIST_COLUMNS: [(f32, Color32, &str); 3] = [
+    (176.0, Color32::from_rgb(32, 33, 37), "BOOK"),
+    (58.0, Color32::from_rgb(38, 40, 46), "CHAPTER"),
+    (66.0, Color32::from_rgb(44, 47, 55), "VERSE"),
+];
+
+/// The colour of the lines between the columns.
+const LIST_LINE: Color32 = Color32::from_rgb(74, 112, 178);
+
+/// One of the lists: a column of its width and shade, scrolling on its own.
+fn list_column(ui: &mut egui::Ui, id: &str, width: f32, height: f32, fill: Color32, add: impl FnOnce(&mut egui::Ui)) {
     ui.allocate_ui_with_layout(vec2(width, height), Layout::top_down(Align::Min), |ui| {
         ui.set_min_size(vec2(width, height));
+        ui.painter().rect_filled(Rect::from_min_size(ui.max_rect().min, vec2(width, height)), 0.0, fill);
         egui::ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).max_height(height).show(ui, |ui| {
             ui.set_width(width);
             Frame::new().inner_margin(egui::Margin::symmetric(6, 0)).show(ui, add);

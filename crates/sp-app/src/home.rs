@@ -491,6 +491,9 @@ pub struct BiblePage {
     pub list_chapter: u16,
     pub list_from: Option<u16>,
     pub list_scroll: bool,
+    /// A slide of the passage just looked up to put on screen once the app has it (a verse
+    /// double-clicked in the lists), by its place in the passage.
+    pub go_live: Option<usize>,
     /// Two verses made with the choices of the moment, for the Options panel's preview when
     /// no passage is showing, and the choices they were made with.
     pub sample: Option<(String, sp_model::Presentation)>,
@@ -539,6 +542,7 @@ impl Default for BiblePage {
             list_chapter: 0,
             list_from: None,
             list_scroll: false,
+            go_live: None,
             sample: None,
         }
     }
@@ -6062,6 +6066,56 @@ mod tests {
         run(&mut state, vec![press(false)], 0.65);
         assert!(!state.bible.lists_open);
         assert!(state.prefs().bible_lists_hidden, "and stay hidden at the next start");
+    }
+
+    #[test]
+    fn a_double_click_in_the_lists_loads_the_chapter_and_puts_a_verse_on_screen() {
+        let mut state = HomeState { bible_open: true, ..HomeState::default() };
+        state.bible.slots = Some([0, 1]);
+        state.bible.list_book = sp_bible::BOOKS.iter().position(|book| book.code == "JOH").unwrap();
+        state.bible.list_chapter = 3;
+        let ctx = egui::Context::default();
+        let show = show(3);
+        let mut clock = 0.0;
+        let mut run = |state: &mut HomeState, events: Vec<Event>| {
+            clock += 0.05;
+            let raw = RawInput { focused: true, time: Some(clock), events, ..input(None) };
+            let output = ctx.run_ui(raw, |ui| {
+                home_ui(ui, &show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            output.drop_without_applying_deltas();
+        };
+        run(&mut state, Vec::new());
+        run(&mut state, Vec::new());
+        let double_click = |run: &mut dyn FnMut(&mut HomeState, Vec<Event>), state: &mut HomeState, at: egui::Pos2| {
+            let press = |pressed| Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            run(state, vec![Event::PointerMoved(at)]);
+            for _ in 0..2 {
+                run(state, vec![press(true)]);
+                run(state, vec![press(false)]);
+            }
+        };
+        // The chapter: all of it.
+        let chapter = ctx.read_response(crate::bible::list_row_id(("chapter", 3u16))).unwrap().rect.center();
+        double_click(&mut run, &mut state, chapter);
+        assert_eq!(state.bible.lookup, "От Иоанна 3:1-36");
+        assert_eq!(state.bible.go_live, None, "nothing goes on screen");
+        // A verse: its chapter, and its slide put on screen once the app has the chapter. (A
+        // pause first, or the clicks would count on from the chapter's as a triple click.)
+        state.bible.pending = None;
+        for _ in 0..10 {
+            run(&mut state, Vec::new());
+        }
+        let verse = ctx.read_response(crate::bible::list_row_id(("verse", 5u16))).unwrap().rect.center();
+        double_click(&mut run, &mut state, verse);
+        assert_eq!(state.bible.lookup, "От Иоанна 3:1-36");
+        assert!(state.bible.pending.is_some());
+        assert_eq!(state.bible.go_live, Some(4), "the fifth slide, one verse a slide");
     }
 
     #[test]

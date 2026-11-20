@@ -4813,6 +4813,11 @@ impl ApplicationHandler<AppEvent> for App {
                 // screen, so the output is untouched.
                 if let Some((slot, passage)) = self.running.as_mut().and_then(|r| r.home_state.bible.pending.take()) {
                     self.show.replace_presentation(slot, Arc::new(passage));
+                    // A verse double-clicked in the Bible lists goes on screen, in its chapter.
+                    let go_live = self.running.as_mut().and_then(|r| r.home_state.bible.go_live.take());
+                    if let Some(slide) = go_live {
+                        self.apply(vec![Command::GoTo(sp_engine::SlideRef { presentation: slot, slide })]);
+                    }
                     if let Some(running) = self.running.as_ref() {
                         running.home_window.request_redraw();
                     }
