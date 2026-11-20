@@ -158,8 +158,11 @@ feature changes, this page changes in the same commit.
   hundred, and Clear History empties it.
 - Up to four translations on one slide, lined up by verse using the standard versification
   tables; each row picks its Bible (or None) and the boxes its verse and reference go in.
-- Options for verse numbers, a new slide for each verse, the translation's name, and where the
-  reference goes; ‹ Verse and Verse › make the passage a verse longer at either end; search
+- Options opens a panel: what each slide shows (one verse, or as many as fit), verse numbers,
+  the translation's name, where the reference goes (on every slide, the whole passage on every
+  slide or the last, or none) and the theme, beside a preview of the first and last slides that
+  changes as they are clicked (the passage showing, or two sample verses). Manage Bibles… opens
+  the Bibles window. ‹ Verse and Verse › make the passage a verse longer at either end; search
   results open a verse or its whole chapter.
 - Book, chapter and verse lists beside the slides (Books shows or hides them): a click on a
   verse looks it up at once, Shift-click makes a passage from the verse before, All takes the

@@ -283,7 +283,6 @@ pub fn build_passage(
 
 /// What is chosen: grey, as the rest of the app.
 const BLUE: Color32 = crate::studio::SELECTED;
-const SHELL: Color32 = Color32::from_rgb(30, 30, 30);
 const PANE: Color32 = Color32::from_rgb(48, 48, 48);
 const DIM: Color32 = Color32::from_gray(160);
 const INK: Color32 = Color32::from_gray(235);
@@ -456,8 +455,6 @@ pub struct BibleOptions {
     /// search box.
     pub manage_open: bool,
     pub manage_search: String,
-    /// 0 is Slide Options, 1 is Bibles.
-    pub pane: usize,
     pub show_verse_numbers: bool,
     pub break_on_new_verse: bool,
     pub display_translation: bool,
@@ -477,7 +474,6 @@ impl Default for BibleOptions {
             open: false,
             manage_open: false,
             manage_search: String::new(),
-            pane: 0,
             show_verse_numbers: false,
             break_on_new_verse: true,
             display_translation: false,
@@ -507,28 +503,46 @@ impl ThemeChoice<'_> {
     }
 }
 
-/// Draws the pop-up under the Options button, its right edge in line with the button's.
+/// What the Options panel previews: the first slide of the passage showing (or of a sample of
+/// two verses when none is), its last slide when it has more than one, and how many it has.
+/// A picture not drawn yet is `None`.
+pub struct SlidesPreview {
+    pub first: Option<egui::TextureId>,
+    pub last: Option<egui::TextureId>,
+    pub count: usize,
+    /// The passage's name, and whether it is the sample.
+    pub name: String,
+    pub sample: bool,
+    /// The short names of the translations, for "Translation name (KJV, SYN)".
+    pub translations: String,
+}
+
+/// The Options panel under the Options button, its right edge in line with the button's:
+/// plain-worded choices on the left, and on the right a preview of the slides they make,
+/// which changes as they are clicked. Returns a theme and layout picked for Bible slides.
 pub fn options_popup(
     ctx: &egui::Context,
     options: &mut BibleOptions,
-    shelf: &mut Shelf,
-    downloads: &mut crate::bible_store::Downloads,
     button: Rect,
     themes: &ThemeChoice,
+    preview: &SlidesPreview,
 ) -> Option<(usize, usize)> {
     let mut picked_theme = None;
-    let size = vec2(508.0, 262.0);
-    let corner = pos2(button.max.x - size.x + 8.0, button.max.y + 8.0);
+    let size = vec2(640.0, 330.0);
+    // Kept inside the window: in a narrow one it moves left rather than off the edge.
+    let left = (button.max.x - size.x + 8.0).max(8.0);
+    let corner = pos2(left, button.max.y + 8.0);
     let area = egui::Area::new(egui::Id::unique("bible options"))
         .order(egui::Order::Foreground)
         .fade_in(false)
-        .constrain(false)
+        .constrain(true)
         .fixed_pos(corner)
         .show(ctx, |ui| {
             Frame::new()
-                .fill(SHELL)
+                .fill(PANE)
                 .corner_radius(12)
                 .stroke(Stroke::new(1.0, Color32::from_gray(78)))
+                .inner_margin(egui::Margin::symmetric(18, 14))
                 .shadow(egui::epaint::Shadow {
                     offset: [0, 6],
                     blur: 18,
@@ -536,72 +550,14 @@ pub fn options_popup(
                     color: Color32::from_black_alpha(120),
                 })
                 .show(ui, |ui| {
-                    ui.set_min_size(size);
-                    ui.set_max_size(size);
-                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+                    ui.set_width(size.x - 36.0);
                     ui.horizontal_top(|ui| {
-                        // Left: the two panes to choose from.
-                        ui.allocate_ui_with_layout(vec2(144.0, size.y), Layout::top_down(Align::Min), |ui| {
-                            ui.set_min_size(vec2(144.0, size.y));
-                            for (index, name) in ["Slide Options", "Bibles"].into_iter().enumerate() {
-                                let (row, response) = ui.allocate_exact_size(vec2(144.0, 46.0), Sense::click());
-                                let selected = options.pane == index;
-                                if selected {
-                                    let radius = if index == 0 {
-                                        egui::CornerRadius { nw: 12, ne: 0, sw: 0, se: 0 }
-                                    } else {
-                                        egui::CornerRadius::ZERO
-                                    };
-                                    ui.painter().rect_filled(row, radius, BLUE);
-                                } else if response.hovered() {
-                                    ui.painter().rect_filled(row, 0.0, Color32::from_gray(44));
-                                }
-                                let mark =
-                                    Rect::from_center_size(pos2(row.min.x + 26.0, row.center().y), vec2(18.0, 18.0));
-                                if index == 0 {
-                                    ui.painter().circle_filled(mark.center(), 10.0, Color32::from_rgb(70, 88, 220));
-                                    ui.painter().text(
-                                        mark.center(),
-                                        Align2::CENTER_CENTER,
-                                        "i",
-                                        FontId::proportional(13.0),
-                                        INK,
-                                    );
-                                } else {
-                                    crate::icons::paint(ui.painter(), crate::icons::Icon::Book, mark, INK);
-                                }
-                                ui.painter().text(
-                                    pos2(row.min.x + 48.0, row.center().y),
-                                    Align2::LEFT_CENTER,
-                                    name,
-                                    FontId::proportional(13.0),
-                                    INK,
-                                );
-                                if response.clicked() {
-                                    // Bibles are installed and removed in a window of their own.
-                                    if index == 1 {
-                                        options.manage_open = true;
-                                        options.open = false;
-                                    } else {
-                                        options.pane = 0;
-                                    }
-                                }
-                            }
+                        ui.allocate_ui_with_layout(vec2(320.0, size.y), Layout::top_down(Align::Min), |ui| {
+                            ui.set_width(320.0);
+                            picked_theme = choices(ui, options, themes, &preview.translations);
                         });
-                        // Right: the chosen pane.
-                        let pane =
-                            Frame::new().fill(PANE).corner_radius(egui::CornerRadius { nw: 0, ne: 12, sw: 0, se: 12 });
-                        pane.inner_margin(egui::Margin::symmetric(16, 12)).show(ui, |ui| {
-                            ui.set_min_size(vec2(size.x - 144.0 - 32.0, size.y - 24.0));
-                            ui.set_max_width(size.x - 144.0 - 32.0);
-                            ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
-                            // The pane sits in a row, so its own contents need to be told to run downwards.
-                            ui.vertical(|ui| {
-                                ui.set_width(size.x - 144.0 - 32.0);
-                                let _ = (&shelf, &downloads);
-                                picked_theme = slide_options(ui, options, themes);
-                            });
-                        });
+                        ui.add_space(18.0);
+                        ui.vertical(|ui| slides_preview(ui, preview));
                     });
                 });
         });
@@ -618,35 +574,70 @@ pub fn options_popup(
     picked_theme
 }
 
-fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, themes: &ThemeChoice) -> Option<(usize, usize)> {
+/// What a reference style is called in the Options panel, and what it does.
+fn reference_words(style: ReferenceStyle) -> (&'static str, &'static str) {
+    match style {
+        ReferenceStyle::VerseReferences => {
+            ("On every slide", "Each slide names its own verses: John 3:16, then John 3:17")
+        }
+        ReferenceStyle::PassageEach => {
+            ("Whole passage, every slide", "Each slide names the whole passage: John 3:16-18")
+        }
+        ReferenceStyle::PassageLast => ("Whole passage, last slide", "Only the last slide names the passage"),
+        ReferenceStyle::NoReference => ("None", "No reference on the slides"),
+    }
+}
+
+/// The Options panel's choices.
+fn choices(
+    ui: &mut egui::Ui,
+    options: &mut BibleOptions,
+    themes: &ThemeChoice,
+    translations: &str,
+) -> Option<(usize, usize)> {
     let mut picked_theme = None;
-    ui.horizontal_top(|ui| {
-        ui.vertical(|ui| {
-            ui.checkbox(&mut options.show_verse_numbers, "Show Verse Numbers")
-                .on_hover_text("Put each verse's number before its words");
-            ui.checkbox(&mut options.break_on_new_verse, "Break on New Verse")
-                .on_hover_text("Start a new slide at each verse");
-            ui.checkbox(&mut options.display_translation, "Display Translation")
-                .on_hover_text("Show the Bible's short name, such as KJV, with the reference");
-        });
-        ui.add_space(12.0);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            for (style, name) in [
-                (ReferenceStyle::VerseReferences, "Verse References"),
-                (ReferenceStyle::PassageEach, "Passage Each"),
-                (ReferenceStyle::PassageLast, "Passage Last"),
-                (ReferenceStyle::NoReference, "No Reference"),
+    let heading = |ui: &mut egui::Ui, text: &str| {
+        ui.label(egui::RichText::new(text).size(11.0).strong().color(Color32::from_gray(140)));
+    };
+    ui.spacing_mut().item_spacing.y = 6.0;
+    // Boxes and circles that can be seen when empty: the usual ones all but vanish on the
+    // panel's grey.
+    let widgets = &mut ui.style_mut().visuals.widgets;
+    widgets.inactive.bg_fill = Color32::from_gray(64);
+    widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_gray(128));
+    widgets.hovered.bg_fill = Color32::from_gray(84);
+    heading(ui, "EACH SLIDE SHOWS");
+    ui.radio_value(&mut options.break_on_new_verse, true, "One verse");
+    ui.radio_value(&mut options.break_on_new_verse, false, "As many verses as fit");
+    ui.add_space(6.0);
+    ui.checkbox(&mut options.show_verse_numbers, "Verse numbers")
+        .on_hover_text("Put each verse's number before its words");
+    let named = if translations.is_empty() {
+        "Translation name".to_owned()
+    } else {
+        format!("Translation name ({translations})")
+    };
+    ui.checkbox(&mut options.display_translation, named)
+        .on_hover_text("Put the Bible's short name after the reference");
+    ui.add_space(6.0);
+    egui::Grid::new("bible slide options").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+        ui.label("Reference");
+        let (chosen, _) = reference_words(options.reference);
+        egui::ComboBox::from_id_salt("bible reference").selected_text(chosen).width(200.0).show_ui(ui, |ui| {
+            for style in [
+                ReferenceStyle::VerseReferences,
+                ReferenceStyle::PassageEach,
+                ReferenceStyle::PassageLast,
+                ReferenceStyle::NoReference,
             ] {
-                ui.radio_value(&mut options.reference, style, name);
+                let (name, hint) = reference_words(style);
+                ui.selectable_value(&mut options.reference, style, name).on_hover_text(hint);
             }
         });
-    });
-    ui.add_space(6.0);
-    egui::Grid::new("bible slide options").num_columns(2).spacing([10.0, 12.0]).show(ui, |ui| {
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(egui::RichText::new("Theme").strong()));
-        // The theme Bible slides use, and which of its layouts. Each layout is shown as a
-        // small picture of where its boxes sit.
+        ui.end_row();
+        ui.label("Look");
+        // The theme Bible slides use, and which of its layouts, each shown as a small picture
+        // of where its boxes sit.
         let chosen = format!(
             "{} › {}",
             themes.names.get(themes.theme).map_or("", String::as_str),
@@ -654,7 +645,7 @@ fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, themes: &ThemeCh
         );
         egui::ComboBox::from_id_salt("bible theme")
             .selected_text(chosen)
-            .width(190.0)
+            .width(200.0)
             .height(320.0)
             .show_ui(ui, |ui| {
                 for (index, name) in themes.names.iter().enumerate() {
@@ -691,7 +682,56 @@ fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, themes: &ThemeCh
             );
         ui.end_row();
     });
+    ui.add_space(10.0);
+    if ui.button("Manage Bibles…").on_hover_text("Install and remove Bibles").clicked() {
+        options.manage_open = true;
+        options.open = false;
+    }
     picked_theme
+}
+
+/// The right of the Options panel: the first slide, and the last when there are more.
+fn slides_preview(ui: &mut egui::Ui, preview: &SlidesPreview) {
+    let width = ui.available_width();
+    let caption = if preview.sample {
+        format!("PREVIEW · {} (a sample)", preview.name)
+    } else {
+        format!("PREVIEW · {}", preview.name)
+    };
+    ui.add(
+        egui::Label::new(egui::RichText::new(caption).size(11.0).strong().color(Color32::from_gray(140))).truncate(),
+    );
+    ui.add_space(4.0);
+    let picture = |ui: &mut egui::Ui, texture: Option<egui::TextureId>, width: f32| {
+        let (rect, _) = ui.allocate_exact_size(vec2(width, (width * 9.0 / 16.0).round()), Sense::hover());
+        ui.painter().rect_filled(rect, 4.0, Color32::BLACK);
+        match texture {
+            Some(texture) => {
+                egui::Image::from_texture((texture, rect.size())).corner_radius(4).paint_at(ui, rect);
+            }
+            // Drawn in a moment.
+            None => ui.ctx().request_repaint(),
+        }
+        ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.0, Color32::from_gray(70)), egui::StrokeKind::Outside);
+    };
+    picture(ui, preview.first, width);
+    ui.add_space(8.0);
+    match preview.count {
+        0 => {}
+        1 => {
+            ui.label(egui::RichText::new("1 slide").size(12.0).color(DIM));
+        }
+        count => {
+            ui.horizontal_top(|ui| {
+                picture(ui, preview.last, (width * 0.45).round());
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("The last").size(12.0).color(INK));
+                    ui.label(egui::RichText::new(format!("{count} slides")).size(12.0).color(DIM));
+                });
+            });
+        }
+    }
 }
 
 /// How wide the book, chapter and verse lists are, together.

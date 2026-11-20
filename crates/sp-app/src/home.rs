@@ -491,6 +491,9 @@ pub struct BiblePage {
     pub list_chapter: u16,
     pub list_from: Option<u16>,
     pub list_scroll: bool,
+    /// Two verses made with the choices of the moment, for the Options panel's preview when
+    /// no passage is showing, and the choices they were made with.
+    pub sample: Option<(String, sp_model::Presentation)>,
 }
 
 impl Default for BiblePage {
@@ -536,6 +539,7 @@ impl Default for BiblePage {
             list_chapter: 0,
             list_from: None,
             list_scroll: false,
+            sample: None,
         }
     }
 }
@@ -711,32 +715,45 @@ impl BiblePage {
         self.make(live, true);
     }
 
-    fn make(&mut self, live: Option<usize>, quiet: bool) {
-        let Some(slots) = self.slots else { return };
+    /// The translations a passage is made in, with where each one's words and reference go.
+    /// A row set to no Bible is left out. The error is a plain sentence.
+    fn row_choices(&mut self) -> Result<Vec<crate::bible::RowChoice>, String> {
         let mut rows = Vec::new();
-        // A row set to no Bible is left out.
         for row in &self.rows {
             let Some(at) = row.bible else { continue };
-            match self.shelf.get(at) {
-                Ok(bible) => rows.push(crate::bible::RowChoice {
-                    bible,
-                    verse: row.verse.clone(),
-                    reference: row.reference.clone(),
-                }),
-                Err(problem) => {
-                    if !quiet {
-                        self.message = Some(problem);
-                    }
-                    return;
-                }
-            }
+            let bible = self.shelf.get(at)?;
+            rows.push(crate::bible::RowChoice { bible, verse: row.verse.clone(), reference: row.reference.clone() });
         }
         if rows.is_empty() {
-            if !quiet {
-                self.message = Some("Choose a Bible for at least one row.".to_owned());
-            }
-            return;
+            return Err("Choose a Bible for at least one row.".to_owned());
         }
+        Ok(rows)
+    }
+
+    /// Two verses made with the choices of the moment, for the Options panel to preview when
+    /// no passage is showing. Made again only when a choice changes, so its pictures are drawn
+    /// once each time.
+    pub fn sample(&mut self) -> Option<&sp_model::Presentation> {
+        let made_with = format!("{} {:?}", self.choices(), self.template);
+        if self.sample.as_ref().is_none_or(|(had, _)| *had != made_with) {
+            let rows = self.row_choices().ok()?;
+            let passage = crate::bible::build_passage(SAMPLE_PASSAGE, &rows, &self.options, self.template).ok()?;
+            self.sample = Some((made_with, passage));
+        }
+        self.sample.as_ref().map(|(_, passage)| passage)
+    }
+
+    fn make(&mut self, live: Option<usize>, quiet: bool) {
+        let Some(slots) = self.slots else { return };
+        let rows = match self.row_choices() {
+            Ok(rows) => rows,
+            Err(problem) => {
+                if !quiet {
+                    self.message = Some(problem);
+                }
+                return;
+            }
+        };
         match crate::bible::build_passage(&self.lookup, &rows, &self.options, self.template) {
             Ok(passage) => {
                 let passage_name = passage.title.clone();
@@ -4126,13 +4143,17 @@ fn bible_area(
                     state.bible.find();
                 }
                 if wide {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| bible_actions(ui, state));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        bible_actions(ui, show, state, &mut *thumb)
+                    });
                 }
             });
             // Too narrow for one row: the actions go on a row of their own, under the fields.
             if !wide {
                 ui.horizontal(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| bible_actions(ui, state));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        bible_actions(ui, show, state, &mut *thumb)
+                    });
                 });
             }
 
@@ -4393,12 +4414,61 @@ fn bible_results(
     }
 }
 
+/// What the Options panel previews: the passage showing, whose slides are made again whenever
+/// a choice changes, or two sample verses when none is.
+fn bible_preview(
+    show: &Show,
+    page: &mut BiblePage,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
+) -> crate::bible::SlidesPreview {
+    let translations = page
+        .rows
+        .iter()
+        .filter_map(|row| row.bible)
+        .filter_map(|at| page.shelf.bibles.get(at).map(|bible| bible.short.clone()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let showing = page
+        .slots
+        .map(|slots| slots[page.showing])
+        .and_then(|slot| show.presentations().get(slot))
+        .filter(|passage| !page.shown.is_empty() && passage.slide_count() > 0)
+        .cloned();
+    let sample = showing.is_none();
+    let passage = match showing {
+        Some(passage) => Some(passage),
+        None => page.sample().cloned().map(std::sync::Arc::new),
+    };
+    let Some(passage) = passage else {
+        return crate::bible::SlidesPreview {
+            first: None,
+            last: None,
+            count: 0,
+            name: String::new(),
+            sample,
+            translations,
+        };
+    };
+    let slides: Vec<&sp_model::Slide> = passage.slides().map(|(_, slide)| slide).collect();
+    let mut picture = |slide: Option<&&sp_model::Slide>| {
+        slide.and_then(|slide| thumb(ThumbOf::BibleSlide(slide))).map(|(texture, _)| texture)
+    };
+    let first = picture(slides.first());
+    let last = if slides.len() > 1 { picture(slides.last()) } else { None };
+    crate::bible::SlidesPreview { first, last, count: slides.len(), name: passage.title.clone(), sample, translations }
+}
+
 /// The rulers along the top and left of the Edit view's canvas, in the slide's own pixels: a
 /// mark every 100, numbered as often as there is room for, with the selected object's extent
 /// shown on each.
 /// The Bible page's actions, laid out from the right: Options, then keeping the passage in the
 /// playlist in front (or another playlist), to open again with its settings.
-fn bible_actions(ui: &mut egui::Ui, state: &mut HomeState) {
+fn bible_actions(
+    ui: &mut egui::Ui,
+    show: &Show,
+    state: &mut HomeState,
+    thumb: &mut dyn FnMut(ThumbOf) -> Option<(TextureId, bool)>,
+) {
     let button = ui
         .add(egui::Button::selectable(state.bible.options.open, "Options"))
         .on_hover_text("How verses become slides, and which Bibles are installed");
@@ -4409,12 +4479,11 @@ fn bible_actions(ui: &mut egui::Ui, state: &mut HomeState) {
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             state.bible.options.open = false;
         }
+        let preview = bible_preview(show, &mut state.bible, thumb);
         let bible = &mut state.bible;
         let picked = crate::bible::options_popup(
             ui.ctx(),
             &mut bible.options,
-            &mut bible.shelf,
-            &mut bible.downloads,
             button.rect,
             &crate::bible::ThemeChoice {
                 names: &state.theme_names,
@@ -4423,6 +4492,7 @@ fn bible_actions(ui: &mut egui::Ui, state: &mut HomeState) {
                 theme: state.theme_for_bible,
                 layout: state.bible_layout,
             },
+            &preview,
         );
         if let Some((index, layout)) = picked {
             state.theme_request = Some(ThemeRequest::UseForBible(index, layout));
@@ -4914,6 +4984,10 @@ const WAS_LIVE_OUTLINE: Color32 = Color32::from_rgb(110, 60, 58);
 /// One presentation's slides, in the view chosen: a grid of thumbnails, the same grid showing
 /// only words, or a table. Clicking a slide puts it on screen; a right-click picks it out
 /// without showing it.
+/// The passage the Options panel previews when none is showing: two verses, so that one verse
+/// a slide, and the reference on the last slide only, can be seen to change it.
+const SAMPLE_PASSAGE: &str = "John 3:16-17";
+
 /// How many passages the Bible history keeps.
 const HISTORY_LENGTH: usize = 100;
 
@@ -5925,6 +5999,18 @@ mod tests {
         page.lookup = "jn 3:17".to_owned();
         page.look_up(None);
         assert!(!page.list_scroll);
+    }
+
+    #[test]
+    fn the_options_sample_is_made_again_only_when_a_choice_changes() {
+        let mut page = BiblePage::default();
+        let first = |page: &mut BiblePage| page.sample().unwrap().slides().next().unwrap().1.id;
+        let id = first(&mut page);
+        assert_eq!(first(&mut page), id, "the same choices keep the same slides, and their pictures");
+        assert_eq!(page.sample().unwrap().slide_count(), 2, "one verse a slide");
+        page.options.break_on_new_verse = false;
+        assert_eq!(page.sample().unwrap().slide_count(), 1, "as many verses as fit");
+        assert_ne!(first(&mut page), id);
     }
 
     #[test]
