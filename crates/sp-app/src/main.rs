@@ -5746,6 +5746,39 @@ impl App {
             }
             return;
         }
+        // Typing actions in a window of its own (Settings, say) go to that window, not the main
+        // one: Paste there pasted into nothing, and Undo undid a song.
+        let focused = self.focused;
+        if matches!(action, A::Cut | A::Copy | A::Paste | A::PasteMatchStyle | A::SelectAll | A::Undo | A::Redo)
+            && let Some(running) = self.running.as_mut()
+            && let Some(panel) = running.panels.iter_mut().find(|panel| Some(panel.window.id()) == focused)
+        {
+            let pasted = matches!(action, A::Paste | A::PasteMatchStyle)
+                .then(|| panel.state.clipboard_text())
+                .flatten()
+                .filter(|text| !text.is_empty());
+            let command = egui::Modifiers::COMMAND;
+            let events = &mut panel.state.egui_input_mut().events;
+            let key = |events: &mut Vec<egui::Event>, key: egui::Key, modifiers: egui::Modifiers| {
+                for pressed in [true, false] {
+                    events.push(egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers });
+                }
+            };
+            match action {
+                A::Cut => events.push(egui::Event::Cut),
+                A::Copy => events.push(egui::Event::Copy),
+                A::Paste | A::PasteMatchStyle => {
+                    if let Some(text) = pasted {
+                        events.push(egui::Event::Paste(text.replace("\r\n", "\n")));
+                    }
+                }
+                A::SelectAll => key(events, egui::Key::A, command),
+                A::Undo => key(events, egui::Key::Z, command),
+                _ => key(events, egui::Key::Z, command | egui::Modifiers::SHIFT),
+            }
+            panel.window.request_redraw();
+            return;
+        }
         // In the Show view and on the Bible page (which has no undo of its own), with nothing
         // being typed, Undo and Redo step through the changes made to songs.
         let in_show = self.running.as_ref().is_some_and(|r| {
