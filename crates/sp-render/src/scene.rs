@@ -342,6 +342,10 @@ fn draw_picture(scene: &mut Scene, placed: Affine, file: &str, fit: ImageFit, re
     let [a, b, ..] = placed.as_coeffs();
     let drawn = w.max(h) * a.hypot(b);
     let Some(picture) = crate::pictures::picture_at(file, drawn) else {
+        // One being read for the screens shows nothing until it is there.
+        if crate::pictures::coming(file) {
+            return;
+        }
         scene.fill(Fill::NonZero, placed, Color::from_rgba8(90, 90, 96, 255), None, outline);
         let mut cross = BezPath::new();
         cross.move_to((x, y));

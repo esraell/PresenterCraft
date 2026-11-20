@@ -3,12 +3,19 @@
 //! size: past it, the pictures drawn longest ago are let go, and read again if they are drawn
 //! again.
 //!
+//! The thread drawing the screens never reads a file: a picture it doesn't have yet is read by
+//! a loader thread of its own while the screens show its small copy (or nothing), and the
+//! screens are told to draw again once it is there. Reading a big photo, or taking a video's
+//! still, can take a good part of a second, which the audience would see as a freeze.
+//!
 //! Something drawn small (a thumbnail, a preview) gets a small copy of the picture instead.
 //! The renderer keeps every picture it draws in a texture of its own until that fills, and a
 //! grid of thumbnails of full-size pages would fill it with full-size pictures: a 60-page deck
 //! took a gigabyte that way.
 
-use std::collections::HashMap;
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{Sender, channel};
 use std::sync::{Mutex, OnceLock};
 
 use crate::Picture;
@@ -30,18 +37,113 @@ fn small_name(file: &str) -> String {
 
 static LOADER: OnceLock<Loader> = OnceLock::new();
 static KEPT: OnceLock<Mutex<Kept>> = OnceLock::new();
+/// Files for the loader thread to read, and what to do once one is read.
+static QUEUE: OnceLock<Mutex<Sender<String>>> = OnceLock::new();
+type Loaded = Box<dyn Fn() + Send + Sync>;
+static ON_LOADED: Mutex<Option<Loaded>> = Mutex::new(None);
+
+thread_local! {
+    /// Whether this thread only draws pictures already kept (the screens' thread).
+    static KEPT_ONLY: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Says how a picture object's file is read. Set once, when the app starts.
 pub fn set_picture_loader(loader: Loader) {
     let _ = LOADER.set(loader);
 }
 
+/// Says this thread draws only pictures already kept, never reading a file itself: one not
+/// kept yet is read by the loader thread meanwhile, and `loaded` is called once it is there,
+/// so the thread can draw again. For the thread that draws the screens.
+pub fn draw_kept_pictures_only(loaded: impl Fn() + Send + Sync + 'static) {
+    KEPT_ONLY.with(|only| only.set(true));
+    if let Ok(mut on_loaded) = ON_LOADED.lock() {
+        *on_loaded = Some(Box::new(loaded));
+    }
+}
+
+/// Has the pictures a slide shows read ahead, on the loader thread, so they are kept by the
+/// time it goes on screen: the screens' thread asks for the next slide's.
+pub fn read_ahead(slide: &sp_model::Slide) {
+    for object in &slide.objects {
+        if let sp_model::ObjectKind::Image { file, .. } = &object.kind {
+            let kept = KEPT.get_or_init(|| Mutex::new(Kept::new(KEEP_BYTES)));
+            if let Ok(mut kept) = kept.lock()
+                && !kept.pictures.contains_key(file.as_str())
+                && !kept.live.contains(file.as_str())
+            {
+                queue_read(&mut kept, file);
+            }
+        }
+    }
+}
+
+/// True while a file's picture is being read by the loader thread (so it is drawn as nothing
+/// for now, not as a picture that can't be read).
+pub(crate) fn coming(file: &str) -> bool {
+    KEPT.get().and_then(|kept| kept.lock().ok()).is_some_and(|kept| kept.reading.contains(file))
+}
+
+/// Has the loader thread read a file, unless it is reading it already.
+fn queue_read(kept: &mut Kept, file: &str) {
+    if !kept.reading.insert(file.to_owned()) {
+        return;
+    }
+    let queue = QUEUE.get_or_init(|| {
+        let (tx, rx) = channel::<String>();
+        let started = std::thread::Builder::new().name("pictures".to_owned()).spawn(move || {
+            for file in rx {
+                read_into_kept(&file);
+            }
+        });
+        if let Err(e) = started {
+            eprintln!("could not start the picture loader: {e}");
+        }
+        Mutex::new(tx)
+    });
+    if queue.lock().map(|tx| tx.send(file.to_owned())).is_err() {
+        kept.reading.remove(file);
+    }
+}
+
+/// On the loader thread: reads a file, keeps its picture and small copy, and says it is there.
+fn read_into_kept(file: &str) {
+    let read = LOADER.get().and_then(|load| load(file));
+    let small = read.as_ref().map(|full| full.shrunk(SMALL_SIDE));
+    let kept = KEPT.get_or_init(|| Mutex::new(Kept::new(KEEP_BYTES)));
+    if let Ok(mut kept) = kept.lock() {
+        kept.reading.remove(file);
+        // A video's newest frame shown in its place meanwhile wins over its still.
+        if !kept.live.contains(file) {
+            if let Some(small) = small {
+                kept.insert(&small_name(file), Some(small));
+            }
+            kept.insert(file, read);
+        }
+    }
+    if let Some(loaded) = ON_LOADED.lock().ok().as_ref().and_then(|on| on.as_ref()) {
+        loaded();
+    }
+}
+
+fn kept_only() -> bool {
+    KEPT_ONLY.with(Cell::get)
+}
+
 /// The picture a file names: read the first time it is asked for, then kept. A file that
-/// can't be read is remembered as missing, so it is not tried again on every frame.
+/// can't be read is remembered as missing, so it is not tried again on every frame. On the
+/// screens' thread, one not kept yet is read meanwhile (see [`draw_kept_pictures_only`]), and
+/// its small copy, if kept, stands in for it.
 pub(crate) fn picture(file: &str) -> Option<Picture> {
     let kept = KEPT.get_or_init(|| Mutex::new(Kept::new(KEEP_BYTES)));
-    if let Some(found) = kept.lock().ok().and_then(|mut kept| kept.get(file)) {
-        return found;
+    if let Ok(mut kept) = kept.lock() {
+        if let Some(found) = kept.get(file) {
+            return found;
+        }
+        if kept_only() {
+            queue_read(&mut kept, file);
+            return kept.get(&small_name(file)).flatten();
+        }
     }
     // Read without holding the lock, so another screen isn't kept waiting.
     let read = LOADER.get().and_then(|load| load(file));
@@ -68,11 +170,19 @@ pub(crate) fn picture_at(file: &str, drawn_side: f64) -> Option<Picture> {
         if let Some(found) = kept.get(&small) {
             return found;
         }
-        // The full picture, if it is kept already, makes the copy without reading the file.
+        // The full picture, if it is kept already, makes the copy without reading the file
+        // (the screens' thread draws it as it is rather than spend time shrinking it).
         if let Some(Some(full)) = kept.get(file) {
+            if kept_only() {
+                return Some(full);
+            }
             let copy = full.shrunk(SMALL_SIDE);
             kept.insert(&small, Some(copy.clone()));
             return Some(copy);
+        }
+        if kept_only() {
+            queue_read(&mut kept, file);
+            return None;
         }
     }
     let read = LOADER.get().and_then(|load| load(file)).map(|full| full.shrunk(SMALL_SIDE));
@@ -126,7 +236,9 @@ struct Kept {
     clock: u64,
     pictures: HashMap<String, (Option<Picture>, u64)>,
     /// Files whose picture is shown in place of theirs (see [`show_picture`]).
-    live: std::collections::HashSet<String>,
+    live: HashSet<String>,
+    /// Files the loader thread is reading.
+    reading: HashSet<String>,
 }
 
 fn bytes_of(picture: Option<&Picture>) -> usize {
@@ -135,7 +247,7 @@ fn bytes_of(picture: Option<&Picture>) -> usize {
 
 impl Kept {
     fn new(limit: usize) -> Kept {
-        Kept { limit, bytes: 0, clock: 0, pictures: HashMap::new(), live: std::collections::HashSet::new() }
+        Kept { limit, bytes: 0, clock: 0, pictures: HashMap::new(), live: HashSet::new(), reading: HashSet::new() }
     }
 
     /// The picture kept for a file (`Some(None)` for one known to be missing), marked as just used.
@@ -196,6 +308,34 @@ mod tests {
         assert_eq!(picture_at("wide-live", 300.0).unwrap().width(), 1280, "a video's frame is never a stale copy");
         forget_picture("wide-live");
         assert!(picture_at("missing", 300.0).is_none());
+    }
+
+    #[test]
+    fn the_screens_thread_never_reads_a_file_itself() {
+        set_picture_loader(wide_picture);
+        let (tx, rx) = channel();
+        let tx = Mutex::new(tx);
+        let drawn = std::thread::spawn(move || {
+            draw_kept_pictures_only(move || {
+                let _ = tx.lock().map(|tx| tx.send(()));
+            });
+            // Not kept yet: nothing for now, and it is coming, not missing.
+            let first = picture("wide-screens");
+            let coming_then = coming("wide-screens");
+            // Once the loader has read it, it is there, full size; and a small copy too.
+            rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the loader said it was read");
+            (
+                first.is_none(),
+                coming_then,
+                picture("wide-screens").map(|p| p.width()),
+                picture_at("wide-screens", 300.0).map(|p| p.width()),
+            )
+        });
+        let (first_none, coming_then, after, small) = drawn.join().unwrap();
+        assert!(first_none && coming_then);
+        assert_eq!(after, Some(1280));
+        assert_eq!(small, Some(SMALL_SIDE), "the loader made the small copy as well");
+        assert!(!coming("wide-screens"));
     }
 
     #[test]

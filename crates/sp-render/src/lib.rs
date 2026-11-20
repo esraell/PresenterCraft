@@ -11,7 +11,7 @@ mod scene;
 pub use fonts::Fonts;
 pub use gpu::{Painter, read_pixels, target_texture};
 pub use picture::Picture;
-pub use pictures::{forget_picture, set_picture_loader, show_picture, web_key};
+pub use pictures::{draw_kept_pictures_only, forget_picture, read_ahead, set_picture_loader, show_picture, web_key};
 pub use scene::{
     Built, Layers, build_layers, build_overlay, build_scene, cross_fade, fit_rect, layout_objects, object_frame,
     scrolls, set_web_stand_in, show_placeholders, transition,

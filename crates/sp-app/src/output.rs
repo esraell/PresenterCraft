@@ -201,9 +201,16 @@ impl OutputHandle {
         let status = ndi_status.clone();
         let live_preview: Arc<LivePreview> = Arc::default();
         let shared = live_preview.clone();
+        // A picture read for the screens meanwhile has them drawn again once it is there.
+        let wake = tx.clone();
         let thread = std::thread::Builder::new()
             .name("output".to_owned())
-            .spawn(move || run(device, queue, theme, rx, status, shared, waker))
+            .spawn(move || {
+                sp_render::draw_kept_pictures_only(move || {
+                    let _ = wake.send(OutputMsg::Redraw);
+                });
+                run(device, queue, theme, rx, status, shared, waker)
+            })
             .map_err(|e| format!("could not start the output thread: {e}"))?;
         Ok(OutputHandle { tx, thread: Some(thread), ndi_status, live_preview })
     }
@@ -543,6 +550,10 @@ fn run(
             match msg {
                 OutputMsg::Show(frame) => {
                     let now = Instant::now();
+                    // The next slide's pictures are read meanwhile, so it goes on at once.
+                    if let Some(next) = frame.next.as_deref() {
+                        sp_render::read_ahead(next);
+                    }
                     let same_slide = output.frame.slide.as_deref() == frame.slide.as_deref()
                         && output.frame.enabled == frame.enabled;
                     if !same_slide {
