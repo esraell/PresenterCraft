@@ -210,6 +210,9 @@ feature changes, this page changes in the same commit.
   all showing the same picture, set up in the Screens window (**Option-Command-1**).
 - Stage screens for the people on stage: the words on screen now, the next slide's words, the
   time, a running timer and the stage message.
+- A screen set to Automatic fills a display the operator doesn't work on: never the one with
+  the main window or the menu bar. With one display, or before it is known which display is
+  the operator's, it opens in a window, so an output never covers the operator's screen.
 - A screen whose display is unplugged waits for it instead of jumping to another display.
   Identify Screens marks each screen with its name, a border and a wash of its own colour that
   breathes a few times to catch the eye (the Screens window shows each screen's colour beside

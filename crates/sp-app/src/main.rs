@@ -385,6 +385,20 @@ fn surface_format(surface: &wgpu::Surface<'_>, adapter: &wgpu::Adapter) -> Resul
 }
 
 /// The connected displays as the window system lists them.
+/// The displays the operator works on, by their place in `monitors`: the one the home window is
+/// on and the one with the menu bar (macOS's main display). Empty when neither is known yet,
+/// as when the home window has just opened: no output then fills a display by guesswork.
+fn operator_displays(
+    monitors: &[winit::monitor::MonitorHandle],
+    home: Option<winit::monitor::MonitorHandle>,
+    primary: Option<winit::monitor::MonitorHandle>,
+) -> Vec<usize> {
+    let mut operator: Vec<usize> =
+        [home, primary].into_iter().flatten().filter_map(|m| monitors.iter().position(|have| *have == m)).collect();
+    operator.dedup();
+    operator
+}
+
 fn display_list(monitors: impl Iterator<Item = winit::monitor::MonitorHandle>) -> Vec<DisplayInfo> {
     monitors
         .enumerate()
@@ -764,12 +778,11 @@ impl App {
         let home_attrs = behind(home_attrs);
         let home_window =
             Arc::new(el.create_window(home_attrs).map_err(|e| format!("Could not open the home window: {e}"))?);
-        let home_display =
-            home_window.current_monitor().and_then(|home| monitors.iter().position(|m| *m == home)).unwrap_or(0);
+        let operator = operator_displays(&monitors, home_window.current_monitor(), el.primary_monitor());
 
         // A display asked for on the command line must exist. The screens' windows are opened
         // once the app has started.
-        choose_output(&displays, home_display, self.options.output_display)?;
+        choose_output(&displays, &operator, self.options.output_display)?;
 
         let mut context = RenderContext::new();
         let home_surface = context
@@ -2888,11 +2901,7 @@ impl App {
         }
         let monitors: Vec<_> = el.available_monitors().collect();
         let displays = display_list(monitors.iter().cloned());
-        let home = running
-            .home_window
-            .current_monitor()
-            .and_then(|home| monitors.iter().position(|m| *m == home))
-            .unwrap_or(0);
+        let operator = operator_displays(&monitors, running.home_window.current_monitor(), el.primary_monitor());
         if displays != running.home_state.displays {
             running.home_state.displays = displays.clone();
         }
@@ -2903,7 +2912,7 @@ impl App {
             running.home_state.notice = Some(problem);
         }
         let list = running.home_state.screens.clone();
-        let mut placed = screens::place_all(&list, &displays, home);
+        let mut placed = screens::place_all(&list, &displays, &operator);
         // A capture never fills a display or sends over the network, whatever the list says.
         if quiet {
             let ndi_aid = std::env::var_os("SOFTPRESENTER_NDI").is_some();

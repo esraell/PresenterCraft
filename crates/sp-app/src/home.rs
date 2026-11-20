@@ -3205,7 +3205,7 @@ pub fn screens_ui(ui: &mut egui::Ui, state: &mut HomeState, output_on: bool) -> 
         });
         ui.add_space(10.0);
         let about = match &screen.output {
-            Output::Automatic => "Automatic fills the first display the main window is not on. With one display it uses a window.",
+            Output::Automatic => "Automatic fills a display you don't work on: never the one with the main window or the menu bar. With one display it uses a window.",
             Output::Display(_) => {
                 "If this display is unplugged the screen shows nowhere until it is back; it never moves to another display."
             }

@@ -147,15 +147,15 @@ pub fn next_name(screens: &[Screen], kind: Kind) -> String {
         .unwrap_or_default()
 }
 
-/// Where each screen goes, in the list's order. `home` is the index of the display the
-/// operator's window is on. A display is filled by one screen only and an NDI name is used
+/// Where each screen goes, in the list's order. `operator` are the displays the operator works
+/// on (the home window's and the one with the menu bar), which Automatic never takes. A display is filled by one screen only and an NDI name is used
 /// once: the first screen in the list that asks gets it. A display that is not connected is
 /// never replaced by another, so a screen can never land on the operator's display by surprise.
-pub fn place_all(screens: &[Screen], displays: &[DisplayInfo], home: usize) -> Vec<Placed> {
+pub fn place_all(screens: &[Screen], displays: &[DisplayInfo], operator: &[usize]) -> Vec<Placed> {
     let mut placed: Vec<Placed> = Vec::with_capacity(screens.len());
     for screen in screens {
         let wanted = match &screen.output {
-            Output::Automatic => match choose_output(displays, home, None) {
+            Output::Automatic => match choose_output(displays, operator, None) {
                 Ok(Placement::Fullscreen(index)) => Placed::Fullscreen(index),
                 _ => Placed::Window,
             },
@@ -275,18 +275,18 @@ mod tests {
     #[test]
     fn automatic_takes_the_other_display_or_a_window() {
         let one = [screen("A", Output::Automatic)];
-        assert_eq!(place_all(&one, &displays(&["Built-in"]), 0), [Placed::Window]);
-        assert_eq!(place_all(&one, &displays(&["Built-in", "Projector"]), 0), [Placed::Fullscreen(1)]);
-        assert_eq!(place_all(&one, &displays(&["Built-in", "Projector"]), 1), [Placed::Fullscreen(0)]);
+        assert_eq!(place_all(&one, &displays(&["Built-in"]), &[0]), [Placed::Window]);
+        assert_eq!(place_all(&one, &displays(&["Built-in", "Projector"]), &[0]), [Placed::Fullscreen(1)]);
+        assert_eq!(place_all(&one, &displays(&["Built-in", "Projector"]), &[1]), [Placed::Fullscreen(0)]);
     }
 
     #[test]
     fn a_display_that_is_not_plugged_in_is_never_swapped_for_another() {
         let screens = [screen("A", Output::Display("Projector".to_owned()))];
-        let placed = place_all(&screens, &displays(&["Built-in"]), 0);
+        let placed = place_all(&screens, &displays(&["Built-in"]), &[0]);
         assert!(matches!(&placed[0], Placed::Nothing(why) if why.contains("Disconnected")), "{placed:?}");
         // Plugged in again, it is found by name wherever it now sits in the list.
-        assert_eq!(place_all(&screens, &displays(&["Projector", "Built-in"]), 1), [Placed::Fullscreen(0)]);
+        assert_eq!(place_all(&screens, &displays(&["Projector", "Built-in"]), &[1]), [Placed::Fullscreen(0)]);
     }
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
             screen("G", Output::Off),
             screen("H", Output::Ndi("  ".to_owned())),
         ];
-        let placed = place_all(&screens, &displays(&["Built-in", "Projector"]), 0);
+        let placed = place_all(&screens, &displays(&["Built-in", "Projector"]), &[0]);
         assert_eq!(placed[0], Placed::Fullscreen(1));
         assert!(matches!(&placed[1], Placed::Nothing(why) if why.contains("\"A\"")), "{placed:?}");
         assert_eq!(placed[2], Placed::Ndi("Main".to_owned()));
