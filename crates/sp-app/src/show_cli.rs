@@ -1,0 +1,313 @@
+//! Command-line commands for running the show: opening a playlist item as a click does, jumping
+//! to a group or a hot key, the continuous playlist, the video behind the words, stepping through
+//! and setting media, the stage message and layouts, and test patterns. Each goes through the
+//! window's own requests and says what it did.
+
+use sp_engine::{Command, SlideRef};
+
+use crate::control::{Reply, find};
+use crate::home::VideoRequest;
+
+fn on_off(word: Option<&String>) -> Result<bool, String> {
+    match word.map(|w| w.to_lowercase()).as_deref() {
+        Some("on" | "yes") => Ok(true),
+        Some("off" | "no") => Ok(false),
+        _ => Err("Say on or off.".to_owned()),
+    }
+}
+
+impl crate::App {
+    /// `playlist go ITEM [SLIDE] [in PLAYLIST]`: opens an item as a click on it does (so the
+    /// continuous playlist follows on from it), and with a slide number puts that slide on screen.
+    pub(crate) fn playlist_go(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "playlist go ITEM [SLIDE] [in PLAYLIST]   (ITEM by number or title)";
+        let (head, list) = match words.iter().rposition(|w| w.eq_ignore_ascii_case("in")) {
+            Some(at) if at + 1 < words.len() => (&words[..at], Some(words[at + 1..].join(" "))),
+            _ => (words, None),
+        };
+        // A last word that is a number, after an item, is the slide.
+        let (item, slide) = match head {
+            [item @ .., last] if !item.is_empty() && last.parse::<usize>().is_ok() => {
+                (item.join(" "), last.parse::<usize>().ok())
+            }
+            item if !item.is_empty() => (item.join(" "), None),
+            _ => return Err(usage.to_owned()),
+        };
+        let list = self.playlist_at_for_cli(list.as_deref())?;
+        let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+        let items: Vec<String> = state.services.list[list].items.iter().map(|i| i.title().to_owned()).collect();
+        let at = find("item", &items, &item)
+            .map_err(|problem| format!("{problem} {} has {} items.", state.services.list[list].name, items.len()))?;
+        let chosen = state.services.list[list].items[at].clone();
+        let song = match &chosen {
+            crate::service::Item::Song { key, .. } => Some(
+                crate::studio::playlist_song(&self.show, state, key)
+                    .ok_or_else(|| format!("{} can't be found.", chosen.title()))?,
+            ),
+            crate::service::Item::Header { name } => return Err(format!("{name} is a header; it opens nothing.")),
+            crate::service::Item::Passage(_) => None,
+        };
+        let live = self.show.live().map(|at| at.presentation);
+        self.with_state(|state| {
+            state.services.show(list);
+            state.services.chosen = Some(at);
+            state.playlist_open = true;
+            if let crate::service::Item::Passage(saved) = &chosen {
+                state.bible_open = true;
+                state.bible.open_saved(saved, live);
+            } else {
+                state.bible_open = false;
+            }
+        });
+        let Some(song) = song else {
+            return Ok(Reply::done(format!("Opened {} on the Bible page.", chosen.title())));
+        };
+        let mut commands = vec![Command::Select(song)];
+        if let Some(number) = slide {
+            let presentation = self.show.presentations().get(song).ok_or("That song is gone.")?;
+            if !(1..=presentation.slide_count()).contains(&number) {
+                return Err(format!(
+                    "{} has {} slides; there is no slide {number}.",
+                    presentation.title,
+                    presentation.slide_count()
+                ));
+            }
+            commands.push(Command::GoTo(SlideRef { presentation: song, slide: number - 1 }));
+        }
+        self.apply(commands);
+        if slide.is_some() {
+            return Ok(Reply::done(self.live_words()));
+        }
+        Ok(Reply::done(format!("Opened {}.", chosen.title())))
+    }
+
+    /// `group NAME|LETTER [in SONG]`: the first slide of a group on screen, in the song on
+    /// screen (or the one shown, or the one named), as the group's letter key does.
+    pub(crate) fn ctl_group(&mut self, args: &[String]) -> Result<Reply, String> {
+        let words = &args[1..];
+        let (name, song) = match words.iter().rposition(|w| w.eq_ignore_ascii_case("in")) {
+            Some(at) if at + 1 < words.len() => (words[..at].join(" "), Some(words[at + 1..].join(" "))),
+            _ => (words.join(" "), None),
+        };
+        if name.trim().is_empty() {
+            return Err("group NAME [in SONG]   (or a group's letter: A for Verse 1, C for the chorus…)".to_owned());
+        }
+        let at = match song {
+            Some(song) => self.find_song(&song)?,
+            None => self.show.live().map_or(self.show.selected(), |at| at.presentation),
+        };
+        let presentation = self.show.presentations().get(at).cloned().ok_or("That song is gone.")?;
+        // By the group's name, else by its letter.
+        let mut index = 0;
+        let mut found = None;
+        for group in &presentation.groups {
+            if group.name.trim().eq_ignore_ascii_case(name.trim())
+                && let Some(skip) = group.slides.iter().position(|slide| slide.enabled)
+            {
+                found = Some(index + skip);
+                break;
+            }
+            index += group.slides.len();
+        }
+        let found = match found {
+            Some(slide) => Some(SlideRef { presentation: at, slide }),
+            None if name.trim().chars().count() == 1 => {
+                self.apply(vec![Command::Select(at)]);
+                let letter = name.trim().chars().next().unwrap_or(' ');
+                self.show.group_start(sp_model::groups_for_key(letter))
+            }
+            None => None,
+        };
+        let mut groups: Vec<&str> = Vec::new();
+        for group in &presentation.groups {
+            if !groups.contains(&group.name.as_str()) {
+                groups.push(group.name.as_str());
+            }
+        }
+        let found = found.ok_or_else(|| {
+            format!("{} has no group {}. Its groups: {}.", presentation.title, name.trim(), groups.join(", "))
+        })?;
+        self.apply(vec![Command::Select(at), Command::GoTo(found)]);
+        Ok(Reply::done(self.live_words()))
+    }
+
+    /// `hotkey KEY`: the slide with that hot key on screen, as pressing the key does.
+    pub(crate) fn ctl_hotkey(&mut self, args: &[String]) -> Result<Reply, String> {
+        let key = args.get(1).filter(|k| k.chars().count() == 1).ok_or("hotkey KEY   (one letter or digit)")?;
+        let letter = key.chars().next().unwrap_or(' ').to_ascii_uppercase();
+        let found = self
+            .show
+            .hot_key_slide(letter)
+            .ok_or_else(|| format!("No slide of the song shown has the hot key {letter}."))?;
+        self.apply(vec![Command::GoTo(found)]);
+        Ok(Reply::done(self.live_words()))
+    }
+
+    /// `continuous on|off`: whether the playlist goes on to its next item after a song's last slide.
+    pub(crate) fn ctl_continuous(&mut self, args: &[String]) -> Result<Reply, String> {
+        let on = on_off(args.get(1))?;
+        self.with_state(|state| state.continuous = on);
+        Ok(Reply::done(format!(
+            "Continuous playlist {}: {}.",
+            if on { "on" } else { "off" },
+            if on {
+                "after a song's last slide, Next goes on to the playlist's next item"
+            } else {
+                "Next stops at a song's last slide"
+            }
+        )))
+    }
+
+    /// `video play|pause|restart|seek SECONDS|loop on|off|mute on|off`: the video behind the words.
+    pub(crate) fn ctl_video(&mut self, args: &[String]) -> Result<Reply, String> {
+        let usage = "video play | pause | restart | seek SECONDS | loop on|off | mute on|off";
+        let playing = self.video.as_ref().map(|(_, player)| player.playing());
+        let Some(playing) = playing else { return Err("No video is playing behind the words.".to_owned()) };
+        let (request, said) = match args.get(1).map(|w| w.to_lowercase()).as_deref() {
+            Some("play") if playing => return Ok(Reply::done("The video is playing already.")),
+            Some("pause") if !playing => return Ok(Reply::done("The video is paused already.")),
+            Some("play") => (VideoRequest::TogglePause, "Playing the video.".to_owned()),
+            Some("pause") => (VideoRequest::TogglePause, "Paused the video.".to_owned()),
+            Some("restart") => (VideoRequest::Restart, "The video starts again.".to_owned()),
+            Some("seek") => {
+                let to: f64 = args.get(2).and_then(|w| w.parse().ok()).filter(|s: &f64| *s >= 0.0).ok_or(usage)?;
+                let length = self.video.as_ref().and_then(|(_, player)| player.duration());
+                if let Some(length) = length.filter(|length| to > *length) {
+                    return Err(format!("The video is {length:.0} seconds long."));
+                }
+                (VideoRequest::Seek(to), format!("The video is at {to:.0} seconds."))
+            }
+            Some("loop") => {
+                let on = on_off(args.get(2))?;
+                (VideoRequest::Looping(on), format!("The video {}.", if on { "loops" } else { "stops at its end" }))
+            }
+            Some("mute") => {
+                let on = on_off(args.get(2))?;
+                (VideoRequest::Muted(on), format!("The video's sound is {}.", if on { "off" } else { "on" }))
+            }
+            _ => return Err(usage.to_owned()),
+        };
+        self.with_state(|state| state.video_request = Some(request));
+        self.handle_video();
+        Ok(Reply::done(said))
+    }
+
+    /// `media next|previous`: the next or previous picture or video in the media bin behind the
+    /// words.
+    pub(crate) fn media_step(&mut self, forward: bool) -> Result<Reply, String> {
+        let count = self.show.media().len();
+        if count == 0 {
+            return Err("The media bin is empty.".to_owned());
+        }
+        let next = match self.show.live_media() {
+            Some(at) if forward => (at + 1) % count,
+            Some(at) => (at + count - 1) % count,
+            None => 0,
+        };
+        self.apply(vec![Command::ShowMedia(next)]);
+        Ok(Reply::done(format!("Showing {} behind the words.", self.show.media()[next].name)))
+    }
+
+    /// `media set ITEM scaling=fit|fill|stretch loop=on|off`: how a picture or video fills the screen.
+    pub(crate) fn media_set(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "media set ITEM scaling=fit|fill|stretch loop=on|off";
+        let settings: Vec<&String> = words.iter().filter(|w| w.contains('=')).collect();
+        let name: Vec<&String> = words.iter().filter(|w| !w.contains('=')).collect();
+        if settings.is_empty() || name.is_empty() {
+            return Err(usage.to_owned());
+        }
+        let names: Vec<String> = self.show.media().iter().map(|m| m.name.clone()).collect();
+        let at = find("media item", &names, &name.iter().map(|w| w.as_str()).collect::<Vec<_>>().join(" "))?;
+        let item = self.show.media()[at].clone();
+        let (mut fit, mut looping) = (item.fit, item.looping);
+        for setting in settings {
+            let (key, value) = setting.split_once('=').unwrap_or_default();
+            match key.to_lowercase().as_str() {
+                "scaling" | "fit" => {
+                    fit = match value.to_lowercase().as_str() {
+                        "fit" => sp_model::ImageFit::Fit,
+                        "fill" => sp_model::ImageFit::Fill,
+                        "stretch" => sp_model::ImageFit::Stretch,
+                        other => return Err(format!("scaling is fit, fill or stretch, not {other}.")),
+                    }
+                }
+                "loop" => looping = on_off(Some(&value.to_owned()))?,
+                other => return Err(format!("{other} isn't a media setting: scaling, loop.")),
+            }
+        }
+        let changes = self.show.set_media_look(at, fit, looping);
+        if changes.media {
+            self.refresh_output();
+        }
+        self.save_media_list();
+        let scaling = match fit {
+            sp_model::ImageFit::Fit => "fitted inside the screen",
+            sp_model::ImageFit::Fill => "filling the screen",
+            sp_model::ImageFit::Stretch => "stretched to the screen",
+        };
+        Ok(Reply::done(format!("{}: {scaling}, {}.", item.name, if looping { "looping" } else { "not looping" })))
+    }
+
+    /// `stage message TEXT | stage message clear`, and `stage layout SCREEN LAYOUT`.
+    pub(crate) fn ctl_stage_more(&mut self, args: &[String]) -> Option<Result<Reply, String>> {
+        let word = args.get(1)?.to_lowercase();
+        let result = match word.as_str() {
+            "message" => {
+                let text = args[2..].join(" ");
+                if text.trim().is_empty() {
+                    Err("stage message TEXT | stage message clear".to_owned())
+                } else if text.trim().eq_ignore_ascii_case("clear") {
+                    self.with_state(|state| state.stage_message_live = false);
+                    self.sync_overlay();
+                    Ok(Reply::done("The stage message is off."))
+                } else {
+                    let text = text.replace("\\n", "\n");
+                    self.with_state(|state| {
+                        state.stage_message = text.clone();
+                        state.stage_message_live = true;
+                    });
+                    self.sync_overlay();
+                    Ok(Reply::done(format!("On the stage screens: \u{201c}{}\u{201d}", text.trim())))
+                }
+            }
+            "layout" => self.stage_layout(&args[2..]),
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    fn stage_layout(&mut self, words: &[String]) -> Result<Reply, String> {
+        let usage = "stage layout SCREEN LAYOUT   (screens and stage layouts by name or number)";
+        let [screen, layout @ ..] = words else { return Err(usage.to_owned()) };
+        if layout.is_empty() {
+            return Err(usage.to_owned());
+        }
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let screens: Vec<String> = state.screens.iter().map(|s| s.name.clone()).collect();
+        let at = find("screen", &screens, screen)?;
+        let layouts: Vec<String> = state.stage_layouts.iter().map(|l| l.name.clone()).collect();
+        let which = find("stage layout", &layouts, &layout.join(" "))?;
+        state.screens[at].stage_layout = Some(state.stage_layouts[which].id);
+        state.screens_changed = true;
+        Ok(Reply::done(format!("{} shows the stage layout {}.", screens[at], layouts[which])))
+    }
+
+    /// `test bars|grid|white|off`: a test pattern on the audience screens, for lining up a projector.
+    pub(crate) fn ctl_test(&mut self, args: &[String]) -> Result<Reply, String> {
+        let pattern = match args.get(1).map(|w| w.to_lowercase()).as_deref() {
+            Some("bars" | "colorbars" | "colourbars") => Some(crate::props::TestPattern::ColorBars),
+            Some("grid") => Some(crate::props::TestPattern::Grid),
+            Some("white") => Some(crate::props::TestPattern::White),
+            Some("off") => None,
+            _ => return Err("test bars | grid | white | off".to_owned()),
+        };
+        self.with_state(|state| state.test_pattern = pattern);
+        self.sync_overlay();
+        Ok(Reply::done(match pattern {
+            Some(crate::props::TestPattern::ColorBars) => "Colour bars on the audience screens.",
+            Some(crate::props::TestPattern::Grid) => "A grid on the audience screens.",
+            Some(crate::props::TestPattern::White) => "White on the audience screens.",
+            None => "The test pattern is off.",
+        }))
+    }
+}

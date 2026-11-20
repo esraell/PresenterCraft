@@ -359,6 +359,15 @@ feature changes, this page changes in the same commit.
   notes|enable|disable|hotkey|transition|template|media`, `slide frame SONG all …`, and `search
   WORDS`. Song and slide changes can be undone (`sp undo`) and are saved; each reply says what
   changed, and something that wasn't done exits 1.
+- Running the show from the command line: `playlist go ITEM [SLIDE]` (opens an item as a click
+  does, so the continuous playlist follows on), `group NAME|LETTER [in SONG]`, `hotkey KEY`,
+  `continuous on|off`, `video play|pause|restart|seek|loop|mute`, `media next|previous`, `media
+  set ITEM scaling=… loop=…`, `stage message TEXT|clear`, `stage layout SCREEN LAYOUT`, and `test
+  bars|grid|white|off`. `sp status` also says what is on the Announcements layer, the media
+  playlist playing, the timers running, the audio, the playlist and item open, the continuous
+  playlist, Identify and the main theme; `timers`, `messages`, `props` and `macros` list each
+  with its state, and `slide SONG N` and `slides` show what a slide sets for itself (off, label,
+  hot key, transition, template, actions, notes).
 - `sp …` (full name `softpresenter`), installed from SoftPresenter › Install Command Line Tool…,
   controls the running app from a terminal, a script or an AI agent (`sp status`, `sp next`):
   what is on screen, the lists, going to slides, clearing, media, messages, props, timers,

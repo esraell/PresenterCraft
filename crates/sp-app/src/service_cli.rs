@@ -67,6 +67,7 @@ impl crate::App {
         let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
         let items: Vec<String> = state.services.list[list].items.iter().map(|item| item.title().to_owned()).collect();
         find("item", &items, typed)
+            .map_err(|problem| format!("{problem} {} has {} items.", state.services.list[list].name, items.len()))
     }
 
     /// `playlist new|rename|delete|remove|move|header …`; `None` for a word that isn't one of them.
@@ -75,6 +76,7 @@ impl crate::App {
         let words = &args[2..];
         let result = match word.as_str() {
             "new" => self.playlist_new(&words.join(" ")),
+            "go" => self.playlist_go(words),
             "rename" => {
                 let (old, new) = split_at_word(words, "to");
                 match new {
@@ -373,10 +375,17 @@ impl crate::App {
             return Err("song rename SONG to TITLE".to_owned());
         }
         let was = self.show.presentations()[at].title.clone();
+        let same = self.listed_songs().iter().any(|(other, have)| *other != at && have.eq_ignore_ascii_case(&title));
         self.with_state(|state| state.pending_title = Some((at, title.clone())));
         self.handle_songs();
         self.save_unsaved();
-        Ok(Reply::done(format!("Renamed {was} to {title}.")))
+        let mut text = format!("Renamed {was} to {title}.");
+        if same {
+            text.push_str(&format!(
+                " Another song is called {title} too; give its number (sp songs) to tell them apart."
+            ));
+        }
+        Ok(Reply::done(text))
     }
 
     fn song_duplicate(&mut self, song: &str, title: Option<&str>) -> Result<Reply, String> {
@@ -460,8 +469,18 @@ impl crate::App {
                 "ccli" | "ccli_song" => &mut details.ccli_song,
                 other => return Err(format!("{other} isn't a song detail: artist, author, publisher, year, ccli.")),
             };
-            *field = value.trim().to_owned();
-            said.push(format!("{key} \u{201c}{}\u{201d}", value.trim()));
+            let value = value.trim();
+            match key.to_lowercase().as_str() {
+                "year" if !value.is_empty() && !(value.len() == 4 && value.chars().all(|c| c.is_ascii_digit())) => {
+                    return Err(format!("A year is four digits, not {value}."));
+                }
+                "ccli" | "ccli_song" if !value.chars().all(|c| c.is_ascii_digit()) => {
+                    return Err(format!("A CCLI song number is digits only, not {value}."));
+                }
+                _ => {}
+            }
+            *field = value.to_owned();
+            said.push(format!("{key} \u{201c}{value}\u{201d}"));
         }
         self.with_state(|state| state.copyright_request = Some((at, details)));
         self.handle_copyright();
@@ -487,15 +506,27 @@ impl crate::App {
             }),
             "move" => match words {
                 [song, number, to, place] if to.eq_ignore_ascii_case("to") => {
-                    let place = place.clone();
-                    self.slide_edit(&[song.clone(), number.clone()], false, move |song, index, _| {
-                        let to = place.parse::<usize>().ok().filter(|to| (1..=song.slide_count()).contains(to))? - 1;
-                        if to == index {
-                            return Some((song.clone(), format!("slide {} is there already", index + 1)));
+                    let count = self.find_song_as_is(song).map(|at| self.show.presentations()[at].slide_count());
+                    match (count, place.parse::<usize>()) {
+                        (Ok(count), Ok(target)) if !(1..=count).contains(&target) => {
+                            Err(format!("{song} has {count} slides; there is no place {target}."))
                         }
-                        let (moved, _) = song.with_slides_moved(&[index], to, to > index)?;
-                        Some((moved, format!("moved slide {} to {}", index + 1, to + 1)))
-                    })
+                        (_, Err(_)) => Err("slide move SONG N to M".to_owned()),
+                        (_, Ok(target)) => {
+                            self.slide_edit(&[song.clone(), number.clone()], false, move |song, index, _| {
+                                let to = target - 1;
+                                if to == index {
+                                    return Some((song.clone(), format!("slide {} is there already", index + 1)));
+                                }
+                                let (moved, _) = song.with_slides_moved(&[index], to, to > index)?;
+                                // It takes the group of the place it lands in.
+                                let group = moved.slide(to).map(|(group, _)| group.name.clone()).unwrap_or_default();
+                                let joined =
+                                    if group.is_empty() { String::new() } else { format!("; it is now in {group}") };
+                                Some((moved, format!("moved slide {} to {}{joined}", index + 1, to + 1)))
+                            })
+                        }
+                    }
                 }
                 _ => Err("slide move SONG N to M".to_owned()),
             },
@@ -677,7 +708,17 @@ impl crate::App {
             place = after;
         }
         if let Some(group) = &group {
+            // Only the new slide goes into the group: a slide after it that was in the same group
+            // stays in that group (which then goes on after the new one).
+            let was = song.slide(place).map(|(g, _)| g.name.clone()).unwrap_or_default();
+            let next_was_same = song.slide(place + 1).is_some_and(|(g, _)| g.name == was)
+                && song
+                    .slide(place)
+                    .is_some_and(|(g, _)| g.slides.first().map(|s| s.id) != song.slide(place + 1).map(|(_, s)| s.id));
             song = song.with_group_starting(place, group).ok_or("The group could not be made.")?;
+            if next_was_same && !was.is_empty() {
+                song = song.with_group_starting(place + 1, &was).ok_or("The group could not be made.")?;
+            }
         }
         self.change_song(at, song);
         Ok(Reply::done(format!("{}: added slide {}.", presentation.title, place + 1)))

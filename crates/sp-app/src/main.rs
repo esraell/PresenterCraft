@@ -31,6 +31,7 @@ mod screens;
 mod service;
 mod service_cli;
 mod setup;
+mod show_cli;
 mod slide_cli;
 mod song_ids;
 mod stage;

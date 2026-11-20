@@ -48,7 +48,43 @@ impl crate::App {
             lines.push(text);
             objects.push(data);
         }
-        let mut data = serde_json::json!({"song": presentation.title, "slide": index + 1, "group": group.name, "objects": objects});
+        // The slide's own settings, so what was set can be read back.
+        let template =
+            slide.template.and_then(|id| theme.templates.iter().find(|t| t.id == id)).map(|t| t.name.clone());
+        let actions: Vec<String> = slide.actions.iter().map(|action| self.action_words(action)).collect();
+        let mut settings = Vec::new();
+        if !slide.enabled {
+            settings.push("off (passed over)".to_owned());
+        }
+        if let Some(label) = &slide.label {
+            settings.push(format!("label {label}"));
+        }
+        if let Some(key) = slide.hot_key {
+            settings.push(format!("hot key {key}"));
+        }
+        if let Some(transition) = &slide.transition {
+            settings.push(format!("transition {} {:.1}s", transition.kind.name(), transition.seconds));
+        }
+        if let Some(name) = &template {
+            settings.push(format!("template {name}"));
+        }
+        if let Some(seconds) = slide.advance {
+            settings.push(format!("goes on after {seconds} s"));
+        }
+        if !settings.is_empty() {
+            lines.insert(1, format!("    {}", settings.join(", ")));
+        }
+        if !actions.is_empty() {
+            lines.push(format!("    actions: {}", actions.join("; ")));
+        }
+        if let Some(notes) = &slide.notes {
+            lines.push(format!("    notes: {}", notes.replace('\n', " / ")));
+        }
+        let mut data = serde_json::json!({
+            "song": presentation.title, "slide": index + 1, "group": group.name, "objects": objects,
+            "enabled": slide.enabled, "label": slide.label, "notes": slide.notes, "hot_key": slide.hot_key,
+            "transition": slide.transition, "template": template, "actions": actions, "advance": slide.advance,
+        });
         if json {
             data["raw"] = serde_json::to_value(slide).unwrap_or_default();
         }

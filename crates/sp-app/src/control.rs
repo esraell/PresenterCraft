@@ -362,6 +362,11 @@ const COMMANDS: &[&str] = &[
     "redo",
     "job",
     "search",
+    "group",
+    "hotkey",
+    "continuous",
+    "video",
+    "test",
     "menu",
 ];
 
@@ -463,6 +468,16 @@ What is going on
 
 Running the show
   next | previous (or back) | first | last
+  group NAME|LETTER [in SONG]  a group's first slide on screen (C for the chorus…)
+  hotkey KEY                   the slide with that hot key on screen
+  playlist go ITEM [SLIDE] [in PLAYLIST]   open a playlist item as a click does (and a slide)
+  continuous on|off            after a song's last slide, go on to the playlist's next item
+  video play|pause|restart | video seek SECONDS | video loop on|off | video mute on|off
+  media next|previous          the next or previous picture or video behind the words
+  media set ITEM scaling=fit|fill|stretch loop=on|off
+  stage message TEXT | stage message clear      words for the stage screens only
+  stage layout SCREEN LAYOUT   which stage layout a stage screen shows
+  test bars|grid|white|off     a test pattern on the audience screens
   go SONG [SLIDE]              put a slide on screen (SONG by name or number; SLIDE from 1)
   select SONG                  show a song's slides without putting anything on screen
   clear [all|slide|media|props|messages|audio|announcements]
@@ -643,10 +658,10 @@ impl crate::App {
             "media-playlist" => self.ctl_media_playlist(args),
             "themes" => Ok(self.ctl_named_list("themes", |s| s.theme_names.clone())),
             "screens" => Ok(self.ctl_screens()),
-            "timers" => Ok(self.ctl_named_list("timers", |s| s.timers.iter().map(|x| x.name.clone()).collect())),
-            "messages" => Ok(self.ctl_named_list("messages", |s| s.messages.iter().map(|x| x.name.clone()).collect())),
-            "props" => Ok(self.ctl_named_list("props", |s| s.props.iter().map(|x| x.name.clone()).collect())),
-            "macros" => Ok(self.ctl_named_list("macros", |s| s.macros.iter().map(|x| x.name.clone()).collect())),
+            "timers" => Ok(self.ctl_timers()),
+            "messages" => Ok(self.ctl_messages()),
+            "props" => Ok(self.ctl_props()),
+            "macros" => Ok(self.ctl_macros()),
             "audio" => self.ctl_audio(args),
             "next" | "previous" | "prev" | "back" | "first" | "last" => {
                 let command = match word.as_str() {
@@ -664,6 +679,9 @@ impl crate::App {
             "audience" => on_off(args.get(1)).map(|on| {
                 self.apply(vec![Command::SetOutputEnabled(on)]);
                 Reply::done(format!("The audience screens are {}.", if on { "on" } else { "off" }))
+            }),
+            "stage" if self.ctl_stage_more_applies(args) => self.ctl_stage_more(args).unwrap_or_else(|| {
+                Err("stage on|off | stage message TEXT|clear | stage layout SCREEN LAYOUT".to_owned())
             }),
             "stage" => on_off(args.get(1)).map(|on| {
                 self.with_state(|state| state.stage_on = on);
@@ -683,6 +701,11 @@ impl crate::App {
             "song" => self.ctl_song(args),
             "job" => self.ctl_job(args),
             "search" => self.ctl_search(&rest(args, 1)),
+            "group" => self.ctl_group(args),
+            "hotkey" => self.ctl_hotkey(args),
+            "continuous" => self.ctl_continuous(args),
+            "video" => self.ctl_video(args),
+            "test" => self.ctl_test(args),
             "undo" => self.ctl_undo(el, false),
             "redo" => self.ctl_undo(el, true),
             "menu" => self.ctl_menu(el, args),
@@ -845,7 +868,7 @@ impl crate::App {
     }
 
     /// What is on screen, in words: "Sample song, slide 3 of 8 (Chorus)".
-    fn live_words(&self) -> String {
+    pub(crate) fn live_words(&self) -> String {
         match self.show.live() {
             None => "Nothing is on screen.".to_owned(),
             Some(at) => {
@@ -904,7 +927,58 @@ impl crate::App {
         if let Some(selected) = &selected {
             lines.push(format!("Song shown in the window: {selected}"));
         }
+        // What else is going on: the announcements, a media playlist playing, the timers running,
+        // the audio, and the window's own state.
+        let announcing = self.announcing_song().map(|(title, slide)| format!("{title}, slide {slide}"));
+        if let Some(announcing) = &announcing {
+            lines.push(format!("Announcements: {announcing}"));
+        }
+        let media_playlist = self.media_playlist_playing();
+        if let Some(name) = &media_playlist {
+            lines.push(format!("Media playlist playing: {name}"));
+        }
+        let timers = self.timer_states();
+        let running: Vec<String> = timers
+            .iter()
+            .filter(|t| t["running"].as_bool() == Some(true))
+            .map(|t| format!("{} {}", t["name"].as_str().unwrap_or(""), t["shows"].as_str().unwrap_or("")))
+            .collect();
+        if !running.is_empty() {
+            lines.push(format!("Timers running: {}", running.join(", ")));
+        }
+        let audio = self.audio_state();
+        if let Some(track) = audio["track"].as_str() {
+            let how = if audio["paused"].as_bool() == Some(true) { "paused" } else { "playing" };
+            lines.push(format!("Audio: {track} ({how}), volume {}", audio["volume"]));
+        }
+        let open = state.map(|s| {
+            let list = s.services.front();
+            let item = s.services.chosen.and_then(|at| list.items.get(at)).map(|item| item.title().to_owned());
+            (list.name.clone(), item, s.playlist_open)
+        });
+        if let Some((list, item, shown)) = &open {
+            lines.push(format!(
+                "Playlist in front: {list}{}{}",
+                item.as_ref().map_or_else(String::new, |item| format!(", item {item}")),
+                if *shown { " (shown)" } else { "" }
+            ));
+        }
+        let theme = self.themes.get(self.songs_theme).map(|t| t.name.clone());
+        lines.push(format!(
+            "Continuous playlist: {}   Identify screens: {}   Main theme: {}",
+            if state.is_some_and(|s| s.continuous) { "on" } else { "off" },
+            if state.is_some_and(|s| s.identify) { "on" } else { "off" },
+            theme.clone().unwrap_or_default()
+        ));
         let data = serde_json::json!({
+            "announcements": announcing,
+            "media_playlist": media_playlist,
+            "timers": timers,
+            "audio": audio,
+            "playlist": open.as_ref().map(|(list, item, shown)| serde_json::json!({"name": list, "item": item, "shown": shown})),
+            "continuous": state.is_some_and(|s| s.continuous),
+            "identify": state.is_some_and(|s| s.identify),
+            "main_theme": theme,
             "live": live.map(|at| serde_json::json!({
                 "song": song.map(|s| s.title.clone()),
                 "slide": at.slide + 1,
@@ -920,6 +994,175 @@ impl crate::App {
             "selected_song": selected,
         });
         Reply::with(lines.join("\n"), data)
+    }
+
+    /// Whether a `stage` command is one of the newer ones (message, layout).
+    fn ctl_stage_more_applies(&self, args: &[String]) -> bool {
+        args.get(1).is_some_and(|w| w.eq_ignore_ascii_case("message") || w.eq_ignore_ascii_case("layout"))
+    }
+
+    /// What a slide or macro action does, in words.
+    pub(crate) fn action_words(&self, action: &sp_model::ShowAction) -> String {
+        let Some(state) = self.running.as_ref().map(|r| &r.home_state) else { return String::new() };
+        crate::macros::describe(
+            action,
+            |id| state.messages.iter().find(|x| x.id == id).map(|x| x.name.clone()),
+            |id| state.props.iter().find(|x| x.id == id).map(|x| x.name.clone()),
+            |id| state.timers.iter().find(|x| x.id == id).map(|x| x.name.clone()),
+            |key| {
+                crate::studio::playlist_song(&self.show, state, key)
+                    .map(|at| self.show.presentations()[at].title.clone())
+            },
+            |id| self.show.media().iter().find(|x| x.id == id).map(|x| x.name.clone()),
+        )
+    }
+
+    /// The song on the Announcements layer, and its slide (from 1).
+    fn announcing_song(&self) -> Option<(String, usize)> {
+        let on = self.announcing.as_ref()?;
+        let song = self.show.presentations().get(on.song)?;
+        Some((song.title.clone(), on.slide + 1))
+    }
+
+    /// The media playlist playing item after item, by name.
+    fn media_playlist_playing(&self) -> Option<String> {
+        let id = self.media_cycle.as_ref()?.playlist;
+        let state = &self.running.as_ref()?.home_state;
+        state.media_playlists.iter().find(|p| p.id == id).map(|p| p.name.clone())
+    }
+
+    /// Each timer: its name, kind, whether it runs, and what it shows now.
+    fn timer_states(&self) -> Vec<serde_json::Value> {
+        let Some(state) = self.running.as_ref().map(|r| &r.home_state) else { return Vec::new() };
+        let (now, day) = (std::time::Instant::now(), crate::timers::seconds_into_day());
+        state
+            .timers
+            .iter()
+            .map(|timer| {
+                let kind = match &timer.kind {
+                    crate::timers::Kind::Countdown { seconds } => {
+                        format!("counts down from {}:{:02}", seconds / 60, seconds % 60)
+                    }
+                    crate::timers::Kind::CountdownTo { hour, minute, .. } => {
+                        format!("counts down to {hour:02}:{minute:02}")
+                    }
+                    crate::timers::Kind::Elapsed { .. } => "counts up".to_owned(),
+                };
+                serde_json::json!({
+                    "name": timer.name,
+                    "kind": kind,
+                    "running": timer.running(),
+                    "shows": timer.text(now, day),
+                })
+            })
+            .collect()
+    }
+
+    /// The track the audio player has, whether it is paused, and the volume (0 to 100).
+    fn audio_state(&self) -> serde_json::Value {
+        let Some(state) = self.running.as_ref().map(|r| &r.home_state) else { return serde_json::json!({}) };
+        let playing = state.audio_playing;
+        let track = playing.track.and_then(|id| {
+            state.audio.playlists.iter().flat_map(|p| p.tracks.iter()).find(|t| t.id == id).map(|t| t.name.clone())
+        });
+        serde_json::json!({
+            "track": track,
+            "paused": playing.paused,
+            "seconds": playing.position.as_secs(),
+            "length": playing.length.map(|l| l.as_secs()),
+            "volume": (state.audio_volume * 100.0).round(),
+        })
+    }
+
+    /// `timers`: each with its kind, whether it runs, and what it shows.
+    fn ctl_timers(&self) -> Reply {
+        let timers = self.timer_states();
+        let lines: Vec<String> = timers
+            .iter()
+            .map(|t| {
+                format!(
+                    "{}: {}, {} ({})",
+                    t["name"].as_str().unwrap_or(""),
+                    t["kind"].as_str().unwrap_or(""),
+                    t["shows"].as_str().unwrap_or(""),
+                    if t["running"].as_bool() == Some(true) { "running" } else { "stopped" }
+                )
+            })
+            .collect();
+        Reply::with(numbered(&lines), serde_json::json!(timers))
+    }
+
+    /// `messages`: each with its words (tokens such as {timer:Sermon} as written), and the one
+    /// showing.
+    fn ctl_messages(&self) -> Reply {
+        let Some(state) = self.running.as_ref().map(|r| &r.home_state) else { return Reply::done("(none)") };
+        let live = state.message_live.map(|(id, _)| id);
+        let lines: Vec<String> = state
+            .messages
+            .iter()
+            .map(|m| {
+                let words = if m.text.trim().is_empty() {
+                    "no words".to_owned()
+                } else {
+                    format!("\u{201c}{}\u{201d}", m.text)
+                };
+                format!("{}: {words}{}", m.name, if live == Some(m.id) { " (showing)" } else { "" })
+            })
+            .collect();
+        let data: Vec<serde_json::Value> = state
+            .messages
+            .iter()
+            .map(|m| serde_json::json!({"name": m.name, "text": m.text, "showing": live == Some(m.id), "leaves_after": m.dismiss_after}))
+            .collect();
+        Reply::with(numbered(&lines), serde_json::json!(data))
+    }
+
+    /// `props`: each, and whether it is on screen.
+    fn ctl_props(&self) -> Reply {
+        let Some(state) = self.running.as_ref().map(|r| &r.home_state) else { return Reply::done("(none)") };
+        let on = |id: sp_model::Uuid| state.props_live.iter().any(|(have, _)| *have == id);
+        let lines: Vec<String> =
+            state.props.iter().map(|p| format!("{}{}", p.name, if on(p.id) { " (on screen)" } else { "" })).collect();
+        let data: Vec<serde_json::Value> = state
+            .props
+            .iter()
+            .map(|p| serde_json::json!({"name": p.name, "on": on(p.id), "clears_after": p.auto_clear}))
+            .collect();
+        Reply::with(numbered(&lines), serde_json::json!(data))
+    }
+
+    /// `macros`: each with what it does, step by step.
+    fn ctl_macros(&self) -> Reply {
+        let Some(state) = self.running.as_ref().map(|r| &r.home_state) else { return Reply::done("(none)") };
+        let steps = |m: &crate::macros::Macro| -> Vec<String> {
+            m.actions
+                .iter()
+                .map(|action| {
+                    crate::macros::describe(
+                        action,
+                        |id| state.messages.iter().find(|x| x.id == id).map(|x| x.name.clone()),
+                        |id| state.props.iter().find(|x| x.id == id).map(|x| x.name.clone()),
+                        |id| state.timers.iter().find(|x| x.id == id).map(|x| x.name.clone()),
+                        |key| {
+                            crate::studio::playlist_song(&self.show, state, key)
+                                .map(|at| self.show.presentations()[at].title.clone())
+                        },
+                        |id| self.show.media().iter().find(|x| x.id == id).map(|x| x.name.clone()),
+                    )
+                })
+                .collect()
+        };
+        let lines: Vec<String> = state
+            .macros
+            .iter()
+            .map(|m| match steps(m) {
+                steps if steps.is_empty() => format!("{}: no steps", m.name),
+                steps => format!("{}: {}", m.name, steps.join("; ")),
+            })
+            .collect();
+        let data: Vec<serde_json::Value> =
+            state.macros.iter().map(|m| serde_json::json!({"name": m.name, "steps": steps(m)})).collect();
+        Reply::with(numbered(&lines), serde_json::json!(data))
     }
 
     fn ctl_songs(&self) -> Reply {
@@ -958,14 +1201,30 @@ impl crate::App {
             let words =
                 slide.texts().into_iter().map(|(_, text)| text.replace('\n', " / ")).collect::<Vec<_>>().join(" / ");
             let live = self.show.live() == Some(SlideRef { presentation: at, slide: index });
+            // Marks for what a slide sets for itself: off, its label, its hot key.
+            let mut marks = Vec::new();
+            if !slide.enabled {
+                marks.push("off".to_owned());
+            }
+            if let Some(label) = &slide.label {
+                marks.push(format!("label {label}"));
+            }
+            if let Some(key) = slide.hot_key {
+                marks.push(format!("key {key}"));
+            }
+            let marked = if marks.is_empty() { String::new() } else { format!("   ({})", marks.join(", ")) };
             lines.push(format!(
-                "{:>3}. {}{}{}",
+                "{:>3}. {}{}{}{}",
                 index + 1,
                 if group.name.is_empty() { String::new() } else { format!("[{}] ", group.name) },
                 words,
+                marked,
                 if live { "   ← on screen" } else { "" }
             ));
-            data.push(serde_json::json!({"slide": index + 1, "group": group.name, "words": words, "on_screen": live}));
+            data.push(serde_json::json!({
+                "slide": index + 1, "group": group.name, "words": words, "on_screen": live,
+                "enabled": slide.enabled, "label": slide.label, "hot_key": slide.hot_key,
+            }));
         }
         Ok(Reply::with(format!("{}\n{}", song.title, lines.join("\n")), serde_json::json!(data)))
     }
@@ -1219,6 +1478,12 @@ impl crate::App {
     }
 
     fn ctl_media(&mut self, args: &[String]) -> Result<Reply, String> {
+        match args.get(1).map(|w| w.to_lowercase()).as_deref() {
+            Some("next") => return self.media_step(true),
+            Some("previous" | "prev" | "back") => return self.media_step(false),
+            Some("set") => return self.media_set(&args[2..]),
+            _ => {}
+        }
         match args.get(1).map(|w| w.to_lowercase()).as_deref() {
             Some("show") => {
                 let at = find("media item", &self.media_names(), &rest(args, 2))?;
