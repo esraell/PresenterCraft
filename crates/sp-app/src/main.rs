@@ -28,6 +28,7 @@ mod screens;
 mod service;
 mod setup;
 mod slide_cli;
+mod song_ids;
 mod stage;
 mod stage_editor;
 mod studio;
@@ -1004,10 +1005,7 @@ impl App {
                     .sources
                     .iter()
                     .zip(self.show.presentations())
-                    .map(|(source, song)| match source {
-                        Some(path) => path.with_extension("").to_string_lossy().into_owned(),
-                        None => format!("title:{}", song.title),
-                    })
+                    .map(|(source, song)| song_ids::key_for(source.as_deref(), song.id, &song.title))
                     .collect(),
                 theme_for_bible: self.bible_theme,
                 bible: home::BiblePage {
@@ -2914,10 +2912,7 @@ impl App {
         self.sources.push(path.clone());
         self.unsaved.push(index);
         self.unsaved_since = Some(Instant::now());
-        let key = match &path {
-            Some(path) => path.with_extension("").to_string_lossy().into_owned(),
-            None => format!("title:{title}"),
-        };
+        let key = song_ids::key_for(path.as_deref(), id, &title);
         if let Some(running) = self.running.as_mut() {
             running.home_state.song_keys.push(key.clone());
         }
@@ -4148,17 +4143,14 @@ impl App {
                 if let Some(folder) = path.as_ref().and_then(|path| path.parent()) {
                     let _ = std::fs::create_dir_all(folder);
                 }
-                let title = copy.title.clone();
+                let (id, title) = (copy.id, copy.title.clone());
                 let at = self.show.add_presentation(Arc::new(copy));
                 self.sources.push(path.clone());
                 self.unsaved.push(at);
                 self.save_unsaved();
                 self.apply(vec![Command::Select(at)]);
                 if let Some(running) = self.running.as_mut() {
-                    running.home_state.song_keys.push(match &path {
-                        Some(path) => path.with_extension("").to_string_lossy().into_owned(),
-                        None => format!("title:{title}"),
-                    });
+                    running.home_state.song_keys.push(song_ids::key_for(path.as_deref(), id, &title));
                 }
             }
             SongRequest::Delete => {
@@ -5183,9 +5175,15 @@ fn main() -> ExitCode {
     // Folders kept under the project's old name are renamed to the new one, once, before the
     // log opens in its new place.
     let moved = renamed::move_old_folders();
+    // Songs named by path or title in files from before songs were found by id are named by
+    // id, once, in whichever library folder is in use.
+    let settled = bible_store::data_dir().map(|dir| song_ids::settle(&dir, true)).unwrap_or_default();
     applog::start();
     for done in &moved {
         applog::event("renamed", done);
+    }
+    for done in &settled {
+        applog::event("song ids", done);
     }
     // Picture objects on slides are read from the app's Images folder.
     sp_render::set_picture_loader(images::load);

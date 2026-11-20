@@ -1,6 +1,6 @@
 //! Libraries: named collections of songs, such as Christmas or Youth, beside All Songs. A song
-//! can be in any number of them; a library only lists songs, by their keys. Kept in
-//! `libraries.json`.
+//! can be in any number of them; a library only lists songs, by their keys (a library song's
+//! id). Kept in `libraries.json`, which before version 2 was a bare list naming songs by path.
 
 use serde::{Deserialize, Serialize};
 use sp_model::Uuid;
@@ -41,15 +41,56 @@ pub fn new_name(libraries: &[Library]) -> String {
         .unwrap_or_default()
 }
 
+/// What the libraries file says it is.
+pub const FORMAT: &str = "softpresenter-libraries";
+/// The newest version of the file this build writes and reads: 2, songs named by id.
+pub const VERSION: u32 = 2;
+
+#[derive(Serialize, Deserialize)]
+struct File {
+    format: String,
+    version: u32,
+    libraries: Vec<Library>,
+}
+
 fn file() -> Option<std::path::PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("libraries.json"))
 }
 
+/// Reads the libraries file: version 2, or the bare list of before. The error is a sentence.
+pub fn from_json(text: &str) -> Result<Vec<Library>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("The libraries file could not be read ({e})."))?;
+    if value.is_array() {
+        return serde_json::from_value(value).map_err(|e| format!("The libraries file could not be read ({e})."));
+    }
+    if value.get("format").and_then(|f| f.as_str()) != Some(FORMAT) {
+        return Err("That is not a SoftPresenter libraries file.".to_owned());
+    }
+    if value.get("version").and_then(serde_json::Value::as_u64).unwrap_or(0) > u64::from(VERSION) {
+        return Err("The libraries file was made by a newer SoftPresenter.".to_owned());
+    }
+    serde_json::from_value::<File>(value)
+        .map(|file| file.libraries)
+        .map_err(|e| format!("The libraries file could not be read ({e})."))
+}
+
+pub fn to_json(libraries: &[Library]) -> String {
+    let file = File { format: FORMAT.to_owned(), version: VERSION, libraries: libraries.to_vec() };
+    let mut text = serde_json::to_string_pretty(&file).unwrap_or_default();
+    text.push('\n');
+    text
+}
+
+/// The libraries as last saved. A file that can't be read (or comes from a newer build) is
+/// moved aside, so the empty list used instead is never saved over it.
 pub fn load() -> Vec<Library> {
-    file()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    let Some(path) = file() else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(&path) else { return Vec::new() };
+    from_json(&text).unwrap_or_else(|problem| {
+        crate::service::set_aside(&path, &problem);
+        Vec::new()
+    })
 }
 
 pub fn save(libraries: &[Library]) -> Result<(), String> {
@@ -58,7 +99,7 @@ pub fn save(libraries: &[Library]) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("Could not make the app's folder: {e}"))?;
     }
     let partial = path.with_extension("json.part");
-    std::fs::write(&partial, serde_json::to_string_pretty(libraries).unwrap_or_default())
+    std::fs::write(&partial, to_json(libraries))
         .and_then(|()| std::fs::rename(&partial, &path))
         .map_err(|e| format!("Could not save the libraries: {e}"))
 }
@@ -78,6 +119,14 @@ mod tests {
         assert_eq!(christmas.songs, ["songs/silent-night"]);
         assert_eq!(new_name(std::slice::from_ref(&christmas)), "New Library 2");
         let saved = vec![christmas];
-        assert_eq!(serde_json::from_str::<Vec<Library>>(&serde_json::to_string(&saved).unwrap()).unwrap(), saved);
+        assert_eq!(from_json(&to_json(&saved)).unwrap(), saved);
+        // The bare list of before still reads; a newer file or another kind is refused.
+        assert_eq!(from_json(&serde_json::to_string(&saved).unwrap()).unwrap(), saved);
+        assert!(
+            from_json(r#"{"format":"softpresenter-libraries","version":3,"libraries":[]}"#)
+                .unwrap_err()
+                .contains("newer")
+        );
+        assert!(from_json(r#"{"format":"other","version":1}"#).is_err());
     }
 }

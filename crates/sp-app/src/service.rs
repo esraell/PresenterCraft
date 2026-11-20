@@ -95,6 +95,9 @@ impl Default for Services {
 }
 
 const FORMAT: &str = "softpresenter-services";
+/// The newest version of the services file: 2, library songs named by id (1 named them by
+/// their file's path or title, and still reads).
+const VERSION: u32 = 2;
 /// What a services file saved before the project was renamed says it is; it still opens.
 const OLD_FORMAT: &str = "presentercraft-services";
 
@@ -231,7 +234,7 @@ impl Services {
     }
 
     pub fn to_json(&self) -> String {
-        let file = File { format: FORMAT.to_owned(), version: 1, services: self.clone() };
+        let file = File { format: FORMAT.to_owned(), version: VERSION, services: self.clone() };
         let mut text = serde_json::to_string_pretty(&file).unwrap_or_default();
         text.push('\n');
         text
@@ -244,7 +247,7 @@ impl Services {
         if file.format != FORMAT && file.format != OLD_FORMAT {
             return Err("That is not a SoftPresenter services file.".to_owned());
         }
-        if file.version > 1 {
+        if file.version > VERSION {
             return Err("The services file was made by a newer SoftPresenter.".to_owned());
         }
         let mut services = file.services;
@@ -467,16 +470,31 @@ fn file() -> Option<std::path::PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("services.json"))
 }
 
-/// The services as last saved, or one empty service.
+/// The services as last saved, or one empty service. A file that can't be read (or comes from
+/// a newer build) is moved aside, so the empty service used instead is never saved over it.
 pub fn load() -> Services {
-    let read = file().and_then(|path| std::fs::read_to_string(path).ok());
-    match read.map(|text| Services::from_json(&text)) {
-        Some(Ok(services)) => services,
-        Some(Err(problem)) => {
-            eprintln!("{problem}");
-            Services::default()
-        }
-        None => Services::default(),
+    let Some(path) = file() else { return Services::default() };
+    let Ok(text) = std::fs::read_to_string(&path) else { return Services::default() };
+    Services::from_json(&text).unwrap_or_else(|problem| {
+        set_aside(&path, &problem);
+        Services::default()
+    })
+}
+
+/// Moves a settings file the app can't read out of the way, beside itself, so what the app uses
+/// instead is never saved over it, and logs where it went.
+pub fn set_aside(path: &std::path::Path, problem: &str) {
+    let stem = path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    let aside = (1..)
+        .map(|n| {
+            let more = if n == 1 { String::new() } else { format!(" {n}") };
+            path.with_file_name(format!("{stem} (could not be read{more}).json"))
+        })
+        .find(|candidate| !candidate.exists())
+        .unwrap_or_else(|| path.with_extension("unread"));
+    match std::fs::rename(path, &aside) {
+        Ok(()) => crate::applog::problem("settings", &format!("{problem} It was kept as {}.", aside.display())),
+        Err(e) => crate::applog::problem("settings", &format!("{problem} It could not be moved aside: {e}")),
     }
 }
 

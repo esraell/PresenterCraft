@@ -445,6 +445,7 @@ Songs, libraries and playlists
   song import FILE… | FOLDER…  import songs (text, lyric, ChordPro, rich text, Word, .pro); a
                                folder becomes a library of its name
   libraries                    the libraries, with how many songs each has
+  library NAME                 list a library's songs
   library open NAME | all      show a library's songs, or all songs
   song delete SONG --yes
   playlist open NAME
@@ -874,7 +875,22 @@ impl crate::App {
                 });
                 Ok(Reply::done(format!("Showing the library {}.", names[at])))
             }
-            _ => Err("library open NAME, or library open all".to_owned()),
+            Some(_) => {
+                // `library NAME`: its songs, one that can't be found marked as missing.
+                let at = find("library", &names, &rest(args, 1))?;
+                let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+                let library = state.libraries.get(at).ok_or("No such library.")?;
+                let songs: Vec<String> = library
+                    .songs
+                    .iter()
+                    .map(|key| match crate::studio::playlist_song(&self.show, state, key) {
+                        Some(index) => self.show.presentations()[index].title.clone(),
+                        None => format!("{} (missing)", key.strip_prefix("title:").unwrap_or("a song")),
+                    })
+                    .collect();
+                Ok(Reply::with(format!("{}\n{}", library.name, numbered(&songs)), serde_json::json!(songs)))
+            }
+            None => Err("library NAME, library open NAME, or library open all".to_owned()),
         }
     }
 
@@ -939,6 +955,12 @@ impl crate::App {
                     .iter()
                     .map(|item| match item {
                         crate::service::Item::Header { name } => format!("— {name} —"),
+                        // A song that can't be found is kept, and shown as missing.
+                        crate::service::Item::Song { key, title }
+                            if crate::studio::playlist_song(&self.show, state, key).is_none() =>
+                        {
+                            format!("{title} (missing)")
+                        }
                         other => other.title().to_owned(),
                     })
                     .collect();

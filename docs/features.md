@@ -15,6 +15,12 @@ feature changes, this page changes in the same commit.
   out the songs on the way), or the item above or below in a playlist (passing over headers);
   ← → and Space go on moving the slides.
 - Groups (Verse 1, Chorus, Bridge…) with coloured bars and one-key jumps.
+- Playlists, libraries, macros, the song that starts with the app and slides' "go to song"
+  actions find a library song by the id in its file, so they keep working when the library
+  folder moves. A song that can't be found is kept and shown as missing (`sp playlist` and
+  `sp library NAME` mark it "(missing)"). Files from before this named songs by path or title;
+  the first start changes those to ids, keeping a copy of each file it changes in
+  "Backup before song ids", and a song file copied in the Finder gets an id of its own.
 - **Arrangements**: a song's groups in the order to sing them (Verse 1, Chorus, Verse 2, Chorus…),
   from the Arrangement icon at the right of its header. Next and Previous follow it, a group can come more than
   once, the stage screens show what comes next in it, and a row of its

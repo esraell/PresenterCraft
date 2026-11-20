@@ -11,8 +11,10 @@ use crate::types::Presentation;
 const FORMAT_NAME: &str = "softpresenter-presentation";
 /// What songs saved before the project was renamed say they are; they still open.
 const OLD_FORMAT_NAME: &str = "presentercraft-presentation";
-/// The newest version of the format this build writes and understands.
-pub const FORMAT_VERSION: u32 = 1;
+/// The newest version of the format this build writes and understands. A song is written as
+/// version 2 only when a slide has a "go to song" action, which since version 2 names the song by
+/// its id; any other song is still written as version 1, which older builds read.
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct File {
@@ -24,7 +26,11 @@ struct File {
 
 /// Writes a presentation as a JSON document, laid out to be read by people too.
 pub fn to_json(presentation: &Presentation) -> String {
-    let file = File { format: FORMAT_NAME.to_owned(), version: FORMAT_VERSION, presentation: presentation.clone() };
+    let goes_to_songs = presentation
+        .slides()
+        .any(|(_, slide)| slide.actions.iter().any(|action| matches!(action, crate::ShowAction::Song { .. })));
+    let version = if goes_to_songs { FORMAT_VERSION } else { 1 };
+    let file = File { format: FORMAT_NAME.to_owned(), version, presentation: presentation.clone() };
     // A presentation has no value that JSON cannot hold, so this cannot fail.
     let mut text = serde_json::to_string_pretty(&file).unwrap_or_default();
     text.push('\n');
@@ -117,8 +123,18 @@ mod tests {
 
     #[test]
     fn a_newer_file_is_refused_not_half_read() {
-        let text = to_json(&song()).replace(r#""version": 1"#, r#""version": 2"#);
+        let text = to_json(&song()).replace(r#""version": 1"#, r#""version": 3"#);
         assert!(from_json(&text).unwrap_err().contains("newer SoftPresenter"));
+    }
+
+    #[test]
+    fn a_song_that_goes_to_another_song_is_written_as_version_2() {
+        let mut going = song();
+        going.groups[0].slides[0].actions.push(crate::ShowAction::Song { key: "1".to_owned() });
+        let text = to_json(&going);
+        assert!(text.contains(r#""version": 2"#), "{text}");
+        assert_eq!(from_json(&text).unwrap(), going);
+        assert!(to_json(&song()).contains(r#""version": 1"#), "any other song stays readable by older builds");
     }
 
     #[test]
