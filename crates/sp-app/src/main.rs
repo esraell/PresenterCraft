@@ -3644,9 +3644,13 @@ impl App {
                     running.home_state.bible.look_up(None);
                 }
                 // Testing aid: open the Options pop-up on the named pane.
+                // Testing aid: open the Options pop-up, or with "bibles" the Bibles window.
                 if let Ok(pane) = std::env::var("SOFTPRESENTER_BIBLE_OPTIONS") {
-                    running.home_state.bible.options.open = true;
-                    running.home_state.bible.options.pane = usize::from(pane == "bibles");
+                    if pane == "bibles" {
+                        running.home_state.bible.options.manage_open = true;
+                    } else {
+                        running.home_state.bible.options.open = true;
+                    }
                 }
             }
             // Testing aid: as if Command-N had been pressed.

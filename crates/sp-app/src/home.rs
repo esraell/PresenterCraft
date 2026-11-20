@@ -1123,6 +1123,17 @@ pub fn home_ui(
         state.new_song_sheet = Some(NewSong { title, focus: true, ..NewSong::default() });
     }
     new_song_sheet(ui, state);
+    // Bibles finished downloading go on the shelf whether or not the Bibles window is open.
+    {
+        let bible = &mut state.bible;
+        crate::bible::collect_downloads(&mut bible.options, &mut bible.shelf, &mut bible.downloads);
+        if bible.options.manage_open {
+            crate::bible::manage_bibles(ui.ctx(), &mut bible.options, &mut bible.shelf, &mut bible.downloads);
+        }
+        if let Some(index) = bible.options.remove.take() {
+            bible.remove_bible(index);
+        }
+    }
     confirm_delete_theme(ui, state);
     confirm_delete_song(ui, show, state);
     confirm_delete_media(ui, show, state);
@@ -4744,6 +4755,9 @@ const WAS_LIVE_OUTLINE: Color32 = Color32::from_rgb(110, 60, 58);
 /// One presentation's slides, in the view chosen: a grid of thumbnails, the same grid showing
 /// only words, or a table. Clicking a slide puts it on screen; a right-click picks it out
 /// without showing it.
+/// How rounded a slide's corners are in the slide grid, in points.
+const SLIDE_ROUND: u8 = 3;
+
 fn slide_grid(
     ui: &mut egui::Ui,
     show: &Show,
@@ -4760,7 +4774,7 @@ fn slide_grid(
     // it, in the playlist's order, so scrolling down goes on into the next song.
     let sections = if from_bible { Vec::new() } else { playlist_sections(show, state, which) };
     let view = state.slide_view;
-    let gap = 16.0;
+    let gap = 10.0;
     let bar_height = 22.0;
     egui::ScrollArea::vertical().id_salt("slide grid").auto_shrink([false, false]).show(ui, |ui| {
         // Between the slides: a click picks nothing; a drag draws a box that picks out every
@@ -5324,12 +5338,16 @@ fn song_slides(
             let ink = text_on(group.color);
             let words = || slide.texts().into_iter().map(|(_, text)| text).collect::<Vec<_>>().join("\n");
             let mut picture = |ui: &mut egui::Ui, image: Rect| {
-                painter.rect_filled(image, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Color32::BLACK);
+                painter.rect_filled(
+                    image,
+                    egui::CornerRadius { nw: SLIDE_ROUND, ne: SLIDE_ROUND, sw: 0, se: 0 },
+                    Color32::BLACK,
+                );
                 let of = if from_bible { ThumbOf::BibleSlide(slide) } else { ThumbOf::Slide(slide) };
                 match thumb(of) {
                     Some((texture, overflow)) => {
                         egui::Image::from_texture((texture, image.size()))
-                            .corner_radius(egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 })
+                            .corner_radius(egui::CornerRadius { nw: SLIDE_ROUND, ne: SLIDE_ROUND, sw: 0, se: 0 })
                             .paint_at(ui, image);
                         if overflow {
                             let mark = image.right_top() + vec2(-14.0, 14.0);
@@ -5395,7 +5413,7 @@ fn song_slides(
                     // the slide's number, the group's name on the group's first slide, and
                     // the key that jumps to the group at the right.
                     let foot = Rect::from_min_max(pos2(rect.min.x, image.max.y), rect.max);
-                    let corners = egui::CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 };
+                    let corners = egui::CornerRadius { nw: 0, ne: 0, sw: SLIDE_ROUND, se: SLIDE_ROUND };
                     painter.rect_filled(foot, corners, color32(group.color));
                     let number = painter.text(
                         foot.left_center() + vec2(8.0, 0.0),
@@ -5478,7 +5496,7 @@ fn song_slides(
             }
             // A disabled slide is dimmed and says so: it is never shown.
             if !slide.enabled {
-                painter.rect_filled(rect, 6.0, Color32::from_black_alpha(170));
+                painter.rect_filled(rect, f32::from(SLIDE_ROUND), Color32::from_black_alpha(170));
                 painter.text(
                     rect.center(),
                     Align2::CENTER_CENTER,
@@ -5489,7 +5507,12 @@ fn song_slides(
             }
             // A hairline round the slide and its bar, so black slides do not melt into the background.
             if view != SlideView::Table {
-                painter.rect_stroke(rect, 6.0, Stroke::new(1.0, crate::studio::LINE), StrokeKind::Outside);
+                painter.rect_stroke(
+                    rect,
+                    f32::from(SLIDE_ROUND),
+                    Stroke::new(1.0, crate::studio::LINE),
+                    StrokeKind::Outside,
+                );
             }
             // Tally red for the slide on screen; the accent for one picked
             // out; a dim red for the slide that was on screen before it was cleared.
@@ -5507,7 +5530,7 @@ fn song_slides(
                 None
             };
             if let Some(stroke) = outline {
-                painter.rect_stroke(framed, 6.0, stroke, StrokeKind::Outside);
+                painter.rect_stroke(framed, f32::from(SLIDE_ROUND) + 1.0, stroke, StrokeKind::Outside);
             }
         }
     });

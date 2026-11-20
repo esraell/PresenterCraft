@@ -23,6 +23,8 @@ pub struct Shelved {
     pub id: String,
     pub name: String,
     pub short: String,
+    /// Its language, as its file says it (`en`, `ru`, `uk`…).
+    pub language: String,
     pub terms: String,
     pub credit: String,
     /// True when it only mostly follows that numbering.
@@ -77,6 +79,7 @@ impl Shelf {
             id: info.id,
             name: info.name,
             short: info.short,
+            language: info.language,
             terms: info.terms,
             credit: info.credit,
             loose: info.loose,
@@ -447,10 +450,12 @@ pub const OFFERED: &[Offered] = &[
 #[derive(Debug)]
 pub struct BibleOptions {
     pub open: bool,
+    /// The Bibles window, where Bibles are installed and removed, and what is typed in its
+    /// search box.
+    pub manage_open: bool,
+    pub manage_search: String,
     /// 0 is Slide Options, 1 is Bibles.
     pub pane: usize,
-    /// 0 is Installed, 1 is Free.
-    pub bibles_tab: usize,
     pub show_verse_numbers: bool,
     pub break_on_new_verse: bool,
     pub display_translation: bool,
@@ -468,8 +473,9 @@ impl Default for BibleOptions {
     fn default() -> BibleOptions {
         BibleOptions {
             open: false,
+            manage_open: false,
+            manage_search: String::new(),
             pane: 0,
-            bibles_tab: 1,
             show_verse_numbers: false,
             break_on_new_verse: true,
             display_translation: false,
@@ -570,7 +576,13 @@ pub fn options_popup(
                                     INK,
                                 );
                                 if response.clicked() {
-                                    options.pane = index;
+                                    // Bibles are installed and removed in a window of their own.
+                                    if index == 1 {
+                                        options.manage_open = true;
+                                        options.open = false;
+                                    } else {
+                                        options.pane = 0;
+                                    }
                                 }
                             }
                         });
@@ -584,11 +596,8 @@ pub fn options_popup(
                             // The pane sits in a row, so its own contents need to be told to run downwards.
                             ui.vertical(|ui| {
                                 ui.set_width(size.x - 144.0 - 32.0);
-                                if options.pane == 0 {
-                                    picked_theme = slide_options(ui, options, themes);
-                                } else {
-                                    bibles(ui, options, shelf, downloads);
-                                }
+                                let _ = (&shelf, &downloads);
+                                picked_theme = slide_options(ui, options, themes);
                             });
                         });
                     });
@@ -683,30 +692,27 @@ fn slide_options(ui: &mut egui::Ui, options: &mut BibleOptions, themes: &ThemeCh
     picked_theme
 }
 
-fn bibles(
-    ui: &mut egui::Ui,
-    options: &mut BibleOptions,
-    shelf: &mut Shelf,
-    downloads: &mut crate::bible_store::Downloads,
-) {
-    // Installed | Free
-    let width = ui.available_width();
-    let (bar, _) = ui.allocate_exact_size(vec2(width, 22.0), Sense::hover());
-    ui.painter().rect_filled(bar, 6.0, Color32::from_gray(70));
-    for (index, name) in ["Installed", "Free"].into_iter().enumerate() {
-        let cell = Rect::from_min_size(
-            pos2(bar.min.x + width / 2.0 * index as f32, bar.min.y),
-            vec2(width / 2.0, bar.height()),
-        );
-        if options.bibles_tab == index {
-            ui.painter().rect_filled(cell, 6.0, BLUE);
-        }
-        ui.painter().text(cell.center(), Align2::CENTER_CENTER, name, FontId::proportional(12.5), INK);
-        if ui.interact(cell, ui.scope_id().with(("bibles tab", index)), Sense::click()).clicked() {
-            options.bibles_tab = index;
-        }
-    }
-    // Downloads that have just ended: put the Bible on the shelf, or say what went wrong.
+/// A language as people who speak it write it, for the Bibles window: from a language code
+/// (`uk`) or an English name ("Ukrainian").
+pub fn language_name(language: &str) -> String {
+    let native = match language.to_lowercase().as_str() {
+        "en" | "english" => "English",
+        "ru" | "russian" => "Русский",
+        "uk" | "ukrainian" => "Українська",
+        "de" | "german" => "Deutsch",
+        "fr" | "french" => "Français",
+        "es" | "spanish" => "Español",
+        "pt" | "portuguese" => "Português",
+        "el" | "grc" | "greek" => "Ελληνικά · Greek",
+        "he" | "hbo" | "hebrew" => "עברית · Hebrew",
+        _ => return language.to_owned(),
+    };
+    native.to_owned()
+}
+
+/// Puts downloads that have just ended on the shelf, or says what went wrong. Done every
+/// frame, so a Bible finished while its window is closed is ready all the same.
+pub fn collect_downloads(options: &mut BibleOptions, shelf: &mut Shelf, downloads: &mut crate::bible_store::Downloads) {
     for (_, result) in downloads.finished() {
         match result {
             Ok((path, info)) => {
@@ -716,65 +722,200 @@ fn bibles(
             Err(problem) => options.problem = Some(problem),
         }
     }
+}
+
+/// The Bibles window: a search box, the Bibles installed (each with a Remove button, but for
+/// the ones built in), and every Bible that can be downloaded, grouped by language, each with
+/// its terms and an Install button that shows the download going on. Removing asks nothing
+/// more: the file goes to the Trash and can be put back. Escape or Done closes it.
+pub fn manage_bibles(
+    ctx: &egui::Context,
+    options: &mut BibleOptions,
+    shelf: &mut Shelf,
+    downloads: &mut crate::bible_store::Downloads,
+) {
     let can_download = crate::bible_store::download_base().is_some();
-    egui::ScrollArea::vertical().id_salt("bibles list").auto_shrink([false, false]).max_height(196.0).show(ui, |ui| {
-        if let Some(problem) = &options.problem {
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(problem.as_str()).size(12.0).color(Color32::from_rgb(255, 150, 120)));
-        }
-        if options.bibles_tab == 0 {
-            ui.add_space(6.0);
-            for (index, bible) in shelf.bibles.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{} ({})", bible.name, bible.short)).color(INK));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // A downloaded Bible can be removed; the ones that come with the app stay.
-                        if !bible.shipped && ui.small_button("Remove").on_hover_text("Move this Bible's file to the Trash").clicked() {
-                            options.remove = Some(index);
-                        }
-                        let note = if bible.shipped { "Comes with the app" } else { bible.terms.as_str() };
-                        ui.label(egui::RichText::new(note).size(10.5).color(DIM));
-                    });
-                });
-            }
-            return;
-        }
-        if !can_download {
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("Downloads start once SoftPresenter is published. Until then, drop a Bible file (.spbible) on the window to install it.")
-                    .size(11.5)
-                    .color(DIM),
-            );
-        }
-        let mut language = "";
-        for bible in OFFERED {
-            if bible.language != language {
-                language = bible.language;
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(language).size(11.5).strong().color(DIM));
-                ui.separator();
-            }
+    let frame = Frame::new()
+        .fill(Color32::from_rgb(38, 38, 40))
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(22)))
+        .corner_radius(14.0)
+        .inner_margin(egui::Margin { left: 22, right: 22, top: 18, bottom: 16 })
+        .shadow(egui::Shadow { offset: [0, 16], blur: 44, spread: 0, color: Color32::from_black_alpha(150) });
+    let area =
+        egui::Modal::default_area(egui::Id::unique("manage bibles")).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0));
+    let mut close = false;
+    egui::Modal::new(egui::Id::unique("manage bibles")).area(area).backdrop_color(Color32::from_black_alpha(90)).frame(frame).show(
+        ctx,
+        |ui| {
+            let width = 600.0_f32.min(ctx.content_rect().width() - 80.0);
+            ui.set_width(width);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("{} ({})", bible.name, bible.short)).color(INK));
+                ui.label(egui::RichText::new("Bibles").font(crate::studio::semibold(18.0)).color(Color32::WHITE));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if shelf.position(bible.id).is_some() {
-                        ui.label(egui::RichText::new("Installed").size(12.0).color(Color32::from_rgb(83, 194, 43)));
-                    } else if downloads.is_busy(bible.id) {
-                        ui.label(egui::RichText::new("Downloading…").size(12.0).color(DIM));
-                    } else if ui
-                        .add_enabled(can_download, egui::Button::new("Install"))
-                        .on_disabled_hover_text("Downloads start once SoftPresenter is published")
-                        .clicked()
-                    {
+                    if ui.button("Done").clicked() {
+                        close = true;
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut options.manage_search)
+                            .hint_text("Search by name or language")
+                            .desired_width(220.0),
+                    );
+                });
+            });
+            ui.add_space(8.0);
+            if let Some(problem) = &options.problem {
+                ui.label(egui::RichText::new(problem.as_str()).size(12.0).color(Color32::from_rgb(255, 150, 120)));
+                ui.add_space(6.0);
+            }
+            let typed = options.manage_search.trim().to_lowercase();
+            let matches = |name: &str, short: &str, language: &str| {
+                typed.is_empty()
+                    || [name, short, language, &language_name(language)].iter().any(|t| t.to_lowercase().contains(&typed))
+            };
+            let height = (ctx.content_rect().height() - 220.0).clamp(240.0, 560.0);
+            egui::ScrollArea::vertical().id_salt("bibles window").max_height(height).auto_shrink([false, true]).show(ui, |ui| {
+                ui.set_width(width);
+                heading(ui, "INSTALLED");
+                let mut any = false;
+                for (index, bible) in shelf.bibles.iter().enumerate() {
+                    if !matches(&bible.name, &bible.short, &bible.language) {
+                        continue;
+                    }
+                    any = true;
+                    let detail = format!("{} · {}", bible.short, language_name(&bible.language));
+                    let right = if bible.shipped { Right::Note("Built in") } else { Right::Button("Remove") };
+                    if bible_row(ui, ("installed", index), &bible.name, &detail, None, right) {
+                        options.remove = Some(index);
+                    }
+                }
+                if !any {
+                    nothing(ui, "No installed Bible matches.");
+                }
+                ui.add_space(12.0);
+                heading(ui, "AVAILABLE");
+                if !can_download {
+                    nothing(ui, "Downloads aren't available in this copy. Drop a Bible file (.spbible) on the window to install it.");
+                }
+                let mut language = "";
+                let mut shown = 0;
+                for bible in OFFERED {
+                    if shelf.position(bible.id).is_some() || !matches(bible.name, bible.short, bible.language) {
+                        continue;
+                    }
+                    if bible.language != language {
+                        language = bible.language;
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(language_name(language)).font(crate::studio::semibold(12.5)).color(DIM));
+                        ui.add_space(2.0);
+                    }
+                    shown += 1;
+                    let right = if downloads.is_busy(bible.id) {
+                        Right::Note("Downloading…")
+                    } else if can_download {
+                        Right::Button("Install")
+                    } else {
+                        Right::Note("")
+                    };
+                    if bible_row(ui, ("offered", bible.id), bible.name, bible.short, Some(bible.terms), right) {
                         let ctx = ui.ctx().clone();
                         downloads.start(bible.id, bible.checksum, move || ctx.request_repaint());
                     }
-                    ui.label(egui::RichText::new(bible.terms).size(10.5).color(DIM));
-                });
+                }
+                if shown == 0 && can_download {
+                    nothing(ui, if typed.is_empty() { "Every Bible offered is installed." } else { "No Bible to install matches." });
+                }
             });
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new(
+                    "Every Bible here may be shared freely: public domain, or an open licence. A Bible file you have (.spbible) installs when dropped on the window.",
+                )
+                .size(11.0)
+                .color(DIM),
+            );
+            if downloads_busy(downloads) {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            }
+        },
+    );
+    if close || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        options.manage_open = false;
+    }
+}
+
+/// True while any Bible is downloading.
+fn downloads_busy(downloads: &crate::bible_store::Downloads) -> bool {
+    OFFERED.iter().any(|bible| downloads.is_busy(bible.id))
+}
+
+fn heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(11.0).strong().color(Color32::from_gray(130)));
+    ui.add_space(4.0);
+}
+
+fn nothing(ui: &mut egui::Ui, text: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(DIM)).wrap());
+}
+
+/// What a Bible's row shows at its right.
+enum Right {
+    Note(&'static str),
+    Button(&'static str),
+}
+
+/// One Bible in the window: its name, a line under it, its terms, and a note or a button at
+/// the right, which keeps its room however long the name is. True when the button is clicked.
+fn bible_row(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    name: &str,
+    detail: &str,
+    terms: Option<&str>,
+    right: Right,
+) -> bool {
+    let width = ui.available_width();
+    let (row, hover) = ui.allocate_exact_size(vec2(width, 44.0), Sense::hover());
+    if hover.hovered() {
+        ui.painter().rect_filled(row, 8.0, Color32::from_white_alpha(8));
+    }
+    // The right side: the button (or note), and the terms before it.
+    let button = Rect::from_min_size(pos2(row.max.x - 92.0, row.center().y - 13.0), vec2(84.0, 26.0));
+    let mut clicked = false;
+    match right {
+        Right::Button(label) => {
+            let response = ui.interact(button, ui.scope_id().with(id), Sense::click());
+            let fill = if response.hovered() { Color32::from_white_alpha(40) } else { Color32::from_white_alpha(24) };
+            ui.painter().rect_filled(button, 7.0, fill);
+            ui.painter().text(button.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.5), INK);
+            clicked = response.clicked();
         }
-    });
+        Right::Note(note) => {
+            ui.painter().text(button.center(), Align2::CENTER_CENTER, note, FontId::proportional(11.5), DIM);
+        }
+    }
+    let mut text_right = button.min.x - 10.0;
+    if let Some(terms) = terms.filter(|t| !t.is_empty()) {
+        let galley = ui.painter().layout_no_wrap(terms.to_owned(), FontId::proportional(10.5), DIM);
+        let pill = Rect::from_min_size(
+            pos2(text_right - galley.size().x - 12.0, row.center().y - 9.0),
+            vec2(galley.size().x + 12.0, 18.0),
+        );
+        ui.painter().rect_filled(pill, 9.0, Color32::from_white_alpha(14));
+        ui.painter().galley(pos2(pill.min.x + 6.0, pill.center().y - galley.size().y / 2.0), galley, DIM);
+        text_right = pill.min.x - 10.0;
+    }
+    // The name and the line under it, cut off before what is at the right.
+    let clip = Rect::from_min_max(pos2(row.min.x + 10.0, row.min.y), pos2(text_right, row.max.y));
+    let painter = ui.painter().with_clip_rect(clip);
+    painter.text(pos2(row.min.x + 10.0, row.min.y + 14.0), Align2::LEFT_CENTER, name, FontId::proportional(13.5), INK);
+    painter.text(
+        pos2(row.min.x + 10.0, row.min.y + 31.0),
+        Align2::LEFT_CENTER,
+        detail,
+        FontId::proportional(11.0),
+        DIM,
+    );
+    clicked
 }
 
 #[cfg(test)]
