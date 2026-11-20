@@ -153,6 +153,9 @@ feature changes, this page changes in the same commit.
   being typed, the books it could be are offered under the field (arrows pick, Tab or Return
   takes one). Control-B, from anywhere, goes to the Bible page with the field's words selected,
   ready for the next reference.
+- History lists the passages that were on screen, newest first, with the time (or the day,
+  for earlier ones); one click brings a passage back. It is kept between starts, holds the last
+  hundred, and Clear History empties it.
 - Up to four translations on one slide, lined up by verse using the standard versification
   tables; each row picks its Bible (or None) and the boxes its verse and reference go in.
 - Options for verse numbers, a new slide for each verse, the translation's name, and where the

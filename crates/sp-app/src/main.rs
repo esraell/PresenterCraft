@@ -1044,6 +1044,15 @@ impl App {
             });
             applog::event("live", &what.unwrap_or_else(|| "cleared".to_owned()));
         }
+        // A Bible passage that has just gone on screen goes in the Bible page's history.
+        if self.show.live() != live_before
+            && let Some(at) = self.show.live()
+            && self.bible_slots.contains(&at.presentation)
+            && let Some(passage) = self.show.presentations().get(at.presentation).map(|song| song.title.clone())
+            && let Some(running) = self.running.as_mut()
+        {
+            running.home_state.bible.note_shown(&passage, chrono::Local::now().naive_local());
+        }
         if self.show.live() != live_before
             && let Some((_, slide)) = self.show.live_slide()
             && !slide.actions.is_empty()
@@ -4436,6 +4445,7 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(page) = service::load_bible_page() {
                     running.home_state.bible.apply_settings(&page);
                 }
+                running.home_state.bible.history = service::load_bible_history();
                 self.bible_page_saved = running.home_state.bible.choices();
                 let prefs = service::load_prefs();
                 running.home_state.apply_prefs(&prefs);
@@ -4816,6 +4826,13 @@ impl ApplicationHandler<AppEvent> for App {
                         }
                         self.bible_page_saved = now;
                     }
+                }
+                // And the passages that were on screen.
+                if let Some(running) = self.running.as_mut()
+                    && std::mem::take(&mut running.home_state.bible.history_changed)
+                    && let Err(problem) = service::save_bible_history(&running.home_state.bible.history)
+                {
+                    running.home_state.notice = Some(problem);
                 }
                 // So are the small choices: transition, view, slide size.
                 if let Some(running) = self.running.as_mut() {

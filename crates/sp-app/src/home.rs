@@ -479,6 +479,10 @@ pub struct BiblePage {
     pub typed_at: Option<f64>,
     /// Put the cursor in Scripture Lookup with its words selected, when it is next drawn.
     pub focus_lookup: bool,
+    /// The passages that were on screen, newest first, and whether that list has changed
+    /// since it was last saved.
+    pub history: Vec<crate::service::HistoryEntry>,
+    pub history_changed: bool,
 }
 
 impl Default for BiblePage {
@@ -517,6 +521,8 @@ impl Default for BiblePage {
             found: Vec::new(),
             typed_at: None,
             focus_lookup: false,
+            history: Vec::new(),
+            history_changed: false,
         }
     }
 }
@@ -739,6 +745,19 @@ impl BiblePage {
             Err(problem) if !quiet => self.message = Some(problem),
             Err(_) => {}
         }
+    }
+
+    /// Notes a passage that has just gone on screen, at the top of the history. One already
+    /// there moves up; the same passage again (its next verse, say) changes nothing.
+    pub fn note_shown(&mut self, passage: &str, at: chrono::NaiveDateTime) {
+        if passage.is_empty() || self.history.first().is_some_and(|newest| newest.passage == passage) {
+            return;
+        }
+        self.history.retain(|entry| entry.passage != passage);
+        let at = at.format("%Y-%m-%dT%H:%M:%S").to_string();
+        self.history.insert(0, crate::service::HistoryEntry { passage: passage.to_owned(), at });
+        self.history.truncate(HISTORY_LENGTH);
+        self.history_changed = true;
     }
 
     /// Makes the passage shown one verse longer, at its end or at its start.
@@ -3957,7 +3976,7 @@ fn bible_area(
             if state.services.list.len() > 1 {
                 actions += button(ui, "▾") + gap;
             }
-            let books = button(ui, "Books") + gap;
+            let books = button(ui, "Books") + gap + button(ui, "History") + gap;
             // Each field also has its own spacing after it.
             let room_in_one = across - books - actions - gap * 2.0 - 8.0;
             let wide = room_in_one >= 260.0;
@@ -4055,6 +4074,32 @@ fn bible_area(
                 })
                 .response
                 .on_hover_text("Pick a book, chapter and verse");
+                // The passages that were on screen, newest first: one click brings one back.
+                ui.menu_button("History", |ui| {
+                    if state.bible.history.is_empty() {
+                        ui.label(egui::RichText::new("Passages shown on screen are listed here.").color(crate::studio::TEXT_DIM));
+                        return;
+                    }
+                    let today = chrono::Local::now().date_naive();
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for entry in &state.bible.history {
+                            let button = egui::Button::new(entry.passage.as_str())
+                                .right_text(egui::RichText::new(history_when(&entry.at, today)).color(crate::studio::TEXT_DIM))
+                                .min_size(vec2(260.0, 0.0));
+                            if ui.add(button).clicked() {
+                                chosen = Some(entry.passage.clone());
+                            }
+                        }
+                    });
+                    ui.separator();
+                    if ui.button("Clear History").clicked() {
+                        state.bible.history.clear();
+                        state.bible.history_changed = true;
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Passages shown on screen, newest first");
                 if let Some(reference) = chosen {
                     state.bible.lookup = reference;
                     state.bible.look_up(live);
@@ -4809,6 +4854,19 @@ const WAS_LIVE_OUTLINE: Color32 = Color32::from_rgb(110, 60, 58);
 /// One presentation's slides, in the view chosen: a grid of thumbnails, the same grid showing
 /// only words, or a table. Clicking a slide puts it on screen; a right-click picks it out
 /// without showing it.
+/// How many passages the Bible history keeps.
+const HISTORY_LENGTH: usize = 100;
+
+/// When a passage in the history was on screen: the time for today ("10:42 AM"), the day
+/// before that ("Sun 17 Nov").
+fn history_when(at: &str, today: chrono::NaiveDate) -> String {
+    match chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M:%S") {
+        Ok(at) if at.date() == today => at.format("%-I:%M %p").to_string(),
+        Ok(at) => at.format("%a %-d %b").to_string(),
+        Err(_) => String::new(),
+    }
+}
+
 /// How long after typing stops in Scripture Lookup its passage is made, in seconds.
 const LOOKUP_PAUSE: f64 = 0.25;
 
@@ -5765,6 +5823,27 @@ mod tests {
         assert_eq!(passage.title, "От Иоанна 3:16", "made in the first translation (Russian Synodal)");
         assert_eq!(state.bible.lookup, "jn 3:16");
         assert_eq!(state.bible.message, None);
+    }
+
+    #[test]
+    fn the_history_keeps_each_passage_once_newest_first() {
+        let at = |h: u32| chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap().and_hms_opt(h, 0, 0).unwrap();
+        let mut page = BiblePage::default();
+        page.note_shown("John 3:16", at(9));
+        page.note_shown("John 3:16", at(10));
+        page.note_shown("Psalm 23", at(11));
+        page.note_shown("John 3:16", at(12));
+        let passages: Vec<&str> = page.history.iter().map(|e| e.passage.as_str()).collect();
+        assert_eq!(passages, ["John 3:16", "Psalm 23"]);
+        assert_eq!(page.history[0].at, "2026-11-19T12:00:00", "moved up, with its new time");
+        assert!(page.history_changed);
+        for n in 0..150 {
+            page.note_shown(&format!("Psalm {n}"), at(13));
+        }
+        assert_eq!(page.history.len(), HISTORY_LENGTH);
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        assert_eq!(history_when("2026-11-19T10:42:05", today), "10:42 AM");
+        assert_eq!(history_when("2026-11-17T09:30:00", today), "Tue 17 Nov");
     }
 
     #[test]

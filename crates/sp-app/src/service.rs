@@ -397,6 +397,45 @@ fn bible_page_file() -> Option<std::path::PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("bible-page.json"))
 }
 
+/// A Bible passage that was on screen, and when it went on (local time,
+/// `2026-11-19T10:42:05`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub passage: String,
+    pub at: String,
+}
+
+fn bible_history_file() -> Option<std::path::PathBuf> {
+    crate::bible_store::data_dir().map(|dir| dir.join("bible-history.json"))
+}
+
+/// The passages that were on screen, newest first. Nothing if there is no file yet.
+pub fn load_bible_history() -> Vec<HistoryEntry> {
+    bible_history_file().map(|path| load_history_from(&path)).unwrap_or_default()
+}
+
+fn load_history_from(path: &std::path::Path) -> Vec<HistoryEntry> {
+    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+/// Keeps the passages that were on screen, for the next start.
+pub fn save_bible_history(history: &[HistoryEntry]) -> Result<(), String> {
+    let path =
+        bible_history_file().ok_or_else(|| "Could not find where to keep settings on this computer.".to_owned())?;
+    save_history_in(&path, history)
+}
+
+fn save_history_in(path: &std::path::Path, history: &[HistoryEntry]) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not make the app's folder: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(history).unwrap_or_default();
+    let partial = path.with_extension("json.part");
+    std::fs::write(&partial, text)
+        .and_then(|()| std::fs::rename(&partial, path))
+        .map_err(|e| format!("Could not save the Bible history: {e}"))
+}
+
 /// How the Bible page was last set up: its translations, boxes and slide options.
 pub fn load_bible_page() -> Option<SavedPassage> {
     let text = std::fs::read_to_string(bible_page_file()?).ok()?;
@@ -448,6 +487,20 @@ pub fn save(services: &Services) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_bible_history_comes_back_as_it_was_saved() {
+        let path =
+            std::env::temp_dir().join(format!("softpresenter-history-{}/bible-history.json", std::process::id()));
+        assert!(load_history_from(&path).is_empty(), "no file yet is no history");
+        let history = vec![
+            HistoryEntry { passage: "John 3:16".to_owned(), at: "2026-11-19T10:42:05".to_owned() },
+            HistoryEntry { passage: "Psalm 23".to_owned(), at: "2026-11-17T09:30:00".to_owned() },
+        ];
+        save_history_in(&path, &history).unwrap();
+        assert_eq!(load_history_from(&path), history);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
 
     #[test]
     fn a_song_dropped_on_another_playlist_goes_there_once_and_the_front_stays() {
