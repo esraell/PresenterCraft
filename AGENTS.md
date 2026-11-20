@@ -12,7 +12,8 @@ written for agents as much as for people:
 - [docs/app-map.md](docs/app-map.md): every view, panel and window, what each part does, the
   matching command-line command, where the data lives and how the code is laid out.
 - [docs/cli.md](docs/cli.md): `sp` (full name `softpresenter`), which controls the running app from a
-  terminal or a script, its replies and its security model.
+  terminal or a script: every command with the replies it gives, JSON, recipes for preparing
+  and running a service, and how to try it safely.
 
 ## Running the app without getting in anyone's way
 
@@ -30,6 +31,11 @@ careless test run puts a slide in front of whoever is using the computer.
 - **Never run `sp` (or `softpresenter ctl`) against the owner's app.** Set `SOFTPRESENTER_DATA` and
   `SOFTPRESENTER_CONTROL_SOCKET` to a test copy first. Without them, `sp` drives the owner's
   live app, which may be on the real screens in front of a congregation.
+  [docs/cli.md](docs/cli.md#trying-it-safely) has a wrapper that refuses to run without the
+  test copy's socket.
+- **Quit a test copy through its own socket** (`sp menu Quit` with its variables set), never by
+  name or path (`osascript -e 'quit app "SoftPresenter"'`): macOS may send that to the owner's
+  copy, or to another session's test copy.
 - **Run one instance at a time,** and close it when you are done. Don't leave builds running
   that you haven't measured.
 - **Before leaving a build running,** watch it idle for a few seconds:
@@ -49,7 +55,7 @@ person:
 |---|---|
 | `SOFTPRESENTER_QUIET=1` | Windows open behind everything, no full screen, no NDI |
 | `SOFTPRESENTER_DATA=<folder>` | Keep the library, Bibles, settings and log in that folder instead of the owner's |
-| `SOFTPRESENTER_CONTROL_SOCKET=<path>` | Where `softpresenter ctl` and the app meet; a short path for a test copy |
+| `SOFTPRESENTER_CONTROL_SOCKET=<path>` | Where `sp` and the app meet; a short path for a test copy |
 | `--capture-home FILE` | Go to the third slide, save a PNG of the home window, quit |
 | `SOFTPRESENTER_CAPTURE_AFTER=<seconds>` | How long a capture run waits before taking its picture |
 | `SOFTPRESENTER_CAPTURE_*` | Capture a particular window instead (`_BIBLE`, `_EDITOR`, `_THEMES`, `_SETTINGS`, `_STAGE_LAYOUTS`, `_OUTPUT`…) |

@@ -90,8 +90,8 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 | File › Import Slides (PowerPoint, Keynote, PDF or Pictures)… (or drop one, or a folder of pictures) | A presentation of picture slides, one per slide, page or picture |
 | Command-L | Back to the song on screen |
 
-Every menu bar item, with its shortcut, is listed by `softpresenter ctl menu`; any of them can be
-chosen with `softpresenter ctl menu ITEM`.
+Every menu bar item, with its shortcut, is listed by `sp menu`; any of them can be chosen with
+`sp menu ITEM`.
 
 ## The Edit view (and the theme editor)
 
@@ -210,4 +210,5 @@ problems, and once a minute how long drawing took.
   `_PLAYLIST`, `_OPEN_ITEM=N`, `_MENU=ItemId,ItemId`, `_DROP=FILE`, `_PICK=songs:0,2`,
   `_WINDOW_SIZE=WxH`, `_NDI=NAME`, `_HIDE_NDI=1`, `_TRACE_PREVIEW=1`.
 - The command line drives a quiet copy as it would the real one:
-  `SOFTPRESENTER_DATA=… SOFTPRESENTER_CONTROL_SOCKET=… softpresenter ctl status`.
+  `SOFTPRESENTER_DATA=… SOFTPRESENTER_CONTROL_SOCKET=… sp status` (see
+  [cli.md](cli.md#trying-it-safely)).

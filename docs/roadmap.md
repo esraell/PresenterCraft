@@ -244,7 +244,7 @@ Ideas of our own, beyond the lists above:
 - TimelyChurch songs and schedules.
 - VoxLive live translation shown on a screen.
 - An API over the network with a stream of changes, and MCP for AI agents. The command line
-  `softpresenter ctl` already controls the running app; see [cli.md](cli.md).
+  `sp` already controls the running app; see [cli.md](cli.md).
 - DeckLink output.
 - Fully customisable NDI.
 - Audio routing in one place.
