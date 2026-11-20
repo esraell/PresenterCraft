@@ -67,6 +67,8 @@ pub fn builtin_layouts() -> Vec<ThemeTemplate> {
     vec![
         ThemeTemplate {
             objects: Vec::new(),
+            songs: true,
+            bible: false,
             id: id(2),
             name: "Words and Next".to_owned(),
             boxes: vec![
@@ -83,6 +85,8 @@ pub fn builtin_layouts() -> Vec<ThemeTemplate> {
         },
         ThemeTemplate {
             objects: Vec::new(),
+            songs: true,
+            bible: false,
             id: id(3),
             name: "Words Only".to_owned(),
             boxes: vec![
@@ -93,6 +97,8 @@ pub fn builtin_layouts() -> Vec<ThemeTemplate> {
         },
         ThemeTemplate {
             objects: Vec::new(),
+            songs: true,
+            bible: false,
             id: id(4),
             name: "Words and Notes".to_owned(),
             boxes: vec![
@@ -105,6 +111,8 @@ pub fn builtin_layouts() -> Vec<ThemeTemplate> {
         },
         ThemeTemplate {
             objects: Vec::new(),
+            songs: true,
+            bible: false,
             id: id(5),
             name: "Clock and Timer".to_owned(),
             boxes: vec![
@@ -349,6 +357,8 @@ mod tests {
             id: Uuid::new_v4(),
             name: "All".to_owned(),
             objects: Vec::new(),
+            songs: true,
+            bible: false,
             boxes: ITEMS
                 .iter()
                 .map(|(role, _, _)| item_box(role, rect, 40.0, Rgba::WHITE, Align::Center, VAlign::Middle))

@@ -636,21 +636,19 @@ fn choices(
             }
         });
         ui.end_row();
-        ui.label("Look");
-        // The theme Bible slides use, and which of its layouts, each shown as a small picture
-        // of where its boxes sit.
-        let chosen = format!(
-            "{} › {}",
-            themes.names.get(themes.theme).map_or("", String::as_str),
-            themes.template_name(themes.theme, themes.layout)
-        );
+        ui.label("Template");
+        // Which template of the main theme Bible slides use, each shown as a small picture of
+        // where its boxes sit.
+        let chosen = themes.template_name(themes.theme, themes.layout).to_owned();
         egui::ComboBox::from_id_salt("bible theme")
             .selected_text(chosen)
             .width(200.0)
             .height(320.0)
             .show_ui(ui, |ui| {
-                for (index, name) in themes.names.iter().enumerate() {
-                    ui.label(egui::RichText::new(name.as_str()).font(crate::studio::semibold(12.0)).color(DIM));
+                for (index, name) in themes.names.iter().enumerate().filter(|(index, _)| *index == themes.theme) {
+                    ui.label(
+                        egui::RichText::new(format!("{name} (the main theme)")).font(crate::studio::semibold(12.0)).color(DIM),
+                    );
                     for layout in 0..themes.layouts.get(index).map_or(0, Vec::len) {
                         let (row, response) = ui.allocate_exact_size(vec2(210.0, 40.0), Sense::click());
                         let on = index == themes.theme && layout == themes.layout;
@@ -679,7 +677,7 @@ fn choices(
             })
             .response
             .on_hover_text(
-                "The theme and layout Bible slides use. Its boxes are what the Verse and Reference menus offer.",
+                "The template of the main theme Bible slides use. Its boxes are what the Verse and Reference menus offer. In the Themes view, right-click a template for this too.",
             );
         ui.end_row();
     });

@@ -429,7 +429,33 @@ pub struct ThemeTemplate {
     /// Shapes, pictures and videos, in order from the back, behind the slide's own objects.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<Object>,
+    /// Whether a song's slide may be drawn with it: among these, the theme picks the one that
+    /// suits what is on the slide. Every template is, until it is told otherwise.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub songs: bool,
+    /// Whether Bible slides are drawn with it. One template of a theme at most.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bible: bool,
 }
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// What a Bible slide names as its template: not one template but the Bible template of
+/// whichever theme draws it, so each screen's theme can lay Bible slides out its own way.
+pub const BIBLE_TEMPLATE: Uuid = Uuid::from_u128(0xb1b1_7e3d);
+
+/// The id of the Bible template the built-in theme comes with.
+const BUILTIN_BIBLE_TEMPLATE: Uuid = Uuid::from_u128(3);
 
 /// The id of the built-in theme Bible slides start with ([`Theme::builtin_bible`]).
 pub const BIBLE_THEME_ID: Uuid = Uuid::from_u128(0xb1b1);
@@ -496,12 +522,16 @@ impl From<ThemeOnDisk> for Theme {
                     name: first.unwrap_or_else(|| "Two languages".to_owned()),
                     boxes: file.boxes,
                     objects: Vec::new(),
+                    songs: true,
+                    bible: false,
                 },
                 ThemeTemplate {
                     id: made(2),
                     name: second.unwrap_or_else(|| "One language".to_owned()),
                     boxes: alone,
                     objects: Vec::new(),
+                    songs: true,
+                    bible: false,
                 },
             ];
         }
@@ -640,7 +670,7 @@ impl ThemeTemplate {
             look.role = role;
             boxes.push(look);
         }
-        ThemeTemplate { id: self.id, name: self.name.clone(), boxes, objects }
+        ThemeTemplate { id: self.id, name: self.name.clone(), boxes, objects, songs: self.songs, bible: self.bible }
     }
 }
 
@@ -711,23 +741,39 @@ impl Theme {
             )
         };
         let main_alone = BoxStyle { rect: MIDDLE, ..main.clone() };
+        // Bible slides: the layout of the built-in Bible theme (two translations, each with its
+        // reference), which only Bible slides use.
+        let bible = Theme::builtin_bible().templates.into_iter().next().map(|template| ThemeTemplate {
+            id: BUILTIN_BIBLE_TEMPLATE,
+            name: "Bible".to_owned(),
+            songs: false,
+            bible: true,
+            ..template
+        });
         Theme {
             id: Uuid::nil(),
             name: "Built-in".to_owned(),
-            templates: vec![
+            templates: [
                 ThemeTemplate {
                     id: Uuid::from_u128(1),
                     name: "Two languages".to_owned(),
                     boxes: vec![main, translation, reference.clone()],
                     objects: Vec::new(),
+                    songs: true,
+                    bible: false,
                 },
                 ThemeTemplate {
                     id: Uuid::from_u128(2),
                     name: "One language".to_owned(),
                     boxes: vec![main_alone, reference],
                     objects: Vec::new(),
+                    songs: true,
+                    bible: false,
                 },
-            ],
+            ]
+            .into_iter()
+            .chain(bible)
+            .collect(),
             background: None,
             background_picture: None,
         }
@@ -741,14 +787,53 @@ impl Theme {
         if let Some(named) = slide.template.and_then(|id| self.templates.iter().find(|t| t.id == id)) {
             return Some(named);
         }
+        // A Bible slide gets the theme's Bible template; a theme without one picks for it as
+        // for a song, among all its templates.
+        let bible = slide.template == Some(BIBLE_TEMPLATE);
+        if bible && let Some(template) = self.bible_template() {
+            return Some(template);
+        }
         let on_slide: Vec<&Role> = slide.objects.iter().filter_map(|o| o.role.as_ref()).collect();
         let languages = [Role::primary(), Role::translation()];
-        self.templates.iter().min_by_key(|template| {
+        // A song picks among the templates for songs (all of them, if none is).
+        let any_for_songs = self.templates.iter().any(|template| template.songs);
+        let candidates = self.templates.iter().filter(|template| bible || template.songs || !any_for_songs);
+        candidates.min_by_key(|template| {
             let missing = on_slide.iter().filter(|role| template.style_for(role).is_none()).count();
             let unused =
                 languages.iter().filter(|role| template.style_for(role).is_some() && !on_slide.contains(role)).count();
             (missing, unused)
         })
+    }
+
+    /// The template Bible slides are drawn with, if the theme has one.
+    pub fn bible_template(&self) -> Option<&ThemeTemplate> {
+        self.templates.iter().find(|template| template.bible)
+    }
+
+    /// Where the template Bible slides are drawn with is in the list: the one for Bible slides,
+    /// or with none, the one a Bible slide of two translations would get.
+    pub fn bible_template_index(&self) -> usize {
+        if let Some(at) = self.templates.iter().position(|template| template.bible) {
+            return at;
+        }
+        let probe = Slide {
+            template: Some(BIBLE_TEMPLATE),
+            ..Slide::new(
+                [Role::primary(), Role::reference(), Role::translation(), Role::translation_reference()]
+                    .into_iter()
+                    .map(|role| Object::text(role, String::new()))
+                    .collect(),
+            )
+        };
+        self.template_for(&probe).and_then(|found| self.templates.iter().position(|t| t.id == found.id)).unwrap_or(0)
+    }
+
+    /// Makes the template at `index` the one Bible slides are drawn with, and no other.
+    pub fn set_bible_template(&mut self, index: usize) {
+        for (at, template) in self.templates.iter_mut().enumerate() {
+            template.bible = at == index;
+        }
     }
 
     /// The look a text object on a slide is drawn with.
@@ -777,8 +862,11 @@ impl Theme {
         let name = (self.templates.len() + 1..).map(|n| format!("Template {n}")).find(|name| !taken(name));
         let boxes = self.templates.get(index).map(|t| t.boxes.clone()).unwrap_or_default();
         let objects = self.templates.get(index).map(|t| t.objects.clone()).unwrap_or_default();
+        // The copy is for songs if its original is; it is never also the Bible template.
+        let songs = self.templates.get(index).is_none_or(|t| t.songs);
         let at = (index + 1).min(self.templates.len());
-        self.templates.insert(at, ThemeTemplate { id: Uuid::new_v4(), name: name.unwrap_or_default(), boxes, objects });
+        let name = name.unwrap_or_default();
+        self.templates.insert(at, ThemeTemplate { id: Uuid::new_v4(), name, boxes, objects, songs, bible: false });
         at
     }
 
@@ -1160,14 +1248,48 @@ mod tests {
     fn templates_are_added_as_copies_and_removed_but_never_all() {
         let mut theme = Theme::builtin();
         let at = theme.add_template(0);
-        assert_eq!((at, theme.templates.len()), (1, 3));
+        assert_eq!((at, theme.templates.len()), (1, 4));
         assert_eq!(theme.templates[1].boxes, theme.templates[0].boxes);
         assert_ne!(theme.templates[1].id, theme.templates[0].id);
-        assert_eq!(theme.templates[1].name, "Template 3");
+        assert_eq!(theme.templates[1].name, "Template 4");
+        // A copy of the Bible template is not a second Bible template.
+        let bible = theme.bible_template_index();
+        let copy = theme.add_template(bible);
+        assert!(!theme.templates[copy].bible && theme.templates[bible].bible);
+        assert!(theme.remove_template(copy));
+        assert!(theme.remove_template(1));
         assert!(theme.remove_template(1));
         assert!(theme.remove_template(1));
         assert!(!theme.remove_template(0));
         assert_eq!(theme.templates.len(), 1);
+    }
+
+    #[test]
+    fn songs_pick_among_templates_for_songs_and_bible_slides_get_the_bible_template() {
+        let theme = Theme::builtin();
+        let words =
+            |roles: &[Role]| Slide::new(roles.iter().map(|role| Object::text(role.clone(), "x".to_owned())).collect());
+        // A song never lands on the Bible template, though it has the boxes for it.
+        let song = words(&[Role::primary(), Role::translation()]);
+        assert_eq!(theme.template_for(&song).unwrap().name, "Two languages");
+        let one = words(&[Role::primary()]);
+        assert_eq!(theme.template_for(&one).unwrap().name, "One language");
+        // A Bible slide asks for the theme's Bible template, whatever is on it.
+        let verse = Slide { template: Some(BIBLE_TEMPLATE), ..words(&[Role::primary()]) };
+        assert_eq!(theme.template_for(&verse).unwrap().name, "Bible");
+        // A theme without one picks for it among all its templates.
+        let mut plain = theme.clone();
+        plain.templates.retain(|template| !template.bible);
+        assert_eq!(plain.template_for(&verse).unwrap().name, "One language");
+        // Another template made the Bible one: only it is.
+        let mut moved = theme.clone();
+        moved.set_bible_template(0);
+        assert_eq!(moved.bible_template().unwrap().name, "Two languages");
+        assert_eq!(moved.templates.iter().filter(|t| t.bible).count(), 1);
+        // A theme saved before templates said what they were for: all are for songs.
+        let old: ThemeTemplate =
+            serde_json::from_str(r#"{"id":"00000000-0000-0000-0000-000000000009","name":"Old","boxes":[]}"#).unwrap();
+        assert!(old.songs && !old.bible);
     }
 
     #[test]

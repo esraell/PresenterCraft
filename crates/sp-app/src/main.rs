@@ -769,8 +769,9 @@ struct App {
     /// The media playlists read at the start, handed to the window's state once it is made.
     media_playlists: Vec<media::Playlist>,
     unsaved_since: Option<Instant>,
-    /// The theme songs are drawn with, and the one Bible slides are drawn with: copies of
-    /// the themes at `songs_theme` and `bible_theme` in `themes`.
+    /// The main theme, which songs and Bible slides are drawn with: a copy of the theme at
+    /// `songs_theme` in `themes`. `theme_for_bible` and `bible_theme` are the same theme, kept
+    /// apart for the places that ask for Bible slides' theme.
     theme: Arc<Theme>,
     theme_for_bible: Arc<Theme>,
     themes: Vec<Theme>,
@@ -778,7 +779,7 @@ struct App {
     theme_arcs: Vec<Arc<Theme>>,
     songs_theme: usize,
     bible_theme: usize,
-    /// Which template of its theme Bible slides use, by its place among them.
+    /// Which template of the main theme Bible slides use, by its place among them.
     bible_layout: usize,
     /// The themes with changes not yet written to their files, by place.
     themes_unsaved: Vec<usize>,
@@ -961,7 +962,7 @@ impl App {
                     .themes
                     .iter()
                     .enumerate()
-                    .filter(|(_, theme)| theme.id.is_nil() || theme.id == sp_model::BIBLE_THEME_ID)
+                    .filter(|(_, theme)| theme.id.is_nil())
                     .map(|(at, _)| at)
                     .collect(),
                 theme_ids: self.themes.iter().map(|theme| theme.id).collect(),
@@ -2836,9 +2837,10 @@ impl App {
         self.themes.iter().map(boxes).collect()
     }
 
-    /// The template Bible slides are drawn with, by its id.
+    /// What Bible slides name as their template: the Bible template of whichever theme draws
+    /// them.
     fn bible_template(&self) -> Option<Uuid> {
-        self.theme_for_bible.templates.get(self.bible_layout).map(|template| template.id)
+        Some(sp_model::BIBLE_TEMPLATE)
     }
 
     /// Brings everything that depends on the themes up to date after one was changed or
@@ -2846,24 +2848,20 @@ impl App {
     /// The output is left as it is; `refresh_output` brings it up to date.
     fn themes_changed(&mut self) {
         self.songs_theme = self.songs_theme.min(self.themes.len().saturating_sub(1));
-        self.bible_theme = self.bible_theme.min(self.themes.len().saturating_sub(1));
+        // Bible slides are drawn with the main theme's Bible template.
+        self.bible_theme = self.songs_theme;
         self.theme = Arc::new(self.themes[self.songs_theme].clone());
-        self.theme_for_bible = Arc::new(self.themes[self.bible_theme].clone());
+        self.theme_for_bible = self.theme.clone();
         self.theme_arcs = self.themes.iter().cloned().map(Arc::new).collect();
-        self.bible_layout = self.bible_layout.min(self.theme_for_bible.templates.len().saturating_sub(1));
+        self.bible_layout = self.theme.bible_template_index();
         let (layouts, pinned) = (self.theme_layouts(), self.bible_template());
         if let Some(running) = self.running.as_mut() {
             running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
             running.canvas_for = None;
             let state = &mut running.home_state;
             state.theme_names = self.themes.iter().map(|theme| theme.name.clone()).collect();
-            state.themes_kept = self
-                .themes
-                .iter()
-                .enumerate()
-                .filter(|(_, theme)| theme.id.is_nil() || theme.id == sp_model::BIBLE_THEME_ID)
-                .map(|(at, _)| at)
-                .collect();
+            state.themes_kept =
+                self.themes.iter().enumerate().filter(|(_, theme)| theme.id.is_nil()).map(|(at, _)| at).collect();
             state.theme_ids = self.themes.iter().map(|theme| theme.id).collect();
             state.theme_for_songs = self.songs_theme;
             state.theme_for_bible = self.bible_theme;
@@ -2891,25 +2889,48 @@ impl App {
             Some(ThemeRequest::UseForSongs(index)) if index < count && index != self.songs_theme => {
                 self.songs_theme = index;
                 self.themes_changed();
-                theme_store::remember_in_use(&self.theme, &self.theme_for_bible, self.bible_layout);
-                if !editing {
-                    self.refresh_output();
-                }
-            }
-            Some(ThemeRequest::UseForBible(index, layout))
-                if index < count && (index != self.bible_theme || layout != self.bible_layout) =>
-            {
-                self.bible_theme = index;
-                self.bible_layout = layout;
-                self.themes_changed();
-                theme_store::remember_in_use(&self.theme, &self.theme_for_bible, self.bible_layout);
-                // Choosing a theme points the translations at its boxes, as a fresh start.
+                theme_store::remember_in_use(&self.theme);
+                // Bible slides now use this theme's Bible template: the translations are pointed
+                // at its boxes, as a fresh start.
                 if let Some(running) = self.running.as_mut() {
                     running.home_state.bible.assign_boxes();
                 }
                 if !editing {
                     self.refresh_output();
                 }
+            }
+            // A template of a theme made the one Bible slides use (from Bible Options; the Theme
+            // Editor changes the theme it has open itself).
+            Some(ThemeRequest::UseForBible(index, layout))
+                if index < count && self.themes[index].templates.get(layout).is_some_and(|t| !t.bible) =>
+            {
+                self.themes[index].set_bible_template(layout);
+                if let Some(edit) = running.home_state.theme_edit.as_mut().filter(|edit| edit.index == index) {
+                    edit.theme.set_bible_template(layout);
+                }
+                if !self.themes_unsaved.contains(&index) {
+                    self.themes_unsaved.push(index);
+                }
+                self.save_unsaved();
+                self.themes_changed();
+                if index == self.songs_theme {
+                    if let Some(running) = self.running.as_mut() {
+                        running.home_state.bible.assign_boxes();
+                    }
+                    if !editing {
+                        self.refresh_output();
+                    }
+                }
+            }
+            Some(ThemeRequest::Duplicate(index)) if index < count => {
+                let mut theme = self.themes[index].clone();
+                theme.id = Uuid::new_v4();
+                theme.name = format!("{} copy", theme.name);
+                self.themes.push(theme);
+                self.themes_unsaved.push(self.themes.len() - 1);
+                self.unsaved_since = Some(Instant::now());
+                self.themes_changed();
+                self.open_theme_editor(self.themes.len() - 1);
             }
             Some(ThemeRequest::New) => {
                 let mut theme = (*self.theme).clone();
@@ -2922,11 +2943,8 @@ impl App {
                 self.open_theme_editor(self.themes.len() - 1);
             }
             Some(ThemeRequest::Edit(index)) if index < count => self.open_theme_editor(index),
-            // The built-in theme, at the front of the list, and the built-in Bible theme are
-            // always kept.
-            Some(ThemeRequest::Delete(index))
-                if index > 0 && index < count && self.themes[index].id != sp_model::BIBLE_THEME_ID =>
-            {
+            // The built-in theme, at the front of the list, is always kept.
+            Some(ThemeRequest::Delete(index)) if index > 0 && index < count => {
                 // Write what is waiting first, so the places in the list still mean what they did.
                 self.save_unsaved();
                 let gone = self.themes.remove(index);
@@ -2937,10 +2955,13 @@ impl App {
                     std::cmp::Ordering::Equal => 0,
                     std::cmp::Ordering::Greater => at - 1,
                 };
+                let main_gone = index == self.songs_theme;
                 self.songs_theme = moved(self.songs_theme);
-                self.bible_theme = moved(self.bible_theme);
                 self.themes_changed();
-                theme_store::remember_in_use(&self.theme, &self.theme_for_bible, self.bible_layout);
+                theme_store::remember_in_use(&self.theme);
+                if main_gone && let Some(running) = self.running.as_mut() {
+                    running.home_state.bible.assign_boxes();
+                }
                 let was_open =
                     self.running.as_ref().and_then(|r| r.home_state.theme_edit.as_ref().map(|edit| edit.index));
                 if let Some(open) = was_open {
@@ -2962,20 +2983,12 @@ impl App {
         };
         let (changed, leave, index) = (std::mem::take(&mut edit.changed), edit.leave, edit.index);
         if changed {
-            let mut bible_template_gone = false;
             let theme = edit.theme.clone();
-            // The template Bible slides use keeps its link when templates are added or
-            // removed around it; if it was removed, the first one takes its place.
-            if index == self.bible_theme {
-                let linked = self.bible_template();
-                let now = theme.templates.iter().position(|template| Some(template.id) == linked);
-                let moved = now != Some(self.bible_layout);
-                self.bible_layout = now.unwrap_or(0);
-                if moved {
-                    theme_store::remember_in_use(&self.theme, &theme, self.bible_layout);
-                }
-                bible_template_gone = now.is_none();
-            }
+            // In the main theme, another template for Bible slides (one marked, or the one
+            // marked removed) points the translations at its boxes, as when one is chosen.
+            let bible_id = |theme: &Theme| theme.templates.get(theme.bible_template_index()).map(|t| t.id);
+            let bible_template_gone =
+                index == self.songs_theme && self.themes.get(index).and_then(bible_id) != bible_id(&theme);
             if let Some(slot) = self.themes.get_mut(index) {
                 *slot = theme;
             }
@@ -5093,7 +5106,18 @@ fn main() -> ExitCode {
             }
         }));
     }
-    let (themes, songs_theme, bible_theme, bible_layout) = theme_store::load_all();
+    let (themes, songs_theme, moved_in) = theme_store::load_all();
+    // Themes changed while loading (a Bible layout brought into the main theme) are written
+    // at once, with the new note of what is in use, so it happens only once.
+    if !moved_in.is_empty() {
+        for at in &moved_in {
+            if let Err(problem) = theme_store::save(&themes[*at]) {
+                eprintln!("{problem}");
+            }
+        }
+        theme_store::remember_in_use(&themes[songs_theme]);
+    }
+    let (bible_theme, bible_layout) = (songs_theme, themes[songs_theme].bible_template_index());
     let mut app = App {
         options,
         waker: Some(event_loop.create_proxy()),

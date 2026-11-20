@@ -54,6 +54,8 @@ pub fn ui(ui: &mut egui::Ui, state: &mut HomeState) {
                             name: format!("{} copy", original.name),
                             boxes: original.boxes.clone(),
                             objects: original.objects.clone(),
+                            songs: original.songs,
+                            bible: false,
                         };
                         state.stage_layouts.insert(layout_at + 1, copy);
                         state.stage_edit = (layout_at + 1, None);

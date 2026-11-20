@@ -221,13 +221,19 @@ feature changes, this page changes in the same commit.
 
 ## Themes
 - A theme decides where each kind of text goes and how it looks. It has any number of
-  templates, each a set of named boxes. A song's slide uses the template that suits it (two
-  languages or one) unless you pick one from the slide's right-click menu; Bible slides use
-  the template you choose.
-- Two themes come with the app: Built-in, for songs, and Bible, which Bible slides start with:
-  the Russian Synodal verse and its reference on top, the King James Version and its reference
-  below, in Linux Biolinum on black. Either can be changed and saved, and neither can be
-  deleted. (Bible's settings live in `crates/sp-model/themes/bible.sptheme`.)
+  templates, each a set of named boxes, and each says what it is for: **Songs** (a song's slide
+  uses, of these, the one that suits it, two languages or one, unless you pick one from the
+  slide's right-click menu) or **Bible** (the one Bible slides use). Right-click a template to
+  change what it is for.
+- Songs and Bible slides are drawn with the **main theme**, tagged Main in the list;
+  right-click a theme to make it the main one, or to duplicate it.
+- The built-in theme has a template for each: two languages and one for songs, and one for
+  Bible slides (the Russian Synodal verse and its reference on top, the King James Version and
+  its reference below, in Linux Biolinum on black; its settings live in
+  `crates/sp-model/themes/bible.sptheme`). It can be changed and saved, and not deleted.
+- Themes from before templates said what they were for keep working: the template Bible slides
+  used is brought into the main theme as its Bible template, looking as it did, the first time
+  the app starts.
 - The theme editor works as the song editor does: Add Text, Shapes, Media… and pictures or
   videos dragged from the Finder. A template's shapes, pictures and videos (a logo, a bar, a
   moving background) are drawn behind the words on every slide that uses it, and a video in

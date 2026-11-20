@@ -537,7 +537,7 @@ fn theme_slide_panel(ui: &mut egui::Ui, state: &mut HomeState) {
         });
     });
     rule(ui);
-    let about = "A slide uses the template that suits what is on it: with the main language and a translation, the first template that has a box for both; with one language, the first that has no translation box. Bible slides use the template marked Bible.";
+    let about = "A song's slide uses, of the templates marked Songs, the one that suits what is on it: with the main language and a translation, the first with a box for both; with one language, the first with no translation box. Bible slides use the template marked Bible. Right-click a template to change what it is for. Songs and Bible slides are drawn with the main theme; right-click a theme to make it the main one.";
     ui.label(egui::RichText::new(about).size(11.5).color(DIM));
     if before != (edit.theme.name.clone(), edit.theme.background, edit.theme.background_picture.clone()) {
         // A theme always has a name.

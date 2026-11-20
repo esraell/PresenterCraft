@@ -13,40 +13,67 @@ fn in_use_file() -> Option<PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("themes-in-use.txt"))
 }
 
-/// Every theme, the places in the list of the ones songs and Bible slides use, and which
-/// layout of its theme Bible slides use. The built-in theme is always there first, and the
-/// built-in Bible theme always among the rest, each as it was last saved if it has been
-/// changed; the others follow in name order. Bible slides start with the built-in Bible theme.
-pub fn load_all() -> (Vec<Theme>, usize, usize, usize) {
-    let mut themes =
-        folder().map_or_else(|| vec![Theme::builtin(), Theme::builtin_bible()], |folder| load_from(&folder));
-    themes[1..].sort_by_key(|theme| theme.name.to_lowercase());
-    // The note has a line for each kind of slide: `songs=<id>` and `bible=<id>`.
+/// Every theme, the place in the list of the main theme (the one songs and Bible slides are
+/// drawn with), and the places of themes changed while loading, to be saved. The built-in
+/// theme is always first, as it was last saved if it has been changed; the others follow in
+/// name order.
+pub fn load_all() -> (Vec<Theme>, usize, Vec<usize>) {
+    let mut themes = folder().map_or_else(|| vec![Theme::builtin()], |folder| load_from(&folder));
     let note = in_use_file().and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default();
+    let (main, changed) = settle(&mut themes, &note);
+    (themes, main, changed)
+}
+
+/// Puts the themes in order and finds the main one from the note of what is in use. A note
+/// from before templates said what they were for names, besides the songs theme, the theme
+/// and template Bible slides used: that template is brought into the main theme as its Bible
+/// template, looking as it did, and the main theme is returned among those to save.
+fn settle(themes: &mut [Theme], note: &str) -> (usize, Vec<usize>) {
+    themes[1..].sort_by_key(|theme| theme.name.to_lowercase());
+    // The note has a line for each thing: `main=<id>` (earlier, `songs=<id>`), and in old
+    // notes `bible=<id>` and `bible_template=<id>`.
     let noted = |kind: &str| {
         note.lines()
             .find_map(|line| line.strip_prefix(kind)?.strip_prefix('='))
             .and_then(|id| Uuid::parse_str(id.trim()).ok())
-            .and_then(|id| themes.iter().position(|theme| theme.id == id))
     };
-    let songs = noted("songs").unwrap_or(0);
-    let bible_theme = themes.iter().position(|theme| theme.id == sp_model::BIBLE_THEME_ID).unwrap_or(0);
-    let bible = noted("bible").unwrap_or(bible_theme);
-    // The Bible theme's template is noted by its id. A note from before templates had ids
-    // says `bible_layout=alone` for the second of the two there were then.
-    let templates = &themes[bible].templates;
-    let by_id = note
-        .lines()
-        .find_map(|line| line.strip_prefix("bible_template="))
-        .and_then(|id| Uuid::parse_str(id.trim()).ok())
-        .and_then(|id| templates.iter().position(|template| template.id == id));
+    let place = |id: Uuid| themes.iter().position(|theme| theme.id == id);
+    let main = noted("main").or_else(|| noted("songs")).and_then(place).unwrap_or(0);
+    if !note.lines().any(|line| line.starts_with("bible=")) {
+        return (main, Vec::new());
+    }
+    // The theme Bible slides used: the one noted, else the built-in Bible theme (as saved, if
+    // it was).
+    let bible_at = noted("bible").and_then(place).or_else(|| place(sp_model::BIBLE_THEME_ID));
+    let source = bible_at.map_or_else(Theme::builtin_bible, |at| themes[at].clone());
+    let by_id = noted("bible_template").and_then(|id| source.templates.iter().position(|t| t.id == id));
     let alone = note.lines().any(|line| line.trim() == "bible_layout=alone");
-    let layout = by_id.unwrap_or(usize::from(alone)).min(templates.len().saturating_sub(1));
-    (themes, songs, bible, layout)
+    let template = by_id.unwrap_or(usize::from(alone)).min(source.templates.len().saturating_sub(1));
+    if bible_at == Some(main) {
+        themes[main].set_bible_template(template);
+    } else if let Some(original) = source.templates.get(template) {
+        let brought = sp_model::ThemeTemplate {
+            id: Uuid::new_v4(),
+            name: "Bible".to_owned(),
+            songs: false,
+            bible: true,
+            ..original.clone()
+        };
+        let theme = &mut themes[main];
+        // It takes the place of the main theme's own Bible template, if it has one.
+        match theme.templates.iter().position(|t| t.bible) {
+            Some(at) => theme.templates[at] = brought,
+            None => theme.templates.push(brought),
+        }
+        let at = theme.templates.len() - 1;
+        let at = theme.templates.iter().position(|t| t.bible).unwrap_or(at);
+        theme.set_bible_template(at);
+    }
+    (main, vec![main])
 }
 
 fn load_from(folder: &Path) -> Vec<Theme> {
-    let mut themes = vec![Theme::builtin(), Theme::builtin_bible()];
+    let mut themes = vec![Theme::builtin()];
     let files = std::fs::read_dir(folder).ok();
     for path in files.into_iter().flatten().flatten().map(|entry| entry.path()) {
         // Themes saved before the project was renamed end in .pctheme; they still open.
@@ -57,7 +84,6 @@ fn load_from(folder: &Path) -> Vec<Theme> {
         match read {
             // The built-in theme's own file takes its place.
             Ok(theme) if theme.id.is_nil() => themes[0] = theme,
-            Ok(theme) if theme.id == sp_model::BIBLE_THEME_ID => themes[1] = theme,
             Ok(theme) if themes.iter().all(|have| have.id != theme.id) => themes.push(theme),
             Ok(_) => {}
             Err(problem) => eprintln!("{}: {problem}", path.display()),
@@ -99,14 +125,13 @@ pub fn delete(theme: &Theme) -> Result<(), String> {
     Ok(())
 }
 
-/// Remembers which themes songs and Bible slides use, for the next start.
-pub fn remember_in_use(songs: &Theme, bible: &Theme, bible_template: usize) {
+/// Remembers which theme is the main one, for the next start.
+pub fn remember_in_use(main: &Theme) {
     if let Some(file) = in_use_file() {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let template = bible.templates.get(bible_template).map(|template| template.id).unwrap_or_default();
-        let _ = std::fs::write(file, format!("songs={}\nbible={}\nbible_template={template}\n", songs.id, bible.id));
+        let _ = std::fs::write(file, format!("main={}\n", main.id));
     }
 }
 
@@ -118,7 +143,7 @@ mod tests {
     fn saved_themes_come_back_and_a_saved_built_in_takes_its_place() {
         let folder = std::env::temp_dir().join(format!("softpresenter-test-themes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
-        assert_eq!(load_from(&folder), vec![Theme::builtin(), Theme::builtin_bible()]);
+        assert_eq!(load_from(&folder), vec![Theme::builtin()]);
 
         let mut sunday = Theme::builtin();
         sunday.id = Uuid::new_v4();
@@ -130,15 +155,51 @@ mod tests {
         std::fs::write(folder.join("broken.pctheme"), "not a theme").unwrap();
 
         let loaded = load_from(&folder);
-        assert_eq!(loaded.len(), 3);
+        assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0], built_in);
-        assert_eq!(loaded[1], Theme::builtin_bible());
-        assert_eq!(loaded[2], sunday);
-        // The built-in Bible theme, changed and saved, takes its own place too.
-        let mut bible = Theme::builtin_bible();
-        bible.templates[0].boxes[0].size = 80.0;
-        save_in(&folder, &bible).unwrap();
-        assert_eq!(load_from(&folder)[1], bible);
+        assert_eq!(loaded[1], sunday);
+        // The old built-in Bible theme, if it was saved, is a theme like any other.
+        save_in(&folder, &Theme::builtin_bible()).unwrap();
+        assert_eq!(load_from(&folder).len(), 3);
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn an_old_note_brings_the_bible_layout_into_the_main_theme_once() {
+        // Songs used the built-in theme, saved with one template; Bible slides used the
+        // built-in Bible theme, saved with the user's own layout.
+        let mut main = Theme::builtin();
+        main.templates.truncate(1);
+        let mut bible = Theme::builtin_bible();
+        bible.templates[0].boxes[0].size = 77.0;
+        let mut themes = vec![main, bible.clone()];
+        let note = format!(
+            "songs={}\nbible={}\nbible_template={}\n",
+            Uuid::nil(),
+            sp_model::BIBLE_THEME_ID,
+            bible.templates[0].id
+        );
+        let (at, changed) = settle(&mut themes, &note);
+        assert_eq!((at, changed), (0, vec![0]));
+        let brought = themes[0].bible_template().expect("the main theme has a Bible template");
+        assert_eq!(brought.boxes, bible.templates[0].boxes, "looking as it did");
+        assert!(!brought.songs, "songs don't use it");
+        assert_eq!(themes[0].templates.len(), 2);
+        // The new note names only the main theme, and nothing more is brought.
+        let (at, changed) = settle(&mut themes, &format!("main={}\n", Uuid::nil()));
+        assert_eq!((at, changed), (0, Vec::<usize>::new()));
+        assert_eq!(themes[0].templates.len(), 2);
+    }
+
+    #[test]
+    fn an_unsaved_built_in_theme_has_its_bible_template_replaced_not_doubled() {
+        let mut bible = Theme::builtin_bible();
+        bible.templates[0].boxes[0].size = 66.0;
+        let mut themes = vec![Theme::builtin(), bible.clone()];
+        let note = format!("songs={}\nbible={}\n", Uuid::nil(), sp_model::BIBLE_THEME_ID);
+        settle(&mut themes, &note);
+        assert_eq!(themes[0].templates.iter().filter(|t| t.bible).count(), 1);
+        assert_eq!(themes[0].templates.len(), Theme::builtin().templates.len());
+        assert_eq!(themes[0].bible_template().unwrap().boxes[0].size, 66.0);
     }
 }

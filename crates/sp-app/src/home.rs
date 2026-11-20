@@ -875,8 +875,10 @@ impl ThemeEdit {
 pub enum ThemeRequest {
     /// Songs use the theme at this place in the list.
     UseForSongs(usize),
-    /// Bible slides use this layout of the theme at this place in the list.
+    /// Bible slides use this template of the theme at this place in the list.
     UseForBible(usize, usize),
+    /// Make a copy of the theme at this place in the list and open it in the Theme Editor.
+    Duplicate(usize),
     /// Make a new theme, a copy of the one songs use, and open it in the Theme Editor.
     New,
     /// Open the Theme Editor on the theme at this place in the list.
@@ -1807,14 +1809,12 @@ fn edit_view(
                 });
 
             if let Some(edit) = state.theme_edit.as_ref() {
-                // The theme's templates, each drawn as it will look. A tag says what is
-                // linked to each: Bible slides use one template; a song's slide uses the
-                // one that suits what is on it.
-                let theme_index = edit.index;
-                let (songs_here, bible_here) =
-                    (state.theme_for_songs == theme_index, state.theme_for_bible == theme_index);
-                let bible_template = state.bible_layout;
+                // The theme's templates, each drawn as it will look. Tags say what each is for:
+                // a song's slide uses, of the ones for songs, the one that suits what is on it;
+                // Bible slides use the one for Bible slides.
+                let marks: Vec<(bool, bool)> = edit.theme.templates.iter().map(|t| (t.songs, t.bible)).collect();
                 let mut link_bible = None;
+                let mut toggle_songs = None;
                 let layouts: Vec<(usize, String)> =
                     edit.theme.templates.iter().map(|template| template.name.clone()).enumerate().collect();
                 let only_one = layouts.len() <= 1;
@@ -1906,9 +1906,8 @@ fn edit_view(
                         }
                         // What is linked to this template, at the right of its name.
                         let mut right = cell.max.x - 8.0;
-                        for (linked, tag) in
-                            [(bible_here && bible_template == template, "Bible"), (songs_here, "Songs")]
-                        {
+                        let (for_songs, for_bible) = marks.get(template).copied().unwrap_or_default();
+                        for (linked, tag) in [(for_bible, "Bible"), (for_songs, "Songs")] {
                             if !linked {
                                 continue;
                             }
@@ -1930,8 +1929,22 @@ fn edit_view(
                             chosen_template = Some(template);
                         }
                         response.context_menu(|ui| {
-                            let linked = bible_here && bible_template == template;
-                            if ui.add_enabled(!linked, egui::Button::new("Use for Bible Slides")).clicked() {
+                            // What the template is for: songs pick among the templates for songs;
+                            // Bible slides use one template.
+                            let mut songs = for_songs;
+                            if ui
+                                .checkbox(&mut songs, "Use for Songs")
+                                .on_hover_text("Songs pick, among these, the one that suits each slide")
+                                .clicked()
+                            {
+                                toggle_songs = Some(template);
+                                ui.close();
+                            }
+                            if ui
+                                .add_enabled(!for_bible, egui::Button::new("Use for Bible Slides"))
+                                .on_hover_text("Bible slides are drawn with this template, in this theme")
+                                .clicked()
+                            {
                                 link_bible = Some(template);
                                 ui.close();
                             }
@@ -1982,8 +1995,15 @@ fn edit_view(
                     // Its name is ready to be typed over.
                     start_rename = Some((at, edit.theme.templates[at].name.clone()));
                 }
-                if let Some(template) = link_bible {
-                    state.theme_request = Some(ThemeRequest::UseForBible(theme_index, template));
+                if let Some(edit) = state.theme_edit.as_mut() {
+                    if let Some(template) = link_bible {
+                        edit.theme.set_bible_template(template);
+                        edit.changed = true;
+                    }
+                    if let Some(toggled) = toggle_songs.and_then(|at| edit.theme.templates.get_mut(at)) {
+                        toggled.songs = !toggled.songs;
+                        edit.changed = true;
+                    }
                 }
                 if let Some(start) = start_rename {
                     state.renaming_template = Some(start);
@@ -3702,11 +3722,10 @@ fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
         state.confirm_delete_theme = None;
         return;
     };
-    let in_use = match (state.theme_for_songs == index, state.theme_for_bible == index) {
-        (true, true) => "Songs and Bible slides use it; they will use the built-in theme instead.",
-        (true, false) => "Songs use it; they will use the built-in theme instead.",
-        (false, true) => "Bible slides use it; they will use the built-in theme instead.",
-        (false, false) => "",
+    let in_use = if state.theme_for_songs == index {
+        "It is the main theme: songs and Bible slides will use the built-in theme instead."
+    } else {
+        ""
     };
     if let Some(delete) = confirm_delete(ui, &format!("Delete the theme \"{name}\"?"), in_use) {
         state.confirm_delete_theme = None;
@@ -3719,15 +3738,18 @@ fn confirm_delete_theme(ui: &mut egui::Ui, state: &mut HomeState) {
 /// Asks before deleting one of the templates of the theme being edited, and deletes it.
 fn confirm_delete_template(ui: &mut egui::Ui, state: &mut HomeState) {
     let Some(template) = state.confirm_delete_template else { return };
-    let bible_uses_it = state.theme_edit.as_ref().is_some_and(|edit| edit.index == state.theme_for_bible)
-        && state.bible_layout == template;
+    let bible_uses_it =
+        state.theme_edit.as_ref().and_then(|edit| edit.theme.templates.get(template)).is_some_and(|t| t.bible);
     let name = state.theme_edit.as_ref().and_then(|edit| edit.theme.templates.get(template)).map(|t| t.name.clone());
     let Some(name) = name else {
         state.confirm_delete_template = None;
         return;
     };
-    let note =
-        if bible_uses_it { "Bible slides use it; they will use the theme's first template instead." } else { "" };
+    let note = if bible_uses_it {
+        "Bible slides use it; they will use the template that suits them best instead."
+    } else {
+        ""
+    };
     let Some(delete) = confirm_delete(ui, &format!("Delete the template \"{name}\"?"), note) else { return };
     state.confirm_delete_template = None;
     if delete
@@ -3790,9 +3812,7 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                     }
                     // Tags at the right say what uses this theme.
                     let mut right = row.max.x - 6.0;
-                    for (used, tag) in
-                        [(state.theme_for_songs == index, "Songs"), (state.theme_for_bible == index, "Bible")]
-                    {
+                    for (used, tag) in [(state.theme_for_songs == index, "Main")] {
                         if !used {
                             continue;
                         }
@@ -3855,9 +3875,17 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                         }
                     }
                     response.context_menu(|ui| {
-                        if ui.add_enabled(state.theme_for_songs != index, egui::Button::new("Use for Songs")).clicked()
+                        // The main theme draws songs and Bible slides on every screen.
+                        if ui
+                            .add_enabled(state.theme_for_songs != index, egui::Button::new("Use as Main Theme"))
+                            .on_hover_text("Songs and Bible slides are drawn with the main theme")
+                            .clicked()
                         {
                             state.theme_request = Some(ThemeRequest::UseForSongs(index));
+                            ui.close();
+                        }
+                        if ui.button("Duplicate").clicked() {
+                            state.theme_request = Some(ThemeRequest::Duplicate(index));
                             ui.close();
                         }
                         if open {
