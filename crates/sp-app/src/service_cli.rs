@@ -97,12 +97,24 @@ impl crate::App {
                     None => Err("playlist move ITEM to N [in PLAYLIST]".to_owned()),
                 }
             }
-            "header" => {
+            // `playlist header|media|media-playlist|placeholder NAME [at N] [in PLAYLIST]`
+            "header" | "media" | "media-playlist" | "placeholder" => {
+                let usage = format!("playlist {word} NAME [at N] [in PLAYLIST]");
                 let (head, list) = split_at_word(words, "in");
                 let (text, at) = split_at_word(head, "at");
                 match at.map(|at| at.parse::<usize>()) {
-                    Some(Err(_)) => Err("playlist header TEXT [at N] [in PLAYLIST]".to_owned()),
-                    at => self.playlist_header(&text.join(" "), at.and_then(Result::ok), list.as_deref()),
+                    Some(Err(_)) => Err(usage),
+                    at => self.playlist_put(&word, &text.join(" "), at.and_then(Result::ok), list.as_deref()),
+                }
+            }
+            // `playlist fill PLACEHOLDER with SONG | with media ITEM [in PLAYLIST]`
+            "fill" => {
+                let (head, list) = split_at_word(words, "in");
+                match split_at_word(head, "with") {
+                    (place, Some(with)) if !place.is_empty() => {
+                        self.playlist_fill(&place.join(" "), &with, list.as_deref())
+                    }
+                    _ => Err("playlist fill PLACEHOLDER with SONG | with media ITEM [in PLAYLIST]".to_owned()),
                 }
             }
             _ => return None,
@@ -187,27 +199,82 @@ impl crate::App {
         Ok(Reply::done(format!("Moved {title} to place {to} in {name}.")))
     }
 
-    fn playlist_header(&mut self, text: &str, at: Option<usize>, list: Option<&str>) -> Result<Reply, String> {
+    /// Puts a header, a picture or video from the media bin, a media playlist or a placeholder
+    /// into a playlist, at a place (or at the end).
+    fn playlist_put(&mut self, kind: &str, text: &str, at: Option<usize>, list: Option<&str>) -> Result<Reply, String> {
         let text = text.trim();
         if text.is_empty() {
-            return Err("playlist header TEXT [at N] [in PLAYLIST]".to_owned());
+            return Err(format!("playlist {kind} NAME [at N] [in PLAYLIST]"));
         }
+        let (item, what) = match kind {
+            "media" => {
+                let names: Vec<String> = self.show.media().iter().map(|media| media.name.clone()).collect();
+                let media = &self.show.media()[find("media item", &names, text)?];
+                let what = if crate::media::is_video(&media.path) { "video" } else { "picture" };
+                (Item::Media { id: media.id, name: media.name.clone() }, what)
+            }
+            "media-playlist" => {
+                let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+                let names: Vec<String> = state.media_playlists.iter().map(|playlist| playlist.name.clone()).collect();
+                let playlist = &state.media_playlists[find("media playlist", &names, text)?];
+                (Item::MediaPlaylist { id: playlist.id, name: playlist.name.clone() }, "media playlist")
+            }
+            "placeholder" => (Item::Placeholder { name: text.to_owned() }, "placeholder"),
+            _ => (Item::Header { name: text.to_owned() }, "header"),
+        };
         let list = self.playlist_at(list)?;
         let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
         let playlist = &mut state.services.list[list];
         let place = at.unwrap_or(playlist.items.len() + 1);
         if !(1..=playlist.items.len() + 1).contains(&place) {
             return Err(format!(
-                "{} has {} items; a header can go at 1 to {}.",
+                "{} has {} items; a {what} can go at 1 to {}.",
                 playlist.name,
                 playlist.items.len(),
                 playlist.items.len() + 1
             ));
         }
-        playlist.items.insert(place - 1, Item::Header { name: text.to_owned() });
+        let title = item.title().to_owned();
+        playlist.items.insert(place - 1, item);
         let name = playlist.name.clone();
         state.services.changed = true;
-        Ok(Reply::done(format!("Put the header {text} at place {place} in {name}.")))
+        Ok(Reply::done(format!("Put the {what} {title} at place {place} in {name}.")))
+    }
+
+    /// Fills a placeholder with a song, or with a picture or video from the media bin (`media
+    /// ITEM`), as dropping one on it does.
+    fn playlist_fill(&mut self, place: &str, with: &str, list: Option<&str>) -> Result<Reply, String> {
+        let list = self.playlist_at(list)?;
+        let at = self.playlist_item(list, place)?;
+        let item = match with.trim().strip_prefix("media ") {
+            Some(media) => {
+                let names: Vec<String> = self.show.media().iter().map(|media| media.name.clone()).collect();
+                let media = &self.show.media()[find("media item", &names, media)?];
+                Item::Media { id: media.id, name: media.name.clone() }
+            }
+            None => {
+                let song = self.find_song(with)?;
+                let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+                let key = state.song_keys.get(song).cloned().ok_or("That song is gone.")?;
+                let title = self.show.presentations().get(song).map(|found| found.title.clone()).unwrap_or_default();
+                Item::Song { key, title }
+            }
+        };
+        let state = &mut self.running.as_mut().ok_or("The app isn't ready.")?.home_state;
+        let shown = state.services.current;
+        let playlist = &state.services.list[list];
+        let Some(Item::Placeholder { name: placeholder }) = playlist.items.get(at).cloned() else {
+            let title = playlist.items.get(at).map(|item| item.title().to_owned()).unwrap_or_default();
+            return Err(format!("{title} isn't a placeholder; only a placeholder can be filled."));
+        };
+        let name = playlist.name.clone();
+        let title = item.title().to_owned();
+        // Filled in the playlist in front, which is where the window's own filling works; the
+        // one in front comes back after.
+        state.services.show(list);
+        state.services.fill(at, item);
+        state.services.show(shown);
+        Ok(Reply::done(format!("Filled the placeholder {placeholder} in {name} with {title}.")))
     }
 
     /// `library new|rename|delete|add|remove …`; `None` for a word that isn't one of them.

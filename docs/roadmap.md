@@ -11,23 +11,21 @@ Size: S = under a day, M = days, L = a week or more. Sunday: how much it matters
 
 1. **Playlists and media from a church's existing presentation software.** Songs and libraries
    come across already; playlists, pictures, videos and bundles are next. · M
-2. **Media and placeholder items in playlists.** The countdown video, the announcement loop and
-   a "sermon slides to come" slot belong in the running order. · M
-3. **Fixing a slide's words from the Show view.** Mend a typo on the live slide without leaving
+2. **Fixing a slide's words from the Show view.** Mend a typo on the live slide without leaving
    the Show view. · S–M
-4. **Corner pin (keystone).** Square up a projector that is off-axis. · M
-5. **More slide and macro actions.** Audio tracks and playlists, clearing audio and
+3. **Corner pin (keystone).** Square up a projector that is off-axis. · M
+4. **More slide and macro actions.** Audio tracks and playlists, clearing audio and
    announcements, changing a stage layout or a saved screen setup, running another macro,
    media playlists. · S each
-6. **A whole song that moves on by itself.** Announcement loops with one setting. · S
-7. **Clear buttons of your own.** Each clears a chosen set of layers. · M
-8. **Slides shown on the stage screens only**, and an action that changes a stage layout. · M
-9. **Saved screen setups switched live, and a theme for each screen.** Lyrics off the stream,
+5. **A whole song that moves on by itself.** Announcement loops with one setting. · S
+6. **Clear buttons of your own.** Each clears a chosen set of layers. · M
+7. **Slides shown on the stage screens only**, and an action that changes a stage layout. · M
+8. **Saved screen setups switched live, and a theme for each screen.** Lyrics off the stream,
     lower thirds on NDI. · M
-10. **Fill-in fields in messages**, for paging parents from the nursery. · S–M
-11. **What a video does when it ends, in and out points, and video sound against background
+9. **Fill-in fields in messages**, for paging parents from the nursery. · S–M
+10. **What a video does when it ends, in and out points, and video sound against background
     music.** · M
-12. **A fuller stage layout editor.** Free text, timers chosen by name, a video countdown and
+11. **A fuller stage layout editor.** Free text, timers chosen by name, a video countdown and
     slide pictures. · M
 
 Next in line: the network API, with the whole app in a browser and a phone remote, spell check, formatting one word, CCLI usage
@@ -185,7 +183,7 @@ rather than a feature, but no church on Windows can use the app without them.
 - **Lighter screens for picture-heavy decks.** The drawing library keeps up to about thirty full-size pictures per screen (roughly half a gigabyte each) until its texture fills; let them go sooner. · S–M · Medium
 - **Importing from a church's existing presentation software**, so a library can move over in one go: songs, playlists and their media. (started: ProPresenter 7 songs and library folders, with groups, arrangements, labels, notes and copyright details; not yet playlists, pictures, videos or bundles) · M · High
 - **SongSelect inside the app.** Search, preview and import from the search panel (⌘F). May need CCLI's agreement. · L · Medium
-- **Media, placeholder and stream items in a playlist.** A countdown video, an announcement loop, a "sermon slides to come" placeholder, a cue, a video or audio stream, and hidden items. (started: playlists hold songs, saved passages and headers) · M · Medium
+- **Cue, stream and hidden items in a playlist.** A cue (an action on its own), a video or audio stream, and items hidden from the running order. (started: playlists hold songs, saved passages, headers, pictures and videos, media playlists and placeholders) · M · Low
 - **CCLI usage reporting.** Each song shown is logged, then exported or reported automatically. (started: CCLI song numbers and the licence number) · M · Medium
 - **Playlist templates.** Save a service's shape and start next week from it. · S–M · Medium
 - **Arrangement and key chosen per playlist item.** The same song sung differently in two services. (started: one chosen arrangement per song) · S–M · Medium

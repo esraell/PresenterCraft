@@ -44,7 +44,7 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 | LIBRARY rows | All Songs, and libraries of your own; + makes one; right-click to rename or delete | `songs`, `libraries`, `library open NAME` (or `all`) |
 | PLAYLISTS rows | Playlists; + makes one; drop songs on a row to add them | `playlists`, `playlist open NAME` |
 | Song list (a library chosen) | Click opens a song; Command/Shift-click and dragging pick several; drag picked songs onto a playlist or library; Delete asks, then deletes; right-click for Duplicate, Theme, Transition, Reflow, Play on Announcements Layer, Delete… | `select SONG`, `song delete SONG --yes`, `announce SONG` |
-| Playlist items (a playlist chosen) | Songs, Bible passages and headers in running order; drag to reorder; + adds a header | `playlist [NAME]`, `playlist add SONG to PLAYLIST` |
+| Playlist items (a playlist chosen) | Songs, Bible passages, pictures and videos, media playlists, placeholders and headers in running order; drag to reorder; + adds a header or a placeholder; a picture or video dragged from the bin goes in where the line shows, or fills a placeholder; a placeholder's right-click Fill with Song | `playlist [NAME]`, `playlist add SONG to PLAYLIST`, `playlist media\|media-playlist\|placeholder NAME`, `playlist fill PLACEHOLDER with SONG` |
 | Search | Filters the list; Command-F searches titles and words | |
 
 ### Middle: the slides
@@ -53,7 +53,7 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 |---|---|---|
 | Song header | Title (double-click renames), slide count, and four icons: Info (writer, CCLI), Reflow (edit the words as text), Arrangement (groups in another order), Notes (operator notes) | `slides SONG` |
 | Slide grid | Click puts a slide on screen; right-click picks it out and opens its menu (Edit, Cut, Copy, Paste, Delete…, Group, Media, Transition, Actions, Go to Next, Hot Key, Copy/Paste Text Style, Label, Disable, Template); Command/Shift-click and dragging a box pick several without going live; Delete asks, then deletes | `go SONG SLIDE`, `next`, `previous`, `first`, `last` |
-| Playlist view | A song opened from a playlist shows the playlist's songs one after another, each under a bar with its name | |
+| Playlist view | A song opened from a playlist shows the playlist's items one after another, each under a bar with its name: a song's slides; a picture or video's tile (click to show it); a media playlist's tile (click to play it); a placeholder's tile (Choose a Song…, or drop a picture or video on it) | `playlist go ITEM [1]` |
 | Bottom bar | + Add Slide; the transition for all slides (Cut, Dissolve, Advanced ▾ with 19 kinds); grid, easy (words only) or table view; slide size | `menu NewSlide` |
 | Media bin | Pictures and videos; click shows one behind the words; drag onto a slide (its media) or under the slides (a slide of its own); Command/Shift-click or a box picks several; Delete asks; right-click for Scaling, Loop, playlists, Delete…; MEDIA ▾ picks a media playlist (Play This Playlist, Follow a Folder…); the chevron folds the bin away | `media`, `media show ITEM`, `media add FILE…`, `media delete ITEM --yes`, `media-playlist play NAME` |
 

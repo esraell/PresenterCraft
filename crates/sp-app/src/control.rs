@@ -562,7 +562,8 @@ Running the show
   next | previous (or back) | first | last
   group NAME|LETTER [in SONG]  a group's first slide on screen (C for the chorus…)
   hotkey KEY                   the slide with that hot key on screen
-  playlist go ITEM [SLIDE] [in PLAYLIST]   open a playlist item as a click does (and a slide)
+  playlist go ITEM [SLIDE] [in PLAYLIST]   open a playlist item as a click does (and a slide;
+                               1 shows a picture or video, or plays a media playlist)
   continuous on|off            after a song's last slide, go on to the playlist's next item
   video play|pause|restart | video seek SECONDS | video loop on|off | video mute on|off
   media next|previous          the next or previous picture or video behind the words
@@ -623,6 +624,10 @@ Songs, libraries and playlists
   playlist remove ITEM [from PLAYLIST]          (ITEM by number or title)
   playlist move ITEM to N [in PLAYLIST]
   playlist header TEXT [at N] [in PLAYLIST]
+  playlist media ITEM [at N] [in PLAYLIST]      a picture or video from the media bin
+  playlist media-playlist NAME [at N] [in PLAYLIST]   a media playlist, to play round
+  playlist placeholder NAME [at N] [in PLAYLIST]      a place kept for something to come
+  playlist fill PLACEHOLDER with SONG | with media ITEM [in PLAYLIST]
   library new NAME | library rename OLD to NEW | library delete NAME --yes (songs stay)
   library add SONG… to LIBRARY | library remove SONG… from LIBRARY
   song rename SONG to TITLE | song duplicate SONG [as TITLE]
@@ -1601,6 +1606,23 @@ impl crate::App {
                         {
                             format!("{title} (missing)")
                         }
+                        // The other kinds say what they are; one whose picture, video or media
+                        // playlist has gone says so.
+                        crate::service::Item::Media { id, name } => {
+                            match self.show.media().iter().find(|media| media.id == *id) {
+                                Some(media) if crate::media::is_video(&media.path) => format!("{name} (video)"),
+                                Some(_) => format!("{name} (picture)"),
+                                None => format!("{name} (missing picture or video)"),
+                            }
+                        }
+                        crate::service::Item::MediaPlaylist { id, name } => {
+                            if state.media_playlists.iter().any(|playlist| playlist.id == *id) {
+                                format!("{name} (media playlist)")
+                            } else {
+                                format!("{name} (missing media playlist)")
+                            }
+                        }
+                        crate::service::Item::Placeholder { name } => format!("{name} (placeholder)"),
                         other => other.title().to_owned(),
                     })
                     .collect();

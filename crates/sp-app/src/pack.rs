@@ -69,6 +69,19 @@ pub struct MediaEntry {
     pub looping: bool,
 }
 
+/// A media playlist in a pack's playlist (an announcement loop, say): its name and the media bin
+/// items in it, in order, by their ids among the pack's `media_items`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MediaPlaylistEntry {
+    pub id: Uuid,
+    pub name: String,
+    pub items: Vec<Uuid>,
+}
+
+/// What a media bin item is, for a pack: its name, its file, how it fills the screen and whether
+/// it loops. `None` for an id the bin doesn't have.
+pub type MediaOf<'a> = dyn Fn(Uuid) -> Option<(String, PathBuf, sp_model::ImageFit, bool)> + 'a;
+
 /// A pack ready to write: copies of the songs and themes, pointing at the pictures and videos by
 /// the names the pack gives them.
 pub struct Export {
@@ -80,8 +93,11 @@ pub struct Export {
     /// Videos the songs use, left out when they aren't wanted.
     pub videos_left_out: Vec<(String, PathBuf)>,
     pub playlist: Option<PlaylistFile>,
-    /// Media bin items the songs' slides show behind their words.
+    /// Media bin items the songs' slides show behind their words, and the playlist's pictures,
+    /// videos and media playlists hold.
     pub media_items: Vec<MediaEntry>,
+    /// The media playlists in the playlist.
+    pub media_playlists: Vec<MediaPlaylistEntry>,
     /// Pictures and videos the songs use that aren't on this computer.
     pub missing: usize,
 }
@@ -90,13 +106,15 @@ impl Export {
     /// Plans a pack of `songs` and the themes among `themes` they set for themselves, with the
     /// playlist given, if any. `id_for` turns a song's key (a "go to song" action's, or a
     /// playlist item's) into its id, if it is a song it knows; a key it doesn't know is written as
-    /// missing, never as the path it may be.
+    /// missing, never as the path it may be. `media_of` says what a media bin item is, and
+    /// `media_playlist_of` a media playlist's name and the bin items in it.
     pub fn plan(
         songs: Vec<Presentation>,
         themes: &[Theme],
         playlist: Option<PlaylistFile>,
         id_for: impl Fn(&str) -> Option<Uuid>,
-        media_of: impl Fn(Uuid) -> Option<(String, PathBuf, sp_model::ImageFit, bool)>,
+        media_of: &MediaOf,
+        media_playlist_of: impl Fn(Uuid) -> Option<(String, Vec<Uuid>)>,
     ) -> Export {
         let mut export = Export {
             songs: Vec::new(),
@@ -106,6 +124,7 @@ impl Export {
             videos_left_out: Vec::new(),
             playlist: None,
             media_items: Vec::new(),
+            media_playlists: Vec::new(),
             missing: 0,
         };
         let mut named: HashMap<PathBuf, String> = HashMap::new();
@@ -128,26 +147,8 @@ impl Export {
                         match action {
                             ShowAction::Song { key } => *key = key_out(key),
                             // The media bin item a slide shows behind it goes in the pack too.
-                            ShowAction::Media { id } if !export.media_items.iter().any(|m| m.id == *id) => {
-                                match media_of(*id) {
-                                    Some((name, path, fit, looping))
-                                        if path.is_file() && crate::media::is_media(&path) =>
-                                    {
-                                        let ending = path.extension().map_or_else(String::new, |e| {
-                                            format!(".{}", e.to_string_lossy().to_lowercase())
-                                        });
-                                        let packed = format!("{}{ending}", Uuid::new_v4());
-                                        let file = if crate::media::is_video(&path) {
-                                            export.videos.push((packed.clone(), path));
-                                            format!("media/{packed}")
-                                        } else {
-                                            export.pictures.push((packed.clone(), path));
-                                            format!("images/{packed}")
-                                        };
-                                        export.media_items.push(MediaEntry { id: *id, name, file, fit, looping });
-                                    }
-                                    _ => export.missing += 1,
-                                }
+                            ShowAction::Media { id } => {
+                                export.carry_media(*id, media_of);
                             }
                             _ => {}
                         }
@@ -175,13 +176,56 @@ impl Export {
         }
         export.playlist = playlist.map(|mut playlist| {
             for item in &mut playlist.items {
-                if let Item::Song { key, .. } = item {
-                    *key = key_out(key);
+                match item {
+                    Item::Song { key, .. } => *key = key_out(key),
+                    // A picture or video goes in the pack as a media bin item; a media playlist
+                    // with the pictures and videos in it.
+                    Item::Media { id, .. } => {
+                        export.carry_media(*id, media_of);
+                    }
+                    Item::MediaPlaylist { id, .. } => match media_playlist_of(*id) {
+                        Some(_) if export.media_playlists.iter().any(|have| have.id == *id) => {}
+                        Some((name, members)) => {
+                            let items =
+                                members.into_iter().filter(|member| export.carry_media(*member, media_of)).collect();
+                            export.media_playlists.push(MediaPlaylistEntry { id: *id, name, items });
+                        }
+                        None => export.missing += 1,
+                    },
+                    Item::Passage(_) | Item::Header { .. } | Item::Placeholder { .. } => {}
                 }
             }
             playlist
         });
         export
+    }
+
+    /// Puts a media bin item in the pack, once: its file (with the pictures, or the videos) and
+    /// its entry in the manifest. False, and counted as missing, if it isn't on this computer.
+    fn carry_media(&mut self, id: Uuid, media_of: &MediaOf) -> bool {
+        if self.media_items.iter().any(|have| have.id == id) {
+            return true;
+        }
+        match media_of(id) {
+            Some((name, path, fit, looping)) if path.is_file() && crate::media::is_media(&path) => {
+                let ending =
+                    path.extension().map_or_else(String::new, |e| format!(".{}", e.to_string_lossy().to_lowercase()));
+                let packed = format!("{}{ending}", Uuid::new_v4());
+                let file = if crate::media::is_video(&path) {
+                    self.videos.push((packed.clone(), path));
+                    format!("media/{packed}")
+                } else {
+                    self.pictures.push((packed.clone(), path));
+                    format!("images/{packed}")
+                };
+                self.media_items.push(MediaEntry { id, name, file, fit, looping });
+                true
+            }
+            _ => {
+                self.missing += 1;
+                false
+            }
+        }
     }
 
     /// The name a song's picture or video has in the pack, noting the file to put in it.
@@ -258,6 +302,7 @@ impl Export {
             "videos": self.videos.iter().map(|(name, _)| name).collect::<Vec<_>>(),
             "playlist": self.playlist.as_ref().map(|playlist| playlist.name.clone()),
             "media_items": self.media_items,
+            "media_playlists": self.media_playlists,
         });
         let mut put = |name: String, text: String| -> Result<(), String> {
             zip.start_file(name, words).map_err(|e| e.to_string())?;
@@ -382,8 +427,11 @@ pub struct Opened {
     pub pictures: HashMap<String, PathBuf>,
     pub videos: HashMap<String, PathBuf>,
     pub playlist: Option<PlaylistFile>,
-    /// Media bin items the songs' slides show behind their words, as the manifest lists them.
+    /// Media bin items the songs' slides show behind their words, and the playlist's pictures,
+    /// videos and media playlists hold, as the manifest lists them.
     pub media_items: Vec<MediaEntry>,
+    /// The media playlists in the playlist, as the manifest lists them.
+    pub media_playlists: Vec<MediaPlaylistEntry>,
     /// What was left out, and why.
     pub ignored: Vec<String>,
     /// The folder the pictures and videos were put in, removed once the pack is in.
@@ -449,6 +497,7 @@ pub fn open(path: &Path, staging: &Path) -> Result<Opened, String> {
         videos: HashMap::new(),
         playlist: None,
         media_items: Vec::new(),
+        media_playlists: Vec::new(),
         ignored,
         staging: staging.to_path_buf(),
     };
@@ -522,6 +571,10 @@ pub fn open(path: &Path, staging: &Path) -> Result<Opened, String> {
     opened.media_items = manifest
         .get("media_items")
         .and_then(|items| serde_json::from_value::<Vec<MediaEntry>>(items.clone()).ok())
+        .unwrap_or_default();
+    opened.media_playlists = manifest
+        .get("media_playlists")
+        .and_then(|lists| serde_json::from_value::<Vec<MediaPlaylistEntry>>(lists.clone()).ok())
         .unwrap_or_default();
     Ok(opened)
 }
@@ -799,6 +852,7 @@ mod tests {
             videos: HashMap::from([("b.mp4".to_owned(), staging.join("v"))]),
             playlist: None,
             media_items: Vec::new(),
+            media_playlists: Vec::new(),
             ignored: Vec::new(),
             staging: staging.clone(),
         };
@@ -841,6 +895,7 @@ mod tests {
             videos: HashMap::new(),
             playlist: None,
             media_items: Vec::new(),
+            media_playlists: Vec::new(),
             ignored: Vec::new(),
             staging,
         };
@@ -889,6 +944,7 @@ mod tests {
                 items: vec![Item::Song { key: song.id.to_string(), title: song.title.clone() }],
             }),
             media_items: Vec::new(),
+            media_playlists: Vec::new(),
             missing: 0,
         };
         let pack = dir.join("Sunday.sppack");

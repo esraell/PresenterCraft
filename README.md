@@ -239,9 +239,9 @@ kept beside it as "SoftPresenter (moved to Documents)".
 SoftPresenter aims to be the presentation app a church never has to pay for and never outgrows:
 complete enough for a large Sunday service, simple enough for a volunteer, light enough for an
 old laptop, and open to scripts and AI. First on the list: bringing playlists and media across
-from a church's existing software, media and placeholder items in playlists, and fixing a slide's words from the Show view. After that come a network API with a
-phone remote, the whole app in a browser, an MCP server for AI assistants, and tested Windows and
-Linux builds.
+from a church's existing software, and fixing a slide's words from the Show view. After that
+come a network API with a phone remote, the whole app in a browser, an MCP server for AI
+assistants, and tested Windows and Linux builds.
 
 The full plan, about 170 features with their size and how much each matters on a Sunday, is in
 [docs/roadmap.md](docs/roadmap.md). Nothing in it is promised by a date.

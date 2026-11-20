@@ -417,6 +417,14 @@ enum AppEvent {
     PackDone,
 }
 
+/// Media bin items a pack brings in, as they come: the id each had where the pack was made, and
+/// its id in this bin (`None` when the pack didn't have it); and how many were added to the bin.
+#[derive(Default)]
+struct PackMedia {
+    came: HashMap<Uuid, Option<Uuid>>,
+    added: usize,
+}
+
 /// A song pack written or read on a thread of its own, for the app to finish.
 enum PackJob {
     Wrote { job: u64, result: Result<String, String> },
@@ -2999,7 +3007,25 @@ impl App {
                 .find(|item| item.id == id)
                 .map(|item| (item.name.clone(), item.path.clone(), item.fit, item.looping))
         };
-        Ok(pack::Export::plan(songs, &self.themes, playlist_file, |key| self.song_id_for_key(key), media_of))
+        // A media playlist's name and the bin items in it, in its order.
+        let media_playlist_of = |id: Uuid| {
+            state.media_playlists.iter().find(|playlist| playlist.id == id).map(|playlist| {
+                let members = playlist
+                    .files
+                    .iter()
+                    .filter_map(|file| self.show.media().iter().find(|item| &item.path == file).map(|item| item.id))
+                    .collect();
+                (playlist.name.clone(), members)
+            })
+        };
+        Ok(pack::Export::plan(
+            songs,
+            &self.themes,
+            playlist_file,
+            |key| self.song_id_for_key(key),
+            &media_of,
+            media_playlist_of,
+        ))
     }
 
     /// Writes a planned pack: at once when it holds no videos, else on a thread of its own (the
@@ -3188,6 +3214,45 @@ impl App {
 
     /// Brings an opened pack's songs into the library, with the themes, pictures and videos
     /// those songs need (and only those), and its playlist as a new playlist. Says what came in.
+    /// Where a media bin item a pack names (by the id it had on the computer it came from) is in
+    /// this bin: the same item, if this bin has it; else its file brought from the pack (or the
+    /// same file here already) as an item of this bin. `None` if the pack doesn't have it.
+    fn pack_media_here(
+        &mut self,
+        id: Uuid,
+        opened: &pack::Opened,
+        dir: &std::path::Path,
+        brought: &mut pack::Brought,
+        seen: &mut PackMedia,
+    ) -> Option<Uuid> {
+        if self.show.media().iter().any(|item| item.id == id) {
+            return Some(id);
+        }
+        if let Some(known) = seen.came.get(&id) {
+            return *known;
+        }
+        let known = opened.media_items.iter().find(|entry| entry.id == id).and_then(|entry| {
+            let path = pack::bring_media_item(entry, opened, dir, brought)?;
+            // The same file in the bin already: that item.
+            if let Some(have) = self.show.media().iter().find(|item| item.path == path) {
+                return Some(have.id);
+            }
+            let picture = media::load_picture(&path).ok()?;
+            let mut name = entry.name.clone();
+            name.retain(|c| !c.is_control());
+            let mut item = MediaItem::new(name, path);
+            item.fit = entry.fit;
+            item.looping = entry.looping;
+            let new = item.id;
+            self.show.add_media(item);
+            self.pictures.push(media::MediaPicture::of(picture));
+            seen.added += 1;
+            Some(new)
+        });
+        seen.came.insert(id, known);
+        known
+    }
+
     fn apply_pack(
         &mut self,
         opened: pack::Opened,
@@ -3261,10 +3326,7 @@ impl App {
                     state.props.iter().map(|p| p.id).collect(),
                 )
             });
-        let mut media: Vec<Uuid> = self.show.media().iter().map(|item| item.id).collect();
-        // Media bin items the pack's slides show, as they come into this bin: the pack's id to this one's.
-        let mut media_in: HashMap<Uuid, Option<Uuid>> = HashMap::new();
-        let mut media_added = 0;
+        let mut media_seen = PackMedia::default();
         let mut brought = pack::Brought::default();
         let mut themes_in: HashMap<Uuid, Uuid> = HashMap::new();
         let mut new_themes = 0;
@@ -3291,44 +3353,13 @@ impl App {
                             ShowAction::Message { id, .. } => messages.contains(id),
                             ShowAction::Prop { id, .. } => props.contains(id),
                             ShowAction::Media { id } => {
-                                if !media.contains(id) {
-                                    let here = match media_in.get(id) {
-                                        Some(known) => *known,
-                                        None => {
-                                            let known =
-                                                opened.media_items.iter().find(|entry| entry.id == *id).and_then(
-                                                    |entry| {
-                                                        let path =
-                                                            pack::bring_media_item(entry, &opened, &dir, &mut brought)?;
-                                                        // The same file in the bin already: that item.
-                                                        if let Some(have) =
-                                                            self.show.media().iter().find(|item| item.path == path)
-                                                        {
-                                                            return Some(have.id);
-                                                        }
-                                                        let picture = media::load_picture(&path).ok()?;
-                                                        let mut item = MediaItem::new(entry.name.clone(), path);
-                                                        item.fit = entry.fit;
-                                                        item.looping = entry.looping;
-                                                        let new = item.id;
-                                                        self.show.add_media(item);
-                                                        self.pictures.push(media::MediaPicture::of(picture));
-                                                        media_added += 1;
-                                                        Some(new)
-                                                    },
-                                                );
-                                            media_in.insert(*id, known);
-                                            if let Some(new) = known {
-                                                media.push(new);
-                                            }
-                                            known
-                                        }
-                                    };
-                                    if let Some(new) = here {
-                                        *id = new;
+                                match self.pack_media_here(*id, &opened, &dir, &mut brought, &mut media_seen) {
+                                    Some(here) => {
+                                        *id = here;
+                                        true
                                     }
+                                    None => false,
                                 }
-                                media.contains(id)
                             }
                             _ => true,
                         };
@@ -3403,21 +3434,75 @@ impl App {
         if new_themes > 0 {
             self.themes_changed();
         }
-        if media_added > 0 {
+        // The playlist's pictures and videos, and its media playlists (with theirs), come into the
+        // media bin and the media playlists, and the items point at them.
+        let mut playlist = opened.playlist.clone();
+        let mut new_media_playlists: Vec<media::Playlist> = Vec::new();
+        for item in playlist.iter_mut().flat_map(|playlist| playlist.items.iter_mut()) {
+            match item {
+                service::Item::Song { key, .. } => remap(key),
+                service::Item::Media { id, name } => {
+                    name.retain(|c| !c.is_control());
+                    if let Some(here) = self.pack_media_here(*id, &opened, &dir, &mut brought, &mut media_seen) {
+                        *id = here;
+                    }
+                }
+                service::Item::MediaPlaylist { id, name } => {
+                    name.retain(|c| !c.is_control());
+                    let have = self
+                        .running
+                        .as_ref()
+                        .is_some_and(|r| r.home_state.media_playlists.iter().any(|playlist| playlist.id == *id));
+                    // One this computer has (the same id) is used as it is here; one it doesn't
+                    // comes in, with the pictures and videos the pack has of it.
+                    if !have
+                        && !new_media_playlists.iter().any(|made| made.id == *id)
+                        && let Some(entry) = opened.media_playlists.iter().find(|entry| entry.id == *id)
+                    {
+                        let mut files = Vec::new();
+                        for member in &entry.items {
+                            if let Some(here) =
+                                self.pack_media_here(*member, &opened, &dir, &mut brought, &mut media_seen)
+                                && let Some(item) = self.show.media().iter().find(|item| item.id == here)
+                            {
+                                files.push(item.path.clone());
+                            }
+                        }
+                        let mut made = media::Playlist::new(entry.name.chars().filter(|c| !c.is_control()).collect());
+                        made.id = entry.id;
+                        made.files = files;
+                        new_media_playlists.push(made);
+                    }
+                }
+                service::Item::Passage(_) | service::Item::Header { .. } | service::Item::Placeholder { .. } => {}
+            }
+        }
+        if media_seen.added > 0 {
             self.save_media_list();
+        }
+        let media_playlists_added = new_media_playlists.len();
+        if let Some(running) = self.running.as_mut()
+            && !new_media_playlists.is_empty()
+        {
+            let state = &mut running.home_state;
+            for mut made in new_media_playlists {
+                let base = made.name.clone();
+                let mut n = 2;
+                while state.media_playlists.iter().any(|have| have.name == made.name) {
+                    made.name = format!("{base} ({n})");
+                    n += 1;
+                }
+                state.media_playlists.push(made);
+            }
+            state.media_playlists_changed = true;
         }
         self.save_unsaved();
         // The playlist, as a new playlist.
         let mut playlist_name = None;
-        if let Some(mut playlist) = opened.playlist.clone()
+        if let Some(mut playlist) = playlist
             && let Some(running) = self.running.as_mut()
         {
             playlist.name.retain(|c| !c.is_control());
-            for item in &mut playlist.items {
-                if let service::Item::Song { key, .. } = item {
-                    remap(key);
-                }
-            }
             let services = &mut running.home_state.services;
             // The same playlist again (opening the pack a second time) isn't added twice.
             let here = services.list.iter().any(|have| have.name == playlist.name && have.items == playlist.items);
@@ -3472,6 +3557,13 @@ impl App {
         }
         if new_themes > 0 {
             parts.push(format!("Added {} theme{}.", new_themes, if new_themes == 1 { "" } else { "s" }));
+        }
+        if media_playlists_added > 0 {
+            parts.push(format!(
+                "Added {} media playlist{}.",
+                media_playlists_added,
+                if media_playlists_added == 1 { "" } else { "s" }
+            ));
         }
         let (pictures, videos) = (brought.pictures, brought.videos);
         let things: Vec<String> = [(pictures, "picture"), (videos, "video")]
@@ -4759,6 +4851,17 @@ impl App {
                 state.playlist_open = true;
                 let key = match state.services.front().items.get(item) {
                     Some(service::Item::Song { key, .. }) => Some(key.clone()),
+                    // A picture or video, a media playlist or a placeholder opens as a click on
+                    // it does: chosen, and shown with the rest of the playlist.
+                    Some(
+                        service::Item::Media { .. }
+                        | service::Item::MediaPlaylist { .. }
+                        | service::Item::Placeholder { .. },
+                    ) => {
+                        state.services.chosen = Some(item);
+                        state.bible_open = false;
+                        None
+                    }
                     _ => None,
                 };
                 if let Some(at) = key.and_then(|key| studio::playlist_song(&self.show, state, &key)) {

@@ -1,7 +1,9 @@
-//! Services: the running order for a gathering. A service lists songs and saved Bible
-//! passages in the order they will be used, so everything is one click away during it.
+//! Services: the running order for a gathering. A service lists songs, saved Bible passages,
+//! pictures and videos, media playlists and placeholders in the order they will be used, so
+//! everything is one click away during it.
 
 use serde::{Deserialize, Serialize};
+use sp_model::Uuid;
 
 /// One translation of a saved passage: which Bible, and the theme boxes its words and
 /// reference go in.
@@ -51,6 +53,23 @@ pub enum Item {
     Header {
         name: String,
     },
+    /// A picture or video from the media bin (a countdown video, say): a click on its tile in
+    /// the slide area shows it. `id` finds it in the bin; `name` is shown if it has gone.
+    Media {
+        id: Uuid,
+        name: String,
+    },
+    /// A media playlist (an announcement loop, say): a click on its tile plays it, item after
+    /// item, round and round. `id` finds it; `name` is shown if it has gone.
+    MediaPlaylist {
+        id: Uuid,
+        name: String,
+    },
+    /// A place kept for something to come ("Sermon slides"): a song dropped on it takes its
+    /// place. It shows nothing.
+    Placeholder {
+        name: String,
+    },
 }
 
 impl Item {
@@ -59,8 +78,16 @@ impl Item {
         match self {
             Item::Song { title, .. } => title,
             Item::Passage(passage) => &passage.lookup,
-            Item::Header { name } => name,
+            Item::Header { name }
+            | Item::Media { name, .. }
+            | Item::MediaPlaylist { name, .. }
+            | Item::Placeholder { name } => name,
         }
+    }
+
+    /// A kind of item a services file before version 3 can't hold.
+    fn needs_version_3(&self) -> bool {
+        matches!(self, Item::Media { .. } | Item::MediaPlaylist { .. } | Item::Placeholder { .. })
     }
 }
 
@@ -95,9 +122,11 @@ impl Default for Services {
 }
 
 const FORMAT: &str = "softpresenter-services";
-/// The newest version of the services file: 2, library songs named by id (1 named them by
-/// their file's path or title, and still reads).
-const VERSION: u32 = 2;
+/// The newest version of the services file: 3, with pictures and videos, media playlists and
+/// placeholders in playlists; 2, library songs named by id (1 named them by their file's path or
+/// title, and still reads). A file is written as 3 only when a playlist holds one of the new
+/// kinds, so an older SoftPresenter still opens the rest.
+const VERSION: u32 = 3;
 /// What a services file saved before the project was renamed says it is; it still opens.
 const OLD_FORMAT: &str = "presentercraft-services";
 
@@ -150,6 +179,43 @@ impl Services {
         true
     }
 
+    /// Puts an item into the service in front at a place (`slot` items above it) and chooses
+    /// it. A song already in the service is chosen where it is, not added again.
+    pub fn insert(&mut self, slot: usize, item: Item) {
+        if let Item::Song { key, .. } = &item
+            && let Some(at) =
+                self.front().items.iter().position(|have| matches!(have, Item::Song { key: k, .. } if k == key))
+        {
+            self.chosen = Some(at);
+            return;
+        }
+        let at = slot.min(self.front().items.len());
+        self.front_mut().items.insert(at, item);
+        self.chosen = Some(at);
+    }
+
+    /// Puts an item in a placeholder's place in the service in front, and chooses it. Returns
+    /// false if the item there isn't a placeholder. A song already elsewhere in the service is
+    /// moved here.
+    pub fn fill(&mut self, index: usize, item: Item) -> bool {
+        if !matches!(self.front().items.get(index), Some(Item::Placeholder { .. })) {
+            return false;
+        }
+        let mut at = index;
+        if let Item::Song { key, .. } = &item
+            && let Some(was) =
+                self.front().items.iter().position(|have| matches!(have, Item::Song { key: k, .. } if k == key))
+        {
+            self.front_mut().items.remove(was);
+            if was < at {
+                at -= 1;
+            }
+        }
+        self.front_mut().items[at] = item;
+        self.chosen = Some(at);
+        true
+    }
+
     /// Takes an item out of the service in front. Returns true if there was one.
     pub fn remove(&mut self, index: usize) -> bool {
         if index >= self.front().items.len() {
@@ -177,9 +243,10 @@ impl Services {
         true
     }
 
-    /// Renames a header in the service shown.
+    /// Renames a header or a placeholder in the service shown.
     pub fn rename_header(&mut self, index: usize, name: &str) {
-        if let Some(Item::Header { name: have }) = self.front_mut().items.get_mut(index)
+        if let Some(Item::Header { name: have } | Item::Placeholder { name: have }) =
+            self.front_mut().items.get_mut(index)
             && !name.trim().is_empty()
         {
             *have = name.trim().to_owned();
@@ -234,7 +301,9 @@ impl Services {
     }
 
     pub fn to_json(&self) -> String {
-        let file = File { format: FORMAT.to_owned(), version: VERSION, services: self.clone() };
+        let newest = self.list.iter().flat_map(|service| &service.items).any(Item::needs_version_3);
+        let file =
+            File { format: FORMAT.to_owned(), version: if newest { VERSION } else { 2 }, services: self.clone() };
         let mut text = serde_json::to_string_pretty(&file).unwrap_or_default();
         text.push('\n');
         text
@@ -513,6 +582,65 @@ pub fn save(services: &Services) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_playlist_with_media_or_a_placeholder_is_written_as_version_3_and_others_as_2() {
+        let mut services = Services::default();
+        services.add(song("one"));
+        let text = services.to_json();
+        assert!(text.contains("\"version\": 2"), "only songs: an older SoftPresenter can open it\n{text}");
+        let id = Uuid::new_v4();
+        services.add(Item::Media { id, name: "Countdown.mp4".to_owned() });
+        services.add(Item::MediaPlaylist { id, name: "Announcements".to_owned() });
+        services.add(Item::Placeholder { name: "Sermon slides".to_owned() });
+        let text = services.to_json();
+        assert!(text.contains("\"version\": 3"), "{text}");
+        assert!(text.contains("\"kind\": \"media_playlist\"") && text.contains("\"kind\": \"placeholder\""), "{text}");
+        let again = Services::from_json(&text).unwrap();
+        assert_eq!(again.front().items, services.front().items, "every kind comes back as it was");
+    }
+
+    #[test]
+    fn a_version_2_services_file_still_opens() {
+        let text = r#"{"format": "softpresenter-services", "version": 2, "list": [{"name": "Sunday",
+            "items": [{"kind": "song", "key": "abc", "title": "Abc"}, {"kind": "header", "name": "Word"}]}],
+            "current": 0}"#;
+        let services = Services::from_json(text).unwrap();
+        assert_eq!(services.front().items, vec![song_titled("abc", "Abc"), Item::Header { name: "Word".to_owned() }]);
+    }
+
+    fn song_titled(key: &str, title: &str) -> Item {
+        Item::Song { key: key.to_owned(), title: title.to_owned() }
+    }
+
+    #[test]
+    fn a_song_dropped_on_a_placeholder_takes_its_place() {
+        let mut services = Services::default();
+        services.add(song("one"));
+        services.add(Item::Placeholder { name: "Sermon slides".to_owned() });
+        services.add(song("two"));
+        assert!(!services.fill(0, song("three")), "only a placeholder is filled");
+        assert!(services.fill(1, song("three")));
+        assert_eq!(services.front().items, vec![song("one"), song("three"), song("two")]);
+        assert_eq!(services.chosen, Some(1));
+        // A song already in the playlist moves into the placeholder's place.
+        services.insert(0, Item::Placeholder { name: "Opening".to_owned() });
+        assert!(services.fill(0, song("two")));
+        assert_eq!(services.front().items, vec![song("two"), song("one"), song("three")]);
+    }
+
+    #[test]
+    fn an_item_dropped_between_two_goes_there_but_a_song_already_there_is_only_chosen() {
+        let mut services = Services::default();
+        services.add(song("one"));
+        services.add(song("two"));
+        let id = Uuid::new_v4();
+        services.insert(1, Item::Media { id, name: "Walk-in.mp4".to_owned() });
+        assert_eq!(services.front().items[1], Item::Media { id, name: "Walk-in.mp4".to_owned() });
+        services.insert(0, song("two"));
+        assert_eq!(services.front().items.len(), 3, "not added twice");
+        assert_eq!(services.chosen, Some(2));
+    }
 
     #[test]
     fn the_bible_history_comes_back_as_it_was_saved() {

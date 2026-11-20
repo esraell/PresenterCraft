@@ -45,7 +45,10 @@ impl crate::App {
                     .ok_or_else(|| format!("{} can't be found.", chosen.title()))?,
             ),
             crate::service::Item::Header { name } => return Err(format!("{name} is a header; it opens nothing.")),
-            crate::service::Item::Passage(_) => None,
+            crate::service::Item::Passage(_)
+            | crate::service::Item::Media { .. }
+            | crate::service::Item::MediaPlaylist { .. }
+            | crate::service::Item::Placeholder { .. } => None,
         };
         let live = self.show.live().map(|at| at.presentation);
         self.with_state(|state| {
@@ -60,7 +63,34 @@ impl crate::App {
             }
         });
         let Some(song) = song else {
-            return Ok(Reply::done(format!("Opened {} on the Bible page.", chosen.title())));
+            let title = chosen.title().to_owned();
+            // A picture, video or media playlist has one thing to show: 1 shows it (or plays it).
+            return match (&chosen, slide) {
+                (crate::service::Item::Passage(_), _) => Ok(Reply::done(format!("Opened {title} on the Bible page."))),
+                (crate::service::Item::Media { id, .. }, Some(1)) => {
+                    let at = self
+                        .show
+                        .media()
+                        .iter()
+                        .position(|media| media.id == *id)
+                        .ok_or_else(|| format!("{title} is no longer in the media bin."))?;
+                    self.apply(vec![Command::ShowMedia(at)]);
+                    Ok(Reply::done(format!("Showing {title}.")))
+                }
+                (crate::service::Item::MediaPlaylist { id, .. }, Some(1)) => {
+                    let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+                    if !state.media_playlists.iter().any(|playlist| playlist.id == *id) {
+                        return Err(format!("The media playlist {title} has been deleted."));
+                    }
+                    self.play_media_playlist(*id);
+                    Ok(Reply::done(format!("Playing the media playlist {title}, round and round.")))
+                }
+                (crate::service::Item::Placeholder { .. }, Some(_)) => Err(format!(
+                    "{title} is a placeholder; it has nothing to show yet (sp playlist fill {title} with SONG)."
+                )),
+                (_, Some(_)) => Err(format!("{title} has one thing to show: say 1 to show it.")),
+                (_, None) => Ok(Reply::done(format!("Opened {title}."))),
+            };
         };
         let mut commands = vec![Command::Select(song)];
         if let Some(number) = slide {

@@ -34,7 +34,9 @@ feature changes, this page changes in the same commit.
   on request). No path or user name from the computer goes in. Opening one (drop it on the
   window, File › Import Songs…, or `sp song import FILE.sppack`) brings the songs into the library,
   their pictures into Images and videos into Media, the themes they need as new themes (a song
-  using the main theme takes on this computer's), and the playlist as a new playlist. A song
+  using the main theme takes on this computer's), and the playlist as a new playlist, with its
+  pictures and videos (into the media bin) and its media playlists (with theirs; one this
+  computer has already is used as it is). A song
   already here (the same id) is replaced, kept beside as a copy, or skipped (the window asks once;
   `--replace`, `--keep-both`, `--skip`, skipped by default). A slide action that points at a
   message, prop, timer or media item this computer doesn't have is kept and counted. A pack is
@@ -116,6 +118,19 @@ feature changes, this page changes in the same commit.
   each under a bar with its name, so scrolling down goes on into the next song; clicking a slide
   of another song puts it on screen. With View, Continuous Playlist on, Next at the end of a
   song goes on to the next song in the playlist.
+- A playlist also holds **pictures and videos** from the media bin (the countdown video),
+  **media playlists** (the announcement loop) and **placeholders** (a place kept for the sermon
+  slides). A picture or video goes in from its right-click menu (Add to Playlist "Sunday"), by
+  dragging it from the bin onto the items (between two, where the line shows) or onto a
+  playlist's name; a media playlist from the menu beside MEDIA; a placeholder from the + over the
+  items, named as it is made. In the slide area each is a bar with one tile: clicking a picture
+  or video's tile shows it, a media playlist's plays it round and round; opening one from the
+  list only scrolls to it, changing nothing on the screens, and Continuous Playlist passes over
+  them, as it does passages. A placeholder is filled with a song chosen from a list (its tile's
+  Choose a Song…, or Fill with Song in its right-click menu), or with a picture or video dropped
+  on it. One whose picture, video or media playlist has gone is kept and shown faint. A playlist
+  holding any of these is saved as version 3 of the services file; one without is still written
+  as version 2, which older SoftPresenters open.
 - Songs, slides and media items are picked out as in the Finder: Command-click adds or takes
   away one, Shift-click picks a run, and dragging across the song list, or a box across the
   slides or between media items, picks everything it touches (picking a slide never puts it on
@@ -358,7 +373,7 @@ feature changes, this page changes in the same commit.
 
 ## From the command line
 - Preparing a service from the command line, as the window does it: `playlist new|rename|delete|
-  remove|move|header`, `bible REF --add [to PLAYLIST]`, `library new|rename|delete|add|remove`,
+  remove|move|header|media|media-playlist|placeholder|fill`, `bible REF --add [to PLAYLIST]`, `library new|rename|delete|add|remove`,
   `song rename|duplicate|theme|transition|info`, `slide add|delete|duplicate|move|group|label|
   notes|enable|disable|hotkey|transition|template|media`, `slide frame SONG all …`, and `search
   WORDS`. Song and slide changes can be undone (`sp undo`) and are saved; each reply says what

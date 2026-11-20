@@ -5708,6 +5708,13 @@ enum Section {
     /// A song the library doesn't have open, or a Bible passage: shown by name, and a click
     /// on a passage opens it.
     Other { item: usize, title: String, passage: bool },
+    /// A picture or video from the media bin: `at` is its place there, while it is there.
+    Media { item: usize, at: Option<usize>, name: String },
+    /// A media playlist: the first of its pictures and videos in the bin, how many are there,
+    /// and whether the playlist itself has gone.
+    MediaPlaylist { item: usize, id: sp_model::Uuid, name: String, first: Option<usize>, count: usize, gone: bool },
+    /// A place kept for something to come.
+    Placeholder { item: usize, name: String },
 }
 
 /// What the slide area shows for the song `which` when it was opened from the playlist in
@@ -5724,9 +5731,13 @@ fn playlist_sections(show: &Show, state: &mut HomeState, which: usize) -> Vec<Se
             _ => None,
         })
         .collect();
+    // A picture or video, a media playlist or a placeholder chosen in the playlist is shown
+    // with the rest of the playlist, whatever song is open: it has no slides of its own to open.
+    let other =
+        matches!(items.get(chosen), Some(Item::Media { .. } | Item::MediaPlaylist { .. } | Item::Placeholder { .. }));
     // The playlist row lit up follows the song shown, as it changes by a click on another
     // song's slide or by Next going on into the next song.
-    if songs.get(chosen).copied().flatten() != Some(which) {
+    if !other && songs.get(chosen).copied().flatten() != Some(which) {
         let after = songs.iter().skip(chosen).position(|at| *at == Some(which)).map(|i| i + chosen);
         match after.or_else(|| songs.iter().position(|at| *at == Some(which))) {
             Some(item) => state.services.chosen = Some(item),
@@ -5739,6 +5750,24 @@ fn playlist_sections(show: &Show, state: &mut HomeState, which: usize) -> Vec<Se
         .enumerate()
         .map(|(item, (entry, at))| match (entry, at) {
             (Item::Header { name }, _) => Section::Header(name),
+            (Item::Media { id, name }, _) => {
+                Section::Media { item, at: show.media().iter().position(|media| media.id == id), name }
+            }
+            (Item::MediaPlaylist { id, name }, _) => {
+                let playlist = state.media_playlists.iter().find(|playlist| playlist.id == id);
+                let places: Vec<usize> = playlist
+                    .map(|playlist| {
+                        playlist
+                            .files
+                            .iter()
+                            .filter_map(|file| show.media().iter().position(|media| &media.path == file))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let (first, count, gone) = (places.first().copied(), places.len(), playlist.is_none());
+                Section::MediaPlaylist { item, id, name, first, count, gone }
+            }
+            (Item::Placeholder { name }, _) => Section::Placeholder { item, name },
             (_, Some(at)) => Section::Song { item, at },
             (entry, None) => {
                 Section::Other { item, title: entry.title().to_owned(), passage: matches!(entry, Item::Passage(_)) }
@@ -5802,6 +5831,117 @@ fn playlist_slides(
                     state.bible.open_saved(&saved, live_in);
                 }
             }
+            Section::Media { item, at, name } => {
+                let chosen = state.services.chosen == Some(*item);
+                let video = at.is_some_and(|at| show.media().get(at).is_some_and(|m| crate::media::is_video(&m.path)));
+                let live = at.is_some() && *at == show.live_media();
+                let kind = match at {
+                    None => "no longer in the media bin",
+                    Some(_) if video => "video",
+                    Some(_) => "picture",
+                };
+                let bar = item_bar(ui, name, kind, chosen, live);
+                follow_chosen(ui, state, *item, chosen, bar.rect);
+                if bar.clicked() {
+                    state.services.chosen = Some(*item);
+                }
+                ui.add_space(8.0);
+                let picture = at.and_then(|at| thumb(ThumbOf::Media(at))).map(|(texture, _)| texture);
+                let words = match at {
+                    None => "Gone from the media bin",
+                    Some(_) if live => "On screen",
+                    Some(_) => "Click to show",
+                };
+                let badge = if video { Some(crate::icons::Icon::Play) } else { None };
+                let tile = item_tile(ui, sizes, picture, words, live, at.is_none(), badge);
+                if let Some(at) = at
+                    && tile.on_hover_text("Show it on the screens").clicked()
+                {
+                    state.services.chosen = Some(*item);
+                    commands.push(Command::ShowMedia(*at));
+                }
+            }
+            Section::MediaPlaylist { item, id, name, first, count, gone } => {
+                let chosen = state.services.chosen == Some(*item);
+                let live = state.media_playing == Some(*id);
+                let kind = if *gone {
+                    "media playlist, deleted".to_owned()
+                } else {
+                    let items = if *count == 1 { "1 item".to_owned() } else { format!("{count} items") };
+                    format!("media playlist \u{b7} {items}, round and round")
+                };
+                let bar = item_bar(ui, name, &kind, chosen, live);
+                follow_chosen(ui, state, *item, chosen, bar.rect);
+                if bar.clicked() {
+                    state.services.chosen = Some(*item);
+                }
+                ui.add_space(8.0);
+                let picture = first.and_then(|at| thumb(ThumbOf::Media(at))).map(|(texture, _)| texture);
+                let empty = *gone || *count == 0;
+                let words = if *gone {
+                    "Deleted"
+                } else if *count == 0 {
+                    "Nothing in it yet"
+                } else if live {
+                    "Playing"
+                } else {
+                    "Click to play"
+                };
+                let tile = item_tile(ui, sizes, picture, words, live, empty, Some(crate::icons::Icon::Loop));
+                if !empty
+                    && tile
+                        .on_hover_text("Play its pictures (8 seconds each) and videos in turn, round and round")
+                        .clicked()
+                {
+                    state.services.chosen = Some(*item);
+                    state.media_request = Some(MediaRequest::PlayPlaylist(Some(*id)));
+                }
+            }
+            Section::Placeholder { item, name } => {
+                let chosen = state.services.chosen == Some(*item);
+                let bar = item_bar(ui, name, "placeholder", chosen, false);
+                follow_chosen(ui, state, *item, chosen, bar.rect);
+                if bar.clicked() {
+                    state.services.chosen = Some(*item);
+                }
+                ui.add_space(8.0);
+                let words = "To come: drop a picture or video here";
+                let tile = item_tile(ui, sizes, None, words, false, true, None);
+                // A picture or video dropped on it takes its place.
+                if tile.dnd_hover_payload::<MediaDrag>().is_some() {
+                    ui.painter().rect_stroke(
+                        tile.rect,
+                        6.0,
+                        Stroke::new(2.0, crate::studio::ACCENT),
+                        StrokeKind::Inside,
+                    );
+                }
+                if let Some(dropped) = tile.dnd_release_payload::<MediaDrag>()
+                    && let Some(media) = show.media().get(dropped.0)
+                {
+                    let filled = crate::service::Item::Media { id: media.id, name: media.name.clone() };
+                    state.services.fill(*item, filled);
+                }
+                // Or a song chosen from a list.
+                let button = ui
+                    .put(
+                        Rect::from_center_size(tile.rect.center() + vec2(0.0, 22.0), vec2(150.0, 26.0)),
+                        egui::Button::new("Choose a Song\u{2026}"),
+                    )
+                    .on_hover_text("Fill the placeholder with a song from the library");
+                let mut picked = None;
+                egui::Popup::from_toggle_button_response(&button)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| picked = crate::studio::song_picker(ui, show, state));
+                if let Some(song) = picked
+                    && let (Some(key), Some(found)) = (state.song_keys.get(song), show.presentations().get(song))
+                {
+                    let filled = crate::service::Item::Song { key: key.clone(), title: found.title.clone() };
+                    if state.services.fill(*item, filled) {
+                        commands.push(Command::Select(song));
+                    }
+                }
+            }
             Section::Song { item, at } => {
                 let Some(song) = show.presentations().get(*at) else { continue };
                 let shown = *at == which && state.services.chosen == Some(*item);
@@ -5845,6 +5985,124 @@ fn playlist_slides(
             }
         }
     }
+}
+
+/// The bar over a picture or video, a media playlist or a placeholder in the playlist shown in
+/// the slide area: its name and what kind of item it is, lit while it is the item chosen, with
+/// a red dot while it is on the screens.
+fn item_bar(ui: &mut egui::Ui, name: &str, kind: &str, chosen: bool, live: bool) -> egui::Response {
+    let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+    let fill = if chosen { crate::studio::SELECTED } else { crate::studio::PANEL };
+    ui.painter().rect_filled(row, 6.0, fill);
+    let title = ui.painter().text(
+        row.left_center() + vec2(12.0, 0.0),
+        Align2::LEFT_CENTER,
+        name,
+        crate::studio::semibold(14.0),
+        crate::studio::TEXT,
+    );
+    ui.painter().text(
+        pos2(title.max.x + 10.0, row.center().y),
+        Align2::LEFT_CENTER,
+        kind,
+        FontId::proportional(11.5),
+        crate::studio::TEXT_FAINT,
+    );
+    if live {
+        ui.painter().circle_filled(row.right_center() - vec2(14.0, 0.0), 4.0, crate::studio::TALLY);
+    }
+    response
+}
+
+/// Scrolls a playlist item's bar to the top of the slide area when it becomes the item chosen
+/// (by a click in the playlist, or ↑ and ↓), as a song's bar is.
+fn follow_chosen(ui: &mut egui::Ui, state: &mut HomeState, item: usize, chosen: bool, bar: Rect) {
+    if chosen && state.slides_scrolled_to != Some(item) {
+        if !std::mem::take(&mut state.slides_picked_here) {
+            ui.scroll_to_rect(bar, Some(Align::TOP));
+        }
+        state.slides_scrolled_to = Some(item);
+    }
+}
+
+/// The one tile of a picture or video, a media playlist or a placeholder, the size of a slide:
+/// its picture (or `words` alone, when `empty`), a mark in its corner, and `words` under it
+/// (beside it in Table view). Outlined in red while it is on the screens.
+fn item_tile(
+    ui: &mut egui::Ui,
+    sizes: &Cells,
+    picture: Option<TextureId>,
+    words: &str,
+    live: bool,
+    empty: bool,
+    badge: Option<crate::icons::Icon>,
+) -> egui::Response {
+    let Cells { view, bar_height, width, image_size, cell, .. } = *sizes;
+    let sense = if empty { Sense::hover() } else { Sense::click() };
+    let (rect, response) = ui.allocate_exact_size(cell, sense);
+    let image = Rect::from_min_size(rect.min, image_size);
+    let round = f32::from(SLIDE_ROUND);
+    if empty {
+        ui.painter().rect_filled(image, round, crate::studio::PANEL);
+        ui.painter().rect_stroke(image, round, Stroke::new(1.0, crate::studio::LINE), StrokeKind::Inside);
+    } else {
+        ui.painter().rect_filled(image, round, Color32::BLACK);
+        match picture {
+            Some(texture) => {
+                egui::Image::from_texture((texture, image_size)).corner_radius(round).paint_at(ui, image);
+            }
+            None => ui.ctx().request_repaint(),
+        }
+    }
+    if let Some(icon) = badge.filter(|_| !empty) {
+        let mark = Rect::from_min_size(image.left_bottom() + vec2(6.0, -22.0), vec2(24.0, 16.0));
+        ui.painter().rect_filled(mark, 3.0, Color32::from_black_alpha(170));
+        crate::icons::paint(
+            ui.painter(),
+            icon,
+            Rect::from_center_size(mark.center(), vec2(10.0, 10.0)),
+            Color32::WHITE,
+        );
+    }
+    let ink = if empty { crate::studio::TEXT_FAINT } else { crate::studio::TEXT_DIM };
+    if view == SlideView::Table {
+        ui.painter().text(
+            pos2(image.max.x + 14.0, image.center().y),
+            Align2::LEFT_CENTER,
+            words,
+            FontId::proportional(13.0),
+            ink,
+        );
+    } else if empty {
+        // Wrapped to the tile, centred, a little above the middle (a button may sit under it).
+        let mut job =
+            egui::text::LayoutJob::simple(words.to_owned(), FontId::proportional(12.0), ink, image.width() - 20.0);
+        job.halign = Align::Center;
+        let galley = ui.painter().layout_job(job);
+        let top = image.center().y - 14.0 - galley.size().y / 2.0;
+        ui.painter().galley(pos2(image.center().x, top), galley, ink);
+    } else {
+        let label = Rect::from_min_size(pos2(rect.min.x, image.max.y), vec2(width, bar_height));
+        ui.painter().rect_filled(label, 0.0, crate::studio::CARD);
+        ui.painter().text(
+            label.left_center() + vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            words,
+            FontId::proportional(11.5),
+            ink,
+        );
+    }
+    let outline = if live {
+        Some(Stroke::new(2.0, crate::studio::TALLY))
+    } else if response.hovered() && !empty {
+        Some(Stroke::new(1.0, crate::studio::TEXT_FAINT))
+    } else {
+        None
+    };
+    if let Some(stroke) = outline {
+        ui.painter().rect_stroke(image, round, stroke, StrokeKind::Outside);
+    }
+    response
 }
 
 /// One song's slides, as the view chosen draws them. `item` is the song's place in the
@@ -7205,6 +7463,109 @@ mod tests {
         // The item after the header is opened (the app then shows its song, Beta).
         assert_eq!(state.playlist_scroll_to, Some(2), "the header is passed over");
         assert!(asked.contains(&Command::Select(1)), "{asked:?}");
+    }
+
+    #[test]
+    fn a_video_or_a_placeholder_in_a_playlist_stays_chosen_and_opening_it_puts_nothing_on_screen() {
+        use crate::service::Item;
+        let songs = ["Alpha", "Beta"].map(|title| Arc::new(parse_song_text(title, "Words\n")));
+        let mut show = Show::new(songs.to_vec());
+        show.add_media(sp_model::MediaItem::new("Walk-in.mp4".into(), "Walk-in.mp4".into()));
+        let walk_in = show.media()[0].id;
+        let mut state = HomeState { playlist_open: true, ..HomeState::default() };
+        state.services.add(Item::Song { key: "title:Alpha".to_owned(), title: "Alpha".to_owned() });
+        state.services.add(Item::Media { id: walk_in, name: "Walk-in.mp4".to_owned() });
+        state.services.add(Item::Placeholder { name: "Sermon slides".to_owned() });
+        state.services.add(Item::Song { key: "title:Beta".to_owned(), title: "Beta".to_owned() });
+        state.services.chosen = Some(0);
+        let ctx = egui::Context::default();
+        let mut all_asked = Vec::new();
+        let mut step = |show: &mut Show, state: &mut HomeState, key: Option<Key>| {
+            let mut asked = Vec::new();
+            let output = ctx.run_ui(input(key), |ui| {
+                asked = home_ui(ui, show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            output.drop_without_applying_deltas();
+            for command in asked {
+                all_asked.push(command);
+                show.apply(command);
+            }
+        };
+        step(&mut show, &mut state, None);
+        step(&mut show, &mut state, Some(Key::ArrowDown));
+        step(&mut show, &mut state, None);
+        step(&mut show, &mut state, None);
+        assert_eq!(state.services.chosen, Some(1), "the video stays chosen; Alpha, still open, doesn't take it back");
+        step(&mut show, &mut state, Some(Key::ArrowDown));
+        step(&mut show, &mut state, None);
+        assert_eq!(state.services.chosen, Some(2), "on to the placeholder");
+        step(&mut show, &mut state, Some(Key::ArrowDown));
+        step(&mut show, &mut state, None);
+        assert_eq!((state.services.chosen, show.selected()), (Some(3), 1), "and past it to Beta");
+        assert!(show.live_media().is_none(), "opening the video didn't put it on screen");
+        assert!(!all_asked.iter().any(|c| matches!(c, Command::ShowMedia(_))), "{all_asked:?}");
+    }
+
+    /// Carries media bin item 0 (as a drag out of the bin does) to `at` in the window and lets go,
+    /// with a playlist of Alpha, a placeholder and Beta open in the left column. Returns the
+    /// playlist's items after.
+    fn drop_media_on_playlist(at: egui::Pos2) -> Vec<crate::service::Item> {
+        use crate::service::Item;
+        let songs = ["Alpha", "Beta"].map(|title| Arc::new(parse_song_text(title, "Words\n")));
+        let mut show = Show::new(songs.to_vec());
+        show.add_media(sp_model::MediaItem::new("Welcome.png".into(), "Welcome.png".into()));
+        let mut state = HomeState { playlist_open: true, ..HomeState::default() };
+        state.services.add(Item::Song { key: "title:Alpha".to_owned(), title: "Alpha".to_owned() });
+        state.services.add(Item::Placeholder { name: "Sermon slides".to_owned() });
+        state.services.add(Item::Song { key: "title:Beta".to_owned(), title: "Beta".to_owned() });
+        let ctx = egui::Context::default();
+        let press = |pressed: bool| Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let frames = [
+            vec![Event::PointerMoved(at)],
+            vec![press(true)],
+            vec![Event::PointerMoved(at + vec2(0.0, 1.0)), Event::PointerMoved(at)],
+            vec![press(false)],
+            vec![],
+        ];
+        for (n, events) in frames.into_iter().enumerate() {
+            let raw = RawInput { events, time: Some(n as f64 * 0.1), ..input(None) };
+            let output = ctx.run_ui(raw, |ui| {
+                if n >= 1 {
+                    egui::DragAndDrop::set_payload(ui.ctx(), MediaDrag(0));
+                }
+                home_ui(ui, &show, &mut state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            output.drop_without_applying_deltas();
+        }
+        state.services.front().items.clone()
+    }
+
+    #[test]
+    fn a_picture_dragged_from_the_bin_fills_a_placeholder_or_goes_between_two_items() {
+        use crate::service::Item;
+        let welcome = |items: &[Item]| {
+            items.iter().position(|item| matches!(item, Item::Media { name, .. } if name == "Welcome.png"))
+        };
+        // Down the left column, where the playlist's rows are: the first place a drop changes
+        // the playlist is over (or just above) its first row.
+        let mut filled = None;
+        let mut between = None;
+        for y in (150..500).step_by(2) {
+            let items = drop_media_on_playlist(pos2(60.0, y as f32));
+            match (items.len(), welcome(&items)) {
+                (3, Some(1)) if filled.is_none() => filled = Some(y),
+                (4, Some(at)) if between.is_none() && at > 0 => between = Some((y, at)),
+                _ => {}
+            }
+        }
+        assert!(filled.is_some(), "a drop on the placeholder's row puts the picture in its place");
+        let (_, at) = between.expect("a drop elsewhere on the list puts it between two items");
+        assert!((1..=3).contains(&at));
     }
 
     #[test]

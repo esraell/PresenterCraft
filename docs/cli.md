@@ -167,7 +167,7 @@ An empty list says `(none)`.
 | Command | Does |
 |---|---|
 | `go SONG [SLIDE]` | Puts a slide on screen (the first if SLIDE is left out), opening the song from the library |
-| `playlist go ITEM [SLIDE] [in PLAYLIST]` | Opens a playlist item as a click does: a song (and a slide), or a passage on the Bible page. Continuous Playlist then follows the playlist |
+| `playlist go ITEM [SLIDE] [in PLAYLIST]` | Opens a playlist item as a click does: a song (and a slide), or a passage on the Bible page. Continuous Playlist then follows the playlist. A picture or video, or a media playlist, has one thing to show: `1` shows it (or plays the media playlist round and round); without it, it is only opened |
 | `next`, `previous` (or `back`), `first`, `last` | As the arrow keys, Home and End; a switched-off slide is passed over and an arrangement is followed |
 | `group NAME\|LETTER [in SONG]` | A group's first slide on screen: `group chorus`, `group c`, `group "verse 2"` |
 | `hotkey KEY` | The slide with that hot key, in the song on screen (or shown) |
@@ -450,6 +450,10 @@ it and `slide frame` moves it, while `slide text` and `slide style` say "The sli
 | `playlist new NAME`, `playlist rename OLD to NEW`, `playlist delete NAME --yes` | Makes, renames or deletes a playlist (the last one stays) |
 | `playlist remove ITEM [from PLAYLIST]`, `playlist move ITEM to N [in PLAYLIST]` | Takes out or moves an item, by number or title |
 | `playlist header TEXT [at N] [in PLAYLIST]` | A header that groups the items after it |
+| `playlist media ITEM [at N] [in PLAYLIST]` | A picture or video from the media bin (the countdown video) |
+| `playlist media-playlist NAME [at N] [in PLAYLIST]` | A media playlist (the announcement loop), to play from the playlist |
+| `playlist placeholder NAME [at N] [in PLAYLIST]` | A place kept for something to come (the sermon slides) |
+| `playlist fill PLACEHOLDER with SONG`, `… with media ITEM` `[in PLAYLIST]` | Puts a song, or a picture or video, in a placeholder's place (a song already in the playlist moves there) |
 | `library open NAME\|all` | Shows a library's songs, or every song, in the song list |
 | `library new NAME`, `library rename OLD to NEW`, `library delete NAME --yes` | Makes, renames or deletes a library (its songs stay) |
 | `library add SONG… to LIBRARY`, `library remove SONG… from LIBRARY` | Puts songs in a library or takes them out (quote each name with spaces) |
@@ -472,8 +476,30 @@ it and `slide frame` moves it, while `slide text` and `slide style` say "The sli
     $ sp library add "Blessed Assurance" "River Song" to Hymns
     Added to Hymns: Blessed Assurance, River Song.
 
+    $ sp playlist media Walk-in.webm at 1 in sunday evening
+    Put the video Walk-in.webm at place 1 in Sunday Evening.
+    $ sp playlist media-playlist Announcements at 1 in sunday evening
+    Put the media playlist Announcements at place 1 in Sunday Evening.
+    $ sp playlist placeholder Sermon slides in sunday evening
+    Put the placeholder Sermon slides at place 6 in Sunday Evening.
+    $ sp playlist "Sunday Evening"
+    Sunday Evening
+      1. Announcements (media playlist)
+      2. Walk-in.webm (video)
+      3. John 3:16-18
+      4. — Opening songs —
+      5. Blessed Assurance
+      6. Sermon slides (placeholder)
+    $ sp playlist go Announcements 1 in sunday evening
+    Playing the media playlist Announcements, round and round.
+    $ sp playlist go "Sermon slides" 1 in sunday evening
+    Sermon slides is a placeholder; it has nothing to show yet (sp playlist fill Sermon slides with SONG).
+    $ sp playlist fill "Sermon slides" with "River Song" in sunday evening
+    Filled the placeholder Sermon slides in Sunday Evening with River Song.
+
 A playlist item or library entry whose song no longer exists is kept and listed as
-"(missing)".
+"(missing)"; a picture, video or media playlist that has gone is listed as "(missing picture or
+video)" or "(missing media playlist)". The JSON of `playlist` is the list of these lines.
 
 ## Themes
 
@@ -623,8 +649,11 @@ SoftPresenter runs on.
   sets for itself comes along if the receiving computer doesn't have it; the receiving
   computer's own themes are never changed.
 - A playlist comes in as a new playlist ("Sunday (2)" if the name is taken) unless the same one
-  is already there. Pictures go into `Images/`, videos into `Media/`; a file already there with
-  the same contents is reused.
+  is already there. Its pictures and videos come into the media bin, and its media playlists
+  with theirs (a media playlist the receiving computer has already, the same one, is used as it
+  is there; a placeholder comes as it is). With `--no-videos`, a video in the playlist is left
+  out and its item shows as missing. Pictures go into `Images/`, videos into `Media/`; a file
+  already there with the same contents is reused.
 - A pack holds no file paths or user names. It is checked as it is opened: entries outside its
   folders, links, unknown references and oversized files are left out and named in the reply,
   and a pack from a newer SoftPresenter is refused.
