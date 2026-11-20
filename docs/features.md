@@ -15,6 +15,15 @@ feature changes, this page changes in the same commit.
   out the songs on the way), or the item above or below in a playlist (passing over headers);
   ← → and Space go on moving the slides.
 - Groups (Verse 1, Chorus, Bridge…) with coloured bars and one-key jumps.
+- **Songs changed outside the app** (in a text editor, by a script or an agent) come in when the
+  song is next opened: chosen in the list or a playlist, opened in the editor, or named in an
+  `sp` command. The app never saves over a song or theme file changed since it read it: a bar
+  under the toolbar offers **Reload** (the file's version) or **Keep mine** (SoftPresenter's
+  written over it). A song on screen, being edited, or holding changes not saved is never swapped
+  unasked; the bar offers it instead. File › Reload Songs from Their Files (`sp song reload`) reads
+  every changed song and theme again and adds song files put in the Songs folder (a copy of one
+  already there gets an id of its own). `sp song reload SONG [--now]` and `sp song keep SONG` do
+  the same for one song, and `sp songs` marks a song waiting on the choice.
 - Playlists, libraries, macros, the song that starts with the app and slides' "go to song"
   actions find a library song by the id in its file, so they keep working when the library
   folder moves. A song that can't be found is kept and shown as missing (`sp playlist` and

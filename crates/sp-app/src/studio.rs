@@ -310,6 +310,45 @@ pub fn segmented(
 
 /// The bar along the top: the three views, themes and more on the left; the audience output
 /// on the right.
+/// A bar under the toolbar, on every view, while a song or theme changed outside SoftPresenter
+/// waits on a choice: Reload takes the file's version, Keep mine writes SoftPresenter's over it.
+pub fn changed_outside_bar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState) {
+    let Some(&first) = state.waiting.first() else { return };
+    let name = match first {
+        crate::outside::Waiting::Song(index) => show
+            .presentations()
+            .get(index)
+            .map_or_else(|| "A song".to_owned(), |song| format!("\u{201c}{}\u{201d}", song.title)),
+        crate::outside::Waiting::Theme(index) => state
+            .theme_names
+            .get(index)
+            .map_or_else(|| "A theme".to_owned(), |theme| format!("The theme \u{201c}{theme}\u{201d}")),
+    };
+    let more = state.waiting.len() - 1;
+    let frame = Frame::new().fill(Color32::from_rgb(74, 52, 26)).inner_margin(egui::Margin::symmetric(14, 7));
+    egui::Panel::top("changed outside").resizable(false).frame(frame).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            let mut words = format!("{name} was changed outside SoftPresenter.");
+            if more > 0 {
+                words.push_str(&format!(" ({more} more after it.)"));
+            }
+            ui.label(egui::RichText::new(words).size(13.0).color(Color32::from_rgb(255, 214, 160)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Keep mine").on_hover_text("Save SoftPresenter's version over the file").clicked() {
+                    state.waiting_choice = Some((first, false));
+                }
+                if ui
+                    .button("Reload")
+                    .on_hover_text("Take the file's version (SoftPresenter's changes to it go)")
+                    .clicked()
+                {
+                    state.waiting_choice = Some((first, true));
+                }
+            });
+        });
+    });
+}
+
 pub fn toolbar(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     let frame = Frame::new().fill(PANEL).inner_margin(egui::Margin::symmetric(14, 9));
     egui::Panel::top("toolbar").resizable(false).frame(frame).show(ui, |ui| {

@@ -462,6 +462,10 @@ Songs, libraries and playlists
   playlist add SONG [to PLAYLIST]
   song text SONG [FILE]        the song as song text, or its words replaced from a file (its
                                slides keep their looks, labels and notes)
+  song reload [SONG [--now]]   read songs again from their files, if changed outside the app
+                               (all of them, and songs put in the Songs folder, with no SONG);
+                               one on screen or being edited waits unless --now
+  song keep SONG               save SoftPresenter's version over a file changed outside it
 
 Changing a slide (each change is saved, can be undone, and shows on screen at once)
   slide SONG N [--json]        the slide's objects: words, place and look (* = the slide's own)
@@ -565,6 +569,7 @@ impl crate::App {
     /// Carries out one command from outside the window, as the window's own controls do, and
     /// says what happened.
     pub(crate) fn control(&mut self, el: &ActiveEventLoop, args: &[String]) -> Reply {
+        let held_before = self.held_songs.clone();
         let word = args.first().map(|w| w.to_lowercase()).unwrap_or_default();
         let result = match word.as_str() {
             "" | "help" => Ok(Reply::done(HELP.trim_end())),
@@ -626,7 +631,16 @@ impl crate::App {
         if let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
         }
-        result.unwrap_or_else(Reply::failed)
+        // A change that couldn't be saved, because the song's file changed outside the app, is
+        // said.
+        let mut reply = result.unwrap_or_else(Reply::failed);
+        for at in self.held_songs.iter().filter(|at| !held_before.contains(at)) {
+            let title = self.show.presentations().get(*at).map_or("The song", |song| song.title.as_str());
+            reply.text.push_str(&format!(
+                "\nNot saved: {title}'s file was changed outside SoftPresenter. sp song reload {title} --now takes the file's version; sp song keep {title} saves this one."
+            ));
+        }
+        reply
     }
 
     fn with_state(&mut self, change: impl FnOnce(&mut crate::home::HomeState)) {
@@ -648,10 +662,49 @@ impl crate::App {
             .collect()
     }
 
-    pub(crate) fn find_song(&self, typed: &str) -> Result<usize, String> {
+    /// The song a name or number stands for, read again first if its file changed outside the
+    /// app (unless it is in use; then the window offers Reload).
+    pub(crate) fn find_song(&mut self, typed: &str) -> Result<usize, String> {
+        let at = self.find_song_as_is(typed)?;
+        self.freshen(at, false);
+        Ok(at)
+    }
+
+    /// The song a name or number stands for, as the app has it.
+    pub(crate) fn find_song_as_is(&self, typed: &str) -> Result<usize, String> {
         let songs = self.listed_songs();
         let names: Vec<String> = songs.iter().map(|(_, title)| title.clone()).collect();
         find("song", &names, typed).map(|at| songs[at].0)
+    }
+
+    /// `song reload [SONG [--now]]`.
+    fn ctl_song_reload(&mut self, args: &[String]) -> Result<Reply, String> {
+        let now = args.iter().any(|w| w == "--now");
+        let typed = args.iter().filter(|w| *w != "--now").cloned().collect::<Vec<_>>().join(" ");
+        if typed.trim().is_empty() || typed.trim().eq_ignore_ascii_case("all") {
+            let done = self.reload_all();
+            let data = serde_json::json!({"read": done.read, "added": done.added, "waiting": done.waiting, "problems": done.problems});
+            return Ok(Reply::with(done.summary(), data));
+        }
+        let at = self.find_song_as_is(&typed)?;
+        let title = self.show.presentations().get(at).map(|s| s.title.clone()).unwrap_or_default();
+        if now {
+            let title = self.reload_song(at)?;
+            crate::applog::event("outside", &format!("read {title} again (sp song reload --now)"));
+            return Ok(Reply::done(format!("Read {title} again from its file.")));
+        }
+        if self.freshen(at, false) {
+            return Ok(Reply::done(format!("Read {title} again from its file.")));
+        }
+        let waiting =
+            self.running.as_ref().is_some_and(|r| r.home_state.waiting.contains(&crate::outside::Waiting::Song(at)));
+        if waiting {
+            return Ok(Reply::done(format!(
+                "{title} is on screen, being edited, or holds changes not saved, so it wasn't read again; the window offers Reload. \
+                 sp song reload {title} --now takes the file's version; sp song keep {title} saves SoftPresenter's."
+            )));
+        }
+        Ok(Reply::done(format!("{title} is as its file has it.")))
     }
 
     /// What is on screen, in words: "Sample song, slide 3 of 8 (Chorus)".
@@ -733,7 +786,15 @@ impl crate::App {
     }
 
     fn ctl_songs(&self) -> Reply {
-        let names: Vec<String> = self.listed_songs().into_iter().map(|(_, title)| title).collect();
+        // A song waiting on Reload or Keep mine is marked.
+        let waiting = |at: usize| {
+            self.running.as_ref().is_some_and(|r| r.home_state.waiting.contains(&crate::outside::Waiting::Song(at)))
+        };
+        let names: Vec<String> = self
+            .listed_songs()
+            .into_iter()
+            .map(|(at, title)| if waiting(at) { format!("{title} (changed outside SoftPresenter)") } else { title })
+            .collect();
         Reply::with(numbered(&names), serde_json::json!(names))
     }
 
@@ -742,7 +803,7 @@ impl crate::App {
         Reply::with(numbered(&names), serde_json::json!(names))
     }
 
-    fn ctl_slides(&self, typed: &str) -> Result<Reply, String> {
+    fn ctl_slides(&mut self, typed: &str) -> Result<Reply, String> {
         let at = if typed.trim().is_empty() { self.show.selected() } else { self.find_song(typed)? };
         let song = self.show.presentations().get(at).ok_or("That song is gone.")?;
         let mut lines = Vec::new();
@@ -1374,6 +1435,21 @@ impl crate::App {
                 Ok(Reply::done(format!("Deleted {title}.")))
             }
             Some("text") => self.ctl_song_text(&args[2..]),
+            Some("reload") => self.ctl_song_reload(&args[2..]),
+            Some("keep") => {
+                let at = self.find_song_as_is(&rest(args, 2))?;
+                let waiting = self.held_songs.contains(&at)
+                    || self.running.as_ref().is_some_and(|r| {
+                        r.home_state.waiting.contains(&crate::outside::Waiting::Song(at))
+                    });
+                let title = self.show.presentations().get(at).map(|s| s.title.clone()).unwrap_or_default();
+                if !waiting {
+                    return Ok(Reply::done(format!("{title} isn't waiting on a choice: its file hasn't changed outside SoftPresenter.")));
+                }
+                let title = self.keep_song(at)?;
+                crate::applog::event("outside", &format!("kept SoftPresenter's version of {title} (sp song keep)"));
+                Ok(Reply::done(format!("Saved SoftPresenter's version of {title} over its file.")))
+            }
             Some("import") => {
                 let paths: Vec<std::path::PathBuf> = args[2..].iter().map(std::path::PathBuf::from).collect();
                 if paths.is_empty() {
@@ -1423,7 +1499,7 @@ impl crate::App {
                 }
                 Ok(Reply::with(text, serde_json::json!({"imported": imported, "problems": problems, "making": decks})))
             }
-            _ => Err("song new TITLE [FILE.txt], song import FILE…, song text SONG [FILE], or song delete SONG --yes"
+            _ => Err("song new TITLE [FILE.txt], song import FILE…, song text SONG [FILE], song reload [SONG], song keep SONG, or song delete SONG --yes"
                 .to_owned()),
         }
     }

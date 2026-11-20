@@ -23,6 +23,7 @@ mod media;
 mod menubar;
 mod messages;
 mod output;
+mod outside;
 mod props;
 mod renamed;
 mod screens;
@@ -132,6 +133,37 @@ struct MediaCycle {
 const PICTURE_SECONDS: f32 = 8.0;
 
 /// A song going round on the Announcements layer.
+/// What reloading every song from its file did.
+#[derive(Default)]
+struct Reloaded {
+    read: Vec<String>,
+    added: Vec<String>,
+    waiting: Vec<String>,
+    problems: Vec<String>,
+}
+
+impl Reloaded {
+    /// In words, for the window and the command line.
+    fn summary(&self) -> String {
+        let list = |names: &[String]| names.join(", ");
+        let mut parts = Vec::new();
+        if !self.read.is_empty() {
+            parts.push(format!("Read again: {}.", list(&self.read)));
+        }
+        if !self.added.is_empty() {
+            parts.push(format!("Added: {}.", list(&self.added)));
+        }
+        if !self.waiting.is_empty() {
+            parts.push(format!(
+                "Waiting on Reload or Keep mine (in use, or with changes not saved): {}.",
+                list(&self.waiting)
+            ));
+        }
+        parts.extend(self.problems.iter().cloned());
+        if parts.is_empty() { "Every song is as its file has it.".to_owned() } else { parts.join(" ") }
+    }
+}
+
 struct Announcing {
     song: usize,
     slide: usize,
@@ -767,6 +799,13 @@ struct App {
     /// Songs changed in the Edit view and not yet written to their files, and when the last
     /// change was made.
     unsaved: Vec<usize>,
+    /// How each song and theme file was when the app last read or wrote it, so a file changed
+    /// outside the app is never saved over (see `outside`).
+    stamps: outside::Stamps,
+    /// Songs and themes with changes not saved because their file changed outside the app; they
+    /// wait on Reload or Keep mine.
+    held_songs: Vec<usize>,
+    held_themes: Vec<usize>,
     /// The changes made to songs in the Show view, to undo and redo.
     history: SongHistory,
     /// The song open in the Edit view, if any, and where the song history was when it opened:
@@ -1030,6 +1069,12 @@ impl App {
 
     /// Applies operator commands and tells the output and the home window what changed.
     fn apply(&mut self, commands: Vec<Command>) {
+        // A song opened is read again first if its file changed outside the app.
+        for command in &commands {
+            if let Command::Select(index) = command {
+                self.freshen(*index, false);
+            }
+        }
         let commands: Vec<Command> = commands.into_iter().map(|command| self.continue_playlist(command)).collect();
         let live_before = self.show.live();
         let Some(running) = self.running.as_mut() else {
@@ -1978,6 +2023,15 @@ impl App {
     /// be undone safely, notes when the editor opens and closes, and undoes or redoes a change of
     /// the song's slides asked for from the editor, the slide being edited following it.
     fn edit_undo_bookkeeping(&mut self) {
+        // A song just opened in the editor is read again first if its file changed outside the
+        // app (the editor then starts from the file's version).
+        let opened = self.running.as_ref().and_then(|r| {
+            let state = &r.home_state;
+            state.editing.as_ref().filter(|_| state.theme_edit.is_none()).map(|draft| draft.at.presentation)
+        });
+        if let Some(index) = opened.filter(|index| Some(*index) != self.edit_song && *index != props::PROP_SLOT) {
+            self.freshen(index, true);
+        }
         let Some(running) = self.running.as_mut() else { return };
         let state = &mut running.home_state;
         if let Some(index) = state.forget_song_history.take() {
@@ -2472,15 +2526,44 @@ impl App {
             let (Some(Some(path)), Some(song)) = (self.sources.get(index), self.show.presentations().get(index)) else {
                 continue;
             };
+            // A file changed outside the app since it was read is never saved over: the song
+            // waits on Reload or Keep mine, holding its changes.
+            let target = load::song_file_for(path);
+            if self.stamps.check(&target) != outside::Now::Same {
+                applog::event("outside", &format!("did not save over {}: it changed outside", target.display()));
+                if !self.held_songs.contains(&index) {
+                    self.held_songs.push(index);
+                }
+                self.wait_on(outside::Waiting::Song(index));
+                continue;
+            }
             match load::save_song(path, song) {
                 // From now on the song lives in the file that was just written.
-                Ok(written) => self.sources[index] = Some(written),
+                Ok(written) => {
+                    self.stamps.note(&written);
+                    self.sources[index] = Some(written);
+                }
                 Err(e) => problem = Some(format!("The change was not saved. {e}")),
             }
         }
         for index in std::mem::take(&mut self.themes_unsaved) {
-            if let Some(Err(e)) = self.themes.get(index).map(theme_store::save) {
-                problem = Some(e);
+            let Some(theme) = self.themes.get(index) else { continue };
+            let file = theme_store::file_of(theme);
+            if file.as_ref().is_some_and(|file| self.stamps.check(file) != outside::Now::Same) {
+                applog::event("outside", &format!("did not save over the theme {}: it changed outside", theme.name));
+                if !self.held_themes.contains(&index) {
+                    self.held_themes.push(index);
+                }
+                self.wait_on(outside::Waiting::Theme(index));
+                continue;
+            }
+            match theme_store::save(theme) {
+                Ok(()) => {
+                    if let Some(file) = file {
+                        self.stamps.note(&file);
+                    }
+                }
+                Err(e) => problem = Some(e),
             }
         }
         self.unsaved_since = None;
@@ -2488,6 +2571,284 @@ impl App {
             running.home_state.notice = problem;
             running.home_window.request_redraw();
         }
+    }
+
+    /// Puts a song or theme in the bar that offers Reload and Keep mine.
+    fn wait_on(&mut self, what: outside::Waiting) {
+        if let Some(running) = self.running.as_mut()
+            && !running.home_state.waiting.contains(&what)
+        {
+            running.home_state.waiting.push(what);
+            running.home_window.request_redraw();
+        }
+    }
+
+    fn stop_waiting(&mut self, what: outside::Waiting) {
+        if let Some(running) = self.running.as_mut() {
+            running.home_state.waiting.retain(|have| *have != what);
+            running.home_window.request_redraw();
+        }
+    }
+
+    /// Whether a song is in use where it can't be swapped for its file's version unasked: on
+    /// screen, on the Announcements layer, or (unless `editor_too` is false) open in the editor.
+    fn song_in_use(&self, index: usize, editor_too: bool) -> bool {
+        let live = self.show.live().is_some_and(|at| at.presentation == index);
+        let announcing = self.announcing.as_ref().is_some_and(|on| on.song == index);
+        let editing = editor_too
+            && self.running.as_ref().is_some_and(|r| {
+                r.home_state.theme_edit.is_none()
+                    && r.home_state.editing.as_ref().is_some_and(|draft| draft.at.presentation == index)
+            });
+        live || announcing || editing
+    }
+
+    /// Before a song is opened or used: if its file changed outside the app, reads it again,
+    /// or, while the song is in use or holds changes not saved, offers Reload instead. With
+    /// `opening_editor`, the song being opened in the editor doesn't count as in use there.
+    /// True when the song was read again.
+    fn freshen(&mut self, index: usize, opening_editor: bool) -> bool {
+        let removed = self.running.as_ref().is_some_and(|r| r.home_state.removed_songs.contains(&index));
+        if self.bible_slots.contains(&index) || removed {
+            return false;
+        }
+        let Some(Some(path)) = self.sources.get(index) else { return false };
+        let now = self.stamps.check(&load::song_file_for(path));
+        if now == outside::Now::Same {
+            return false;
+        }
+        let waiting = outside::Waiting::Song(index);
+        if now == outside::Now::Gone
+            || self.song_in_use(index, !opening_editor)
+            || self.unsaved.contains(&index)
+            || self.held_songs.contains(&index)
+        {
+            self.wait_on(waiting);
+            return false;
+        }
+        match self.reload_song(index) {
+            Ok(title) => {
+                applog::event("outside", &format!("read {title} again: its file changed outside SoftPresenter"));
+                true
+            }
+            Err(problem) => {
+                self.wait_on(waiting);
+                if let Some(running) = self.running.as_mut() {
+                    running.home_state.notice = Some(problem);
+                }
+                false
+            }
+        }
+    }
+
+    /// Takes a song's file's version in place of the app's: what was not saved goes, as does
+    /// its undo history, and the editor on it starts again from the file. Returns its title.
+    fn reload_song(&mut self, index: usize) -> Result<String, String> {
+        let title = self.show.presentations().get(index).map(|song| song.title.clone()).unwrap_or_default();
+        let path = self.sources.get(index).cloned().flatten().ok_or_else(|| format!("{title} has no file to read."))?;
+        let target = load::song_file_for(&path);
+        if !target.is_file() {
+            return Err(format!("{title}'s file is gone; Keep mine saves it again."));
+        }
+        let (mut loaded, problems) = load::load_songs(std::slice::from_ref(&target));
+        let song = loaded.pop().map(|loaded| loaded.song).ok_or_else(|| {
+            format!("{title} could not be read again ({}); SoftPresenter's version is kept.", problems.join(" "))
+        })?;
+        let key = song_ids::key_for(Some(&target), song.id, &song.title);
+        let title = song.title.clone();
+        let changes = self.show.replace_presentation_following(index, Arc::new(song));
+        self.sources[index] = Some(target.clone());
+        self.stamps.note(&target);
+        self.history.forget(index);
+        self.unsaved.retain(|at| *at != index);
+        self.held_songs.retain(|at| *at != index);
+        if let Some(running) = self.running.as_mut() {
+            running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
+            let state = &mut running.home_state;
+            if let Some(have) = state.song_keys.get_mut(index) {
+                *have = key;
+            }
+            state.waiting.retain(|have| *have != outside::Waiting::Song(index));
+            // The editor on the song starts again from the file's version.
+            let open = state.editing.as_ref().map(|draft| draft.at).filter(|at| at.presentation == index);
+            if let Some(open) = open {
+                let count = self.show.presentations().get(index).map_or(0, |song| song.slide_count());
+                let at = sp_engine::SlideRef { slide: open.slide.min(count.saturating_sub(1)), ..open };
+                state.editing = EditDraft::of(&self.show, at);
+                state.edit_steps.clear();
+                state.edit_redo.clear();
+            }
+            running.home_window.request_redraw();
+        }
+        if changes.slides {
+            self.refresh_output();
+        }
+        Ok(title)
+    }
+
+    /// Writes the app's version of a song over its file, which changed outside the app.
+    fn keep_song(&mut self, index: usize) -> Result<String, String> {
+        let (Some(Some(path)), Some(song)) = (self.sources.get(index), self.show.presentations().get(index)) else {
+            return Err("That song has no file.".to_owned());
+        };
+        let title = song.title.clone();
+        let written = load::save_song(path, song)?;
+        self.stamps.note(&written);
+        self.sources[index] = Some(written);
+        self.held_songs.retain(|at| *at != index);
+        self.unsaved.retain(|at| *at != index);
+        self.stop_waiting(outside::Waiting::Song(index));
+        Ok(title)
+    }
+
+    /// Takes a theme's file's version in place of the app's.
+    fn reload_theme(&mut self, index: usize) -> Result<String, String> {
+        if self.running.as_ref().is_some_and(|r| r.home_state.theme_edit.is_some()) {
+            return Err("Close the Theme editor first, then reload the theme.".to_owned());
+        }
+        let theme = self.themes.get(index).ok_or("That theme is gone.")?;
+        let file = theme_store::file_of(theme).ok_or("The theme has no file.")?;
+        let text =
+            std::fs::read_to_string(&file).map_err(|e| format!("The theme {} could not be read: {e}", theme.name))?;
+        let read = sp_model::Theme::from_json(&text)
+            .map_err(|e| format!("The theme {} could not be read: {e}", theme.name))?;
+        if read.id != theme.id {
+            return Err(format!("The file of the theme {} now holds another theme.", theme.name));
+        }
+        let name = read.name.clone();
+        self.themes[index] = read;
+        self.stamps.note(&file);
+        self.held_themes.retain(|at| *at != index);
+        self.themes_unsaved.retain(|at| *at != index);
+        self.stop_waiting(outside::Waiting::Theme(index));
+        self.themes_changed();
+        self.refresh_output();
+        Ok(name)
+    }
+
+    /// Writes the app's version of a theme over its file, which changed outside the app.
+    fn keep_theme(&mut self, index: usize) -> Result<String, String> {
+        let theme = self.themes.get(index).ok_or("That theme is gone.")?;
+        theme_store::save(theme)?;
+        let name = theme.name.clone();
+        if let Some(file) = theme_store::file_of(theme) {
+            self.stamps.note(&file);
+        }
+        self.held_themes.retain(|at| *at != index);
+        self.stop_waiting(outside::Waiting::Theme(index));
+        Ok(name)
+    }
+
+    /// Carries out the choice made in the bar that offers Reload and Keep mine.
+    fn choose_outside(&mut self, what: outside::Waiting, reload: bool) {
+        let result = match (what, reload) {
+            (outside::Waiting::Song(index), true) => self.reload_song(index),
+            (outside::Waiting::Song(index), false) => self.keep_song(index),
+            (outside::Waiting::Theme(index), true) => self.reload_theme(index),
+            (outside::Waiting::Theme(index), false) => self.keep_theme(index),
+        };
+        let said = match result {
+            Ok(name) if reload => format!("Read {name} again from its file."),
+            Ok(name) => format!("Saved SoftPresenter's version of {name}."),
+            Err(problem) => problem,
+        };
+        applog::event("outside", &said);
+        if let Some(running) = self.running.as_mut() {
+            running.home_state.notice = Some(said);
+        }
+    }
+
+    /// Reads again every song (and, with the Theme editor closed, every theme) whose file
+    /// changed outside the app, and adds songs put in the Songs folder since. A song in use or
+    /// holding changes not saved is offered in the bar instead.
+    fn reload_all(&mut self) -> Reloaded {
+        let mut done = Reloaded::default();
+        for index in 0..self.show.presentations().len() {
+            let Some(Some(path)) = self.sources.get(index) else { continue };
+            let title = self.show.presentations()[index].title.clone();
+            let before = self.stamps.check(&load::song_file_for(path));
+            if before == outside::Now::Same {
+                continue;
+            }
+            if self.freshen(index, false) {
+                done.read.push(title);
+            } else if self
+                .running
+                .as_ref()
+                .is_some_and(|r| r.home_state.waiting.contains(&outside::Waiting::Song(index)))
+            {
+                done.waiting.push(title);
+            }
+        }
+        // Song files put in the Songs folder while the app runs.
+        let known: std::collections::HashSet<PathBuf> =
+            self.sources.iter().flatten().map(|path| load::song_file_for(path)).collect();
+        let folder = bible_store::data_dir().map(|dir| dir.join("Songs"));
+        let mut new_files: Vec<PathBuf> = folder
+            .and_then(|folder| std::fs::read_dir(folder).ok())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| load::is_song_file(path) && !known.contains(path))
+            .collect();
+        new_files.sort();
+        for path in new_files {
+            let (mut loaded, problems) = load::load_songs(std::slice::from_ref(&path));
+            let Some(mut song) = loaded.pop().map(|loaded| loaded.song) else {
+                done.problems.extend(problems);
+                continue;
+            };
+            // A copy of a song already here gets an id of its own, written back to its file.
+            if self.show.presentations().iter().any(|have| have.id == song.id) {
+                song.id = Uuid::new_v4();
+                if let Err(e) = load::save_song(&path, &song) {
+                    done.problems.push(e);
+                    continue;
+                }
+            }
+            self.stamps.note(&path);
+            let key = song_ids::key_for(Some(&path), song.id, &song.title);
+            done.added.push(song.title.clone());
+            self.show.add_presentation(Arc::new(song));
+            self.sources.push(Some(path));
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.song_keys.push(key);
+            }
+        }
+        // Themes, with the Theme editor closed.
+        if self.running.as_ref().is_some_and(|r| r.home_state.theme_edit.is_none()) {
+            for index in 0..self.themes.len() {
+                let Some(file) = theme_store::file_of(&self.themes[index]) else { continue };
+                match self.stamps.check(&file) {
+                    outside::Now::Same => {}
+                    outside::Now::Changed
+                        if !self.held_themes.contains(&index) && !self.themes_unsaved.contains(&index) =>
+                    {
+                        match self.reload_theme(index) {
+                            Ok(name) => done.read.push(format!("the theme {name}")),
+                            Err(problem) => done.problems.push(problem),
+                        }
+                    }
+                    _ => {
+                        done.waiting.push(format!("the theme {}", self.themes[index].name));
+                        self.wait_on(outside::Waiting::Theme(index));
+                    }
+                }
+            }
+        }
+        for line in done
+            .read
+            .iter()
+            .map(|name| format!("read {name} again"))
+            .chain(done.added.iter().map(|name| format!("added {name}")))
+        {
+            applog::event("outside", &line);
+        }
+        if let Some(running) = self.running.as_mut() {
+            running.home_window.request_redraw();
+        }
+        done
     }
 
     /// Makes the new song that was asked for, and gives a song the title just typed for it.
@@ -4337,6 +4698,13 @@ impl App {
         if action == A::ImportSlides {
             return self.choose_slides_to_import();
         }
+        if action == A::ReloadSongs {
+            let said = self.reload_all().summary();
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.notice = Some(said);
+            }
+            return;
+        }
         // In the Show view and on the Bible page (which has no undo of its own), with nothing
         // being typed, Undo and Redo step through the changes made to songs.
         let in_show = self.running.as_ref().is_some_and(|r| {
@@ -4439,7 +4807,7 @@ impl App {
             A::StageLayouts => state.stage_editor_open = true,
             A::NewSong => state.new_song = true,
             // Handled above, before the window's state is borrowed.
-            A::ImportSongs | A::ImportLibraryFolder | A::ImportSlides => {}
+            A::ImportSongs | A::ImportLibraryFolder | A::ImportSlides | A::ReloadSongs => {}
             A::NewSlide => {
                 let song = match (&state.editing, &state.theme_edit) {
                     (Some(draft), None) => draft.at.presentation,
@@ -4615,6 +4983,10 @@ impl App {
 
     fn quit(&mut self, el: &ActiveEventLoop) {
         self.save_unsaved();
+        for index in &self.held_songs {
+            let title = self.show.presentations().get(*index).map_or("?", |song| song.title.as_str());
+            applog::problem("outside", &format!("{title}: changes not saved, its file changed outside SoftPresenter"));
+        }
         if let Some(output) = self.running.as_mut().and_then(|r| r.output.take()) {
             output.shutdown();
         }
@@ -5045,6 +5417,10 @@ impl ApplicationHandler<AppEvent> for App {
                 {
                     running.home_state.notice = Some(problem);
                 }
+                // Reload or Keep mine, chosen in the bar for a file changed outside the app.
+                if let Some((what, reload)) = self.running.as_mut().and_then(|r| r.home_state.waiting_choice.take()) {
+                    self.choose_outside(what, reload);
+                }
                 self.update_canvas();
                 self.sync_screens(el);
                 self.sync_panels(el);
@@ -5316,6 +5692,16 @@ fn main() -> ExitCode {
         theme_store::remember_in_use(&themes[songs_theme]);
     }
     let (bible_theme, bible_layout) = (songs_theme, themes[songs_theme].bible_template_index());
+    // How each song and theme file is now, as it was just read (and the themes saved above).
+    let mut stamps = outside::Stamps::default();
+    for source in sources.iter().flatten() {
+        stamps.note(&load::song_file_for(source));
+    }
+    for theme in &themes {
+        if let Some(file) = theme_store::file_of(theme) {
+            stamps.note(&file);
+        }
+    }
     let mut app = App {
         options,
         waker: Some(event_loop.create_proxy()),
@@ -5352,6 +5738,9 @@ fn main() -> ExitCode {
         slide_videos: Vec::new(),
         media_playlists: Vec::new(),
         announcing: None,
+        stamps,
+        held_songs: Vec::new(),
+        held_themes: Vec::new(),
         media_cycle: None,
         folders_seen: std::collections::HashMap::new(),
         folders_checked: Instant::now(),

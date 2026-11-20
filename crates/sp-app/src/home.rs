@@ -146,6 +146,10 @@ pub struct HomeState {
     /// A short message for the operator, shown in the media bin (a file that could not be
     /// added, a song that could not be saved).
     pub notice: Option<String>,
+    /// Songs and themes changed outside SoftPresenter that wait on Reload or Keep mine, and the
+    /// choice made in the bar that offers them (true for Reload).
+    pub waiting: Vec<crate::outside::Waiting>,
+    pub waiting_choice: Option<(crate::outside::Waiting, bool)>,
     /// The slide being edited. While this is set the window shows the Edit view.
     pub editing: Option<EditDraft>,
     /// The slide as it was just changed in the Edit view. The app takes this and puts it into
@@ -960,6 +964,8 @@ impl Default for HomeState {
             output_stopped: false,
             drop_hover: false,
             notice: None,
+            waiting: Vec::new(),
+            waiting_choice: None,
             editing: None,
             pending_edit: None,
             live_edit: false,
@@ -1226,6 +1232,7 @@ pub fn home_ui(
     // Text boxes are dark wells in the lighter side columns.
     ui.visuals_mut().extreme_bg_color = FIELD;
     crate::studio::toolbar(ui, show, state, &mut commands);
+    crate::studio::changed_outside_bar(ui, show, state);
     crate::setup::setup_ui(ui.ctx(), show, state, &mut commands);
     if ui.input(|input| command_key(input, egui::Key::Comma, false)) {
         state.preferences_open = true;

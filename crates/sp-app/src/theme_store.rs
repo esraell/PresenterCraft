@@ -9,6 +9,11 @@ fn folder() -> Option<PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("Themes"))
 }
 
+/// The file a theme is saved in.
+pub fn file_of(theme: &Theme) -> Option<PathBuf> {
+    folder().map(|folder| folder.join(format!("{}.sptheme", theme.id)))
+}
+
 fn in_use_file() -> Option<PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("themes-in-use.txt"))
 }
