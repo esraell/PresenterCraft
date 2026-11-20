@@ -3644,7 +3644,10 @@ impl App {
             let waited = wait.is_none_or(|seconds| started.elapsed().as_secs_f32() >= seconds);
             if running.frames == GO_LIVE_AT {
                 commands.push(Command::GoTo(sp_engine::SlideRef { presentation: 0, slide: 2 }));
-                commands.push(Command::ShowMedia(0));
+                // Testing aid: SOFTPRESENTER_CAPTURE_MEDIA=N puts the media bin's Nth item on
+                // screen instead of the first (a video, to see its controls).
+                let media = std::env::var("SOFTPRESENTER_CAPTURE_MEDIA").ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+                commands.push(Command::ShowMedia(media));
             }
             // Testing aid: open the Settings window.
             if running.frames == GO_LIVE_AT + 2 && std::env::var_os("SOFTPRESENTER_CAPTURE_PREFERENCES").is_some() {

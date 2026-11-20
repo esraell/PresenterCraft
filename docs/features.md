@@ -88,8 +88,9 @@ feature changes, this page changes in the same commit.
   (including HEVC and ProRes) through macOS's own player, and everything else (MKV, WebM, AVI,
   WMV, FLV, MPEG, TS and others, or an MP4 the Mac's player can't decode, such as AV1 on an older
   Mac) through FFmpeg, played as it is, never converted first. FFmpeg must be installed for
-  those for now; a release will include it; under the Program preview
-  they can be paused, started again, moved through, looped or not, and muted. An item's
+  those for now; a release will include it. Under the Program preview, a video on screen has
+  Play or Pause and Start Over buttons that say what they do, how far in it is, a bar to click
+  or drag through it, and two ticks, Loop when it ends and Sound. An item's
   right-click menu sets its Scaling (Scale to Fill, Scale to Fit, Stretch to Fill), whether a
   video loops, and the media playlists it is in; the menu beside MEDIA shows All Media or one
   playlist, and makes, renames and deletes them.

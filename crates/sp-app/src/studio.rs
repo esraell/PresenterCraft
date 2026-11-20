@@ -2185,76 +2185,112 @@ fn transition_settings(ui: &mut egui::Ui, look: &mut sp_model::Transition, id: &
     }
 }
 
-/// The video on screen: play and pause, start again, how far in it is (a click on the bar goes
-/// there, and the playhead can be dragged), and whether it loops and has sound.
+/// The video on screen: its name; Play or Pause and Start Over, as buttons that say what they
+/// do, and how far in it is; the bar (a click goes there, and the playhead can be dragged); and
+/// two ticks that show at a glance whether it loops and whether its sound plays.
 fn video_controls(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home::VideoLive, width: f32) {
     use crate::home::VideoRequest;
     let clock = |seconds: f64| crate::audio::clock(std::time::Duration::from_secs_f64(seconds.max(0.0)));
-    // A small button that is only an icon.
-    let tool = |ui: &mut egui::Ui, icon: Icon, hint: &str| {
-        let (cell, response) = ui.allocate_exact_size(vec2(26.0, 22.0), Sense::click());
-        if response.hovered() {
-            ui.painter().rect_filled(cell, 5.0, HOVER);
-        }
-        icons::paint(ui.painter(), icon, Rect::from_center_size(cell.center(), vec2(12.0, 12.0)), TEXT);
+    // A button with an icon and words.
+    let button = |ui: &mut egui::Ui, w: f32, icon: Icon, words: &str, hint: &str| {
+        let (cell, response) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+        paint_button(ui.painter(), cell, response.hovered());
+        let galley = ui.painter().layout_no_wrap(words.to_owned(), semibold(12.5), TEXT);
+        let content = 14.0 + 6.0 + galley.size().x;
+        let left = cell.center().x - content / 2.0;
+        icons::paint(
+            ui.painter(),
+            icon,
+            Rect::from_center_size(pos2(left + 7.0, cell.center().y), vec2(13.0, 13.0)),
+            TEXT,
+        );
+        ui.painter().galley(pos2(left + 20.0, cell.center().y - galley.size().y / 2.0), galley, TEXT);
         response.on_hover_text(hint)
     };
-    egui::Frame::new().fill(CARD).corner_radius(8).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
-        ui.set_width(width - 16.0);
+    egui::Frame::new().fill(CARD).corner_radius(8).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+        ui.set_width(width - 20.0);
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        ui.add(egui::Label::new(egui::RichText::new(video.name.as_str()).font(semibold(12.5)).color(TEXT)).truncate());
+        let length = video.duration;
+        // Play or Pause, and Start Over.
+        let mut time_at: Option<Rect> = None;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            let (icon, hint) =
-                if video.playing { (Icon::Pause, "Pause the video") } else { (Icon::Play, "Play the video") };
-            if tool(ui, icon, hint).clicked() {
+            let (icon, words, hint) = if video.playing {
+                (Icon::Pause, "Pause", "Pause the video where it is")
+            } else {
+                (Icon::Play, "Play", "Play the video from where it is")
+            };
+            if button(ui, 86.0, icon, words, hint).clicked() {
                 state.video_request = Some(VideoRequest::TogglePause);
             }
-            if tool(ui, Icon::Back, "Play the video from the start").clicked() {
+            if button(ui, 116.0, Icon::Back, "Start Over", "Play the video again from the beginning").clicked() {
                 state.video_request = Some(VideoRequest::Restart);
             }
-            ui.add_space(6.0);
-            ui.add(egui::Label::new(egui::RichText::new(video.name.as_str()).size(12.0).color(TEXT)).truncate());
+            // How far in it is, at the right; drawn once the bar has said where the playhead is.
+            time_at = Some(ui.available_rect_before_wrap());
         });
-        let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::click_and_drag());
+        let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::click_and_drag());
         let track = Rect::from_center_size(bar.center(), vec2(bar.width() - 8.0, 4.0));
         let seconds_at = |x: f32, length: f64| f64::from(((x - track.min.x) / track.width()).clamp(0.0, 1.0)) * length;
         // While the playhead is dragged it follows the pointer, not the player, which catches
         // up a moment later (or, playing through FFmpeg, at the end of the drag).
-        let dragged = video
-            .duration
+        let dragged = length
             .zip(response.interact_pointer_pos().filter(|_| response.dragged() || response.drag_stopped()))
             .map(|(length, at)| seconds_at(at.x, length));
         let shown = dragged.unwrap_or(video.position);
-        let fraction = video.duration.map_or(0.0, |length| (shown / length.max(0.001)).clamp(0.0, 1.0));
+        let fraction = length.map_or(0.0, |length| (shown / length.max(0.001)).clamp(0.0, 1.0));
         let x = track.min.x + track.width() * fraction as f32;
         ui.painter().rect_filled(track, 2.0, LINE);
         ui.painter().rect_filled(Rect::from_min_max(track.min, pos2(x, track.max.y)), 2.0, ACCENT);
-        if video.duration.is_some() && (response.hovered() || response.dragged()) {
-            ui.painter().circle_filled(pos2(x, track.center().y), 6.0, Color32::WHITE);
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        if length.is_some() {
+            // The playhead always shows where it is; bigger under the pointer.
+            let radius = if response.hovered() || response.dragged() { 6.5 } else { 4.5 };
+            ui.painter().circle_filled(pos2(x, track.center().y), radius, Color32::WHITE);
+            if response.hovered() || response.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
         }
         match dragged {
             Some(to) if response.drag_stopped() => state.video_request = Some(VideoRequest::Seek(to)),
             Some(to) => state.video_request = Some(VideoRequest::Scrub(to)),
             None => {
                 if let (Some(length), Some(at)) =
-                    (video.duration, response.interact_pointer_pos().filter(|_| response.clicked()))
+                    (length, response.interact_pointer_pos().filter(|_| response.clicked()))
                 {
                     state.video_request = Some(VideoRequest::Seek(seconds_at(at.x, length)));
                 }
             }
         }
         response.on_hover_text("Click or drag to go to that point in the video");
+        if let Some(place) = time_at {
+            let total = length.map_or_else(|| "–".to_owned(), clock);
+            ui.painter().text(
+                pos2(place.max.x, place.center().y),
+                Align2::RIGHT_CENTER,
+                format!("{} / {total}", clock(shown)),
+                FontId::monospace(11.5),
+                TEXT_DIM,
+            );
+        }
+        // Whether it loops and whether its sound plays.
         ui.horizontal(|ui| {
-            let total = video.duration.map_or_else(|| "–".to_owned(), clock);
-            ui.label(egui::RichText::new(format!("{} / {total}", clock(shown))).size(11.0).color(TEXT_DIM).monospace());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.selectable_label(!video.muted, "Sound").on_hover_text("Play the video's sound").clicked() {
-                    state.video_request = Some(VideoRequest::Muted(!video.muted));
-                }
-                if ui.selectable_label(video.looping, "Loop").on_hover_text("Start again at the end").clicked() {
-                    state.video_request = Some(VideoRequest::Looping(!video.looping));
-                }
-            });
+            let mut looping = video.looping;
+            if ui
+                .checkbox(&mut looping, "Loop when it ends")
+                .on_hover_text("Ticked, the video starts again from the beginning when it ends")
+                .clicked()
+            {
+                state.video_request = Some(VideoRequest::Looping(looping));
+            }
+            ui.add_space(12.0);
+            let mut sound = !video.muted;
+            if ui
+                .checkbox(&mut sound, "Sound")
+                .on_hover_text("Ticked, the video's sound plays; unticked, it is silent")
+                .clicked()
+            {
+                state.video_request = Some(VideoRequest::Muted(!sound));
+            }
         });
     });
 }
