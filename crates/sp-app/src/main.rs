@@ -385,6 +385,26 @@ fn surface_format(surface: &wgpu::Surface<'_>, adapter: &wgpu::Adapter) -> Resul
 }
 
 /// The connected displays as the window system lists them.
+/// Notes in the log where a screen's window was asked to go and which display it is on, so a
+/// screen on the wrong display can be seen from the log.
+fn log_placement(screen: &str, place: &Placed, window: &Window, displays: &[DisplayInfo]) {
+    let asked = match place {
+        Placed::Fullscreen(index) => {
+            displays.iter().find(|d| d.index == *index).map_or("a display", |d| d.name.as_str())
+        }
+        Placed::Window => "a window",
+        _ => return,
+    };
+    let on = window
+        .current_monitor()
+        .and_then(|m| displays.iter().find(|d| d.x == m.position().x && d.y == m.position().y).map(|d| d.name.clone()));
+    let at = window.outer_position().map(|p| format!("{},{}", p.x, p.y)).unwrap_or_default();
+    applog::event(
+        "screens",
+        &format!("{screen}: asked for {asked}; the window is on {} at {at}", on.as_deref().unwrap_or("?")),
+    );
+}
+
 /// The displays the operator works on, by their place in `monitors`: the one the home window is
 /// on and the one with the menu bar (macOS's main display). Empty when neither is known yet,
 /// as when the home window has just opened: no output then fills a display by guesswork.
@@ -686,6 +706,10 @@ struct ScreenWindow {
     window: Arc<Window>,
     placed: Placed,
     name: String,
+    /// When the window was last put on its display, and how many times it has been put back
+    /// after being found on another (macOS can put a full-screen window on the main display).
+    placed_at: Instant,
+    put_back: u8,
 }
 
 struct App {
@@ -3027,10 +3051,33 @@ impl App {
                 if kept.placed != *place {
                     match place {
                         Placed::Fullscreen(index) => {
+                            // Out of full screen, onto the display, then full screen there: macOS
+                            // fills the display the window is on, whatever display is asked for.
+                            if let Some(monitor) = monitors.get(*index) {
+                                kept.window.set_fullscreen(None);
+                                kept.window.set_outer_position(monitor.position());
+                            }
                             kept.window.set_fullscreen(Some(Fullscreen::Borderless(monitors.get(*index).cloned())));
                         }
                         _ => kept.window.set_fullscreen(None),
                     }
+                    log_placement(&screen.name, place, &kept.window, &displays);
+                    kept.placed_at = Instant::now();
+                    kept.put_back = 0;
+                } else if let Placed::Fullscreen(index) = place
+                    && let Some(monitor) = monitors.get(*index)
+                    && kept.put_back < 3
+                    && kept.placed_at.elapsed() >= Duration::from_secs(2)
+                    && kept.window.current_monitor().is_some_and(|on| on != *monitor)
+                {
+                    // Found on another display than the one it fills: put it back.
+                    kept.window.set_fullscreen(None);
+                    kept.window.set_outer_position(monitor.position());
+                    kept.window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor.clone()))));
+                    kept.placed_at = Instant::now();
+                    kept.put_back += 1;
+                    applog::event("screens", &format!("{}: was on another display; put back", screen.name));
+                    log_placement(&screen.name, place, &kept.window, &displays);
                     kept.window.set_cursor_visible(!matches!(place, Placed::Fullscreen(_)));
                     kept.placed = place.clone();
                 }
@@ -3043,9 +3090,14 @@ impl App {
             }
             let attrs = Window::default_attributes().with_title(format!("{} — SoftPresenter", screen.name));
             let attrs = match place {
-                Placed::Fullscreen(index) => {
-                    attrs.with_fullscreen(Some(Fullscreen::Borderless(monitors.get(*index).cloned())))
-                }
+                // Opened on the display first, as large as it, and made full screen once it is
+                // there (below): a window made full screen as it opens fills the main display on
+                // macOS, whatever display is asked for, which put the audience on the operator's
+                // monitor.
+                Placed::Fullscreen(index) => match monitors.get(*index) {
+                    Some(monitor) => attrs.with_position(monitor.position()).with_inner_size(monitor.size()),
+                    None => attrs,
+                },
                 // A screen in a window opens on a display the operator doesn't work on when there
                 // is one, so it never lands on top of the operator's own screen.
                 _ => {
@@ -3075,6 +3127,13 @@ impl App {
                     continue;
                 }
             };
+            if let Placed::Fullscreen(index) = place
+                && let Some(monitor) = monitors.get(*index)
+            {
+                window.set_outer_position(monitor.position());
+                window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor.clone()))));
+            }
+            log_placement(&screen.name, place, &window, &displays);
             window.set_cursor_visible(!matches!(place, Placed::Fullscreen(_)));
             let surface = match context.instance.create_surface(window.clone()) {
                 Ok(surface) => surface,
@@ -3097,6 +3156,8 @@ impl App {
                 window,
                 placed: place.clone(),
                 name: screen.name.clone(),
+                placed_at: Instant::now(),
+                put_back: 0,
             });
             opened = true;
         }
