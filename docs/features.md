@@ -193,6 +193,10 @@ feature changes, this page changes in the same commit.
   slides still draws a box to pick them out.
 - The Edit view lists the song's slides as cards, as the Show view does: each picture with a
   bar in its group's colour under it, its number, and the group's name on its first slide.
+  ↑ and ↓ open the slide before or after (with no object selected). Shift-click picks out the
+  slides from the one open to the one clicked, Command-click picks one out or puts it back, as
+  in the Show view and the lists of songs and media; the slides picked out move together when
+  one is dragged, and Cmd-C copies them.
 - An editor for a song's slides: move, resize and restyle text boxes, with alignment guides
   and a safe-area edge, multi-select (Shift or Command, or drag a box around them), copy and
   paste, undo, renaming by clicking a name, font search, and typing straight on the slide.

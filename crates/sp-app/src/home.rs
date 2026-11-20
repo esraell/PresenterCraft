@@ -165,6 +165,8 @@ pub struct HomeState {
     /// The Edit view's undo order, newest last: each step a change to the slide being edited
     /// (undone by the draft) or to the song's slides (moved, pasted, deleted; undone by the
     /// app); and the steps undone, to redo. The draft the slide's steps belong to.
+    /// Scroll the Edit view's list to the slide being edited, once (after ↑ or ↓).
+    pub edit_list_scroll: bool,
     pub edit_steps: Vec<EditStep>,
     pub edit_redo: Vec<EditStep>,
     pub edit_steps_draft: u64,
@@ -976,6 +978,7 @@ impl Default for HomeState {
             picture_to_add: Vec::new(),
             slide_clip: Vec::new(),
             slide_clip_text: String::new(),
+            edit_list_scroll: false,
             edit_steps: Vec::new(),
             edit_redo: Vec::new(),
             edit_steps_draft: 0,
@@ -1414,9 +1417,23 @@ fn edit_view(
                 // Pasting again lands further on, not on top of the last copy.
                 state.object_clip = draft.copied(theme);
             } else if copy && draft.selected.is_none() && !theme_mode && !prop_mode {
-                // With no object selected, Copy takes the slide itself, as it now is.
-                let slide = draft.slide.clone();
-                copy_these_slides(ui.ctx(), state, vec![slide]);
+                // With no object selected, Copy takes the slides picked out in the list, or the
+                // slide itself, as it now is.
+                let mut picked: Vec<usize> = state
+                    .picked_slides
+                    .iter()
+                    .filter(|p| p.presentation == draft.at.presentation)
+                    .map(|p| p.slide)
+                    .collect();
+                picked.sort_unstable();
+                let song = show.presentations().get(draft.at.presentation).cloned();
+                match song {
+                    Some(song) if picked.len() > 1 => copy_slides(ui.ctx(), state, &song, &picked),
+                    _ => {
+                        let slide = draft.slide.clone();
+                        copy_these_slides(ui.ctx(), state, vec![slide]);
+                    }
+                }
             } else if let Some(text) = pasted.as_ref()
                 && !state.slide_clip.is_empty()
                 && *text == state.slide_clip_text
@@ -1602,6 +1619,29 @@ fn edit_view(
         && state.confirm_delete_theme.is_none();
     // Left: the slide navigator, with the slide's objects below it.
     let mut chosen = None;
+    // With no object selected and nothing being typed, ↑ and ↓ open the slide before or after.
+    if !theme_mode
+        && !prop_mode
+        && !typing
+        && let Some(draft) = state.editing.as_ref().filter(|draft| draft.selected.is_none())
+    {
+        let (up, down) =
+            ui.input(|input| (input.key_pressed(egui::Key::ArrowUp), input.key_pressed(egui::Key::ArrowDown)));
+        let count = show.presentations().get(draft.at.presentation).map_or(0, |song| song.slide_count());
+        let at = draft.at;
+        let to = if up && at.slide > 0 {
+            Some(at.slide - 1)
+        } else if down && at.slide + 1 < count {
+            Some(at.slide + 1)
+        } else {
+            None
+        };
+        if let Some(slide) = to {
+            chosen = Some(SlideRef { slide, ..at });
+            state.picked_slides.clear();
+            state.edit_list_scroll = true;
+        }
+    }
     let mut chosen_template = None;
     // The Theme Editor's column is a little wider, for the list of themes.
     let column = if theme_mode { 224.0 } else { 186.0 };
@@ -2217,6 +2257,8 @@ fn edit_view(
                                 );
                                 let outline = if selected {
                                     Some(Stroke::new(2.0, EDIT_OUTLINE))
+                                } else if state.picked_slides.contains(&here) {
+                                    Some(Stroke::new(2.0, SELECTED_OUTLINE))
                                 } else if response.hovered() {
                                     Some(Stroke::new(1.0, crate::studio::TEXT_FAINT))
                                 } else {
@@ -2229,12 +2271,21 @@ fn edit_view(
                                     ui.painter().rect_filled(card, f32::from(round), Color32::from_black_alpha(150));
                                 }
                             }
+                            if selected && std::mem::take(&mut state.edit_list_scroll) {
+                                response.scroll_to_me(Some(Align::Center));
+                            }
                             if movable {
+                                // Dragged, it goes with the slides picked out with it.
                                 if response.dragged() {
-                                    response.dnd_set_drag_payload(SlideDrag {
-                                        presentation: at.presentation,
-                                        slides: vec![index],
-                                    });
+                                    let mut picked: Vec<usize> = state
+                                        .picked_slides
+                                        .iter()
+                                        .filter(|p| p.presentation == at.presentation)
+                                        .map(|p| p.slide)
+                                        .collect();
+                                    picked.sort_unstable();
+                                    let slides = if picked.contains(&index) { picked } else { vec![index] };
+                                    response.dnd_set_drag_payload(SlideDrag { presentation: at.presentation, slides });
                                 }
                                 let target = |drag: &SlideDrag| {
                                     drag.presentation == at.presentation && !drag.slides.contains(&index)
@@ -2270,8 +2321,26 @@ fn edit_view(
                                     }
                                 });
                             }
-                            if response.clicked() && !selected {
-                                chosen = Some(here);
+                            if response.clicked() {
+                                let mods = ui.input(|input| input.modifiers);
+                                if (mods.command || mods.shift) && movable {
+                                    // Picked out, to move, copy or delete several; the slide open
+                                    // stays open, and is picked out with them.
+                                    let total = presentation.map_or(0, |song| song.slide_count());
+                                    let order: Vec<SlideRef> = (0..total)
+                                        .map(|slide| SlideRef { presentation: at.presentation, slide })
+                                        .collect();
+                                    state.picked_slides.retain(|p| p.presentation == at.presentation);
+                                    if state.picked_slides.is_empty() {
+                                        state.picked_slides.push(at);
+                                    }
+                                    pick_slide(&mut state.picked_slides, &order, here, mods, Some(at));
+                                } else {
+                                    state.picked_slides.clear();
+                                    if !selected {
+                                        chosen = Some(here);
+                                    }
+                                }
                             }
                             index += 1;
                         }
@@ -5504,17 +5573,26 @@ fn sweep_slides(ui: &mut egui::Ui, state: &mut HomeState) {
 
 /// Picks out a slide as a Command- or Shift-click does: Command adds or takes away one; Shift
 /// picks the run from the last one picked to it, in the order the slides are shown.
-fn pick_slide(picked: &mut Vec<SlideRef>, order: &[SlideRef], here: SlideRef, mods: egui::Modifiers) {
+/// Picks out slides as the Finder does: Shift picks every slide from the last one picked (or,
+/// with none, from `anchor`, the slide clicked last) to this one; Command picks this one out, or
+/// puts it back.
+fn pick_slide(
+    picked: &mut Vec<SlideRef>,
+    order: &[SlideRef],
+    here: SlideRef,
+    mods: egui::Modifiers,
+    anchor: Option<SlideRef>,
+) {
     if mods.shift
-        && let Some(from) = picked.last().and_then(|last| order.iter().position(|at| at == last))
+        && let Some(from) = picked.last().copied().or(anchor).and_then(|last| order.iter().position(|at| *at == last))
         && let Some(to) = order.iter().position(|at| *at == here)
     {
+        // As in the lists of songs and media: the slides between, and only those, the one it
+        // ran from last so a further Shift-click runs from the same place.
         let (a, b) = (from.min(to), from.max(to));
-        for at in &order[a..=b] {
-            if !picked.contains(at) {
-                picked.push(*at);
-            }
-        }
+        let start = order[from];
+        *picked = order[a..=b].iter().copied().filter(|at| *at != start).collect();
+        picked.push(start);
         return;
     }
     match picked.iter().position(|at| *at == here) {
@@ -5748,7 +5826,8 @@ fn song_slides(
                 // Picked out without going on screen, to delete several at once.
                 state.picking = Picking::Slides;
                 let order: Vec<SlideRef> = state.slide_rects.iter().map(|(at, _)| *at).collect();
-                pick_slide(&mut state.picked_slides, &order, here, mods);
+                let anchor = state.selected_slide.or(show.live()).filter(|at| at.presentation == which);
+                pick_slide(&mut state.picked_slides, &order, here, mods, anchor);
             } else if response.clicked() {
                 state.selected_slide = None;
                 state.picked_slides.clear();
@@ -7002,15 +7081,55 @@ mod tests {
     }
 
     #[test]
+    fn up_and_down_in_the_editor_open_the_slide_before_and_after() {
+        let show = show(3);
+        let ctx = egui::Context::default();
+        let mut state =
+            HomeState { editing: EditDraft::of(&show, SlideRef { presentation: 0, slide: 0 }), ..HomeState::default() };
+        let key =
+            |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        let run = |state: &mut HomeState, events: Vec<Event>| {
+            let raw = RawInput { focused: true, events, ..input(None) };
+            let output = ctx.run_ui(raw, |ui| {
+                home_ui(ui, &show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            output.drop_without_applying_deltas();
+        };
+        let open = |state: &HomeState| state.editing.as_ref().map(|draft| draft.at.slide);
+        run(&mut state, Vec::new());
+        run(&mut state, vec![key(Key::ArrowDown)]);
+        assert_eq!(open(&state), Some(1));
+        run(&mut state, vec![key(Key::ArrowDown)]);
+        run(&mut state, vec![key(Key::ArrowDown)]);
+        assert_eq!(open(&state), Some(2), "stops at the last");
+        run(&mut state, vec![key(Key::ArrowUp)]);
+        assert_eq!(open(&state), Some(1));
+    }
+
+    #[test]
     fn command_and_shift_pick_slides_as_the_finder_does() {
         let at = |slide| SlideRef { presentation: 0, slide };
         let order: Vec<SlideRef> = (0..6).map(at).collect();
+        let sorted = |picked: &[SlideRef]| {
+            let mut slides: Vec<usize> = picked.iter().map(|at| at.slide).collect();
+            slides.sort_unstable();
+            slides
+        };
         let mut picked = Vec::new();
-        pick_slide(&mut picked, &order, at(1), Modifiers::COMMAND);
-        pick_slide(&mut picked, &order, at(4), Modifiers::SHIFT);
-        assert_eq!(picked, vec![at(1), at(2), at(3), at(4)]);
-        pick_slide(&mut picked, &order, at(2), Modifiers::COMMAND);
-        assert_eq!(picked, vec![at(1), at(3), at(4)]);
+        pick_slide(&mut picked, &order, at(1), Modifiers::COMMAND, None);
+        pick_slide(&mut picked, &order, at(4), Modifiers::SHIFT, None);
+        assert_eq!(sorted(&picked), [1, 2, 3, 4]);
+        // Shift again runs from the same place, and only that range is picked.
+        pick_slide(&mut picked, &order, at(2), Modifiers::SHIFT, None);
+        assert_eq!(sorted(&picked), [1, 2]);
+        pick_slide(&mut picked, &order, at(5), Modifiers::COMMAND, None);
+        assert_eq!(sorted(&picked), [1, 2, 5]);
+        pick_slide(&mut picked, &order, at(2), Modifiers::COMMAND, None);
+        assert_eq!(sorted(&picked), [1, 5]);
+        // Nothing picked yet: Shift runs from the slide clicked last.
+        let mut picked = Vec::new();
+        pick_slide(&mut picked, &order, at(3), Modifiers::SHIFT, Some(at(0)));
+        assert_eq!(sorted(&picked), [0, 1, 2, 3]);
     }
 
     #[test]
