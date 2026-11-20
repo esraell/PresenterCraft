@@ -105,7 +105,7 @@ pub const BOOKS: [Book; 66] = [
     book!("2CO", "2 Corinthians", ["2co", "2cor"], "2 Коринфянам", ["2кор"], "2 до коринтян", ["2кор"]),
     book!("GAL", "Galatians", ["gal"], "Галатам", ["гал"], "До галатів", ["гал"]),
     book!("EPH", "Ephesians", ["eph"], "Ефесянам", ["еф"], "До ефесян", ["еф"]),
-    book!("PHI", "Philippians", ["phi", "phil", "php"], "Филиппийцам", ["флп", "фил"], "До филип'ян", ["фил"]),
+    book!("PHI", "Philippians", ["phi", "phil", "php"], "Филиппийцам", ["флп", "фил"], "До филип\u{2019}ян", ["фил"]),
     book!("COL", "Colossians", ["col"], "Колоссянам", ["кол"], "До колосян", ["кол"]),
     book!(
         "1TH",
@@ -143,14 +143,19 @@ pub const BOOKS: [Book; 66] = [
         ["rev", "rv", "revelations"],
         "Откровение",
         ["откр", "отк"],
-        "Об'явлення",
+        "Об\u{2019}явлення",
         ["об", "обявлення"]
     ),
 ];
 
 /// What someone typed for a book, made comparable: lower case, no spaces or full stops.
+/// What was typed, or a name, for matching: no spaces, full stops or apostrophes (typed as
+/// ', ’ or ʼ), in lower case.
 fn plain(text: &str) -> String {
-    text.chars().filter(|c| !c.is_whitespace() && *c != '.').flat_map(char::to_lowercase).collect()
+    text.chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '.' | '\'' | '\u{2019}' | '\u{2bc}'))
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// Whether a book's name starts with what was typed (already plain), also without the word
@@ -253,6 +258,18 @@ pub fn book_by_code(code: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_apostrophe_typed_any_way_finds_the_book() {
+        let revelation = BOOKS.iter().position(|book| book.code == "REV");
+        let philippians = BOOKS.iter().position(|book| book.code == "PHI");
+        for typed in ["Об'явлення", "Об\u{2019}явлення", "Об\u{2bc}явлення", "Обявлення"]
+        {
+            assert_eq!(find_book_in(typed, "uk"), revelation, "{typed}");
+        }
+        assert_eq!(find_book_in("До филип'ян", "uk"), philippians);
+        assert_eq!(BOOKS[revelation.unwrap()].ukrainian, "Об\u{2019}явлення", "shown with a typographic apostrophe");
+    }
 
     #[test]
     fn suggestions_rank_exact_forms_then_the_bibles_language_and_name_the_book_as_matched() {
