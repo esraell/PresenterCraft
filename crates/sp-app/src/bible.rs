@@ -434,6 +434,14 @@ pub const OFFERED: &[Offered] = &[
         terms: "Public domain",
         checksum: "2f7f15cdc4bcdd1bde456487d202258846c6259aafa0feeb83f5038bef3d63a3",
     },
+    Offered {
+        language: "Ukrainian",
+        name: "Новий переклад українською (Новий Завіт і Псалми)",
+        short: "НПУ",
+        id: "ukronpu",
+        terms: "CC BY-SA 4.0",
+        checksum: "5c34d4bfce41efa33e85bf003160d1c4b439a275083a0c5de5a8f14040dc3265",
+    },
 ];
 
 #[derive(Debug)]

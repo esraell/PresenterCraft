@@ -39,6 +39,7 @@ knowledge.
 | Spanish | Reina-Valera (1909) | `spaRV1909` | Public domain | Nothing |
 | Spanish | Versión Biblia Libre | `spavbl` | CC BY-SA 4.0 | Credit; changed text stays under the same licence |
 | Ukrainian | Куліш and Пулюй (1905) | `ukr1871` | Public domain | Nothing |
+| Ukrainian | Open New Ukrainian Translation, New Testament and Psalms (2022) | `ukronpu` | © 2022 Biblica, Inc., CC BY-SA 4.0 | Credit Biblica and the licence (the file carries both); anything made from the text is shared under the same licence; "Biblica" is a trademark, so it isn't used in the translation's name in the app. It follows the Synodal numbering (4 of its 410 chapters differ) |
 
 Rules that follow from these terms:
 
@@ -94,18 +95,19 @@ has bought one of these elsewhere cannot get it through SoftPresenter.
 
 ## Downloads
 
-- The Bibles under "Free" are files attached to the project's `bibles-2` release on GitHub.
+- The Bibles under "Free" are files attached to the project's `bibles-3` release on GitHub (`bibles-2` holds the first fifteen, unchanged, for older versions of the app).
   Install fetches `<id>.spbible` from there, checks it against the SHA-256 written into the
   app for that Bible, checks that it reads as that Bible, and only then keeps it in the
   Bibles folder (`~/Library/Application Support/SoftPresenter/Bibles` on a Mac). A file with
   any other checksum is not installed.
 - Dropping a `.spbible` file on the window installs it too.
-- To publish a new or corrected Bible: convert it, attach it to a new release (`bibles-2`),
+- To publish a new or corrected Bible: convert it, attach it to a new release (the next `bibles-N`, with every file the app offers),
   and update its checksum and the release name in the app. Files in a release that the app
   already points at must never be replaced, or older versions of the app will refuse them.
-- Offered now (15): ASV, Young's, Darby, Geneva, Louis Segond, French Darby, Luther 1912,
+- Offered now (16): ASV, Young's, Darby, Geneva, Louis Segond, French Darby, Luther 1912,
   Elberfelder 1905, SBL Greek New Testament, Byzantine, Westminster Leningrad Codex, Bíblia
-  Livre, Reina-Valera 1909, Versión Biblia Libre, Kulish.
+  Livre, Reina-Valera 1909, Versión Biblia Libre, Kulish, and the Open New Ukrainian
+  Translation (added 2026-11-19 in `bibles-3`).
 - Not offered yet, though free: Douay-Rheims and Brenton's Septuagint (they have books beyond
   the sixty-six, which the app does not handle yet) and the Russian Open Bible (published in a
   different file format).
