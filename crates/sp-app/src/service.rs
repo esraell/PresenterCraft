@@ -312,6 +312,9 @@ pub struct Prefs {
     /// True when the Bible page's book, chapter and verse lists were put away.
     #[serde(default)]
     pub bible_lists_hidden: bool,
+    /// True when the Bible page's table of translations was left open.
+    #[serde(default)]
+    pub bible_rows_open: bool,
 }
 
 /// When a song's copyright line is shown.
@@ -369,6 +372,7 @@ impl Default for Prefs {
             start_with: StartWith::Nothing,
             setup_done: false,
             bible_lists_hidden: false,
+            bible_rows_open: false,
         }
     }
 }

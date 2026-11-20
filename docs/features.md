@@ -159,7 +159,10 @@ feature changes, this page changes in the same commit.
   for earlier ones); one click brings a passage back. It is kept between starts, holds the last
   hundred, and Clear History empties it.
 - Up to four translations on one slide, lined up by verse using the standard versification
-  tables; each row picks its Bible (or None) and the boxes its verse and reference go in.
+  tables; each row picks its Bible (or None) and the boxes its verse and reference go in. As
+  this is set once and seldom changed, it is folded into one line, TRANSLATIONS with each
+  Bible's short name (where it goes, on hover); Change opens the table and Done folds it
+  again, and the app remembers which.
 - Options opens a panel: what each slide shows (one verse, or the whole passage), verse numbers,
   the translation's name, where the reference goes (on every slide, the whole passage on every
   slide or the last, or none) and the theme, beside a preview of the first and last slides that

@@ -504,6 +504,9 @@ pub struct BiblePage {
     /// chapter open in them (chapter 0 for none yet), the verse a Shift-click runs from, and
     /// whether to scroll them to what is open.
     pub lists_open: bool,
+    /// Whether the table of translations (which Bibles, which boxes) is open, rather than
+    /// folded into one line.
+    pub rows_open: bool,
     pub list_book: usize,
     pub list_chapter: u16,
     pub list_from: Option<u16>,
@@ -555,6 +558,7 @@ impl Default for BiblePage {
             history: Vec::new(),
             history_changed: false,
             lists_open: true,
+            rows_open: false,
             list_book: 0,
             list_chapter: 0,
             list_from: None,
@@ -1131,6 +1135,7 @@ impl HomeState {
             stage_off: !self.stage_on,
             setup_done: self.setup_done,
             bible_lists_hidden: !self.bible.lists_open,
+            bible_rows_open: self.bible.rows_open,
             ..crate::service::Prefs::default()
         }
     }
@@ -1160,6 +1165,7 @@ impl HomeState {
         self.stage_on = !prefs.stage_off;
         self.setup_done = prefs.setup_done;
         self.bible.lists_open = !prefs.bible_lists_hidden;
+        self.bible.rows_open = prefs.bible_rows_open;
     }
 
     /// How long a new picture takes to fade in on the output; zero when slides cut.
@@ -4497,108 +4503,158 @@ fn bible_area(
             let ends = 26.0 + 28.0 + gap * 2.0;
             let room = (ui.available_width() - ends - gap * 2.0).max(240.0);
             let (bible_width, menu_width) = ((room * 0.44).floor(), (room * 0.28).floor());
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for (heading, width) in
-                    [("TRANSLATION", bible_width), ("VERSE GOES IN", menu_width), ("REFERENCE GOES IN", menu_width)]
-                {
-                    let (place, _) = ui.allocate_exact_size(vec2(width, 14.0), Sense::hover());
-                    ui.painter().with_clip_rect(place).text(
-                        place.left_center() + vec2(2.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        heading,
-                        FontId::proportional(10.0),
-                        Color32::from_gray(130),
-                    );
-                }
-            });
-            for (index, row) in state.bible.rows.iter_mut().enumerate() {
-                // Boxes another translation already fills are not offered again.
-                let taken = |by_verse: bool| -> Vec<sp_model::Role> {
-                    used.iter()
-                        .enumerate()
-                        .flat_map(|(other, (verse, reference))| {
-                            let mine = other == index;
-                            let verse = verse.clone().filter(|_| !(mine && by_verse));
-                            let reference = reference.clone().filter(|_| !mine);
-                            [verse, reference]
-                        })
-                        .flatten()
-                        .collect()
-                };
-                let shelved = row.bible.and_then(|at| state.bible.shelf.bibles.get(at));
-                let chosen = shelved.map_or("None", |b| b.name.as_str()).to_owned();
-                // Each picker held to its column's width; a longer name is cut off.
-                let column = |ui: &mut egui::Ui, width: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
-                    ui.allocate_ui_with_layout(vec2(width, 28.0), Layout::left_to_right(Align::Center), |ui| {
-                        ui.set_max_width(width);
-                        add(ui);
-                    });
-                };
+            // Which Bibles show, and where their words go, is set once and seldom changed: folded
+            // into one line of the translations' short names, with Change to open the table (and
+            // Done to fold it again). Whether it is open is kept between starts.
+            let mut fold = false;
+            if state.bible.rows_open {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
-                    column(ui, bible_width, &mut |ui| {
-                        egui::ComboBox::from_id_salt(("bible translation", index))
-                            .selected_text(&chosen)
-                            .width(bible_width)
-                            .truncate()
-                            .show_ui(ui, |ui| {
-                                // None frees the row's Bible for another row: to swap two, set one
-                                // row to None, give its Bible to the other, then pick again.
-                                if ui
-                                    .add(egui::Button::selectable(row.bible.is_none(), "None"))
-                                    .on_hover_text("Show no Bible in this row, so its Bible can go to another row")
-                                    .clicked()
-                                {
-                                    row.bible = None;
-                                }
-                                ui.separator();
-                                // A Bible another row already shows is greyed out.
-                                for (place, bible) in state.bible.shelf.bibles.iter().enumerate() {
-                                    let elsewhere = row.bible != Some(place) && bibles_used.contains(&place);
-                                    let label = format!("{} ({})", bible.name, bible.short);
-                                    let item = ui.add_enabled(
-                                        !elsewhere,
-                                        egui::Button::selectable(row.bible == Some(place), label),
-                                    );
-                                    if item
-                                        .on_disabled_hover_text(
-                                            "Another row shows this Bible. Set that row to None first.",
-                                        )
+                    for (heading, width) in
+                        [("TRANSLATION", bible_width), ("VERSE GOES IN", menu_width), ("REFERENCE GOES IN", menu_width)]
+                    {
+                        let (place, _) = ui.allocate_exact_size(vec2(width, 14.0), Sense::hover());
+                        ui.painter().with_clip_rect(place).text(
+                            place.left_center() + vec2(2.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            heading,
+                            FontId::proportional(10.0),
+                            Color32::from_gray(130),
+                        );
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("Done").on_hover_text("Fold the translations away into one line").clicked() {
+                            fold = true;
+                        }
+                    });
+                });
+                for (index, row) in state.bible.rows.iter_mut().enumerate() {
+                    // Boxes another translation already fills are not offered again.
+                    let taken = |by_verse: bool| -> Vec<sp_model::Role> {
+                        used.iter()
+                            .enumerate()
+                            .flat_map(|(other, (verse, reference))| {
+                                let mine = other == index;
+                                let verse = verse.clone().filter(|_| !(mine && by_verse));
+                                let reference = reference.clone().filter(|_| !mine);
+                                [verse, reference]
+                            })
+                            .flatten()
+                            .collect()
+                    };
+                    let shelved = row.bible.and_then(|at| state.bible.shelf.bibles.get(at));
+                    let chosen = shelved.map_or("None", |b| b.name.as_str()).to_owned();
+                    // Each picker held to its column's width; a longer name is cut off.
+                    let column = |ui: &mut egui::Ui, width: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+                        ui.allocate_ui_with_layout(vec2(width, 28.0), Layout::left_to_right(Align::Center), |ui| {
+                            ui.set_max_width(width);
+                            add(ui);
+                        });
+                    };
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        column(ui, bible_width, &mut |ui| {
+                            egui::ComboBox::from_id_salt(("bible translation", index))
+                                .selected_text(&chosen)
+                                .width(bible_width)
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    // None frees the row's Bible for another row: to swap two, set one
+                                    // row to None, give its Bible to the other, then pick again.
+                                    if ui
+                                        .add(egui::Button::selectable(row.bible.is_none(), "None"))
+                                        .on_hover_text("Show no Bible in this row, so its Bible can go to another row")
                                         .clicked()
                                     {
-                                        row.bible = Some(place);
+                                        row.bible = None;
                                     }
-                                }
-                            });
+                                    ui.separator();
+                                    // A Bible another row already shows is greyed out.
+                                    for (place, bible) in state.bible.shelf.bibles.iter().enumerate() {
+                                        let elsewhere = row.bible != Some(place) && bibles_used.contains(&place);
+                                        let label = format!("{} ({})", bible.name, bible.short);
+                                        let item = ui.add_enabled(
+                                            !elsewhere,
+                                            egui::Button::selectable(row.bible == Some(place), label),
+                                        );
+                                        if item
+                                            .on_disabled_hover_text(
+                                                "Another row shows this Bible. Set that row to None first.",
+                                            )
+                                            .clicked()
+                                        {
+                                            row.bible = Some(place);
+                                        }
+                                    }
+                                });
+                        });
+                        column(ui, menu_width, &mut |ui| {
+                            target_menu(
+                                ui,
+                                ("bible verse", index),
+                                &mut row.verse,
+                                &boxes,
+                                &labels,
+                                &taken(true),
+                                None,
+                                menu_width,
+                            );
+                        });
+                        let with = row.verse.clone();
+                        column(ui, menu_width, &mut |ui| {
+                            target_menu(
+                                ui,
+                                ("bible reference", index),
+                                &mut row.reference,
+                                &boxes,
+                                &labels,
+                                &taken(false),
+                                with.as_ref(),
+                                menu_width,
+                            );
+                        });
+                        bible_row_extras(ui, index, count, shelved, &mut add, &mut remove);
                     });
-                    column(ui, menu_width, &mut |ui| {
-                        target_menu(
-                            ui,
-                            ("bible verse", index),
-                            &mut row.verse,
-                            &boxes,
-                            &labels,
-                            &taken(true),
-                            None,
-                            menu_width,
+                }
+            } else {
+                let mut open = false;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label(egui::RichText::new("TRANSLATIONS").size(10.0).color(Color32::from_gray(130)));
+                    ui.add_space(4.0);
+                    for row in &state.bible.rows {
+                        let Some(bible) = row.bible.and_then(|at| state.bible.shelf.bibles.get(at)) else { continue };
+                        let goes = |target: &BibleTarget| {
+                            target.as_ref().map_or("nowhere".to_owned(), |role| {
+                                boxes
+                                    .iter()
+                                    .position(|(have, _)| have == role)
+                                    .and_then(|at| labels.get(at).cloned())
+                                    .unwrap_or_else(|| role.label())
+                            })
+                        };
+                        let tag =
+                            egui::Button::new(egui::RichText::new(bible.short.as_str()).size(12.0)).corner_radius(10);
+                        let hint = format!(
+                            "{}: its words go in {}, its reference in {}",
+                            bible.name,
+                            goes(&row.verse),
+                            goes(&row.reference)
                         );
-                    });
-                    let with = row.verse.clone();
-                    column(ui, menu_width, &mut |ui| {
-                        target_menu(
-                            ui,
-                            ("bible reference", index),
-                            &mut row.reference,
-                            &boxes,
-                            &labels,
-                            &taken(false),
-                            with.as_ref(),
-                            menu_width,
-                        );
-                    });
-                    bible_row_extras(ui, index, count, shelved, &mut add, &mut remove);
+                        if ui.add(tag).on_hover_text(hint).clicked() {
+                            open = true;
+                        }
+                    }
+                    if ui.button("Change").on_hover_text("Choose the Bibles shown and the boxes they go in").clicked() {
+                        open = true;
+                    }
                 });
+                if open {
+                    state.bible.rows_open = true;
+                }
+            }
+            if fold {
+                state.bible.rows_open = false;
             }
             if add {
                 state.bible.add_row();
