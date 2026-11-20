@@ -474,8 +474,13 @@ impl Client {
                                 *have = saved.clone();
                             }
                         }
-                        Err(Saving::Changed(_)) => {
-                            crate::applog::event("voxlive", "a look wasn't saved: the screen changed in VoxLive")
+                        // The refusal carries the screen as VoxLive has it now: take it, so its
+                        // look shows what is really there and a second save goes over it.
+                        Err(Saving::Changed(now)) => {
+                            crate::applog::event("voxlive", "a look wasn't saved: the screen changed in VoxLive");
+                            if let Some(have) = self.screens.iter_mut().find(|have| have.id == now.id) {
+                                *have = (**now).clone();
+                            }
                         }
                         Err(Saving::Failed(why)) => crate::applog::problem("voxlive", why),
                     }

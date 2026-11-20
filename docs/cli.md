@@ -592,7 +592,7 @@ VoxLive screens.
 | `voxlive connect` | Connects with a key read from the standard input, never from an argument (an argument would stay in the shell's history): pipe it in or paste it. The key is checked in the background; `voxlive` then says how it went |
 | `voxlive show N\|NAME` | Puts that VoxLive screen's captions on the screens, in place of what is there, as a click in the VoxLive tab does (`go` and `next` then move on as usual) |
 | `voxlive look N\|NAME` | That screen's look: every setting VoxLive describes, with its value and its choices or range (JSON: the look's settings) |
-| `voxlive look N\|NAME setting=value …` | Saves those settings of the screen's look to VoxLive (the screen changes at once, wherever it shows). Each is checked against VoxLive's description first: one of its values, a colour such as `#FFE14D`, `on` or `off`, or a number in its range. If the screen changed in VoxLive since it was last found, nothing is written; `voxlive` says how it went |
+| `voxlive look N\|NAME setting=value …` | Saves those settings of the screen's look to VoxLive (the screen changes at once, wherever it shows). Each is checked against VoxLive's description first: one of its values, a colour such as `#FFE14D`, `on` or `off`, or a number in its range. If the screen changed in VoxLive since it was last found, nothing is written and the screen is taken as VoxLive has it now (so `voxlive look N` shows it, and the same command again saves over it); `voxlive` says how it went |
 | `voxlive refresh` | Finds the screens again now (they are also found every 30 seconds) |
 | `voxlive disconnect --yes` | Forgets the key on this computer (it stays in VoxLive until revoked there) |
 
