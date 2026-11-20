@@ -2277,60 +2277,71 @@ fn transition_settings(ui: &mut egui::Ui, look: &mut sp_model::Transition, id: &
 /// The colour of a choice that is on (the video loops).
 const ON: Color32 = Color32::from_rgb(52, 199, 89);
 
-/// The video on screen: its name; the bar, to click or drag through it, with the time gone and
-/// the whole length under its two ends; and under that the controls as icons: Loop at the left
-/// (green while on), Start Over and Play or Pause in the middle, and Sound at the right (a
-/// speaker, struck through while muted).
+/// How far Forward goes in the video on screen, in seconds.
+const VIDEO_STEP: f64 = 10.0;
+
+/// The video on screen, as a media player shows it: its name; a slim bar to click or drag
+/// through, the playhead showing under the pointer; the time gone and the time left; and the
+/// controls in one group about Play or Pause in the middle: Loop, Start Over, Play or Pause,
+/// Forward ten seconds, and Sound.
 fn video_controls(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home::VideoLive, width: f32) {
     use crate::home::VideoRequest;
     let clock = |seconds: f64| crate::audio::clock(std::time::Duration::from_secs_f64(seconds.max(0.0)));
-    // An icon that is a button: a round patch under the pointer.
-    let icon_button = |ui: &egui::Ui, at: egui::Pos2, side: f32, icon: Icon, ink: Color32, id: &str, hint: &str| {
-        let cell = Rect::from_center_size(at, vec2(side, side));
+    // A round button that is only its icon: a patch under the pointer.
+    let round = |ui: &egui::Ui, at: egui::Pos2, id: &str, hint: &str| {
+        let cell = Rect::from_center_size(at, vec2(34.0, 34.0));
         let response = ui.interact(cell, ui.scope_id().with(id), Sense::click());
         if response.hovered() {
-            ui.painter().circle_filled(cell.center(), side / 2.0, HOVER);
+            ui.painter().circle_filled(at, 17.0, Color32::from_white_alpha(18));
         }
-        icons::paint(ui.painter(), icon, Rect::from_center_size(cell.center(), vec2(side * 0.5, side * 0.5)), ink);
         response.on_hover_text(hint)
     };
     egui::Frame::new()
         .fill(CARD)
-        .corner_radius(8)
-        .inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 6 })
+        .corner_radius(10)
+        .inner_margin(egui::Margin { left: 14, right: 14, top: 10, bottom: 8 })
         .show(ui, |ui| {
-            ui.set_width(width - 24.0);
-            ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-            ui.add(
-                egui::Label::new(egui::RichText::new(video.name.as_str()).font(semibold(12.5)).color(TEXT)).truncate(),
-            );
+            ui.set_width(width - 28.0);
+            ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
+            // The name, with a small mark that it is a video.
+            ui.horizontal(|ui| {
+                let (mark, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                icons::paint(ui.painter(), Icon::Camera, mark, TEXT_DIM);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(video.name.as_str()).font(semibold(12.5)).color(TEXT))
+                        .truncate(),
+                );
+            });
+            ui.add_space(6.0);
             let length = video.duration;
-            // The bar: a rounded track, the part played filled, and the playhead.
-            let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::click_and_drag());
-            let track = Rect::from_center_size(bar.center(), vec2(bar.width() - 12.0, 6.0));
+            // The bar: a slim rounded track, the part played in white, the playhead under the
+            // pointer (and while dragged).
+            let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0), Sense::click_and_drag());
+            let active = response.hovered() || response.dragged();
+            let track = Rect::from_center_size(bar.center(), vec2(bar.width(), if active { 6.0 } else { 4.0 }));
             let seconds_at =
                 |x: f32, length: f64| f64::from(((x - track.min.x) / track.width()).clamp(0.0, 1.0)) * length;
-            // While the playhead is dragged it follows the pointer, not the player, which catches
-            // up a moment later (or, playing through FFmpeg, at the end of the drag).
+            // While the playhead is dragged it follows the pointer, not the player, which
+            // catches up a moment later (or, playing through FFmpeg, at the end of the drag).
             let dragged = length
                 .zip(response.interact_pointer_pos().filter(|_| response.dragged() || response.drag_stopped()))
                 .map(|(length, at)| seconds_at(at.x, length));
             let shown = dragged.unwrap_or(video.position);
             let fraction = length.map_or(0.0, |length| (shown / length.max(0.001)).clamp(0.0, 1.0));
             let x = track.min.x + track.width() * fraction as f32;
-            let active = response.hovered() || response.dragged();
-            ui.painter().rect_filled(track, 3.0, Color32::from_gray(70));
+            ui.painter().rect_filled(track, 3.0, Color32::from_white_alpha(38));
             ui.painter().rect_filled(Rect::from_min_max(track.min, pos2(x, track.max.y)), 3.0, Color32::WHITE);
-            if length.is_some() {
-                let knob = pos2(x, track.center().y);
-                ui.painter().circle_filled(knob, if active { 8.0 } else { 6.5 }, Color32::WHITE);
-                ui.painter().circle_stroke(
-                    knob,
-                    if active { 8.0 } else { 6.5 },
-                    Stroke::new(1.0, Color32::from_black_alpha(90)),
-                );
-                if active {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            if active && let Some(length) = length {
+                ui.painter().circle_filled(pos2(x, track.center().y), 7.0, Color32::WHITE);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                // Where a click would go, over the bar.
+                if let Some(hover) = response.hover_pos().filter(|_| !response.dragged()) {
+                    let tip = clock(seconds_at(hover.x, length));
+                    let at = pos2(hover.x.clamp(track.min.x + 16.0, track.max.x - 16.0), bar.min.y - 9.0);
+                    let galley = ui.painter().layout_no_wrap(tip, FontId::proportional(11.0), TEXT);
+                    let pill = Rect::from_center_size(at, galley.size() + vec2(10.0, 4.0));
+                    ui.painter().rect_filled(pill, 4.0, Color32::from_black_alpha(200));
+                    ui.painter().galley(pill.min + vec2(5.0, 2.0), galley, TEXT);
                 }
             }
             match dragged {
@@ -2344,70 +2355,72 @@ fn video_controls(ui: &mut egui::Ui, state: &mut HomeState, video: &crate::home:
                     }
                 }
             }
-            response.on_hover_text("Click or drag to go to that point in the video");
-            // The time gone, under the bar's start, and the whole length, under its end.
+            // The time gone, and the time left.
             let (times, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::hover());
-            let total = length.map_or_else(|| "–".to_owned(), clock);
-            let font = FontId::monospace(11.0);
-            ui.painter().text(
-                pos2(track.min.x, times.center().y),
-                Align2::LEFT_CENTER,
-                clock(shown),
-                font.clone(),
-                TEXT_DIM,
-            );
-            ui.painter().text(pos2(track.max.x, times.center().y), Align2::RIGHT_CENTER, total, font, TEXT_DIM);
-            // The controls: Loop, Start Over, Play or Pause, Sound.
-            let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
+            let left = length.map_or_else(|| "–".to_owned(), |length| format!("−{}", clock(length - shown)));
+            let font = FontId::proportional(11.0);
+            ui.painter().text(times.left_center(), Align2::LEFT_CENTER, clock(shown), font.clone(), TEXT_DIM);
+            ui.painter().text(times.right_center(), Align2::RIGHT_CENTER, left, font, TEXT_DIM);
+            // The controls, one group about Play or Pause.
+            let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
             let middle = row.center();
+            let step = 52.0;
+            let slot = |n: f32| middle + vec2(step * n, 0.0);
+            // Play or Pause: the biggest, a white circle.
+            let big = ui.interact(
+                Rect::from_center_size(middle, vec2(42.0, 42.0)),
+                ui.scope_id().with("video play"),
+                Sense::click(),
+            );
+            ui.painter().circle_filled(middle, if big.hovered() { 21.0 } else { 20.0 }, Color32::WHITE);
             let (play, words) = if video.playing { (Icon::Pause, "Pause") } else { (Icon::Play, "Play") };
-            // Play or Pause: the biggest, in a white circle.
-            let big = Rect::from_center_size(middle, vec2(40.0, 40.0));
-            let toggle = ui.interact(big, ui.scope_id().with("video play"), Sense::click());
-            ui.painter().circle_filled(middle, if toggle.hovered() { 20.0 } else { 19.0 }, Color32::WHITE);
             let nudge = if video.playing { 0.0 } else { 1.5 };
             icons::paint(
                 ui.painter(),
                 play,
                 Rect::from_center_size(middle + vec2(nudge, 0.0), vec2(16.0, 16.0)),
-                Color32::from_gray(30),
+                Color32::from_gray(28),
             );
-            if toggle.on_hover_text(format!("{words} the video")).clicked() {
+            if big.on_hover_text(words).clicked() {
                 state.video_request = Some(VideoRequest::TogglePause);
             }
-            if icon_button(
-                ui,
-                middle - vec2(46.0, 0.0),
-                32.0,
-                Icon::Back,
-                TEXT,
-                "video restart",
-                "Start over, from the beginning",
-            )
-            .clicked()
-            {
+            // Start Over, and Forward ten seconds, either side of it.
+            if round(ui, slot(-1.0), "video start", "Start over, from the beginning").clicked() {
                 state.video_request = Some(VideoRequest::Restart);
             }
+            icons::paint(ui.painter(), Icon::ToStart, Rect::from_center_size(slot(-1.0), vec2(15.0, 15.0)), TEXT);
+            let forward = round(ui, slot(1.0), "video forward", "Forward 10 seconds");
+            // The arrow that turns clockwise (the icon named Back is drawn that way), with 10 in it.
+            icons::paint(ui.painter(), Icon::Back, Rect::from_center_size(slot(1.0), vec2(20.0, 20.0)), TEXT);
+            ui.painter().text(slot(1.0) + vec2(0.0, 1.5), Align2::CENTER_CENTER, "10", FontId::proportional(8.5), TEXT);
+            if forward.clicked()
+                && let Some(length) = length
+            {
+                state.video_request = Some(VideoRequest::Seek((video.position + VIDEO_STEP).min(length)));
+            }
+            // Loop and Sound at the two ends of the group: green while it loops; a speaker,
+            // struck through while muted.
             let (loop_ink, loop_hint) = if video.looping {
                 (ON, "Looping: it starts again at the end. Click to stop looping")
             } else {
                 (TEXT_FAINT, "Not looping: it stops at the end. Click to loop")
             };
-            if icon_button(ui, pos2(row.min.x + 16.0, middle.y), 32.0, Icon::Loop, loop_ink, "video loop", loop_hint)
-                .clicked()
-            {
+            if round(ui, slot(-2.0), "video loop", loop_hint).clicked() {
                 state.video_request = Some(VideoRequest::Looping(!video.looping));
+            }
+            icons::paint(ui.painter(), Icon::Loop, Rect::from_center_size(slot(-2.0), vec2(17.0, 17.0)), loop_ink);
+            if video.looping {
+                ui.painter().circle_filled(slot(-2.0) + vec2(0.0, 13.0), 1.8, ON);
             }
             let (sound, sound_ink, sound_hint) = if video.muted {
                 (Icon::Muted, TEXT_FAINT, "Muted. Click to play its sound")
             } else {
                 (Icon::Sound, TEXT, "Its sound plays. Click to mute")
             };
-            if icon_button(ui, pos2(row.max.x - 16.0, middle.y), 32.0, sound, sound_ink, "video sound", sound_hint)
-                .clicked()
-            {
+            if round(ui, slot(2.0), "video sound", sound_hint).clicked() {
                 state.video_request = Some(VideoRequest::Muted(!video.muted));
             }
+            icons::paint(ui.painter(), sound, Rect::from_center_size(slot(2.0), vec2(17.0, 17.0)), sound_ink);
         });
 }
 

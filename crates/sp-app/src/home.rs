@@ -7180,6 +7180,40 @@ mod tests {
     }
 
     #[test]
+    fn up_and_down_go_down_a_playlist_step_by_step_as_the_app_runs_it() {
+        use crate::service::Item;
+        let songs = ["Alpha", "Beta", "Gamma"].map(|title| Arc::new(parse_song_text(title, "Words\n")));
+        let mut show = Show::new(songs.to_vec());
+        let mut state = HomeState { playlist_open: true, ..HomeState::default() };
+        for title in ["Alpha", "Beta", "Gamma"] {
+            state.services.add(Item::Song { key: format!("title:{title}"), title: title.to_owned() });
+        }
+        state.services.chosen = Some(0);
+        let ctx = egui::Context::default();
+        // Each frame as the app runs it: the window, then what it asked for carried out.
+        let step = |show: &mut Show, state: &mut HomeState, key: Option<Key>| {
+            let mut asked = Vec::new();
+            let output = ctx.run_ui(input(key), |ui| {
+                asked = home_ui(ui, show, state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+            });
+            output.drop_without_applying_deltas();
+            for command in asked {
+                show.apply(command);
+            }
+        };
+        step(&mut show, &mut state, None);
+        step(&mut show, &mut state, Some(Key::ArrowDown));
+        step(&mut show, &mut state, None);
+        assert_eq!((state.services.chosen, show.selected()), (Some(1), 1), "Beta");
+        step(&mut show, &mut state, Some(Key::ArrowDown));
+        step(&mut show, &mut state, None);
+        assert_eq!((state.services.chosen, show.selected()), (Some(2), 2), "Gamma");
+        step(&mut show, &mut state, Some(Key::ArrowUp));
+        step(&mut show, &mut state, None);
+        assert_eq!((state.services.chosen, show.selected()), (Some(1), 1), "back to Beta");
+    }
+
+    #[test]
     fn up_and_down_in_the_editor_open_the_slide_before_and_after() {
         let show = show(3);
         let ctx = egui::Context::default();

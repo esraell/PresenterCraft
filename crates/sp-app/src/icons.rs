@@ -58,11 +58,13 @@ pub enum Icon {
     /// A speaker with sound coming from it, and the same speaker struck through.
     Sound,
     Muted,
+    /// Back to the beginning: a bar and a triangle pointing at it.
+    ToStart,
 }
 
 /// Every icon, so a test can draw them all.
 #[cfg(test)]
-pub const ALL: [Icon; 49] = [
+pub const ALL: [Icon; 50] = [
     Icon::Search,
     Icon::Theme,
     Icon::Play,
@@ -112,6 +114,7 @@ pub const ALL: [Icon; 49] = [
     Icon::Loop,
     Icon::Sound,
     Icon::Muted,
+    Icon::ToStart,
 ];
 
 /// Draws inside a square using coordinates from 0 to 1.
@@ -402,6 +405,10 @@ pub fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
                 p.line(&[(0.64, 0.36), (0.9, 0.64)]);
                 p.line(&[(0.9, 0.36), (0.64, 0.64)]);
             }
+        }
+        Icon::ToStart => {
+            p.fill_rect(0.18, 0.2, 0.28, 0.8, 0.02);
+            p.filled(&[(0.82, 0.2), (0.34, 0.5), (0.82, 0.8)]);
         }
     }
 }
