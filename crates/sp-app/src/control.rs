@@ -224,15 +224,29 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     if reply.ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::from(1) }
 }
 
-/// `sp` with nothing after it: what is on screen, when the app is running; otherwise it starts
-/// the app (`bundle`), saying so. Either way it says where the commands are listed. A test
-/// setup (its own SOFTPRESENTER_CONTROL_SOCKET) is never made to start the app.
-#[cfg(target_os = "macos")]
-pub fn bare(bundle: &Path) -> std::process::ExitCode {
+/// Whether the program was started through a link (`sp`), not by its own path or as an app.
+pub fn started_through_link() -> bool {
+    let Some(started_as) = std::env::args_os().next().map(PathBuf::from) else { return false };
+    let is_link = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink());
+    if started_as.components().count() > 1 {
+        return is_link(&started_as);
+    }
+    // Started by name: found on the PATH.
+    std::env::var_os("PATH")
+        .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join(&started_as)).find(|c| c.exists()))
+        .is_some_and(|found| is_link(&found))
+}
+
+/// `sp` with nothing after it: what is on screen, when the app answers. Otherwise, with a test
+/// socket named (SOFTPRESENTER_CONTROL_SOCKET), it says nothing answers and starts nothing;
+/// else it starts the app: the bundle the link points into, when there is one. `None` means
+/// the app is to be started in this process (a link to the program itself, outside a bundle).
+#[cfg(unix)]
+pub fn bare(bundle: Option<&Path>) -> Option<std::process::ExitCode> {
     const MORE: &str = "sp help lists the commands.";
     let answers = socket_path().is_some_and(|path| std::os::unix::net::UnixStream::connect(path).is_ok());
     if answers {
-        return match send(&["status".to_owned()]) {
+        return Some(match send(&["status".to_owned()]) {
             Ok(reply) if reply.ok => {
                 println!("{}\n\n{MORE}", reply.text);
                 std::process::ExitCode::SUCCESS
@@ -245,20 +259,21 @@ pub fn bare(bundle: &Path) -> std::process::ExitCode {
                 eprintln!("{problem}");
                 std::process::ExitCode::from(1)
             }
-        };
+        });
     }
     if let Some(own) = std::env::var_os("SOFTPRESENTER_CONTROL_SOCKET").filter(|p| !p.is_empty()) {
         eprintln!("Nothing answers at {} (SOFTPRESENTER_CONTROL_SOCKET). {MORE}", Path::new(&own).display());
-        return std::process::ExitCode::from(1);
+        return Some(std::process::ExitCode::from(1));
     }
     println!("SoftPresenter isn't running; starting it. {MORE}");
-    match std::process::Command::new("/usr/bin/open").arg(bundle).status() {
+    let bundle = bundle?;
+    Some(match std::process::Command::new("/usr/bin/open").arg(bundle).status() {
         Ok(status) if status.success() => std::process::ExitCode::SUCCESS,
         _ => {
             eprintln!("Could not start {}.", bundle.display());
             std::process::ExitCode::from(1)
         }
-    }
+    })
 }
 
 /// `groups`: each group name's colour and the letter key that jumps to it, as Settings › Groups
@@ -1527,7 +1542,7 @@ impl crate::App {
             Some("add") => {
                 // `playlist add SONG [to PLAYLIST]`, or the playlist in front.
                 let words = &args[2..];
-                let (song_words, list_words) = match words.iter().position(|w| w.eq_ignore_ascii_case("to")) {
+                let (song_words, list_words) = match words.iter().rposition(|w| w.eq_ignore_ascii_case("to")) {
                     Some(at) => (words[..at].join(" "), Some(words[at + 1..].join(" "))),
                     None => (words.join(" "), None),
                 };
@@ -1614,7 +1629,7 @@ impl crate::App {
                         .map_or_else(|| file.display().to_string(), |n| n.to_string_lossy().into_owned());
                     if !crate::media::is_media(file) {
                         problems.push(if crate::audio::is_audio(file) {
-                            format!("{name} is a sound: sounds go in the Audio tab (there is no command for that yet).")
+                            format!("{name} is a sound: sounds go in an audio playlist (sp audio add {name}).")
                         } else {
                             format!("{name} isn't a picture or video (songs come in with song import).")
                         });
@@ -1946,7 +1961,10 @@ impl crate::App {
                 Some(state.libraries[find("library", &names, &name)?].id)
             };
             let shown = std::mem::replace(&mut state.library_shown, wanted);
+            // A folder imported then goes into that library (or none), not one named after it.
+            self.import_library_override = Some(wanted);
             let result = self.ctl_song(&rest);
+            self.import_library_override = None;
             if let Some(running) = self.running.as_mut() {
                 running.home_state.library_shown = shown;
             }

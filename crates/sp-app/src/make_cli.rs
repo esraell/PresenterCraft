@@ -108,12 +108,20 @@ impl crate::App {
         let result = match word.as_str() {
             // `timer new NAME countdown 5:00 | to 10:30 | up [to M:SS]`
             "new" => {
-                let at = words.iter().position(|w| {
-                    ["countdown", "down", "to", "until", "up", "elapsed"].contains(&w.to_lowercase().as_str())
-                });
-                match at {
-                    Some(at) if at > 0 => self.timer_new(&words[..at].join(" "), &words[at..]),
-                    _ => Err("timer new NAME countdown M:SS | to HH:MM | up [to M:SS]".to_owned()),
+                // The name is the words before the first place the rest reads as a kind, so a
+                // timer may have "to" or "up" in its name ("Walk to Church countdown 5:00").
+                let usage = "timer new NAME countdown M:SS | to HH:MM | up [to M:SS]";
+                match (1..words.len()).find(|at| parse_kind(&words[*at..]).is_ok()) {
+                    Some(at) => self.timer_new(&words[..at].join(" "), &words[at..]),
+                    None => {
+                        // Say what was wrong with the last kind typed, if there was one.
+                        let keywords = ["countdown", "down", "to", "until", "up", "elapsed"];
+                        let last = words
+                            .iter()
+                            .rposition(|w| keywords.contains(&w.to_lowercase().as_str()))
+                            .filter(|at| *at > 0);
+                        Err(last.and_then(|at| parse_kind(&words[at..]).err()).unwrap_or_else(|| usage.to_owned()))
+                    }
                 }
             }
             // `timer set NAME countdown 5:00 | to 10:30 | up | overrun on|off | name NEW`
@@ -163,14 +171,13 @@ impl crate::App {
 
     fn timer_set(&mut self, words: &[String]) -> Result<Reply, String> {
         let usage = "timer set NAME countdown M:SS | to HH:MM | up [to M:SS] | overrun on|off | name NEW";
-        let at = words
-            .iter()
-            .position(|w| {
-                ["countdown", "down", "to", "until", "up", "elapsed", "overrun", "name"]
-                    .contains(&w.to_lowercase().as_str())
-            })
-            .filter(|at| *at > 0)
-            .ok_or(usage)?;
+        // As for timer new: the first place the rest reads as a setting.
+        let reads = |rest: &[String]| match rest.first().map(|w| w.to_lowercase()).as_deref() {
+            Some("overrun") => matches!(rest.get(1).map(|w| w.to_lowercase()).as_deref(), Some("on" | "off")),
+            Some("name") => rest.len() > 1,
+            _ => parse_kind(rest).is_ok(),
+        };
+        let at = (1..words.len()).find(|at| reads(&words[*at..])).ok_or(usage)?;
         let index = self.with_named("timer", &words[..at].join(" "), |state| {
             state.timers.iter().map(|t| t.name.clone()).collect()
         })?;

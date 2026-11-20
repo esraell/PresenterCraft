@@ -172,8 +172,15 @@ impl crate::App {
             Some("seek") => {
                 let to: f64 = args.get(2).and_then(|w| w.parse().ok()).filter(|s: &f64| *s >= 0.0).ok_or(usage)?;
                 let length = self.video.as_ref().and_then(|(_, player)| player.duration());
-                if let Some(length) = length.filter(|length| to > *length) {
-                    return Err(format!("The video is {length:.0} seconds long."));
+                match length {
+                    None => {
+                        return Err(
+                            "The video's length isn't known yet (it has only just started); try again in a moment."
+                                .to_owned(),
+                        );
+                    }
+                    Some(length) if to > length => return Err(format!("The video is {length:.0} seconds long.")),
+                    Some(_) => {}
                 }
                 let shown = format!("{to:.1}");
                 let shown = shown.trim_end_matches(".0");

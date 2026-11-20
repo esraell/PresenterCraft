@@ -820,6 +820,9 @@ struct App {
     /// done (`sp job N`, and `--wait`); the number of the last one started.
     jobs: Vec<(u64, Option<Result<String, String>>)>,
     last_job: Option<u64>,
+    /// While `sp song import … --library NAME|none` runs: the library its songs (a folder's
+    /// included) go into, or none.
+    import_library_override: Option<Option<Uuid>>,
     /// Bible downloads started from the command line: each job's number, the Bible's id and name.
     bible_jobs: Vec<(u64, String, String)>,
     /// The socket `softpresenter ctl` reaches the app through, while it listens.
@@ -2737,6 +2740,9 @@ impl App {
 
     /// Writes the app's version of a song over its file, which changed outside the app.
     fn keep_song(&mut self, index: usize) -> Result<String, String> {
+        if self.running.as_ref().is_some_and(|r| r.home_state.removed_songs.contains(&index)) {
+            return Err("That song was deleted.".to_owned());
+        }
         let (Some(Some(path)), Some(song)) = (self.sources.get(index), self.show.presentations().get(index)) else {
             return Err("That song has no file.".to_owned());
         };
@@ -2853,7 +2859,12 @@ impl App {
     /// holding changes not saved is offered in the bar instead.
     fn reload_all(&mut self) -> Reloaded {
         let mut done = Reloaded::default();
+        let removed = self.running.as_ref().map(|r| r.home_state.removed_songs.clone()).unwrap_or_default();
         for index in 0..self.show.presentations().len() {
+            // A song deleted in the app, or a Bible page, is not looked at.
+            if removed.contains(&index) || self.bible_slots.contains(&index) {
+                continue;
+            }
             let Some(Some(path)) = self.sources.get(index) else { continue };
             let title = self.show.presentations()[index].title.clone();
             let before = self.stamps.check(&load::song_file_for(path));
@@ -3639,8 +3650,10 @@ impl App {
             first.get_or_insert(index);
             if let Some(running) = self.running.as_mut() {
                 let state = &mut running.home_state;
-                let into = match library {
-                    Some(name) => {
+                let into = match (library, self.import_library_override) {
+                    // `--library NAME|none` on the command line decides for a folder's songs too.
+                    (_, Some(chosen)) => chosen.and_then(|id| state.libraries.iter().position(|l| l.id == id)),
+                    (Some(name), None) => {
                         if !libraries_used.contains(name) {
                             libraries_used.push(name.clone());
                         }
@@ -3653,7 +3666,7 @@ impl App {
                         };
                         Some(at)
                     }
-                    None => state.library_shown.and_then(|id| state.libraries.iter().position(|l| l.id == id)),
+                    (None, None) => state.library_shown.and_then(|id| state.libraries.iter().position(|l| l.id == id)),
                 };
                 if let Some(at) = into {
                     state.libraries[at].songs.push(key);
@@ -5136,6 +5149,7 @@ impl App {
                     if let Some(running) = self.running.as_mut() {
                         let state = &mut running.home_state;
                         state.removed_songs.push(index);
+                        state.waiting.retain(|have| *have != outside::Waiting::Song(index));
                         // Nor is it in any library any more.
                         if let Some(key) = state.song_keys.get(index).cloned() {
                             for library in &mut state.libraries {
@@ -6152,12 +6166,20 @@ fn main() -> ExitCode {
     }
     // Started through the installed command (a link outside the app), the app is opened as a
     // Mac app is, so it is named and placed properly; anything typed after it goes along.
+    // `sp` alone, through any link (into the app, or to the program itself): what is on screen,
+    // or the app started if nothing answers; never a second app beside one that answers.
+    #[cfg(unix)]
+    if args.is_empty() && control::started_through_link() {
+        #[cfg(target_os = "macos")]
+        let bundle = control::bundle_opened_through_link();
+        #[cfg(not(target_os = "macos"))]
+        let bundle: Option<PathBuf> = None;
+        if let Some(code) = control::bare(bundle.as_deref()) {
+            return code;
+        }
+    }
     #[cfg(target_os = "macos")]
     if let Some(bundle) = control::bundle_opened_through_link() {
-        // `sp` alone: what is on screen, or the app started if it isn't running.
-        if args.is_empty() {
-            return control::bare(&bundle);
-        }
         let mut open = std::process::Command::new("/usr/bin/open");
         open.arg(&bundle);
         if !args.is_empty() {
@@ -6325,6 +6347,7 @@ fn main() -> ExitCode {
         pack_rx,
         jobs: Vec::new(),
         last_job: None,
+        import_library_override: None,
         bible_jobs: Vec::new(),
         // Commands from `softpresenter ctl` come in on the control socket. Without it (another
         // copy has it, say) the app runs as usual.

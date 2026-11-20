@@ -243,15 +243,18 @@ impl crate::App {
             let text = sp_model::to_song_text(&presentation);
             return Ok(Reply::with(text.clone(), serde_json::json!({"song": presentation.title, "text": text})));
         };
-        let bytes = std::fs::read(file).map_err(|e| format!("Could not read {file}: {e}"))?;
+        // The file named by its name alone in replies (the client sends the whole path).
+        let shown =
+            std::path::Path::new(file).file_name().map_or_else(|| file.clone(), |n| n.to_string_lossy().into_owned());
+        let bytes = std::fs::read(file).map_err(|e| format!("Could not read {shown}: {e}"))?;
         let text = sp_model::decode_text(&bytes);
         let song = presentation.reflowed(&text);
         if song.slide_count() == 0 {
-            return Err(format!("{file} has no words in it; {} is unchanged.", presentation.title));
+            return Err(format!("{shown} has no words in it; {} is unchanged.", presentation.title));
         }
         let count = song.slide_count();
         self.change_song(at, song);
-        Ok(Reply::done(format!("{} now has the words from {file}: {count} slides.", presentation.title)))
+        Ok(Reply::done(format!("{} now has the words from {shown}: {count} slides.", presentation.title)))
     }
 
     /// Puts a song changed from the command line in its place, as a change in the window is

@@ -94,7 +94,11 @@ impl crate::App {
         if let Output::Display(display) = &output
             && !connected.iter().any(|d| d.is_named(display))
         {
-            said.push_str(" (not connected now; the screen waits for it)");
+            let names: Vec<&str> = connected.iter().map(|d| d.name.as_str()).collect();
+            said.push_str(&format!(
+                " (not connected now; the screen waits for it; connected: {})",
+                if names.is_empty() { "none".to_owned() } else { names.join(", ") }
+            ));
         }
         let screen = if stage { Screen::stage(name.clone(), output) } else { Screen::new(name.clone(), output) };
         state.screens.push(screen);
