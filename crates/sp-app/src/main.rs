@@ -7021,8 +7021,9 @@ fn main() -> ExitCode {
         songs.clear();
         sources.clear();
     }
+    let mut have: std::collections::HashSet<PathBuf> = sources.iter().flatten().cloned().collect();
     for loaded in made_here {
-        if !sources.contains(&Some(loaded.path.clone())) {
+        if have.insert(loaded.path.clone()) {
             songs.push(loaded.song);
             sources.push(Some(loaded.path));
         }

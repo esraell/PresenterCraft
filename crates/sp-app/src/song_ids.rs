@@ -75,14 +75,16 @@ type Done = Vec<String>;
 pub fn settle(folder: &Path, backup: bool) -> Done {
     let mut done = Done::new();
     let mut keeper = Keeper { folder: folder.to_path_buf(), backup, done: Vec::new() };
-    let songs = read_songs(folder, &mut keeper, &mut done);
+    // The song files are read once, and kept up to date as they are written here.
+    let mut files = song_files(folder);
+    let songs = read_songs(&mut files, &mut keeper, &mut done);
     // Whether this start converts files from before songs were found by id. The preferences and
     // macros say no version, so a name there that can't be matched is said only on such a start,
     // not on every start after.
     let services = folder.join("services.json");
     let old_services = read_json(&services).is_some_and(|v| v.get("version").and_then(Value::as_u64).unwrap_or(1) < 2);
     let old_libraries = read_json(&folder.join("libraries.json")).is_some_and(|v| v.is_array());
-    let old_songs = song_files(folder)
+    let old_songs = files
         .iter()
         .any(|(_, value)| value.get("version").and_then(Value::as_u64).unwrap_or(1) < 2 && has_song_action(value));
     let converting = old_services || old_libraries || old_songs;
@@ -150,7 +152,7 @@ pub fn settle(folder: &Path, backup: bool) -> Done {
     // Slides' "go to song" actions, in song files saved before songs were found by id. A song
     // with such an action is written as version 2, which an older build refuses rather than
     // misreads.
-    for (path, mut value) in song_files(folder) {
+    for (path, mut value) in files {
         if value.get("version").and_then(Value::as_u64).unwrap_or(1) >= 2 || !has_song_action(&value) {
             continue;
         }
@@ -255,13 +257,13 @@ fn song_files(folder: &Path) -> Vec<(PathBuf, Value)> {
 /// Reads the library's songs. Where several files have one id (a copy made in the Finder), the
 /// file named after that id keeps it, else the oldest, else the first by name; each of the others
 /// is given a new id of its own, written back to its file.
-fn read_songs(folder: &Path, keeper: &mut Keeper, done: &mut Done) -> Songs {
+fn read_songs(read: &mut [(PathBuf, Value)], keeper: &mut Keeper, done: &mut Done) -> Songs {
     let mut songs = Songs { by_file: HashMap::new(), by_title: HashMap::new() };
-    let files: Vec<(PathBuf, Value, String)> = song_files(folder)
-        .into_iter()
+    let files: Vec<(PathBuf, Value, String)> = read
+        .iter()
         .filter_map(|(path, value)| {
             let id = value.get("id").and_then(Value::as_str)?.to_owned();
-            Some((path, value, id))
+            Some((path.clone(), value.clone(), id))
         })
         .collect();
     let born = |path: &Path| std::fs::metadata(path).and_then(|meta| meta.created().or_else(|_| meta.modified())).ok();
@@ -300,6 +302,10 @@ fn read_songs(folder: &Path, keeper: &mut Keeper, done: &mut Done) -> Songs {
             let mut value = value.clone();
             value["id"] = Value::String(fresh.clone());
             keeper.write(path, &value, done);
+            // The files read are kept as written, for the passes after this one.
+            if let Some((_, kept_value)) = read.iter_mut().find(|(read_path, _)| read_path == path) {
+                *kept_value = value;
+            }
             id = fresh;
         }
         if let Some(stem) = path.file_stem() {
@@ -512,6 +518,23 @@ mod tests {
         assert_ne!(read(other.join("Songs/a.sppres"))["id"], HILLS);
         let _ = std::fs::remove_dir_all(&folder);
         let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn a_copied_song_with_an_old_slide_action_keeps_both_changes() {
+        // The copy needs an id of its own and its old "go to song" action changed: the second
+        // change is written over the first, so it must start from the file as the first left it.
+        let folder = temp("copy-and-action");
+        let action = r#","slides_extra":[{"do":"song","key":"title:Quiet Hills"}]"#;
+        song(&folder, &format!("{RIVER} copy.sppres"), RIVER, "River Song", action);
+        song(&folder, &format!("{RIVER}.sppres"), RIVER, "River Song", "");
+        song(&folder, &format!("{HILLS}.sppres"), HILLS, "Quiet Hills", "");
+        settle(&folder, false);
+        let copy = read(folder.join(format!("Songs/{RIVER} copy.sppres")));
+        assert_ne!(copy["id"], RIVER, "the copy kept its id of its own");
+        assert_eq!(copy["version"], 2);
+        assert_eq!(copy["slides_extra"][0]["key"], HILLS, "and its action points at the song by id");
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]
