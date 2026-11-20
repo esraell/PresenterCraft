@@ -229,6 +229,7 @@ const COMMANDS: &[&str] = &[
     "status",
     "songs",
     "slides",
+    "slide",
     "playlists",
     "libraries",
     "library",
@@ -1184,6 +1185,37 @@ impl crate::App {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every first word the app carries out a command for starts a command when typed after
+    /// `sp` (without `ctl`), so a new command can't be left out of COMMANDS again.
+    #[test]
+    fn every_command_the_app_knows_can_be_typed_after_sp() {
+        let source = include_str!("control.rs");
+        let start = source.find("let result = match word.as_str() {").expect("the commands' match");
+        let end = start + source[start..].find("            _ =>").expect("its end");
+        let mut words = Vec::new();
+        for line in source[start..end].lines() {
+            let line = line.trim();
+            let Some((pattern, _)) = line.split_once("=>") else { continue };
+            if !pattern.trim_start().starts_with('"') {
+                continue;
+            }
+            for word in pattern.split('|') {
+                let word = word.trim().trim_matches('"');
+                if !word.is_empty() {
+                    words.push(word.to_owned());
+                }
+            }
+        }
+        assert!(words.len() > 20, "found the commands: {words:?}");
+        for word in &words {
+            assert!(
+                is_command(word),
+                "\"{word}\" is carried out but not in COMMANDS, so `sp {word}` would open it as a file"
+            );
+        }
+    }
+
     use super::*;
 
     fn names(list: &[&str]) -> Vec<String> {

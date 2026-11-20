@@ -5129,6 +5129,12 @@ fn main() -> ExitCode {
         Some(first) if control::is_command(first) && !std::path::Path::new(first).exists() => {
             return control::run_client(args);
         }
+        // A first word that is neither a command nor a file to open is a mistake, said so,
+        // rather than handed to the app as a file it can't read.
+        Some(first) if !first.starts_with('-') && !std::path::Path::new(first).exists() => {
+            eprintln!("sp: no command or file called '{first}'. See: sp help");
+            return ExitCode::from(2);
+        }
         _ => {}
     }
     // Started through the installed command (a link outside the app), the app is opened as a
