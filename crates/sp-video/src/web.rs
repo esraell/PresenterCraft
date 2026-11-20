@@ -67,12 +67,12 @@ impl WebFrames {
 /// different pictures all but never share one.
 fn fingerprint(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut words = bytes.chunks_exact(8);
-    for word in &mut words {
-        hash ^= u64::from_le_bytes(word.try_into().unwrap_or_default());
+    let (words, rest) = bytes.as_chunks::<8>();
+    for word in words {
+        hash ^= u64::from_le_bytes(*word);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    for &byte in words.remainder() {
+    for &byte in rest {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
