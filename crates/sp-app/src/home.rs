@@ -167,6 +167,8 @@ pub struct HomeState {
     /// app); and the steps undone, to redo. The draft the slide's steps belong to.
     /// Scroll the Edit view's list to the slide being edited, once (after ↑ or ↓).
     pub edit_list_scroll: bool,
+    /// Scroll the playlist to this item, once (after ↑ or ↓).
+    pub playlist_scroll_to: Option<usize>,
     pub edit_steps: Vec<EditStep>,
     pub edit_redo: Vec<EditStep>,
     pub edit_steps_draft: u64,
@@ -983,6 +985,7 @@ impl Default for HomeState {
             slide_clip: Vec::new(),
             slide_clip_text: String::new(),
             edit_list_scroll: false,
+            playlist_scroll_to: None,
             edit_steps: Vec::new(),
             edit_redo: Vec::new(),
             edit_steps_draft: 0,
@@ -7153,6 +7156,27 @@ mod tests {
         });
         output.drop_without_applying_deltas();
         assert!(!asked.iter().any(|c| matches!(c, Command::Select(_))));
+    }
+
+    #[test]
+    fn up_and_down_go_through_a_playlist_passing_over_headers() {
+        use crate::service::Item;
+        let songs = ["Alpha", "Beta"].map(|title| Arc::new(parse_song_text(title, "Words\n")));
+        let show = Show::new(songs.to_vec());
+        let mut state = HomeState { playlist_open: true, ..HomeState::default() };
+        state.services.add(Item::Song { key: "title:Alpha".to_owned(), title: "Alpha".to_owned() });
+        state.services.add(Item::Header { name: "Sermon".to_owned() });
+        state.services.add(Item::Song { key: "title:Beta".to_owned(), title: "Beta".to_owned() });
+        state.services.chosen = Some(0);
+        let ctx = egui::Context::default();
+        let mut asked = Vec::new();
+        let output = ctx.run_ui(input(Some(Key::ArrowDown)), |ui| {
+            asked = home_ui(ui, &show, &mut state, &Theme::builtin(), &mut |_| None, Preview::default(), None);
+        });
+        output.drop_without_applying_deltas();
+        // The item after the header is opened (the app then shows its song, Beta).
+        assert_eq!(state.playlist_scroll_to, Some(2), "the header is passed over");
+        assert!(asked.contains(&Command::Select(1)), "{asked:?}");
     }
 
     #[test]

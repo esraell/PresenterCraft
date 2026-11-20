@@ -803,13 +803,7 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
     // open, editing, or on the Bible page.
     const ROW: f32 = 30.0;
     let mut scroll_to = None;
-    if !ui.ctx().text_edit_focused()
-        && state.library_search.is_none()
-        && state.editing.is_none()
-        && state.theme_edit.is_none()
-        && !state.bible_open
-        && !shown.is_empty()
-    {
+    if list_keys_work(ui, state) && !shown.is_empty() {
         let (up, down, shift) = ui.input(|input| {
             (input.key_pressed(egui::Key::ArrowUp), input.key_pressed(egui::Key::ArrowDown), input.modifiers.shift)
         });
@@ -1309,6 +1303,16 @@ fn song_menu(
 
 /// The items of the playlist in front: headers, songs (with the library each is in) and Bible
 /// passages, dragged up and down to change the order.
+/// Whether ↑ and ↓ go through the song list or the playlist: in the Show view, with nothing
+/// being typed and the song search closed.
+fn list_keys_work(ui: &egui::Ui, state: &HomeState) -> bool {
+    !ui.ctx().text_edit_focused()
+        && state.library_search.is_none()
+        && state.editing.is_none()
+        && state.theme_edit.is_none()
+        && !state.bible_open
+}
+
 fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     use crate::service::Item;
     let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
@@ -1465,6 +1469,11 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
             if response.clicked() {
                 ask = Some(Ask::Open(index));
             }
+            // Gone to with ↑ or ↓: kept in sight.
+            if state.playlist_scroll_to == Some(index) {
+                response.scroll_to_me(None);
+                state.playlist_scroll_to = None;
+            }
             response.context_menu(|ui| {
                 if ui.add_enabled(index > 0, egui::Button::new("Move Up")).clicked() {
                     ask = Some(Ask::Earlier(index));
@@ -1501,6 +1510,33 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
         }
         Some(None) => state.renaming_header = None,
         None => {}
+    }
+    // ↑ and ↓ open the item above or below, passing over headers (and items the filter hides).
+    if ask.is_none() && list_keys_work(ui, state) {
+        let (up, down) =
+            ui.input(|input| (input.key_pressed(egui::Key::ArrowUp), input.key_pressed(egui::Key::ArrowDown)));
+        let openable: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| !matches!(item, Item::Header { .. }))
+            .filter(|(_, item)| !filtering || matches_filter(item.title(), &state.filter))
+            .map(|(index, _)| index)
+            .collect();
+        if (up || down) && !openable.is_empty() {
+            let last = openable.len() - 1;
+            let current = state.services.chosen.and_then(|chosen| openable.iter().position(|at| *at == chosen));
+            let next = match current {
+                Some(at) if up && at > 0 => Some(at - 1),
+                Some(at) if down && at < last => Some(at + 1),
+                None if up => Some(last),
+                None if down => Some(0),
+                _ => None,
+            };
+            if let Some(next) = next {
+                ask = Some(Ask::Open(openable[next]));
+                state.playlist_scroll_to = Some(openable[next]);
+            }
+        }
     }
     match ask {
         Some(Ask::Rename(index)) => {
