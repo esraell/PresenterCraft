@@ -33,13 +33,17 @@ pub struct Setup {
     /// A library folder of another presentation program found on this Mac, how many song
     /// documents are in it, and in how many libraries.
     pub library_found: Option<(PathBuf, usize, usize)>,
+    /// True once the Documents folder has been looked in for one. It is looked in only when
+    /// asked on the Songs step: the first look at Documents makes macOS ask permission, and the
+    /// app waits for the answer, so it mustn't happen as the app opens with nothing said.
+    pub looked: bool,
     /// What bringing songs in came to, in plain words.
     pub songs_said: Option<String>,
 }
 
 impl Setup {
     pub fn new() -> Setup {
-        Setup { step: Step::Welcome, library_found: library_found(), songs_said: None }
+        Setup { step: Step::Welcome, library_found: None, looked: false, songs_said: None }
     }
 }
 
@@ -354,6 +358,33 @@ fn screens(ui: &mut egui::Ui, state: &mut HomeState) {
 
 fn songs(ui: &mut egui::Ui, setup: &mut Setup, state: &mut HomeState) {
     title(ui, "Bring your songs in");
+    if !setup.looked {
+        say(
+            ui,
+            "SoftPresenter can look in your Documents folder for a ProPresenter library to bring across. macOS may ask \
+             whether SoftPresenter can use the Documents folder: choose OK.",
+        );
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if button(ui, "Look for a ProPresenter Library", true).clicked() {
+                setup.library_found = library_found();
+                setup.looked = true;
+            }
+            if button(ui, "Choose Song Files…", false).clicked() {
+                state.setup_request = Some(SetupRequest::ChooseSongFiles);
+            }
+        });
+        ui.add_space(8.0);
+        say(
+            ui,
+            "Or skip this and start with the sample song. Songs can be imported at any time from the File menu, or dropped on the window.",
+        );
+        if let Some(said) = &setup.songs_said {
+            ui.add_space(10.0);
+            ui.label(RichText::new(said).size(12.5).color(READY));
+        }
+        return;
+    }
     if let Some((folder, songs, libraries)) = &setup.library_found {
         say(
             ui,
@@ -371,7 +402,8 @@ fn songs(ui: &mut egui::Ui, setup: &mut Setup, state: &mut HomeState) {
     } else {
         say(
             ui,
-            "Song files from anywhere come in: text, lyric files from song services, ChordPro, Word, and ProPresenter documents.",
+            "No ProPresenter library was found in the Documents folder. Song files from anywhere come in: text, lyric files \
+             from song services, ChordPro, Word, and ProPresenter documents.",
         );
         ui.add_space(10.0);
     }
@@ -454,6 +486,10 @@ fn permissions(ui: &mut egui::Ui) {
         (
             "Local Network",
             "When a screen is sent over NDI (to a stream or a video switcher). Without it, NDI can't be seen on the network.",
+        ),
+        (
+            "Files in your Documents folder",
+            "When SoftPresenter looks for a ProPresenter library or opens songs, pictures and videos kept there.",
         ),
         (
             "Control Keynote or PowerPoint",
