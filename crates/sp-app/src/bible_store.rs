@@ -106,10 +106,28 @@ pub fn install_file(path: &Path) -> Result<(PathBuf, Info), String> {
     install_bytes(&std::fs::read(path).map_err(|e| format!("Could not read that file: {e}"))?)
 }
 
+/// Downloads a Bible's file, trying once more if the first try fails or comes back short.
 fn fetch(address: &str) -> Result<Vec<u8>, String> {
+    fetch_once(address).or_else(|_| fetch_once(address))
+}
+
+/// One try: it gives up after two minutes, and a file shorter than the server said it was is
+/// "cut short", never mistaken for the wrong file.
+fn fetch_once(address: &str) -> Result<Vec<u8>, String> {
     let offline = |e: ureq::Error| format!("Could not download the Bible: {e}");
-    let mut response = ureq::get(address).call().map_err(offline)?;
-    response.body_mut().with_config().limit(LARGEST).read_to_vec().map_err(offline)
+    let agent: ureq::Agent =
+        ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(120))).build().into();
+    let mut response = agent.get(address).call().map_err(offline)?;
+    let expected = response
+        .headers()
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    let bytes = response.body_mut().with_config().limit(LARGEST).read_to_vec().map_err(offline)?;
+    if expected.is_some_and(|expected| expected != bytes.len() as u64) {
+        return Err("The Bible's download was cut short. Try again.".to_owned());
+    }
+    Ok(bytes)
 }
 
 /// Fetches one Bible and installs it, if it is the file expected.
