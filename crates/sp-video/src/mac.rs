@@ -12,7 +12,8 @@ use objc2_av_foundation::{
 };
 use objc2_core_foundation::{CFDictionary, CFString, CFURL, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
-    CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo, kCGColorSpaceSRGB,
+    CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo, CGPDFBox,
+    CGPDFDocument, CGPDFPage, kCGColorSpaceSRGB,
 };
 use objc2_core_media::{CMTime, kCMTimeZero};
 use objc2_core_video::{
@@ -315,4 +316,87 @@ pub fn picture(path: &Path, max_side: u32) -> Result<Frame, String> {
     let image = unsafe { source.thumbnail_at_index(0, Some(options)) }
         .ok_or_else(|| format!("{}: the picture could not be read.", shown_name(path)))?;
     draw(&image).ok_or_else(|| format!("{}: the picture is empty.", shown_name(path)))
+}
+
+/// Draws each page of a PDF in turn, as large as fits in `max_width` × `max_height`, on white,
+/// turned as the page says and cut to its crop box, and hands it to `each` with its number
+/// (from 1) and the number of pages drawn in all; `each` returns `false` to stop. At most
+/// `most_pages` pages are drawn. Only one page is held at a time. Returns how many were drawn.
+pub fn pdf_pages(
+    path: &Path,
+    max_width: u32,
+    max_height: u32,
+    most_pages: usize,
+    mut each: impl FnMut(usize, usize, Frame) -> bool,
+) -> Result<usize, String> {
+    let name = shown_name(path);
+    let url = file_url(path)?;
+    // SAFETY: NSURL and CFURL are toll-free bridged: the same object, usable as either.
+    let url: &CFURL = unsafe { &*Retained::as_ptr(&url).cast::<CFURL>() };
+    let document =
+        CGPDFDocument::with_url(Some(url)).ok_or_else(|| format!("{name} is not a PDF SoftPresenter can read."))?;
+    if !CGPDFDocument::is_unlocked(Some(&document)) {
+        return Err(format!("{name} is locked with a password. Save a copy without one, then try again."));
+    }
+    let pages = CGPDFDocument::number_of_pages(Some(&document)).min(most_pages);
+    if pages == 0 {
+        return Err(format!("{name} has no pages."));
+    }
+    // SAFETY: the name is a static string the framework defines.
+    let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))
+        .ok_or_else(|| "The colour space for drawing pages is missing.".to_owned())?;
+    for number in 1..=pages {
+        let Some(page) = CGPDFDocument::page(Some(&document), number) else { continue };
+        let Some(frame) = draw_page(&page, max_width, max_height, &space) else { continue };
+        if !each(number, pages, frame) {
+            return Ok(number);
+        }
+    }
+    Ok(pages)
+}
+
+/// One PDF page drawn as large as fits in the size given.
+fn draw_page(page: &CGPDFPage, max_width: u32, max_height: u32, space: &CGColorSpace) -> Option<Frame> {
+    let crop = CGPDFPage::box_rect(Some(page), CGPDFBox::CropBox);
+    let (w, h) = (crop.size.width, crop.size.height);
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    let turn = CGPDFPage::rotation_angle(Some(page)).rem_euclid(360);
+    let (shown_w, shown_h) = if turn % 180 == 0 { (w, h) } else { (h, w) };
+    let scale = (f64::from(max_width) / shown_w).min(f64::from(max_height) / shown_h);
+    let width = ((shown_w * scale).round() as usize).max(1);
+    let height = ((shown_h * scale).round() as usize).max(1);
+    let mut rgba = vec![0u8; width.checked_mul(height)?.checked_mul(4)?];
+    let info = CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0;
+    // SAFETY: the buffer holds `height` rows of `width * 4` bytes and outlives the context,
+    // which is dropped before the buffer is read.
+    let context =
+        unsafe { CGBitmapContextCreate(rgba.as_mut_ptr().cast(), width, height, 8, width * 4, Some(space), info) }?;
+    let context = Some(&*context);
+    // White first: a page draws only what is on it.
+    CGContext::set_rgb_fill_color(context, 1.0, 1.0, 1.0, 1.0);
+    CGContext::fill_rect(context, CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(width as f64, height as f64)));
+    // The page's crop box to the whole picture, turned clockwise as the page says. The last
+    // change named applies first to what is drawn.
+    CGContext::scale_ctm(context, scale, scale);
+    match turn {
+        90 => {
+            CGContext::translate_ctm(context, 0.0, w);
+            CGContext::rotate_ctm(context, -std::f64::consts::FRAC_PI_2);
+        }
+        180 => {
+            CGContext::translate_ctm(context, w, h);
+            CGContext::rotate_ctm(context, std::f64::consts::PI);
+        }
+        270 => {
+            CGContext::translate_ctm(context, h, 0.0);
+            CGContext::rotate_ctm(context, std::f64::consts::FRAC_PI_2);
+        }
+        _ => {}
+    }
+    CGContext::translate_ctm(context, -crop.origin.x, -crop.origin.y);
+    CGContext::clip_to_rect(context, crop);
+    CGContext::draw_pdf_page(context, Some(page));
+    Some(Frame { width: width as u32, height: height as u32, rgba })
 }

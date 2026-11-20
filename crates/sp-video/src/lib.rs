@@ -17,13 +17,13 @@ mod mac;
 mod ffmpeg;
 
 #[cfg(target_os = "macos")]
-pub use mac::picture;
+pub use mac::{pdf_pages, picture};
 
 #[cfg(not(target_os = "macos"))]
 mod other;
 
 #[cfg(not(target_os = "macos"))]
-pub use other::picture;
+pub use other::{pdf_pages, picture};
 
 use std::path::Path;
 use std::time::Duration;

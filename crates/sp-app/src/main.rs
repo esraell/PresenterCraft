@@ -5,6 +5,7 @@ mod audio;
 mod bible;
 mod bible_store;
 mod control;
+mod deck;
 mod displays;
 mod editor;
 mod home;
@@ -650,6 +651,8 @@ struct App {
     sources: Vec<Option<PathBuf>>,
     /// The presentations kept for Bible passages.
     bible_slots: [usize; 2],
+    /// PDFs and folders of pictures being made into slides, each on a thread of its own.
+    decks: deck::Decks,
     /// The decoded picture of each media item, in the show's order: full size for the screens,
     /// and small for the window.
     pictures: Vec<media::MediaPicture>,
@@ -1724,7 +1727,12 @@ impl App {
         }
         // A song file, or text, lyric, ChordPro, rich-text, Word or song document, is imported
         // as a song; a folder of them as a library.
-        if load::is_importable(path)
+        // A PDF or a folder of pictures becomes slides.
+        let deck = deck::is_pdf(path)
+            || deck::is_unexported_deck(path)
+            || (path.is_dir() && deck::pictures_in(path).is_some());
+        if deck
+            || load::is_importable(path)
             || load::is_song_file(path)
             || (path.is_dir() && !load::files_to_import(&[path.to_owned()]).is_empty())
         {
@@ -2364,12 +2372,27 @@ impl App {
     /// shown, if any. The first song's slides are shown. A song the library already has, word
     /// for word under the same title, isn't added again. Returns the titles imported and a
     /// plain sentence for each file that wasn't.
-    fn import_songs(&mut self, paths: &[PathBuf]) -> (Vec<String>, Vec<String>) {
+    fn import_songs(&mut self, paths: &[PathBuf]) -> (Vec<String>, Vec<String>, Vec<String>) {
         let started = Instant::now();
-        let files = load::files_to_import(paths);
         let mut imported = Vec::new();
         let mut problems = Vec::new();
         let mut first = None;
+        // PDFs and folders of pictures become slides, made on threads of their own; a
+        // presentation program's own file is answered with how to export it.
+        let mut decks = Vec::new();
+        let mut songs = Vec::new();
+        for path in paths {
+            if deck::is_unexported_deck(path) {
+                problems.push(deck::unexported_message(path));
+            } else if deck::is_pdf(path) || (path.is_dir() && deck::pictures_in(path).is_some()) {
+                let source = deck::Source::File(path.clone());
+                decks.push(source.name());
+                self.start_deck(source);
+            } else {
+                songs.push(path.clone());
+            }
+        }
+        let files = load::files_to_import(&songs);
         // What the library has, looked up once rather than song by song.
         let mut ids: std::collections::HashSet<Uuid> = self.show.presentations().iter().map(|s| s.id).collect();
         let mut have: std::collections::HashMap<(String, String), usize> = self
@@ -2472,6 +2495,7 @@ impl App {
                 many => format!(" into {} libraries", many.len()),
             };
             let said = match (imported.as_slice(), problems.as_slice()) {
+                ([], []) if !decks.is_empty() => None,
                 ([], []) => Some("There were no songs to import there.".to_owned()),
                 ([one], []) => Some(format!("Imported {one}{into}.")),
                 (many, []) => Some(format!("Imported {} songs{into}.", many.len())),
@@ -2488,10 +2512,72 @@ impl App {
             for problem in &problems {
                 applog::event("songs", &format!("not imported: {problem}"));
             }
-            state.notice = said;
+            let making = (!decks.is_empty()).then(|| format!("Making slides from {}…", decks.join(", ")));
+            state.notice = match (said, making) {
+                (Some(said), Some(making)) => Some(format!("{said} {making}")),
+                (said, making) => said.or(making),
+            };
             running.home_window.request_redraw();
         }
-        (imported, problems)
+        (imported, problems, decks)
+    }
+
+    /// Starts making slides from a PDF or pictures, on a thread of its own; the presentation
+    /// is added when it is done (see [`App::handle_decks`]).
+    fn start_deck(&mut self, source: deck::Source) {
+        applog::event("slides", &format!("making slides from {}", source.name()));
+        let Some(running) = self.running.as_ref() else {
+            // No window to wake: make it now.
+            match deck::make(&source) {
+                Ok(made) => self.add_song(made, false),
+                Err(problem) => applog::event("slides", &problem),
+            }
+            return;
+        };
+        let ctx = running.egui_ctx.clone();
+        self.decks.start(source, move || ctx.request_repaint());
+    }
+
+    /// Adds the decks made since the last look, and says how each went.
+    fn handle_decks(&mut self) {
+        for (path, made) in self.decks.finished() {
+            let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            let said = match made {
+                Ok(made) => {
+                    let count = made.slide_count();
+                    applog::event("slides", &format!("made {count} slides from {name}"));
+                    self.add_song(made, false);
+                    format!("Made {count} slide{} from {name}.", if count == 1 { "" } else { "s" })
+                }
+                Err(problem) => {
+                    applog::event("slides", &format!("could not make slides: {problem}"));
+                    problem
+                }
+            };
+            if let Some(running) = self.running.as_mut() {
+                running.home_state.notice = Some(said);
+                running.home_window.request_redraw();
+            }
+        }
+    }
+
+    /// Asks for a PDF, or pictures, to make slides of: each PDF becomes a presentation, and the
+    /// pictures chosen together become one.
+    fn choose_slides_to_import(&mut self) {
+        let mut endings = vec![deck::PDF_ENDING];
+        endings.extend(media::PICTURES);
+        let Some(chosen) =
+            rfd::FileDialog::new().set_title("Import Slides").add_filter("PDFs and pictures", &endings).pick_files()
+        else {
+            return;
+        };
+        let (pdfs, pictures): (Vec<PathBuf>, Vec<PathBuf>) = chosen.into_iter().partition(|path| deck::is_pdf(path));
+        for pdf in pdfs {
+            self.start_deck(deck::Source::File(pdf));
+        }
+        if !pictures.is_empty() {
+            self.start_deck(deck::chosen_pictures(pictures));
+        }
     }
 
     /// Asks which song files to import, and imports them.
@@ -3763,6 +3849,9 @@ impl App {
         if action == A::ImportLibraryFolder {
             return self.choose_library_folder_to_import();
         }
+        if action == A::ImportSlides {
+            return self.choose_slides_to_import();
+        }
         // In the Show view, with nothing being typed, Undo and Redo step through the changes
         // made to songs there.
         let in_show = self.running.as_ref().is_some_and(|r| {
@@ -3867,7 +3956,7 @@ impl App {
             A::StageLayouts => state.stage_editor_open = true,
             A::NewSong => state.new_song = true,
             // Handled above, before the window's state is borrowed.
-            A::ImportSongs | A::ImportLibraryFolder => {}
+            A::ImportSongs | A::ImportLibraryFolder | A::ImportSlides => {}
             A::NewSlide => {
                 let song = match (&state.editing, &state.theme_edit) {
                     (Some(draft), None) => draft.at.presentation,
@@ -4408,6 +4497,7 @@ impl ApplicationHandler<AppEvent> for App {
                 }
                 self.handle_themes();
                 self.handle_songs();
+                self.handle_decks();
                 // The Bible page's set-up (translations, boxes, options) is remembered the
                 // moment it changes, so it is as it was left at the next start.
                 if let Some(running) = self.running.as_mut() {
@@ -4691,6 +4781,7 @@ fn main() -> ExitCode {
         show: Show::new(songs.into_iter().map(Arc::new).collect()),
         sources,
         bible_slots,
+        decks: deck::Decks::default(),
         pictures: Vec::new(),
         unsaved: Vec::new(),
         history: SongHistory::default(),

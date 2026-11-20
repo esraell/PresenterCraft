@@ -80,7 +80,7 @@ needed. Then:
 | Command | Does |
 |---|---|
 | `song new TITLE [FILE.txt]` | A new song, its words from a song text file (a line in square brackets starts a group, a blank line a new slide) |
-| `song import FILE… or FOLDER…` | Imports songs from text, lyric, ChordPro, rich-text or Word files, ProPresenter 7 `.pro` documents, or SoftPresenter song files, as File › Import Songs… does; a folder becomes a library of its name, and each folder inside it another. A song already in the library is skipped. The reply's data lists `imported` and `problems` |
+| `song import FILE… or FOLDER…` | Imports songs from text, lyric, ChordPro, rich-text or Word files, ProPresenter 7 `.pro` documents, or SoftPresenter song files, as File › Import Songs… does; a folder becomes a library of its name, and each folder inside it another. A PDF, or a folder of pictures, becomes a presentation of picture slides, made in the background (the reply's data lists them under `making`). A song already in the library is skipped. The reply's data lists `imported` and `problems` |
 | `song delete SONG --yes` | Deletes a song (one made in SoftPresenter goes to the Trash) |
 | `playlist open NAME` | Puts a playlist in front |
 | `library open NAME` | Shows a library's songs in the song list; `library open all` shows every song |

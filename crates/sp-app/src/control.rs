@@ -182,8 +182,8 @@ pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     if reply.ok { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::from(1) }
 }
 
-/// The app doesn't share the terminal's folder, so a file named in `song import` or `song new`
-/// is sent as a full path. Only those commands: elsewhere a word that happens to match a file
+/// The app doesn't share the terminal's folder, so a file or folder named in `song import` or
+/// `song new` is sent as a full path. Only those commands: elsewhere a word that happens to match a file
 /// in the folder (a song called "notes") is meant as words.
 fn with_full_paths(args: Vec<String>) -> Vec<String> {
     let names_files = args.first().is_some_and(|w| w.eq_ignore_ascii_case("song"))
@@ -194,7 +194,7 @@ fn with_full_paths(args: Vec<String>) -> Vec<String> {
     args.into_iter()
         .enumerate()
         .map(|(at, word)| match Path::new(&word) {
-            path if at >= 2 && path.is_file() => {
+            path if at >= 2 && path.exists() => {
                 path.canonicalize().map_or(word.clone(), |full| full.to_string_lossy().into_owned())
             }
             _ => word,
@@ -1062,8 +1062,19 @@ impl crate::App {
                 if paths.is_empty() {
                     return Err("song import FILE…".to_owned());
                 }
-                let (imported, problems) = self.import_songs(&paths);
+                let (imported, problems, decks) = self.import_songs(&paths);
+                let making = (!decks.is_empty()).then(|| {
+                    format!("Making slides from {}; each appears in the song list when it is done.", decks.join(", "))
+                });
                 if imported.is_empty() {
+                    if let Some(making) = making {
+                        let mut text = making;
+                        for problem in problems.iter().take(10) {
+                            text.push_str(&format!("\n{problem}"));
+                        }
+                        let data = serde_json::json!({"imported": imported, "problems": problems, "making": decks});
+                        return Ok(Reply::with(text, data));
+                    }
                     return Err(if problems.is_empty() {
                         "Nothing was imported.".to_owned()
                     } else {
@@ -1088,7 +1099,10 @@ impl crate::App {
                 if problems.len() > NAMED {
                     text.push_str(&format!("\n…and {} more not imported (see the log).", problems.len() - NAMED));
                 }
-                Ok(Reply::with(text, serde_json::json!({"imported": imported, "problems": problems})))
+                if let Some(making) = making {
+                    text.push_str(&format!("\n{making}"));
+                }
+                Ok(Reply::with(text, serde_json::json!({"imported": imported, "problems": problems, "making": decks})))
             }
             _ => Err("song new TITLE [FILE.txt], song import FILE…, or song delete SONG --yes".to_owned()),
         }

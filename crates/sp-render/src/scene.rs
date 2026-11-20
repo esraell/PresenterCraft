@@ -87,7 +87,7 @@ pub fn build_layers(fonts: &mut Fonts, layers: &Layers, theme: &Theme, target_w:
 
     // The media, or while none is showing, the theme's own picture behind its slides.
     let theme_picture = match (layers.media, layers.slide, theme.background_picture.as_deref()) {
-        (None, Some(_), Some(file)) => crate::pictures::picture(file),
+        (None, Some(_), Some(file)) => crate::pictures::picture_at(file, w),
         _ => None,
     };
     if let Some(picture) = layers.media.or(theme_picture.as_ref()) {
@@ -274,7 +274,10 @@ fn draw_objects(
 /// drawn as a grey box with a cross, so it can still be seen, moved and deleted.
 fn draw_picture(scene: &mut Scene, placed: Affine, file: &str, fit: ImageFit, rect: SlideRect, outline: &BezPath) {
     let (x, y, w, h) = (f64::from(rect.x), f64::from(rect.y), f64::from(rect.w), f64::from(rect.h));
-    let Some(picture) = crate::pictures::picture(file) else {
+    // How large it is drawn, in pixels, says whether a small copy will do.
+    let [a, b, ..] = placed.as_coeffs();
+    let drawn = w.max(h) * a.hypot(b);
+    let Some(picture) = crate::pictures::picture_at(file, drawn) else {
         scene.fill(Fill::NonZero, placed, Color::from_rgba8(90, 90, 96, 255), None, outline);
         let mut cross = BezPath::new();
         cross.move_to((x, y));

@@ -3,7 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-fn folder() -> Option<PathBuf> {
+/// The Images folder in the app's data folder.
+pub(crate) fn folder() -> Option<PathBuf> {
     crate::bible_store::data_dir().map(|dir| dir.join("Images"))
 }
 

@@ -11,8 +11,9 @@ Size: S = under a day, M = days, L = a week or more. Sunday: how much it matters
 
 1. **Playlists and media from a church's existing presentation software.** Songs and libraries
    come across already; playlists, pictures, videos and bundles are next. · M
-2. **PowerPoint import.** As pictures first and editable later: sermon and announcement slides
-   arrive as PowerPoint files every week. · L
+2. **PowerPoint and Keynote files straight in.** Sermon and announcement slides arrive as
+   PowerPoint files every week; they should drop straight in, made into pictures by the program
+   that made them (PDFs and folders of pictures already work). · M
 3. **FFmpeg in the app.** Without it, MKV, WebM, AVI and some MP4 files won't play on a stock
    Mac. · M
 4. **Media and placeholder items in playlists.** The countdown video, the announcement loop and
@@ -183,7 +184,8 @@ rather than a feature, but no church on Windows can use the app without them.
 ## Library, playlists and import/export
 
 - **Choices when importing songs.** How slides are split (paragraph, line or marker, and how many lines), and the theme, library and playlist imported songs go to. (started: File › Import Songs…, drops and `sp song import` read text, lyric, ChordPro, rich-text and Word files, find sections, and share long stretches into slides of up to four lines) · S · Medium
-- **PowerPoint import.** As editable slides, as pictures, or as objects and text (weekly sermon slides). · L · High
+- **PowerPoint import.** As editable slides, as pictures, or as objects and text (weekly sermon slides). (started: PDFs and folders of pictures become picture slides) · L · High
+- **Lighter screens for picture-heavy decks.** The drawing library keeps up to about thirty full-size pictures per screen (roughly half a gigabyte each) until its texture fills; let them go sooner. · S–M · Medium
 - **Importing from a church's existing presentation software**, so a library can move over in one go: songs, playlists and their media. (started: ProPresenter 7 songs and library folders, with groups, arrangements, labels, notes and copyright details; not yet playlists, pictures, videos or bundles) · M · High
 - **SongSelect inside the app.** Search, preview and import from the search panel (⌘F). May need CCLI's agreement. · L · Medium
 - **Media, placeholder and stream items in a playlist.** A countdown video, an announcement loop, a "sermon slides to come" placeholder, a cue, a video or audio stream, and hidden items. (started: playlists hold songs, saved passages and headers) · M · Medium
