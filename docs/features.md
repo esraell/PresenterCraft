@@ -230,7 +230,9 @@ feature changes, this page changes in the same commit.
 - Switching the audience (or stage) screens off closes their windows, so the display shows
   what is behind them, not black; NDI goes on sending black, so a stream keeps its source. A
   screen in a window opens on a display the operator doesn't work on when there is one.
-- A screen whose display is unplugged waits for it instead of jumping to another display.
+- A screen keeps the display it was set to, by name. If that display isn't connected, the
+  Screens window shows it as not found and the screen shows nothing anywhere (it never jumps to
+  another display); it goes back to its display as soon as it is connected again.
   Identify Screens marks each screen with its name, a border and a wash of its own colour that
   breathes a few times to catch the eye (the Screens window shows each screen's colour beside
   it), and the Screens menu puts a test pattern
