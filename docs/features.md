@@ -40,7 +40,14 @@ feature changes, this page changes in the same commit.
   message, prop, timer or media item this computer doesn't have is kept and counted. A pack is
   untrusted: only its own kinds of entry with plain names are read, within size limits and the
   free disk space; a picture or video a song names must be one the pack holds; the app names every
-  file it writes; anything else is left out and named.
+  file it writes; anything else is left out and named. A pack is the same on every system
+  SoftPresenter runs on (macOS, Windows, Linux): zip entries named with `/`, files the app names
+  by id, songs and themes in UTF-8 JSON, and videos named inside the library rather than by a
+  computer's own paths. Opening a pack again adds nothing twice: a theme the computer has (the
+  same id) is used as it is, and a picture or video already in the library (the same contents)
+  is reused. Fonts don't travel (their licences rarely allow it): a theme's font missing on the
+  other computer falls back to one it has. A pack with videos is written or opened in the
+  background; `--wait` waits for it, and `sp job N` says how it went.
 - Playlists, libraries, macros, the song that starts with the app and slides' "go to song"
   actions find a library song by the id in its file, so they keep working when the library
   folder moves. A song that can't be found is kept and shown as missing (`sp playlist` and

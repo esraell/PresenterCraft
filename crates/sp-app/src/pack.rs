@@ -507,75 +507,181 @@ fn put_file(entry: &mut impl Read, into: &Path, cap: u64) -> Result<u64, String>
     }
 }
 
-/// The free space on the disk holding `folder`, from `df` (the standard library has no call
-/// for it).
+/// The free space on the disk holding `folder`, on any system.
 fn free_space(folder: &Path) -> Option<u64> {
-    let out = std::process::Command::new("/bin/df").arg("-k").arg(folder).output().ok()?;
-    let text = String::from_utf8(out.stdout).ok()?;
-    let line = text.lines().nth(1)?;
-    let kb: u64 = line.split_whitespace().nth(3)?.parse().ok()?;
-    Some(kb * 1024)
+    fs4::available_space(folder).ok()
+}
+
+/// A name made from a title that every system accepts as a file name: no characters Windows,
+/// macOS or Linux refuse, no control characters, no trailing dot or space, not one of the names
+/// Windows keeps for itself (CON, NUL, COM1…), and not empty.
+pub fn safe_file_name(title: &str) -> String {
+    let mut name: String =
+        title
+            .chars()
+            .map(|c| {
+                if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() {
+                    '-'
+                } else {
+                    c
+                }
+            })
+            .collect();
+    while name.ends_with(['.', ' ']) {
+        name.pop();
+    }
+    let name = name.trim_start().to_owned();
+    let stem = name.split('.').next().unwrap_or_default().to_uppercase();
+    let kept = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem[3..].chars().all(|c| c.is_ascii_digit()));
+    match name {
+        name if name.is_empty() => "Untitled".to_owned(),
+        name if kept => format!("{name}_"),
+        name => name.chars().take(120).collect(),
+    }
+}
+
+/// The choice made in a dialog of three buttons, as 0, 1 or 2: by the button's words, or by its
+/// place on a system whose dialogs answer Yes, No or Cancel. `None` when it was closed.
+pub fn three_way(result: rfd::MessageDialogResult, words: [&str; 3]) -> Option<usize> {
+    match result {
+        rfd::MessageDialogResult::Custom(choice) => words.iter().position(|word| *word == choice),
+        rfd::MessageDialogResult::Yes | rfd::MessageDialogResult::Ok => Some(0),
+        rfd::MessageDialogResult::No => Some(1),
+        rfd::MessageDialogResult::Cancel => Some(2),
+    }
+}
+
+/// The pictures and videos brought into the library from a pack: what each name in the pack
+/// became, and how many files were copied in or found there already.
+#[derive(Default)]
+pub struct Brought {
+    names: HashMap<String, Option<String>>,
+    pub pictures: usize,
+    pub videos: usize,
+    pub already: usize,
 }
 
 /// Where a song or theme from a pack points at a picture or video: only at one the pack itself
-/// holds, copied into the library under a name the app makes (pictures in Images, videos in
-/// Media). Anything else (a path on the computer, `..`, a name the pack doesn't have) becomes
-/// nothing, so the slide shows the picture as missing. `brought` remembers what was copied.
-pub fn bring_file(file: &str, opened: &Opened, library: &Path, brought: &mut HashMap<String, String>) -> String {
-    if let Some(done) = brought.get(file) {
+/// holds, copied into the library (pictures in Images, videos in Media) under a name the app
+/// makes, or the same file the library has already (by its contents), so opening a pack again
+/// adds nothing twice. A video the pack left out stays named, shown as missing. Anything else
+/// (a path on the computer, `..`, a picture the pack doesn't have) is `None`: the object goes.
+pub fn bring_file(file: &str, opened: &Opened, library: &Path, brought: &mut Brought) -> Option<String> {
+    if let Some(done) = brought.names.get(file) {
         return done.clone();
     }
-    let (from, label, folder, prefix) = match file.strip_prefix(MEDIA_PREFIX) {
-        Some(name) if plain(name).is_some() => (opened.videos.get(name), name, "Media", MEDIA_PREFIX),
-        Some(_) => (None, "", "", ""),
-        None if plain(file).is_some() => (opened.pictures.get(file), file, "Images", ""),
-        None => (None, "", "", ""),
+    let named = match file.strip_prefix(MEDIA_PREFIX) {
+        Some(name) if plain(name).is_some() => match opened.videos.get(name) {
+            Some(from) => {
+                place(from, name, &library.join("Media"), brought, true).map(|n| format!("{MEDIA_PREFIX}{n}"))
+            }
+            // Left out of the pack: kept, so the slide shows the video as missing.
+            None => Some(file.to_owned()),
+        },
+        None if plain(file).is_some() => {
+            opened.pictures.get(file).and_then(|from| place(from, file, &library.join("Images"), brought, false))
+        }
+        _ => None,
     };
-    let Some(from) = from else { return String::new() };
+    brought.names.insert(file.to_owned(), named.clone());
+    named
+}
+
+/// Puts a picture or video from the pack in `dir`: the file there with the same contents if
+/// there is one, else a copy under a new name. Returns its name there.
+fn place(from: &Path, label: &str, dir: &Path, brought: &mut Brought, video: bool) -> Option<String> {
+    if let Some(same) = same_file_in(dir, from) {
+        brought.already += 1;
+        return Some(same);
+    }
     // The ending is the pack's name's (checked to be a picture's or a video's when it was read).
     let ending =
         Path::new(label).extension().map_or_else(String::new, |e| format!(".{}", e.to_string_lossy().to_lowercase()));
     let name = format!("{}{ending}", Uuid::new_v4());
-    let dir = library.join(folder);
     let to = dir.join(&name);
-    let moved = std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::rename(from, &to).or_else(|_| std::fs::copy(from, &to).map(|_| ())));
-    let named = if moved.is_ok() { format!("{prefix}{name}") } else { String::new() };
-    brought.insert(file.to_owned(), named.clone());
-    named
+    std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::rename(from, &to).or_else(|_| std::fs::copy(from, &to).map(|_| ())))
+        .ok()?;
+    if video {
+        brought.videos += 1;
+    } else {
+        brought.pictures += 1;
+    }
+    Some(name)
+}
+
+/// The name of a file directly in `dir` with the same contents as `file`, if there is one.
+fn same_file_in(dir: &Path, file: &Path) -> Option<String> {
+    let size = std::fs::metadata(file).ok()?.len();
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        let meta = entry.metadata().ok()?;
+        (meta.is_file() && meta.len() == size && same_contents(&entry.path(), file))
+            .then(|| entry.file_name().to_string_lossy().into_owned())
+    })
+}
+
+fn same_contents(a: &Path, b: &Path) -> bool {
+    let (Ok(a), Ok(b)) = (std::fs::File::open(a), std::fs::File::open(b)) else { return false };
+    let (mut a, mut b) = (std::io::BufReader::new(a), std::io::BufReader::new(b));
+    let (mut left, mut right) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
+    loop {
+        let (Some(n), Some(m)) = (fill(&mut a, &mut left), fill(&mut b, &mut right)) else { return false };
+        if n != m || left[..n] != right[..m] {
+            return false;
+        }
+        if n < left.len() {
+            return true;
+        }
+    }
+}
+
+/// Reads until `buffer` is full or the file ends; how much was read, or `None` on an error.
+fn fill(from: &mut impl Read, buffer: &mut [u8]) -> Option<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match from.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
+    Some(filled)
 }
 
 /// Points every picture and video of a song from a pack at the library's copies (see
-/// `bring_file`).
-pub fn bring_song_files(
-    song: &mut Presentation,
-    opened: &Opened,
-    library: &Path,
-    brought: &mut HashMap<String, String>,
-) {
+/// `bring_file`); an object naming anything else is taken off its slide.
+pub fn bring_song_files(song: &mut Presentation, opened: &Opened, library: &Path, brought: &mut Brought) {
     for group in &mut song.groups {
         for slide in &mut group.slides {
-            for object in &mut slide.objects {
-                if let ObjectKind::Image { file, .. } = &mut object.kind {
-                    *file = bring_file(file, opened, library, brought);
-                }
-            }
+            bring_objects(&mut slide.objects, opened, library, brought);
         }
     }
 }
 
 /// The same for a theme from a pack.
-pub fn bring_theme_files(theme: &mut Theme, opened: &Opened, library: &Path, brought: &mut HashMap<String, String>) {
+pub fn bring_theme_files(theme: &mut Theme, opened: &Opened, library: &Path, brought: &mut Brought) {
     for template in &mut theme.templates {
-        for object in &mut template.objects {
-            if let ObjectKind::Image { file, .. } = &mut object.kind {
-                *file = bring_file(file, opened, library, brought);
+        bring_objects(&mut template.objects, opened, library, brought);
+    }
+    theme.background_picture =
+        theme.background_picture.take().and_then(|picture| bring_file(&picture, opened, library, brought));
+}
+
+fn bring_objects(objects: &mut Vec<sp_model::Object>, opened: &Opened, library: &Path, brought: &mut Brought) {
+    objects.retain_mut(|object| match &mut object.kind {
+        ObjectKind::Image { file, .. } => match bring_file(file, opened, library, brought) {
+            Some(named) => {
+                *file = named;
+                true
             }
-        }
-    }
-    if let Some(picture) = theme.background_picture.take() {
-        theme.background_picture = Some(bring_file(&picture, opened, library, brought)).filter(|n| !n.is_empty());
-    }
+            None => false,
+        },
+        _ => true,
+    });
 }
 
 /// What to do with a song from a pack that the library has already (the same id).
@@ -634,17 +740,122 @@ mod tests {
             ignored: Vec::new(),
             staging: staging.clone(),
         };
-        let mut brought = HashMap::new();
-        let picture = bring_file("a.png", &opened, &library, &mut brought);
+        let mut brought = Brought::default();
+        let picture = bring_file("a.png", &opened, &library, &mut brought).unwrap();
         assert!(library.join("Images").join(&picture).is_file() && picture.ends_with(".png") && picture != "a.png");
-        assert_eq!(bring_file("a.png", &opened, &library, &mut brought), picture, "once");
-        let video = bring_file("Media/b.mp4", &opened, &library, &mut brought);
+        assert_eq!(bring_file("a.png", &opened, &library, &mut brought).unwrap(), picture, "once");
+        let video = bring_file("Media/b.mp4", &opened, &library, &mut brought).unwrap();
         assert!(video.starts_with(MEDIA_PREFIX) && library.join(&video).is_file());
+        assert_eq!((brought.pictures, brought.videos), (1, 1));
+        // A video the pack left out stays named, shown as missing.
+        assert_eq!(
+            bring_file("Media/left-out.mp4", &opened, &library, &mut brought).as_deref(),
+            Some("Media/left-out.mp4")
+        );
         for hostile in
-            ["/etc/passwd", "../a.png", "Media/../a.png", "Media/missing.mp4", "missing.png", "Images/a.png", ""]
+            ["/etc/passwd", "../a.png", "Media/../a.png", "Media/sub/x.mp4", "missing.png", "Images/a.png", ""]
         {
-            assert_eq!(bring_file(hostile, &opened, &library, &mut brought), "", "{hostile}");
+            assert_eq!(bring_file(hostile, &opened, &library, &mut brought), None, "{hostile}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picture_the_library_has_already_is_not_copied_again() {
+        let dir = std::env::temp_dir().join(format!("sp-pack-again-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let library = dir.join("library");
+        std::fs::create_dir_all(library.join("Images")).unwrap();
+        let picture: Vec<u8> = (0..200_000u32).map(|n| (n % 251) as u8).collect();
+        std::fs::write(library.join("Images/mine.png"), &picture).unwrap();
+        std::fs::write(library.join("Images/other.png"), vec![0u8; picture.len()]).unwrap();
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("p"), &picture).unwrap();
+        let opened = Opened {
+            songs: Vec::new(),
+            themes: HashMap::new(),
+            pictures: HashMap::from([("x.png".to_owned(), staging.join("p"))]),
+            videos: HashMap::new(),
+            playlist: None,
+            ignored: Vec::new(),
+            staging,
+        };
+        let mut brought = Brought::default();
+        assert_eq!(bring_file("x.png", &opened, &library, &mut brought).as_deref(), Some("mine.png"));
+        assert_eq!((brought.pictures, brought.already), (0, 1));
+        assert_eq!(std::fs::read_dir(library.join("Images")).unwrap().count(), 2, "nothing added");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn names_from_titles_work_on_every_system() {
+        assert_eq!(safe_file_name("Sunday: 10am / Main?"), "Sunday- 10am - Main-");
+        assert_eq!(safe_file_name("Joy <live> \"v2\"*|"), "Joy -live- -v2---");
+        assert_eq!(safe_file_name("Amen. "), "Amen");
+        assert_eq!(safe_file_name("con"), "con_");
+        assert_eq!(safe_file_name("COM1.sppack"), "COM1.sppack_");
+        assert_eq!(safe_file_name("Command"), "Command");
+        assert_eq!(safe_file_name(" ... "), "Untitled");
+        assert_eq!(safe_file_name("Благословений потоки"), "Благословений потоки");
+    }
+
+    #[test]
+    fn a_pack_written_here_opens_the_same_anywhere() {
+        let dir = std::env::temp_dir().join(format!("sp-pack-round-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("picture.png"), [137u8, 80, 78, 71]).unwrap();
+        std::fs::write(dir.join("clip.mp4"), vec![7u8; 5000]).unwrap();
+        let mut song = sp_model::parse_song_text("River Song", "Light rises\n\nEvening falls\n");
+        song.groups[0].slides[0].objects.push(sp_model::Object::image("a.png".to_owned(), "Picture".to_owned(), 4, 3));
+        song.groups[0].slides[0].objects.push(sp_model::Object::image(
+            format!("{MEDIA_PREFIX}b.mp4"),
+            "Video".to_owned(),
+            4,
+            3,
+        ));
+        let export = Export {
+            songs: vec![song.clone()],
+            themes: Vec::new(),
+            pictures: vec![("a.png".to_owned(), dir.join("picture.png"))],
+            videos: vec![("b.mp4".to_owned(), dir.join("clip.mp4"))],
+            videos_left_out: Vec::new(),
+            playlist: Some(PlaylistFile {
+                name: "Sunday".to_owned(),
+                items: vec![Item::Song { key: song.id.to_string(), title: song.title.clone() }],
+            }),
+            missing: 0,
+        };
+        let pack = dir.join("Sunday.sppack");
+        assert!(export.write(&pack).unwrap().contains("1 song"));
+        // Entry names use / only, as zip files must, so any system reads them the same way.
+        let names: Vec<String> = {
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(&pack).unwrap()).unwrap();
+            (0..zip.len()).map(|at| zip.by_index(at).unwrap().name().unwrap().into_owned()).collect()
+        };
+        assert!(names.iter().all(|name| !name.contains('\\') && !name.starts_with('/')), "{names:?}");
+        let opened = open(&pack, &dir.join("staging")).unwrap();
+        assert_eq!(opened.songs, vec![song.clone()]);
+        assert_eq!(opened.playlist.as_ref().map(|p| p.name.as_str()), Some("Sunday"));
+        assert!(opened.ignored.is_empty(), "{:?}", opened.ignored);
+        // Brought into a library, a picture and a video are named the same way on every system.
+        let mut brought = Brought::default();
+        let mut copy = opened.songs[0].clone();
+        bring_song_files(&mut copy, &opened, &dir.join("library"), &mut brought);
+        let files: Vec<String> = copy.groups[0].slides[0]
+            .objects
+            .iter()
+            .filter_map(|object| match &object.kind {
+                ObjectKind::Image { file, .. } => Some(file.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(dir.join("library").join("Images").join(&files[0]).is_file(), "{files:?}");
+        assert!(
+            files[1].starts_with(MEDIA_PREFIX)
+                && dir.join("library").join("Media").join(&files[1][MEDIA_PREFIX.len()..]).is_file()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

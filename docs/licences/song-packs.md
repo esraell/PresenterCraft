@@ -23,6 +23,7 @@ compression format and no native library comes with it.
 | zeroize, zeroize_derive | MIT OR Apache-2.0 |
 | constant_time_eq | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | adler2, simd-adler32 | 0BSD OR MIT OR Apache-2.0; MIT |
+| fs4 0.13 (the free space on a disk, before a pack is opened) | MIT OR Apache-2.0 |
 
 All can be combined with the GNU GPL version 3, as NOTICE.md's "Other libraries" says;
 `cargo metadata` lists each with its licence.

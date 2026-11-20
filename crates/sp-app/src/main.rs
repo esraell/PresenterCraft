@@ -414,8 +414,8 @@ enum AppEvent {
 
 /// A song pack written or read on a thread of its own, for the app to finish.
 enum PackJob {
-    Wrote(Result<String, String>),
-    Opened { result: Box<Result<pack::Opened, String>>, same: Option<pack::Same>, library: Option<Uuid> },
+    Wrote { job: u64, result: Result<String, String> },
+    Opened { job: u64, result: Box<Result<pack::Opened, String>>, same: Option<pack::Same>, library: Option<Uuid> },
 }
 
 /// A song pack is read at once (the reply waits for it) when its file is no bigger than this;
@@ -811,6 +811,10 @@ struct App {
     /// Song packs written or read on threads of their own report here.
     pack_tx: std::sync::mpsc::Sender<PackJob>,
     pack_rx: std::sync::mpsc::Receiver<PackJob>,
+    /// Song packs being written or read in the background, by number, with how each went once
+    /// done (`sp job N`, and `--wait`); the number of the last one started.
+    jobs: Vec<(u64, Option<Result<String, String>>)>,
+    last_job: Option<u64>,
     /// The socket `softpresenter ctl` reaches the app through, while it listens.
     _control: Option<control::Listening>,
     show: Show,
@@ -2802,8 +2806,7 @@ impl App {
     fn keep_held_aside(&mut self) {
         let Some(folder) = bible_store::data_dir().map(|dir| dir.join("Not saved")) else { return };
         let when = chrono::Local::now().format("%Y-%m-%d %H.%M.%S");
-        let plain =
-            |name: &str| name.chars().map(|c| if matches!(c, '/' | '\\' | ':') { '-' } else { c }).collect::<String>();
+        let plain = pack::safe_file_name;
         for index in self.held_songs.clone() {
             let Some(song) = self.show.presentations().get(index) else { continue };
             let file = folder.join(format!("{} {when}.{}", plain(&song.title), load::SONG_EXTENSION));
@@ -2985,8 +2988,9 @@ impl App {
         let size = pack::size_words(export.video_bytes());
         let (tx, waker) = (self.pack_tx.clone(), self.waker.clone());
         let name = to.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let job = self.start_job();
         std::thread::spawn(move || {
-            let _ = tx.send(PackJob::Wrote(export.write(&to)));
+            let _ = tx.send(PackJob::Wrote { job, result: export.write(&to) });
             if let Some(waker) = waker {
                 let _ = waker.send_event(AppEvent::PackDone);
             }
@@ -3018,11 +3022,10 @@ impl App {
                             "Cancel".to_owned(),
                         ))
                         .show();
-                    match keep {
-                        rfd::MessageDialogResult::Custom(choice) if choice.starts_with("Include") => {}
-                        rfd::MessageDialogResult::Custom(choice) if choice.starts_with("Leave") => {
-                            export.leave_out_videos()
-                        }
+                    let include = format!("Include Videos ({size})");
+                    match pack::three_way(keep, [include.as_str(), "Leave Them Out", "Cancel"]) {
+                        Some(0) => {}
+                        Some(1) => export.leave_out_videos(),
                         _ => return,
                     }
                 }
@@ -3034,7 +3037,7 @@ impl App {
                     None => Some("Songs".to_owned()),
                 };
                 let file =
-                    format!("{}.{}", name.unwrap_or_else(|| "Songs".to_owned()).replace(['/', ':'], "-"), pack::ENDING);
+                    format!("{}.{}", pack::safe_file_name(&name.unwrap_or_else(|| "Songs".to_owned())), pack::ENDING);
                 let Some(to) = rfd::FileDialog::new()
                     .set_title("Export Songs")
                     .set_file_name(file)
@@ -3083,12 +3086,13 @@ impl App {
         }
         let (tx, waker) = (self.pack_tx.clone(), self.waker.clone());
         let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let job = self.start_job();
         std::thread::spawn(move || {
             let result = pack::open(&path, &staging);
             if result.is_err() {
                 let _ = std::fs::remove_dir_all(&staging);
             }
-            let _ = tx.send(PackJob::Opened { result: Box::new(result), same, library });
+            let _ = tx.send(PackJob::Opened { job, result: Box::new(result), same, library });
             if let Some(waker) = waker {
                 let _ = waker.send_event(AppEvent::PackDone);
             }
@@ -3096,16 +3100,31 @@ impl App {
         Ok(format!("Opening {name}; the window says when its songs are in."))
     }
 
+    /// Numbers a song pack job started in the background (the last 50 are kept).
+    fn start_job(&mut self) -> u64 {
+        let job = self.jobs.last().map_or(1, |(last, _)| last + 1);
+        self.jobs.push((job, None));
+        if self.jobs.len() > 50 {
+            self.jobs.remove(0);
+        }
+        self.last_job = Some(job);
+        job
+    }
+
     /// Finishes the song packs written or read on threads of their own since the last look.
     fn finish_packs(&mut self) {
-        while let Ok(job) = self.pack_rx.try_recv() {
-            let said = match job {
-                PackJob::Wrote(result) => result.unwrap_or_else(|problem| problem),
-                PackJob::Opened { result, same, library } => match *result {
-                    Ok(opened) => self.apply_pack(opened, same, library).unwrap_or_else(|problem| problem),
-                    Err(problem) => problem,
+        while let Ok(done) = self.pack_rx.try_recv() {
+            let (job, result) = match done {
+                PackJob::Wrote { job, result } => (job, result),
+                PackJob::Opened { job, result, same, library } => match *result {
+                    Ok(opened) => (job, self.apply_pack(opened, same, library)),
+                    Err(problem) => (job, Err(problem)),
                 },
             };
+            let said = result.clone().unwrap_or_else(|problem| problem);
+            if let Some((_, kept)) = self.jobs.iter_mut().find(|(have, _)| *have == job) {
+                *kept = Some(result);
+            }
             applog::event("pack", &said);
             if let Some(running) = self.running.as_mut() {
                 running.home_state.notice = Some(said);
@@ -3152,9 +3171,9 @@ impl App {
                         "Skip".to_owned(),
                     ))
                     .show();
-                match answer {
-                    rfd::MessageDialogResult::Custom(choice) if choice == "Replace" => pack::Same::Replace,
-                    rfd::MessageDialogResult::Custom(choice) if choice == "Keep Both" => pack::Same::KeepBoth,
+                match pack::three_way(answer, ["Replace", "Keep Both", "Skip"]) {
+                    Some(0) => pack::Same::Replace,
+                    Some(1) => pack::Same::KeepBoth,
                     _ => pack::Same::Skip,
                 }
             }
@@ -3190,7 +3209,7 @@ impl App {
                 )
             });
         let media: Vec<Uuid> = self.show.media().iter().map(|item| item.id).collect();
-        let mut brought: HashMap<String, String> = HashMap::new();
+        let mut brought = pack::Brought::default();
         let mut themes_in: HashMap<Uuid, Uuid> = HashMap::new();
         let mut new_themes = 0;
         let mut lost_actions = 0;
@@ -3226,18 +3245,13 @@ impl App {
             // main theme takes on this computer's main theme.
             song.theme = match song.theme {
                 Some(id) if themes_in.contains_key(&id) => themes_in.get(&id).copied(),
+                // A theme this computer has (the same id) is used as it is here, never changed or
+                // added again; one it doesn't have comes in, under its own id.
+                Some(id) if self.themes.iter().any(|have| have.id == id) => Some(id),
                 Some(id) => opened.themes.get(&id).map(|theme| {
-                    let same_here = self.themes.iter().any(|have| have.id == id && have.to_json() == theme.to_json());
-                    if same_here {
-                        themes_in.insert(id, id);
-                        return id;
-                    }
                     let mut theme = theme.clone();
                     theme.name.retain(|c| !c.is_control());
                     pack::bring_theme_files(&mut theme, &opened, &dir, &mut brought);
-                    if self.themes.iter().any(|have| have.id == theme.id) {
-                        theme.id = Uuid::new_v4();
-                    }
                     let base = theme.name.clone();
                     let mut n = 2;
                     while self.themes.iter().any(|have| have.name == theme.name) {
@@ -3249,11 +3263,10 @@ impl App {
                     {
                         self.stamps.note(&file);
                     }
-                    let new = theme.id;
                     self.themes.push(theme);
-                    themes_in.insert(id, new);
+                    themes_in.insert(id, id);
                     new_themes += 1;
-                    new
+                    id
                 }),
                 None => None,
             };
@@ -3362,9 +3375,7 @@ impl App {
         if new_themes > 0 {
             parts.push(format!("Added {} theme{}.", new_themes, if new_themes == 1 { "" } else { "s" }));
         }
-        let pictures =
-            brought.values().filter(|name| !name.is_empty() && !name.starts_with(pack::MEDIA_PREFIX)).count();
-        let videos = brought.values().filter(|name| name.starts_with(pack::MEDIA_PREFIX)).count();
+        let (pictures, videos) = (brought.pictures, brought.videos);
         let things: Vec<String> = [(pictures, "picture"), (videos, "video")]
             .into_iter()
             .filter(|(n, _)| *n > 0)
@@ -3781,7 +3792,13 @@ impl App {
                 dialog = dialog.set_directory(libraries);
             }
         }
-        if let Some(chosen) = dialog.pick_files_or_folders() {
+        // A Mac's file window takes song documents and folders at once; elsewhere, a folder (of
+        // one library, or of all of them) is chosen.
+        #[cfg(target_os = "macos")]
+        let chosen = dialog.pick_files_or_folders();
+        #[cfg(not(target_os = "macos"))]
+        let chosen = dialog.pick_folders();
+        if let Some(chosen) = chosen {
             self.import_songs(&chosen);
         }
     }
@@ -6268,6 +6285,8 @@ fn main() -> ExitCode {
         waker: Some(event_loop.create_proxy()),
         pack_tx,
         pack_rx,
+        jobs: Vec::new(),
+        last_job: None,
         // Commands from `softpresenter ctl` come in on the control socket. Without it (another
         // copy has it, say) the app runs as usual.
         _control: {

@@ -8,6 +8,7 @@
 //! Who can use it: programs running as the same user, who could change the app's files anyway.
 //! Nothing listens on the network, so no web page or other computer can reach it.
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -183,12 +184,26 @@ fn answer(stream: std::os::unix::net::UnixStream, deliver: &impl Fn(Incoming)) {
 /// the reply as JSON. Returns the process's exit code.
 pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     let json = args.iter().any(|a| a == "--json");
-    let args = with_full_paths(args.into_iter().filter(|a| a != "--json").collect());
+    let wait = args.iter().any(|a| a == "--wait");
+    let args = with_full_paths(args.into_iter().filter(|a| a != "--json" && a != "--wait").collect());
     // Help needs no app: it is printed here.
     let reply = if args.first().is_none_or(|w| w.eq_ignore_ascii_case("help")) {
         Reply::done(HELP.trim_end())
     } else {
         send(&args).unwrap_or_else(Reply::failed)
+    };
+    // `--wait`: a job the app does in the background (a song pack with videos) is waited for, and
+    // its own reply printed.
+    let reply = match reply.data.get("job").and_then(serde_json::Value::as_u64) {
+        Some(job) if wait && reply.ok => loop {
+            std::thread::sleep(Duration::from_millis(500));
+            match send(&["job".to_owned(), job.to_string()]) {
+                Ok(now) if now.data.get("done").and_then(serde_json::Value::as_bool) == Some(false) => {}
+                Ok(now) => break now,
+                Err(problem) => break Reply::failed(problem),
+            }
+        },
+        _ => reply,
     };
     // A command that did what it was asked always says so.
     let reply =
@@ -345,6 +360,7 @@ const COMMANDS: &[&str] = &[
     "song",
     "undo",
     "redo",
+    "job",
     "menu",
 ];
 
@@ -484,6 +500,8 @@ Songs, libraries and playlists
                                they set, their pictures and videos, to open on another computer
   song import FILE.sppack [--skip|--replace|--keep-both]
                                a song pack's songs; ones already here are skipped unless told
+                               (a pack with videos goes on in the background: add --wait to
+                               wait for it, or ask with job N)
 
 Changing a slide (each change is saved, can be undone, and shows on screen at once)
   slide SONG N [--json]        the slide's objects: words, place and look (* = the slide's own)
@@ -588,6 +606,7 @@ impl crate::App {
     /// says what happened.
     pub(crate) fn control(&mut self, el: &ActiveEventLoop, args: &[String]) -> Reply {
         let held_before = self.held_songs.clone();
+        self.last_job = None;
         let word = args.first().map(|w| w.to_lowercase()).unwrap_or_default();
         let result = match word.as_str() {
             "" | "help" => Ok(Reply::done(HELP.trim_end())),
@@ -641,6 +660,7 @@ impl crate::App {
             "announce" => self.ctl_announce(args),
             "bible" => self.ctl_bible(args),
             "song" => self.ctl_song(args),
+            "job" => self.ctl_job(args),
             "undo" => self.ctl_undo(el, false),
             "redo" => self.ctl_undo(el, true),
             "menu" => self.ctl_menu(el, args),
@@ -652,6 +672,16 @@ impl crate::App {
         // A change that couldn't be saved, because the song's file changed outside the app, is
         // said.
         let mut reply = result.unwrap_or_else(Reply::failed);
+        // A song pack job started in the background: its number, for `job N` and `--wait`.
+        if let Some(job) = self.last_job.take() {
+            match &mut reply.data {
+                serde_json::Value::Object(map) => {
+                    map.insert("job".to_owned(), serde_json::json!(job));
+                }
+                data => *data = serde_json::json!({"job": job}),
+            }
+            reply.text.push_str(&format!(" (job {job}; sp job {job} says how it went)"));
+        }
         for at in self.held_songs.iter().filter(|at| !held_before.contains(at)) {
             // The change is made in the app but not saved: a script must be able to tell.
             reply.ok = false;
@@ -741,6 +771,25 @@ impl crate::App {
         }
         let said = self.write_pack(export, to)?;
         Ok(Reply::done(said))
+    }
+
+    /// `job N`: how a song pack written or opened in the background went, or that it is still
+    /// going.
+    fn ctl_job(&self, args: &[String]) -> Result<Reply, String> {
+        let job: u64 = args
+            .get(1)
+            .and_then(|w| w.parse().ok())
+            .ok_or("job N (the number a background song pack job was given)")?;
+        match self.jobs.iter().find(|(have, _)| *have == job) {
+            None => Err(format!("There is no job {job}.")),
+            Some((_, None)) => {
+                Ok(Reply::with(format!("Job {job} is still going."), serde_json::json!({"job": job, "done": false})))
+            }
+            Some((_, Some(Ok(said)))) => Ok(Reply::with(said.clone(), serde_json::json!({"job": job, "done": true}))),
+            Some((_, Some(Err(problem)))) => {
+                Ok(Reply { ok: false, text: problem.clone(), data: serde_json::json!({"job": job, "done": true}) })
+            }
+        }
     }
 
     /// `song reload [SONG [--now]]`.
