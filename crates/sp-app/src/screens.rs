@@ -166,9 +166,7 @@ pub fn place_all(screens: &[Screen], displays: &[DisplayInfo], operator: &[usize
                     display.name
                 )),
                 Some(display) => Placed::Fullscreen(display.index),
-                None => Placed::Nothing(format!(
-                    "Not found: \"{name}\" isn't connected. This screen shows nothing until it is, and goes back to it then."
-                )),
+                None => Placed::Nothing(format!("Disconnected: \"{name}\" is not plugged in.")),
             },
             Output::Window => Placed::Window,
             Output::Ndi(name) if name.trim().is_empty() => Placed::Nothing("Give the NDI output a name.".to_owned()),
@@ -319,7 +317,7 @@ mod tests {
     fn a_display_that_is_not_plugged_in_is_never_swapped_for_another() {
         let screens = [screen("A", Output::Display("Projector".to_owned()))];
         let placed = place_all(&screens, &displays(&["Built-in"]), &[0]);
-        assert!(matches!(&placed[0], Placed::Nothing(why) if why.contains("Not found")), "{placed:?}");
+        assert!(matches!(&placed[0], Placed::Nothing(why) if why.contains("Disconnected")), "{placed:?}");
         // Plugged in again, it is found by name wherever it now sits in the list.
         assert_eq!(place_all(&screens, &displays(&["Projector", "Built-in"]), &[1]), [Placed::Fullscreen(0)]);
     }

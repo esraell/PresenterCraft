@@ -2398,7 +2398,7 @@ fn output_label(output: &Output, displays: &[DisplayInfo]) -> String {
         Output::Display(name) => match displays.iter().find(|display| display.is_named(name)) {
             Some(display) if display.main => format!("{}   (main display)", display.name),
             Some(display) => format!("{}   {} x {}", display.name, display.w, display.h),
-            None => format!("{name}   (not found)"),
+            None => format!("{name}   (disconnected)"),
         },
         Output::Window => "A window".to_owned(),
         Output::Ndi(_) => "NDI".to_owned(),
@@ -5831,7 +5831,7 @@ mod tests {
             assert!(!state.screens_changed, "nothing was clicked, so nothing is changed");
             assert_eq!(state.screens, screens);
         }
-        assert_eq!(output_label(&screens[2].output, &[]), "Gone   (not found)");
+        assert_eq!(output_label(&screens[2].output, &[]), "Gone   (disconnected)");
     }
 
     #[test]
