@@ -303,6 +303,7 @@ const COMMANDS: &[&str] = &[
     "next",
     "previous",
     "prev",
+    "back",
     "first",
     "last",
     "go",
@@ -421,7 +422,7 @@ What is going on
   timers | messages | props | macros | audio | menu
 
 Running the show
-  next | previous | first | last
+  next | previous (or back) | first | last
   go SONG [SLIDE]              put a slide on screen (SONG by name or number; SLIDE from 1)
   select SONG                  show a song's slides without putting anything on screen
   clear [all|slide|media|props|messages|audio|announcements]
@@ -573,7 +574,7 @@ impl crate::App {
             "props" => Ok(self.ctl_named_list("props", |s| s.props.iter().map(|x| x.name.clone()).collect())),
             "macros" => Ok(self.ctl_named_list("macros", |s| s.macros.iter().map(|x| x.name.clone()).collect())),
             "audio" => self.ctl_audio(args),
-            "next" | "previous" | "prev" | "first" | "last" => {
+            "next" | "previous" | "prev" | "back" | "first" | "last" => {
                 let command = match word.as_str() {
                     "next" => self.continue_playlist(Command::Next),
                     "first" => Command::First,
