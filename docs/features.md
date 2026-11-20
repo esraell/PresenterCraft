@@ -234,8 +234,8 @@ feature changes, this page changes in the same commit.
   changes as they are clicked (the passage showing, or two sample verses). Manage Bibles… opens
   the Bibles window. ‹ Verse and Verse › make the passage a verse longer at either end; search
   results open a verse or its whole chapter.
-- Book, chapter and verse lists beside the slides, each column with its own shade and heading
-  (Hide, at their top, puts them away and Books brings them back; the choice is kept). A click
+- Book, chapter and verse lists beside the slides, each column with its heading, in one plain
+  shade so only the rows chosen stand out (Hide, at their top, puts them away and Books brings them back; the choice is kept). A click
   on a book opens it at chapter 1, a double-click looks that chapter up; a double-click on a
   chapter looks the whole chapter up; a click on a verse looks it up at once, Shift-click makes
   a passage from the verse before, and a double-click looks the chapter up and puts the verse on
