@@ -799,6 +799,14 @@ struct App {
 
 impl App {
     fn start(&mut self, el: &ActiveEventLoop) -> Result<Option<Running>, String> {
+        // macOS opens a new window as a tab of a full-screen window (System Settings' "prefer
+        // tabs in full screen"), which put the Settings and Screens windows over the whole
+        // screen. SoftPresenter's windows are never tabs.
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::ActiveEventLoopExtMacOS;
+            el.set_allows_automatic_window_tabbing(false);
+        }
         let monitors: Vec<_> = el.available_monitors().collect();
         let displays = display_list(monitors.iter().cloned(), el.primary_monitor());
         if self.options.list_displays {
@@ -937,6 +945,13 @@ impl App {
             home_state: HomeState {
                 fonts: Arc::new(sp_render::Fonts::new().family_names()),
                 theme_names: self.themes.iter().map(|theme| theme.name.clone()).collect(),
+                themes_kept: self
+                    .themes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, theme)| theme.id.is_nil() || theme.id == sp_model::BIBLE_THEME_ID)
+                    .map(|(at, _)| at)
+                    .collect(),
                 theme_ids: self.themes.iter().map(|theme| theme.id).collect(),
                 theme_for_songs: self.songs_theme,
                 theme_layouts: self.theme_layouts(),
@@ -2821,6 +2836,13 @@ impl App {
             running.canvas_for = None;
             let state = &mut running.home_state;
             state.theme_names = self.themes.iter().map(|theme| theme.name.clone()).collect();
+            state.themes_kept = self
+                .themes
+                .iter()
+                .enumerate()
+                .filter(|(_, theme)| theme.id.is_nil() || theme.id == sp_model::BIBLE_THEME_ID)
+                .map(|(at, _)| at)
+                .collect();
             state.theme_ids = self.themes.iter().map(|theme| theme.id).collect();
             state.theme_for_songs = self.songs_theme;
             state.theme_for_bible = self.bible_theme;

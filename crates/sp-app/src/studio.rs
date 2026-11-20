@@ -748,6 +748,7 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
     let heading = library.as_ref().map_or_else(|| "ALL SONGS".to_owned(), |library| library.name.to_uppercase());
     let live_in = show.live().map(|at| at.presentation);
     let mut add = None;
+    let mut add_to: Option<(usize, Option<usize>)> = None;
     ui.horizontal(|ui| {
         caption(ui, &heading);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -762,7 +763,6 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
         });
     });
     ui.add_space(4.0);
-    let front = state.services.front().name.clone();
     let list = ui.available_rect_before_wrap();
     let (pointer, mods, down) =
         ui.input(|input| (input.pointer.interact_pos(), input.modifiers, input.pointer.primary_down()));
@@ -804,15 +804,36 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
                     carried: false,
                 });
             }
-            // A "+" at the right of the row under the pointer puts the song in the playlist in front.
+            // A "+" at the right of the row under the pointer opens a menu of the playlists to
+            // put the song in, the one in front first, so it is always said which one.
             let plus = Rect::from_center_size(response.rect.right_center() - vec2(13.0, 0.0), vec2(20.0, 20.0));
-            if response.hovered() || ui.rect_contains_pointer(plus) {
-                let button = ui.interact(plus, ui.scope_id().with(("add to playlist", index)), Sense::click());
-                let ink = if button.hovered() { Color32::WHITE } else { TEXT_DIM };
-                ui.painter().rect_filled(plus, 5.0, if button.hovered() { SELECTED } else { HOVER });
+            let plus_id = ui.scope_id().with(("add to playlist", index));
+            let menu_open = egui::Popup::is_id_open(ui.ctx(), plus_id.with("popup"));
+            if response.hovered() || ui.rect_contains_pointer(plus) || menu_open {
+                let button = ui.interact(plus, plus_id, Sense::click());
+                let lit = button.hovered() || menu_open;
+                let ink = if lit { Color32::WHITE } else { TEXT_DIM };
+                ui.painter().rect_filled(plus, 5.0, if lit { SELECTED } else { HOVER });
                 icons::paint(ui.painter(), Icon::Plus, Rect::from_center_size(plus.center(), vec2(10.0, 10.0)), ink);
-                if button.on_hover_text(format!("Add to {front}")).clicked() {
-                    add = Some(index);
+                let button = button.on_hover_text("Add to a playlist");
+                egui::Popup::menu(&button).show(|ui| {
+                    ui.label(egui::RichText::new("Add to playlist").size(11.0).color(TEXT_FAINT));
+                    let order = std::iter::once(state.services.current)
+                        .chain((0..state.services.list.len()).filter(|at| *at != state.services.current));
+                    for at in order {
+                        let Some(name) = state.services.list.get(at).map(|p| p.name.clone()) else { continue };
+                        if ui.button(name).clicked() {
+                            add_to = Some((index, Some(at)));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("New Playlist…").clicked() {
+                        add_to = Some((index, None));
+                        ui.close();
+                    }
+                });
+                if menu_open {
                     continue;
                 }
             }
@@ -854,6 +875,30 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
         && let (Some(key), Some(song)) = (state.song_keys.get(index), show.presentations().get(index))
     {
         state.services.add(Item::Song { key: key.clone(), title: song.title.clone() });
+    }
+    // A song added from its "+" menu: to the playlist chosen, or to a new one, which is then
+    // shown with its name ready to type.
+    if let Some((index, playlist)) = add_to
+        && let (Some(key), Some(song)) = (state.song_keys.get(index).cloned(), show.presentations().get(index))
+    {
+        let item = Item::Song { key, title: song.title.clone() };
+        match playlist {
+            Some(at) => {
+                let name = state.services.list.get(at).map_or_else(String::new, |p| p.name.clone());
+                state.notice = Some(if state.services.add_to(at, item) {
+                    format!("Added {} to {name}.", song.title)
+                } else {
+                    format!("{} is already in {name}.", song.title)
+                });
+            }
+            None => {
+                state.services.add_service();
+                state.services.add(item);
+                state.playlist_open = true;
+                state.renaming_service = Some(state.services.front().name.clone());
+                state.rename_started = true;
+            }
+        }
     }
     // Songs being carried say how many beside the pointer, until they are dropped.
     if let Some(carried) = egui::DragAndDrop::payload::<SongDrag>(ui.ctx())

@@ -35,6 +35,8 @@ pub enum Picking {
     Songs,
     Media,
     Slides,
+    /// A theme in the Theme Editor's list.
+    Themes,
 }
 
 /// A drag across a list that picks out what it passes over. It starts on an item (or, in the
@@ -366,6 +368,8 @@ pub struct HomeState {
     pub theme_edit: Option<ThemeEdit>,
     /// Every theme's name, and the places of the ones songs and Bible slides use.
     pub theme_names: Vec<String>,
+    /// The places in the list of the themes that can't be deleted: the two built in.
+    pub themes_kept: Vec<usize>,
     /// What each theme calls its two templates, the one for two languages first.
     pub template_names: Vec<Vec<String>>,
     /// The templates of the theme songs use, by id and name, for a slide's Template menu.
@@ -962,6 +966,7 @@ impl Default for HomeState {
             inspector: crate::inspector::InspectorState::default(),
             theme_edit: None,
             theme_names: Vec::new(),
+            themes_kept: vec![0],
             template_names: Vec::new(),
             song_templates: Vec::new(),
             pending_template: None,
@@ -1157,6 +1162,8 @@ pub fn home_ui(
                 let from_bible = |at: SlideRef| state.bible.slots.is_some_and(|slots| slots.contains(&at.presentation));
                 state.confirm_delete_slides = state.selected_slide.filter(|at| !from_bible(*at)).into_iter().collect();
             }
+            // Themes are deleted in the Theme Editor, where the list is.
+            Picking::Themes => {}
         }
     }
     library_search(ui, show, state, &mut commands);
@@ -1390,12 +1397,25 @@ fn edit_view(
     // Whether a box was selected when Delete was pressed: deleting it leaves nothing selected,
     // and the same key press must not then go on to delete the template behind it.
     let had_selection = state.editing.as_ref().is_some_and(|draft| draft.selected.is_some());
+    // Delete goes to what was clicked last: with a theme picked in the Theme Editor's list, it
+    // asks about deleting that theme (never one of the two built in), not a box or template.
+    let delete_theme = delete
+        && theme_mode
+        && state.picking == Picking::Themes
+        && state.confirm_delete_theme.is_none()
+        && state.renaming_theme.is_none();
+    if delete_theme
+        && let Some(open) = state.theme_edit.as_ref().map(|edit| edit.index)
+        && !state.themes_kept.contains(&open)
+    {
+        state.confirm_delete_theme = Some(open);
+    }
     if let Some(draft) = state.editing.as_mut() {
         if undo && !typing {
             draft.undo();
         } else if redo && !typing {
             draft.redo();
-        } else if delete {
+        } else if delete && !delete_theme {
             draft.delete_selected();
         } else if nudge != (0.0, 0.0) && draft.selected.is_some() {
             let snapshot = draft.slide.clone();
@@ -1407,6 +1427,7 @@ fn edit_view(
     // Delete with no box selected, in the Theme Editor, is for the template itself.
     let delete_template_key = delete
         && theme_mode
+        && !delete_theme
         && !had_selection
         && state.editing.as_ref().is_some_and(|draft| draft.selected.is_none())
         && state.renaming_template.is_none()
@@ -2146,6 +2167,10 @@ fn edit_view(
             painter.rect_stroke(slide.shrink(4.0), 6.0, Stroke::new(2.0, crate::studio::ACCENT), StrokeKind::Inside);
             let words = if for_theme { "Drop to put it on the layout" } else { "Drop to put it on the slide" };
             painter.text(slide.center(), Align2::CENTER_CENTER, words, crate::studio::semibold(16.0), crate::studio::TEXT);
+        }
+        // A press on the slide makes Delete and the other keys act on its boxes again.
+        if response.drag_started() || response.clicked() || response.secondary_clicked() {
+            state.picking = Picking::Nothing;
         }
         if let Some(draft) = state.editing.as_mut() {
             // A press anywhere on the canvas ends typing; the field itself is in front of the
@@ -3716,6 +3741,9 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                         );
                         // A click opens the theme; a click on the open theme's name, or a double
                         // click, renames it, as in a file list.
+                        if response.clicked() || response.double_clicked() {
+                            state.picking = Picking::Themes;
+                        }
                         if response.double_clicked() || (response.clicked() && open) {
                             if !open {
                                 state.theme_request = Some(ThemeRequest::Edit(index));
@@ -3742,8 +3770,8 @@ fn theme_list(ui: &mut egui::Ui, state: &mut HomeState) {
                         // Deleting asks first. The built-in theme is always kept.
                         ui.separator();
                         let delete = ui
-                            .add_enabled(index != 0, egui::Button::new("Delete Theme…"))
-                            .on_disabled_hover_text("The built-in theme is always kept");
+                            .add_enabled(!state.themes_kept.contains(&index), egui::Button::new("Delete Theme…"))
+                            .on_disabled_hover_text("The built-in themes are always kept");
                         if delete.clicked() {
                             state.confirm_delete_theme = Some(index);
                             ui.close();
@@ -5691,6 +5719,36 @@ mod tests {
         // With nothing selected, Delete is for the template.
         frame_with(&ctx, &show, &mut state, Some(Key::Delete));
         assert_eq!(state.confirm_delete_template, Some(0));
+    }
+
+    #[test]
+    fn delete_after_picking_a_theme_asks_about_that_theme_but_never_a_built_in_one() {
+        let (ctx, show) = (egui::Context::default(), three_songs());
+        let mut theme = Theme::builtin();
+        theme.id = sp_model::Uuid::new_v4();
+        let slide = theme.templates[0].as_slide();
+        let boxes = slide.objects.len();
+        let mut state = HomeState {
+            theme_edit: Some(ThemeEdit::of(2, theme.clone())),
+            editing: Some(EditDraft::of_slide(slide.clone(), 0)),
+            picking: Picking::Themes,
+            themes_kept: vec![0, 1],
+            ..HomeState::default()
+        };
+        frame_with(&ctx, &show, &mut state, Some(Key::Delete));
+        assert_eq!(state.confirm_delete_theme, Some(2));
+        assert_eq!(state.confirm_delete_template, None);
+        assert_eq!(state.editing.as_ref().map(|d| d.slide.objects.len()), Some(boxes));
+        // The built-in Bible theme, picked, is kept.
+        let mut kept = HomeState {
+            theme_edit: Some(ThemeEdit::of(1, theme)),
+            editing: Some(EditDraft::of_slide(slide, 0)),
+            picking: Picking::Themes,
+            themes_kept: vec![0, 1],
+            ..HomeState::default()
+        };
+        frame_with(&ctx, &show, &mut kept, Some(Key::Delete));
+        assert_eq!((kept.confirm_delete_theme, kept.confirm_delete_template), (None, None));
     }
 
     #[test]
