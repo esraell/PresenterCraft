@@ -46,7 +46,7 @@ pub fn move_old_folders() -> Vec<String> {
 
 /// Renames `old` to `new` when `old` is a folder and `new` does not exist, then points the
 /// paths inside the moved files at the new place. `None` when there was nothing to do.
-fn move_folder(old: &Path, new: &Path) -> Result<Option<String>, String> {
+pub(crate) fn move_folder(old: &Path, new: &Path) -> Result<Option<String>, String> {
     let is_folder = std::fs::symlink_metadata(old).is_ok_and(|meta| meta.is_dir());
     if !is_folder || std::fs::symlink_metadata(new).is_ok() {
         return Ok(None);
@@ -63,7 +63,7 @@ fn move_folder(old: &Path, new: &Path) -> Result<Option<String>, String> {
 /// Points every path inside the folder's own files (settings, playlists, songs, themes) that
 /// starts with `old` at `new`. Bibles, pictures and videos are not opened. Returns how many
 /// files were changed. Each is written beside itself and moved into place.
-fn repoint(folder: &Path, old: &str, new: &str) -> usize {
+pub(crate) fn repoint(folder: &Path, old: &str, new: &str) -> usize {
     let mut changed = 0;
     let mut stack = vec![(folder.to_path_buf(), 0)];
     while let Some((dir, depth)) = stack.pop() {

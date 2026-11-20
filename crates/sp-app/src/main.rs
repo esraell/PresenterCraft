@@ -14,6 +14,7 @@ mod icons;
 mod images;
 mod inspector;
 mod libraries;
+mod library_folder;
 mod links;
 mod live_tabs;
 mod load;
@@ -4689,6 +4690,10 @@ impl ApplicationHandler<AppEvent> for App {
                     running.home_state.screens.push(screen);
                     running.home_state.screen_selected = running.home_state.screens.len() - 1;
                 }
+                // What became of the library's folder at this start (moved to Documents, or why not).
+                if let Some(said) = library_folder::take_notice() {
+                    running.home_state.notice = Some(said);
+                }
                 running.home_window.request_redraw();
                 self.running = Some(running);
                 if start_off {
@@ -5175,12 +5180,17 @@ fn main() -> ExitCode {
     // Folders kept under the project's old name are renamed to the new one, once, before the
     // log opens in its new place.
     let moved = renamed::move_old_folders();
+    // On a Mac the library moves to Documents, once.
+    let to_documents = library_folder::move_to_documents();
     // Songs named by path or title in files from before songs were found by id are named by
     // id, once, in whichever library folder is in use.
     let settled = bible_store::data_dir().map(|dir| song_ids::settle(&dir, true)).unwrap_or_default();
     applog::start();
     for done in &moved {
         applog::event("renamed", done);
+    }
+    for done in &to_documents {
+        applog::event("library", done);
     }
     for done in &settled {
         applog::event("song ids", done);

@@ -332,6 +332,12 @@ feature changes, this page changes in the same commit.
   [cli.md](cli.md); [app-map.md](app-map.md) maps every part of the app.
 
 ## On the Mac
+- The library (songs, themes, pictures, playlists, libraries, Bibles and settings) is kept in
+  Documents › SoftPresenter. A library an earlier version kept in Library › Application Support
+  is copied there on the first start, checked, and the old folder kept as "SoftPresenter (moved to
+  Documents)"; the window says so. A folder called SoftPresenter already in Documents that isn't
+  the library is never moved into, and the window says why. The command line's connection stays
+  outside Documents, in Library › Caches, so `sp` works from any terminal or over ssh.
 - A menu bar with the usual menus and shortcuts (New Song, Import Songs…, Undo, Cut/Copy/Paste, the views,
   Clear, Audience and Stage Output on/off with Cmd+1 and Cmd+2, Configure Screens), showing
   only what works.

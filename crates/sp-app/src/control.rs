@@ -60,10 +60,20 @@ pub struct Incoming {
 }
 
 /// Where the socket is: `SOFTPRESENTER_CONTROL_SOCKET` if set (for tests, whose folders have
-/// paths too long for a socket), or the `control` folder in the app's data folder.
+/// paths too long for a socket); else, on a Mac, in ~/Library/Caches/SoftPresenter/control,
+/// outside the library in Documents (which macOS guards, and may sync), so `sp` reaches the app
+/// from any terminal or over ssh; else the `control` folder in the app's data folder (as for a
+/// test copy with a data folder of its own).
 pub fn socket_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("SOFTPRESENTER_CONTROL_SOCKET").filter(|p| !p.is_empty()) {
-        return Some(PathBuf::from(path));
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(path) = var("SOFTPRESENTER_CONTROL_SOCKET") {
+        return Some(path);
+    }
+    if cfg!(target_os = "macos")
+        && var("SOFTPRESENTER_DATA").is_none()
+        && let Some(home) = var("HOME")
+    {
+        return Some(home.join("Library/Caches/SoftPresenter/control/ctl.sock"));
     }
     crate::bible_store::data_dir().map(|dir| dir.join("control").join("ctl.sock"))
 }

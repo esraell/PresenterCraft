@@ -224,9 +224,12 @@ box sits and how it looks.
 
 ### Where things are kept
 
-Everything lives in `~/Library/Application Support/SoftPresenter/`: songs made in the app
-(`Songs/`), themes (`Themes/`), downloaded Bibles (`Bibles/`), playlists, screens and a few
-preferences. The log is in `~/Library/Logs/SoftPresenter/`.
+Everything lives in `~/Documents/SoftPresenter/`: songs made in the app (`Songs/`), themes
+(`Themes/`), pictures (`Images/`), downloaded Bibles (`Bibles/`), playlists, libraries,
+screens and a few preferences, where you can see it and back it up. The log is in
+`~/Library/Logs/SoftPresenter/`. A library kept in `~/Library/Application Support/SoftPresenter/`
+by an earlier version is moved to Documents the first time the new one starts; the old folder is
+kept beside it as "SoftPresenter (moved to Documents)".
 
 ## Where it's heading
 

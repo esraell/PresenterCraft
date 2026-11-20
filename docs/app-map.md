@@ -154,20 +154,29 @@ chosen with `softpresenter ctl menu ITEM`.
 
 ## Where the app keeps things
 
-On a Mac, in `~/Library/Application Support/SoftPresenter/` (or the folder
-`SOFTPRESENTER_DATA` names):
+On a Mac, in `~/Documents/SoftPresenter/` (or the folder `SOFTPRESENTER_DATA` names). An
+earlier version kept it in `~/Library/Application Support/SoftPresenter/`; the first start
+of this one copies it to Documents, checks the copy, and keeps the old folder as
+"SoftPresenter (moved to Documents)" (`library_folder.rs`).
 
 | File or folder | Holds |
 |---|---|
-| `Songs/*.sppres` | Songs made or changed in the app (JSON) |
+| `Songs/*.sppres` | Songs made or changed in the app (JSON), each named by its id |
 | `Themes/*.sptheme` | Themes (JSON); `themes-in-use.txt` says which theme songs and Bible slides use |
 | `Images/` | Pictures put on slides |
-| `services.json` | Playlists |
+| `Bibles/` | Downloaded Bibles |
+| `services.json` | Playlists; a song in them is named by its id |
+| `libraries.json` | Libraries, each a list of song ids |
 | `media.json` | The media bin and media playlists |
 | `timers.json`, `messages.json`, `macros.json` | Timers, messages and macros |
 | `screens.json` | The screens and their looks |
-| `preferences.json`, `bible-page.json` | Small choices, and how the Bible page was left |
-| `control/ctl.sock` | The command line's socket, while the app runs |
+| `preferences.json`, `bible-page.json`, `bible-history.json` | Small choices, how the Bible page was left, and the Bible passages looked up |
+| `.softpresenter-library` | Says the folder is SoftPresenter's library |
+| `Backup before song ids/` | Files as they were before songs were named by id (only where that was done in place) |
+
+The command line's socket, while the app runs, is `~/Library/Caches/SoftPresenter/control/ctl.sock`
+(outside Documents, so `sp` reaches the app from any terminal or over ssh), or
+`control/ctl.sock` in a folder `SOFTPRESENTER_DATA` names.
 
 The log is `~/Library/Logs/SoftPresenter/SoftPresenter.log`: what went on screen, commands,
 problems, and once a minute how long drawing took.

@@ -24,7 +24,9 @@ careless test run puts a slide in front of whoever is using the computer.
   and it sends nothing over NDI.
 - **Use a data folder of your own:** `SOFTPRESENTER_DATA=/some/empty/folder`. Without it, the
   app reads and writes the owner's real library, Bibles and settings in
-  `~/Library/Application Support/SoftPresenter/`.
+  `~/Documents/SoftPresenter/` (on a Mac whose library hasn't moved there yet, in
+  `~/Library/Application Support/SoftPresenter/`, which the first start moves). A data folder
+  of your own is never moved.
 - **Never run `sp` (or `softpresenter ctl`) against the owner's app.** Set `SOFTPRESENTER_DATA` and
   `SOFTPRESENTER_CONTROL_SOCKET` to a test copy first. Without them, `sp` drives the owner's
   live app, which may be on the real screens in front of a congregation.

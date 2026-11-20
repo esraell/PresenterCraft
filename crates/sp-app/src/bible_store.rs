@@ -35,7 +35,8 @@ pub fn data_dir() -> Option<PathBuf> {
     let base = if let Some(base) = var("SOFTPRESENTER_DATA") {
         base
     } else if cfg!(target_os = "macos") {
-        var("HOME")?.join("Library/Application Support/SoftPresenter")
+        // ~/Documents/SoftPresenter, or the old place until the library has moved there.
+        crate::library_folder::folder_in(&var("HOME")?)
     } else if cfg!(target_os = "windows") {
         var("APPDATA")?.join("SoftPresenter")
     } else {
