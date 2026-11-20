@@ -670,6 +670,20 @@ fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Lay
     let floor = style.min_size.min(style.size).max(1.0);
     let mut size = style.size.max(floor);
     let mut layout = lay_out(fonts, text, style, size, rect.w);
+    // A written line a little too long for the box is made a little smaller, so it stays on one
+    // row, as lyrics are written; one much too long (a paragraph, a Bible verse) wraps instead.
+    if shrinks && wraps(&layout, text) {
+        let lowest = (style.size * KEEP_LINES_DOWN_TO).max(floor);
+        let mut trial = size;
+        while trial > lowest {
+            trial = (trial * 0.96).max(lowest);
+            let smaller = lay_out(fonts, text, style, trial, rect.w);
+            if !wraps(&smaller, text) {
+                (size, layout) = (trial, smaller);
+                break;
+            }
+        }
+    }
     if too_big(&layout, size) {
         while shrinks && too_big(&layout, size) && size > floor {
             size = (size * 0.96).max(floor);
@@ -688,6 +702,15 @@ fn fit(fonts: &mut Fonts, text: &str, style: &BoxStyle, rect: SlideRect) -> (Lay
     }
     let overflow = too_big(&layout, size);
     (layout, overflow, size)
+}
+
+/// How far below its size text is made smaller to keep each written line on one row, before
+/// it is left to wrap.
+const KEEP_LINES_DOWN_TO: f32 = 0.7;
+
+/// Whether a written line of the text runs onto more than one row.
+fn wraps(layout: &Layout<()>, text: &str) -> bool {
+    layout.len() > text.trim_end().split('\n').count()
 }
 
 /// The paragraph spacing at a size: set at the box's font size, kept in proportion when the
@@ -1024,6 +1047,25 @@ mod tests {
         assert!(overflows(&with(&long, Scaling::TextUp)));
         assert!(!overflows(&with(&long, Scaling::TextUpOrDown)));
         assert!(!overflows(&with("Short", Scaling::TextUp)));
+    }
+
+    #[test]
+    fn a_line_a_little_too_long_stays_on_one_row_and_a_paragraph_wraps() {
+        let mut fonts = Fonts::new();
+        let style = Theme::builtin().templates[0].boxes[0].clone();
+        let rect = SlideRect { x: 0.0, y: 0.0, w: 1728.0, h: 700.0 };
+        // At the box's size this line takes two rows; made a little smaller it fits on one.
+        let line = "Filled with His goodness, lost in His love";
+        let full = lay_out(&mut fonts, line, &style, style.size, rect.w);
+        assert!(full.len() > 1, "the test needs a line that wraps at full size");
+        let (layout, _, size) = fit(&mut fonts, &format!("{line}\nThis is my story, this is my song"), &style, rect);
+        assert_eq!(layout.len(), 2, "each written line on one row");
+        assert!(size < style.size && size >= style.size * KEEP_LINES_DOWN_TO);
+        // A paragraph far too long for one row wraps at its size, as before.
+        let paragraph = "For God so loved the world, that he gave his only begotten Son, that whosoever believeth in him should not perish";
+        let (layout, _, size) = fit(&mut fonts, paragraph, &style, rect);
+        assert!(layout.len() > 1);
+        assert_eq!(size, style.size);
     }
 
     #[test]
