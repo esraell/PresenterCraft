@@ -853,13 +853,35 @@ impl crate::App {
     }
 
     fn ctl_libraries(&self) -> Reply {
-        let libraries = self.running.as_ref().map(|r| r.home_state.libraries.clone()).unwrap_or_default();
-        let lines: Vec<String> = libraries
+        let Some(state) = self.running.as_ref().map(|r| &r.home_state) else { return Reply::done("(none)") };
+        // Each library's songs, and how many of them can't be found.
+        let counts: Vec<(usize, usize)> = state
+            .libraries
             .iter()
-            .map(|l| format!("{} ({} song{})", l.name, l.songs.len(), if l.songs.len() == 1 { "" } else { "s" }))
+            .map(|l| {
+                let missing =
+                    l.songs.iter().filter(|key| crate::studio::playlist_song(&self.show, state, key).is_none()).count();
+                (l.songs.len(), missing)
+            })
             .collect();
-        let data: Vec<serde_json::Value> =
-            libraries.iter().map(|l| serde_json::json!({"name": l.name, "songs": l.songs.len()})).collect();
+        let lines: Vec<String> = state
+            .libraries
+            .iter()
+            .zip(&counts)
+            .map(|(l, (songs, missing))| {
+                let plural = if *songs == 1 { "" } else { "s" };
+                match missing {
+                    0 => format!("{} ({songs} song{plural})", l.name),
+                    _ => format!("{} ({songs} song{plural}, {missing} missing)", l.name),
+                }
+            })
+            .collect();
+        let data: Vec<serde_json::Value> = state
+            .libraries
+            .iter()
+            .zip(&counts)
+            .map(|(l, (songs, missing))| serde_json::json!({"name": l.name, "songs": songs, "missing": missing}))
+            .collect();
         Reply::with(numbered(&lines), serde_json::json!(data))
     }
 
@@ -1148,9 +1170,24 @@ impl crate::App {
         let names: Vec<String> = state.macros.iter().map(|m| m.name.clone()).collect();
         let at = find("macro", &names, &rest(args, 2))?;
         let actions = state.macros[at].actions.clone();
+        // A "go to song" step whose song can't be found is said, not passed over in silence.
+        let lost = actions
+            .iter()
+            .filter(|action| match action {
+                sp_model::ShowAction::Song { key } => crate::studio::playlist_song(&self.show, state, key).is_none(),
+                _ => false,
+            })
+            .count();
         self.with_state(|state| state.actions_to_run.extend(actions));
         self.run_actions();
-        Ok(Reply::done(format!("Ran the macro {}. {}", names[at], self.live_words())))
+        let mut text = format!("Ran the macro {}. {}", names[at], self.live_words());
+        if lost > 0 {
+            text.push_str(match lost {
+                1 => "\nIts \"go to song\" step found no song.",
+                _ => "\nSome of its \"go to song\" steps found no song.",
+            });
+        }
+        Ok(Reply::done(text))
     }
 
     /// Does one slide action now, as a slide or a macro does it.

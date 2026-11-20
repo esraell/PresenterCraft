@@ -5177,6 +5177,19 @@ fn main() -> ExitCode {
             _ => ExitCode::from(1),
         };
     }
+    // The options are read before anything is moved or changed: asking for help, or a mistyped
+    // option, never moves the library.
+    let options = match parse_args(std::env::args().skip(1)) {
+        Ok(Some(options)) => options,
+        Ok(None) => {
+            print!("{HELP}");
+            return ExitCode::SUCCESS;
+        }
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::from(2);
+        }
+    };
     // Folders kept under the project's old name are renamed to the new one, once, before the
     // log opens in its new place.
     let moved = renamed::move_old_folders();
@@ -5197,17 +5210,6 @@ fn main() -> ExitCode {
     }
     // Picture objects on slides are read from the app's Images folder.
     sp_render::set_picture_loader(images::load);
-    let options = match parse_args(std::env::args().skip(1)) {
-        Ok(Some(options)) => options,
-        Ok(None) => {
-            print!("{HELP}");
-            return ExitCode::SUCCESS;
-        }
-        Err(message) => {
-            eprintln!("{message}");
-            return ExitCode::from(2);
-        }
-    };
 
     let (media_paths, song_paths): (Vec<PathBuf>, Vec<PathBuf>) =
         options.paths.iter().cloned().partition(|path| media::is_media(path));

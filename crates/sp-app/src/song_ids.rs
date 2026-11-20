@@ -76,9 +76,18 @@ pub fn settle(folder: &Path, backup: bool) -> Done {
     let mut done = Done::new();
     let mut keeper = Keeper { folder: folder.to_path_buf(), backup, done: Vec::new() };
     let songs = read_songs(folder, &mut keeper, &mut done);
+    // Whether this start converts files from before songs were found by id. The preferences and
+    // macros say no version, so a name there that can't be matched is said only on such a start,
+    // not on every start after.
+    let services = folder.join("services.json");
+    let old_services = read_json(&services).is_some_and(|v| v.get("version").and_then(Value::as_u64).unwrap_or(1) < 2);
+    let old_libraries = read_json(&folder.join("libraries.json")).is_some_and(|v| v.is_array());
+    let old_songs = song_files(folder)
+        .iter()
+        .any(|(_, value)| value.get("version").and_then(Value::as_u64).unwrap_or(1) < 2 && has_song_action(value));
+    let converting = old_services || old_libraries || old_songs;
 
     // Playlists.
-    let services = folder.join("services.json");
     if let Some(mut value) = read_json(&services)
         && value.get("version").and_then(Value::as_u64).unwrap_or(1) < 2
     {
@@ -88,7 +97,7 @@ pub fn settle(folder: &Path, backup: bool) -> Done {
                     continue;
                 }
                 let old = item.get("key").and_then(Value::as_str).unwrap_or_default().to_owned();
-                if let Some(id) = note(&mut done, "playlist item", &old, songs.resolve(&old), true) {
+                if let Some(id) = note(&mut done, &songs, "playlist item", &old, true) {
                     item["key"] = Value::String(id);
                 }
             }
@@ -103,7 +112,7 @@ pub fn settle(folder: &Path, backup: bool) -> Done {
         for library in &mut list {
             for key in library.get_mut("songs").and_then(Value::as_array_mut).into_iter().flatten() {
                 let old = key.as_str().unwrap_or_default().to_owned();
-                if let Some(id) = note(&mut done, "library entry", &old, songs.resolve(&old), true) {
+                if let Some(id) = note(&mut done, &songs, "library entry", &old, true) {
                     *key = Value::String(id);
                 }
             }
@@ -124,7 +133,7 @@ pub fn settle(folder: &Path, backup: bool) -> Done {
         && start.get("play").and_then(Value::as_str) == Some("announcements")
     {
         let old = start.get("song").and_then(Value::as_str).unwrap_or_default().to_owned();
-        if let Some(id) = note(&mut done, "song started with the app", &old, songs.resolve(&old), false) {
+        if let Some(id) = note(&mut done, &songs, "song started with the app", &old, converting) {
             start["song"] = Value::String(id);
             keeper.write(&prefs, &value, &mut done);
         }
@@ -133,7 +142,7 @@ pub fn settle(folder: &Path, backup: bool) -> Done {
     // Macros' "go to song" steps; the same.
     let macros = folder.join("macros.json");
     if let Some(mut value) = read_json(&macros)
-        && song_actions(&mut value, &songs, "macro step", false, &mut done)
+        && song_actions(&mut value, &songs, "macro step", converting, &mut done)
     {
         keeper.write(&macros, &value, &mut done);
     }
@@ -154,12 +163,19 @@ pub fn settle(folder: &Path, backup: bool) -> Done {
 }
 
 /// Says what became of an old name, and passes on the id it now is, if any. Not finding a song
-/// is said only with `say_missing`.
-fn note(done: &mut Done, name: &str, old: &str, new: Option<String>, say_missing: bool) -> Option<String> {
+/// (or finding several with the title) is said only with `say_missing`.
+fn note(done: &mut Done, songs: &Songs, name: &str, old: &str, say_missing: bool) -> Option<String> {
+    let new = songs.resolve(old);
     match &new {
         Some(id) => done.push(format!("{name}: {} is now the song {id}", shown(old))),
         None if say_missing && looks_like_library_song(old) => {
-            done.push(format!("{name}: no song found for {}; kept, and shown as missing", shown(old)));
+            let several = old.strip_prefix("title:").and_then(|title| songs.by_title.get(title)).map_or(0, Vec::len);
+            let why = if several > 1 {
+                format!("{several} songs have {}", shown(old))
+            } else {
+                format!("no song found for {}", shown(old))
+            };
+            done.push(format!("{name}: {why}; kept, and shown as missing"));
         }
         None => {}
     }
@@ -202,7 +218,7 @@ fn song_actions(value: &mut Value, songs: &Songs, name: &str, say_missing: bool,
             let mut any = false;
             if map.get("do").and_then(Value::as_str) == Some("song")
                 && let Some(old) = map.get("key").and_then(Value::as_str).map(str::to_owned)
-                && let Some(id) = note(done, name, &old, songs.resolve(&old), say_missing)
+                && let Some(id) = note(done, songs, name, &old, say_missing)
             {
                 map.insert("key".to_owned(), Value::String(id));
                 any = true;
@@ -236,25 +252,56 @@ fn song_files(folder: &Path) -> Vec<(PathBuf, Value)> {
     paths.into_iter().filter_map(|path| read_json(&path).map(|value| (path, value))).collect()
 }
 
-/// Reads the library's songs, giving any whose id an earlier file (in name order) already has
-/// a new id of its own, written back to its file.
+/// Reads the library's songs. Where several files have one id (a copy made in the Finder), the
+/// file named after that id keeps it, else the oldest, else the first by name; each of the others
+/// is given a new id of its own, written back to its file.
 fn read_songs(folder: &Path, keeper: &mut Keeper, done: &mut Done) -> Songs {
     let mut songs = Songs { by_file: HashMap::new(), by_title: HashMap::new() };
-    let mut seen: HashMap<String, PathBuf> = HashMap::new();
-    for (path, mut value) in song_files(folder) {
-        let Some(mut id) = value.get("id").and_then(Value::as_str).map(str::to_owned) else { continue };
-        if let Some(first) = seen.get(&id) {
+    let files: Vec<(PathBuf, Value, String)> = song_files(folder)
+        .into_iter()
+        .filter_map(|(path, value)| {
+            let id = value.get("id").and_then(Value::as_str)?.to_owned();
+            Some((path, value, id))
+        })
+        .collect();
+    let born = |path: &Path| std::fs::metadata(path).and_then(|meta| meta.created().or_else(|_| meta.modified())).ok();
+    // Which file keeps each id.
+    let mut keeps: HashMap<&str, &Path> = HashMap::new();
+    for (path, _, id) in &files {
+        let named_for_it = |path: &Path| path.file_stem().is_some_and(|stem| stem.to_string_lossy() == id.as_str());
+        match keeps.get(id.as_str()) {
+            None => {
+                keeps.insert(id, path);
+            }
+            Some(kept) => {
+                let better = match (named_for_it(path), named_for_it(kept)) {
+                    (true, false) => true,
+                    (false, true) => false,
+                    // Files come in name order, so the first by name wins a tie.
+                    _ => born(path).zip(born(kept)).is_some_and(|(new, old)| new < old),
+                };
+                if better {
+                    keeps.insert(id, path);
+                }
+            }
+        }
+    }
+    for (path, value, id) in &files {
+        let mut id = id.clone();
+        if let Some(kept) = keeps.get(id.as_str()).copied()
+            && kept != path.as_path()
+        {
             let fresh = Uuid::new_v4().to_string();
             done.push(format!(
                 "{} had the same id as {}; it now has an id of its own",
-                file_name(&path),
-                file_name(first)
+                file_name(path),
+                file_name(kept)
             ));
+            let mut value = value.clone();
             value["id"] = Value::String(fresh.clone());
-            keeper.write(&path, &value, done);
+            keeper.write(path, &value, done);
             id = fresh;
         }
-        seen.insert(id.clone(), path.clone());
         if let Some(stem) = path.file_stem() {
             songs.by_file.insert(stem.to_string_lossy().into_owned(), id.clone());
         }
@@ -439,18 +486,32 @@ mod tests {
     #[test]
     fn a_song_file_copied_in_the_finder_gets_an_id_of_its_own() {
         let folder = temp("copies");
-        song(&folder, "a.sppres", RIVER, "River Song", "");
-        song(&folder, "b.sppres", RIVER, "River Song", "");
+        // "<id> copy" sorts before "<id>" (a space before a dot): the file named after the id
+        // keeps it all the same.
+        song(&folder, &format!("{RIVER} copy.sppres"), RIVER, "River Song", "");
+        song(&folder, &format!("{RIVER}.sppres"), RIVER, "River Song", "");
         let done = settle(&folder, false);
-        let a = read(folder.join("Songs/a.sppres"));
-        let b = read(folder.join("Songs/b.sppres"));
-        assert_eq!(a["id"], RIVER, "the first in name order keeps its id");
-        assert_ne!(b["id"], RIVER);
-        assert!(Uuid::parse_str(b["id"].as_str().unwrap()).is_ok());
-        assert!(done.iter().any(|line| line.contains("b.sppres had the same id as a.sppres")), "{done:?}");
+        let original = read(folder.join(format!("Songs/{RIVER}.sppres")));
+        let copy = read(folder.join(format!("Songs/{RIVER} copy.sppres")));
+        assert_eq!(original["id"], RIVER, "the file named after the id keeps it");
+        assert_ne!(copy["id"], RIVER);
+        assert!(Uuid::parse_str(copy["id"].as_str().unwrap()).is_ok());
+        assert!(
+            done.iter().any(|line| line.contains(&format!("{RIVER} copy.sppres had the same id as {RIVER}.sppres"))),
+            "{done:?}"
+        );
         assert!(!folder.join(BACKUP_FOLDER).exists(), "no copies kept when not asked");
         assert!(settle(&folder, false).is_empty());
+        // Neither named after the id: the oldest keeps it.
+        let other = temp("copies-oldest");
+        song(&other, "b.sppres", HILLS, "Quiet Hills", "");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        song(&other, "a.sppres", HILLS, "Quiet Hills", "");
+        settle(&other, false);
+        assert_eq!(read(other.join("Songs/b.sppres"))["id"], HILLS, "the older file keeps the id");
+        assert_ne!(read(other.join("Songs/a.sppres"))["id"], HILLS);
         let _ = std::fs::remove_dir_all(&folder);
+        let _ = std::fs::remove_dir_all(&other);
     }
 
     #[test]
