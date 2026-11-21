@@ -121,7 +121,7 @@ mistake impossible:
 | `playlists`, `playlist [NAME]` | The playlists; one playlist's items (the one in front if none is named) |
 | `media` | The media bin's pictures and videos |
 | `themes`, `timers`, `messages`, `props`, `macros`, `audio` | Each list, with its state: a timer's kind, time and whether it runs; a message's words and whether it shows; a prop on screen; a macro's steps |
-| `screens`, `displays`, `stage layouts` | Each screen and what it is doing; the connected displays; the stage layouts and the screens that use them |
+| `screens`, `displays`, `stage layouts` | Each screen and what it is doing (for a screen on NDI, how many receivers are watching it, or that nobody is); the connected displays; the stage layouts and the screens that use them |
 | `groups` | The group names that have a jump key, with their colours |
 | `settings` | The app's settings |
 | `menu` | Every menu bar item: its id and its words |
@@ -137,6 +137,11 @@ mistake impossible:
     Timers running: Timer 00:05:00
     Playlist in front: Sunday (listed in the left column); item last opened from it: Blessed Assurance
     Continuous playlist: off   Identify screens: off   Main theme: Built-in
+
+    $ sp screens
+      1. Screen 1: In a window
+      2. Stream: Sending as "Sanctuary" to 2 receivers
+      3. Lobby feed: On NDI as "Lobby"; nobody is watching
 
     $ sp slides "River Song"
     River Song

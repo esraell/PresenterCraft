@@ -11,9 +11,22 @@
 //! # Sending only while someone is watching
 //!
 //! About once a second, each source asks NDI how many receivers are connected to it. While
-//! there are none, it sends nothing and keeps only the newest picture it was given. When one
-//! connects, that picture goes at once, so the receiver has a picture within about a second. A
-//! source whose NDI runtime can't count receivers sends all the time, as before.
+//! there are none, it sends nothing and keeps no picture: the one it had is let go when the
+//! last receiver leaves, and any handed over meanwhile is dropped. A source whose NDI runtime
+//! can't count receivers keeps its picture and sends all the time, as before.
+//!
+//! A receiver that connects must never be shown a slide that has gone. Two things could show
+//! it one, and neither does:
+//!
+//! - The source itself sends nothing from before the receiver came. The receiver gets the
+//!   first picture handed over after it connected, and it is for whoever draws the pictures to
+//!   hand one over then (see `start_with_wake` below).
+//! - NDI keeps the last picture a source sent, and gives it to a receiver the moment it
+//!   connects, before the source can know of it. While that picture is still what is on the
+//!   screens, that is welcome: the receiver has its picture at once. When it no longer is
+//!   (something changed, and nobody was watching to be sent it), the source is told to
+//!   [`NdiOutput::forget`], and sends one black picture to take its place. A receiver that
+//!   connects then sees black until its picture is drawn, within about a second.
 //!
 //! What the thread drawing the screens needs, none of which ever makes it wait:
 //!
@@ -21,19 +34,27 @@
 //!   the picture for that source need not be drawn or read back from the GPU at all. `None`
 //!   means the count isn't known (the source is still starting, or its runtime can't count):
 //!   draw for it as usual.
-//! - [`NdiOutput::start_with_wake`]: `wake` is called when receivers connect to a source that
-//!   had none. It runs on the source's own thread, after the new count can be read, and should
-//!   only pass the word on (send a message on a channel, say) and return. Whoever it wakes then
-//!   draws a fresh picture and hands it over. Until that arrives, the receiver sees the newest
-//!   picture the source kept: if nothing was handed over while nobody watched, that is an older
-//!   one, the slide on screen when the last receiver left.
+//! - [`NdiOutput::forget`]: said for a source nobody is watching whenever a picture that may
+//!   differ from the last is not drawn for it.
+//! - [`NdiOutput::start_with_wake`]: `wake` is called each time the count of receivers is
+//!   found to have changed, the first time it is known included. It runs on the source's own
+//!   thread, after the new count can be read, and should only pass the word on (send a message
+//!   on a channel, say) and return. Whoever it wakes reads the count: when receivers have come
+//!   to a source that had none, it draws a fresh picture and hands it over. A source started
+//!   with [`NdiOutput::start`] has nobody to wake, so a receiver that connects to it waits for
+//!   the next picture handed over.
 //! - [`NdiOutput::show_shared`]: one picture for several sources, handed to each without
 //!   copying it.
+//!
+//! A source counts again, there and then, when it is handed a picture or told to forget while
+//! it believes nobody is watching: a receiver may have connected since the last count. If one
+//! has, the picture is sent to it rather than dropped, and no black picture is sent over what
+//! it is looking at.
 
 #[allow(unsafe_code)]
 mod runtime;
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -59,6 +80,14 @@ struct Picture {
     width: u32,
     height: u32,
     rgba: Arc<Vec<u8>>,
+}
+
+/// What a source's thread is told by whoever draws its pictures.
+enum Told {
+    /// The picture to send from now on.
+    Picture(Picture),
+    /// The picture last handed over is out of date, and no newer one is coming for now.
+    Forget,
 }
 
 /// What a source is doing.
@@ -131,21 +160,27 @@ impl Watch {
 pub struct NdiOutput {
     name: String,
     shared: Arc<Shared>,
-    tx: Option<Sender<Picture>>,
+    tx: Option<Sender<Told>>,
+    /// True from `forget` until the next picture is handed over: the source's thread is told
+    /// once, however often it is said.
+    forgotten: AtomicBool,
     thread: Option<JoinHandle<()>>,
 }
 
 impl NdiOutput {
     /// Starts an NDI source with this name. Never waits for NDI: the source starts on its own
     /// thread, and `state` says how that went. The error is a plain sentence for the operator.
+    /// Nobody is told when receivers connect: use `start_with_wake` to hand them a picture.
     pub fn start(name: &str) -> Result<NdiOutput, String> {
         NdiOutput::start_with_wake(name, || {})
     }
 
-    /// Starts an NDI source as `start` does, which also calls `wake` each time receivers
-    /// connect after a spell with none, so a picture can be drawn for them. `wake` runs on the
-    /// source's own thread once the new count can be read from `receivers`, never on the
-    /// caller's; it should only pass the word on and return.
+    /// Starts an NDI source as `start` does, which also calls `wake` each time the count of
+    /// receivers is found to have changed, so that a picture can be drawn for receivers that
+    /// connect after a spell with none (the source sends them nothing until one is handed
+    /// over), and so that whoever shows the count can show the new one. `wake` runs on the source's own
+    /// thread once the new count can be read from `receivers`, never on the caller's; it
+    /// should only pass the word on and return.
     pub fn start_with_wake(name: &str, wake: impl FnMut() + Send + 'static) -> Result<NdiOutput, String> {
         spawn(name, |name| runtime::get().and_then(|runtime| runtime::Source::new(runtime, name)), wake)
     }
@@ -170,20 +205,37 @@ impl NdiOutput {
     }
 
     /// Hands over the picture to send from now on. Never blocks, and never copies the pixels.
-    /// A picture whose size and pixel count disagree is ignored.
+    /// A picture whose size and pixel count disagree is ignored, and so is one handed over
+    /// while nobody is watching.
     pub fn show(&self, width: u32, height: u32, rgba: Vec<u8>) {
         self.show_shared(width, height, Arc::new(rgba));
     }
 
     /// Hands over the picture to send from now on, as `show` does, for a picture that several
     /// sources send: each is handed the same pixels, and none copies them. Never blocks. A
-    /// picture whose size and pixel count disagree is ignored.
+    /// picture whose size and pixel count disagree is ignored, and so is one handed over
+    /// while nobody is watching.
     pub fn show_shared(&self, width: u32, height: u32, rgba: Arc<Vec<u8>>) {
         if width == 0 || height == 0 || rgba.len() != width as usize * height as usize * 4 {
             return;
         }
+        self.forgotten.store(false, Ordering::Relaxed);
         if let Some(tx) = &self.tx {
-            let _ = tx.send(Picture { width, height, rgba });
+            let _ = tx.send(Told::Picture(Picture { width, height, rgba }));
+        }
+    }
+
+    /// Says that the picture last handed over is no longer what should be seen, and that no
+    /// newer one is being handed over, because nobody is watching. NDI itself keeps the last
+    /// picture a source sent and gives it to a receiver the moment it connects; after this, a
+    /// receiver that connects is given a black picture instead, until one is handed over for
+    /// it. Never blocks. Said again before the next picture is handed over, it does nothing,
+    /// so it can be said for every picture that is not drawn.
+    pub fn forget(&self) {
+        if !self.forgotten.swap(true, Ordering::Relaxed)
+            && let Some(tx) = &self.tx
+        {
+            let _ = tx.send(Told::Forget);
         }
     }
 }
@@ -247,11 +299,18 @@ fn spawn<S: Sink + 'static>(
             Err(reason) => theirs.set_state(State::Failed(reason)),
         })
         .map_err(|e| format!("Could not start the NDI thread: {e}"))?;
-    Ok(NdiOutput { name: name.to_owned(), shared, tx: Some(tx), thread: Some(thread) })
+    Ok(NdiOutput {
+        name: name.to_owned(),
+        shared,
+        tx: Some(tx),
+        forgotten: AtomicBool::new(false),
+        thread: Some(thread),
+    })
 }
 
-/// The newest of the pictures that have queued up, `first` among them: only the last matters.
-fn newest(rx: &Receiver<Picture>, first: Picture) -> Picture {
+/// The newest of what has queued up, `first` included: only the last matters, a picture or
+/// the word that there is none any more.
+fn newest(rx: &Receiver<Told>, first: Told) -> Told {
     let mut newest = first;
     while let Ok(later) = rx.try_recv() {
         newest = later;
@@ -260,25 +319,44 @@ fn newest(rx: &Receiver<Picture>, first: Picture) -> Picture {
 }
 
 /// Sends the pictures handed over to `sink` until the output is dropped: each new one at once
-/// and the current one again every second, while anyone is watching.
-fn serve(sink: &impl Sink, rx: &Receiver<Picture>, shared: &Shared, wake: &mut impl FnMut()) {
+/// and the current one again every second, while anyone is watching. Calls `wake` whenever the
+/// count of receivers has changed.
+fn serve(sink: &impl Sink, rx: &Receiver<Told>, shared: &Shared, wake: &mut impl FnMut()) {
     let mut gate = Gate::new(Instant::now());
+    // Counts the receivers, and tells everyone the count before `wake`, so that whoever is
+    // woken reads the new one.
+    let mut count = |gate: &mut Gate| {
+        let receivers = sink.receivers();
+        shared.set_receivers(receivers);
+        if gate.counted(Instant::now(), receivers) {
+            wake();
+        }
+    };
     loop {
         match rx.recv_timeout(gate.wait(Instant::now())) {
-            Ok(first) => gate.picture(newest(rx, first)),
+            Ok(first) => {
+                let told = newest(rx, first);
+                // Word for a source nobody was watching when last counted. Someone may have
+                // come since: counted again now, a picture is sent to them rather than
+                // dropped, and a black one is not sent over what they are looking at.
+                if !gate.watched() {
+                    count(&mut gate);
+                }
+                match told {
+                    Told::Picture(picture) => gate.picture(picture),
+                    Told::Forget => gate.forget(),
+                }
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
-        let now = Instant::now();
-        if gate.count_due(now) {
-            let receivers = sink.receivers();
-            // Told before `wake`, so whoever is woken reads the new count.
-            shared.set_receivers(receivers);
-            if gate.counted(now, receivers) {
-                wake();
-            }
+        if gate.count_due(Instant::now()) {
+            count(&mut gate);
         }
-        if let Some(picture) = gate.picture_due(now) {
+        if let Some((width, height)) = gate.blank_due() {
+            sink.send(width, height, &vec![0; width as usize * height as usize * 4]);
+        }
+        if let Some(picture) = gate.picture_due(Instant::now()) {
             sink.send(picture.width, picture.height, &picture.rgba);
         }
     }
@@ -287,14 +365,18 @@ fn serve(sink: &impl Sink, rx: &Receiver<Picture>, shared: &Shared, wake: &mut i
 /// What a source's thread remembers between one wake and the next, and its rule for what to
 /// send when. Told the time rather than reading the clock, so it can be tested on its own.
 struct Gate {
-    /// The newest picture, kept while nobody is watching.
+    /// The newest picture; none while nobody is watching.
     current: Option<Picture>,
     /// How many receivers were connected when last counted; `None`, sent to as if someone
     /// were watching, when that isn't known.
     receivers: Option<u32>,
-    /// The current picture is still to be sent at once: it is new, or receivers have just
-    /// come back.
+    /// The current picture is new, and still to be sent at once.
     fresh: bool,
+    /// The size of the last picture sent, while NDI still has it to give to a receiver the
+    /// moment one connects; `None` before any is sent and once a black one has taken its place.
+    given: Option<(u32, u32)>,
+    /// That picture is out of date: a newer one was dropped or never drawn, nobody watching.
+    stale: bool,
     next_count: Instant,
     next_resend: Instant,
 }
@@ -302,7 +384,15 @@ struct Gate {
 impl Gate {
     /// Receivers are counted straight away, before anything is sent.
     fn new(now: Instant) -> Gate {
-        Gate { current: None, receivers: None, fresh: false, next_count: now, next_resend: now }
+        Gate {
+            current: None,
+            receivers: None,
+            fresh: false,
+            given: None,
+            stale: false,
+            next_count: now,
+            next_resend: now,
+        }
     }
 
     fn watched(&self) -> bool {
@@ -319,10 +409,38 @@ impl Gate {
         next.saturating_duration_since(now)
     }
 
-    /// A new picture: it takes the current one's place, and goes as soon as anyone watches.
+    /// A new picture: it takes the current one's place and goes at once. While nobody is
+    /// watching it is dropped: by the time anyone watches, it may be a slide long gone. The
+    /// one NDI was last sent is then out of date too.
     fn picture(&mut self, picture: Picture) {
-        self.current = Some(picture);
-        self.fresh = true;
+        if self.watched() {
+            self.current = Some(picture);
+            self.fresh = true;
+            self.stale = false;
+        } else {
+            self.stale = true;
+        }
+    }
+
+    /// The picture last handed over is out of date, and no newer one is coming for now.
+    fn forget(&mut self) {
+        self.current = None;
+        self.fresh = false;
+        self.stale = true;
+    }
+
+    /// The size of the black picture to send now, if one is due: when nobody is watching and
+    /// the last picture sent is out of date. NDI gives a receiver the last picture a source
+    /// sent the moment it connects, before the source can know of it; this puts black in the
+    /// place of a slide that has gone, once. While someone is watching none is due: they
+    /// were given the picture when it was the newest, and a new one is on its way to them.
+    /// Should they leave before it comes (it could not be drawn, say), black is due then.
+    fn blank_due(&mut self) -> Option<(u32, u32)> {
+        if !self.stale || self.watched() {
+            return None;
+        }
+        self.stale = false;
+        self.given.take()
     }
 
     /// Whether it is time to count the receivers again.
@@ -330,17 +448,19 @@ impl Gate {
         now >= self.next_count
     }
 
-    /// The receivers have been counted. True when they have come back after a spell with none:
-    /// the newest picture then goes at once, and whoever draws the pictures is told, so it can
-    /// draw a fresh one.
+    /// The receivers have been counted. True when the count has changed, which whoever draws
+    /// the pictures is told. With nobody watching, the picture kept is let go, so receivers
+    /// that come later are sent nothing from before they came: only what is handed over then.
     fn counted(&mut self, now: Instant, receivers: Option<u32>) -> bool {
         self.next_count = now + COUNT_EVERY;
-        let back = self.receivers == Some(0) && receivers != Some(0);
+        let changed = self.receivers != receivers;
         self.receivers = receivers;
-        if back {
-            self.fresh = true;
+        if !self.watched() {
+            self.current = None;
+            // A picture not sent yet goes unsent, so the one sent before it is out of date.
+            self.stale |= std::mem::take(&mut self.fresh);
         }
-        back
+        changed
     }
 
     /// The picture to send now, if any: a fresh one at once, the current one again when it is
@@ -352,6 +472,7 @@ impl Gate {
         let picture = self.current.as_ref()?;
         self.fresh = false;
         self.next_resend = now + RESEND_EVERY;
+        self.given = Some((picture.width, picture.height));
         Some(picture)
     }
 }
@@ -365,7 +486,7 @@ mod tests {
     const PATIENCE: Duration = Duration::from_secs(5);
 
     fn picture(width: u32) -> Picture {
-        Picture { width, height: 1, rgba: Arc::new(vec![0; width as usize * 4]) }
+        Picture { width, height: 1, rgba: Arc::new(vec![9; width as usize * 4]) }
     }
 
     /// The width of the picture the gate sends now, which tells the tests' pictures apart.
@@ -390,10 +511,101 @@ mod tests {
     fn the_newest_queued_picture_wins() {
         let (tx, rx) = channel();
         for width in [2, 3] {
-            tx.send(picture(width)).unwrap();
+            tx.send(Told::Picture(picture(width))).unwrap();
         }
-        assert_eq!(newest(&rx, picture(1)).width, 3);
+        assert!(matches!(newest(&rx, Told::Picture(picture(1))), Told::Picture(Picture { width: 3, .. })));
         assert!(rx.try_recv().is_err(), "the older ones are gone");
+        // The word to forget, coming last, is what matters; a picture after it is.
+        tx.send(Told::Forget).unwrap();
+        assert!(matches!(newest(&rx, Told::Picture(picture(1))), Told::Forget));
+        tx.send(Told::Picture(picture(4))).unwrap();
+        assert!(matches!(newest(&rx, Told::Forget), Told::Picture(Picture { width: 4, .. })));
+    }
+
+    #[test]
+    fn a_picture_gone_out_of_date_while_nobody_watches_is_covered_with_black_once() {
+        let t = Instant::now();
+        // NDI gives a receiver the last picture a source sent the moment it connects. While
+        // that is still the newest, it is left alone.
+        let mut gate = Gate::new(t);
+        gate.counted(t, Some(1));
+        gate.picture(picture(3));
+        assert_eq!(sent(&mut gate, t), Some(3));
+        assert_eq!(gate.blank_due(), None);
+        gate.counted(t + SECOND, Some(0));
+        assert_eq!(gate.blank_due(), None, "the last receiver leaving puts nothing out of date");
+        // The slide changes and is not drawn, nobody watching: black, the size of that picture.
+        gate.forget();
+        assert_eq!(gate.blank_due(), Some((3, 1)));
+        gate.forget();
+        assert_eq!(gate.blank_due(), None, "once: NDI has the black one now");
+        // A receiver comes and is drawn a picture, leaves, and the slide changes again.
+        gate.counted(t + 2 * SECOND, Some(1));
+        gate.picture(picture(4));
+        assert_eq!(sent(&mut gate, t + 2 * SECOND), Some(4));
+        gate.counted(t + 3 * SECOND, Some(0));
+        gate.forget();
+        assert_eq!(gate.blank_due(), Some((4, 1)));
+        // A picture handed over for nobody is dropped, which puts the last one sent out of
+        // date as well.
+        let mut gate = Gate::new(t);
+        gate.counted(t, Some(1));
+        gate.picture(picture(2));
+        assert_eq!(sent(&mut gate, t), Some(2));
+        gate.counted(t + SECOND, Some(0));
+        gate.picture(picture(5));
+        assert_eq!(gate.blank_due(), Some((2, 1)));
+        assert_eq!(sent(&mut gate, t + SECOND), None);
+        // So does a picture handed over while someone watched that was still to be sent when
+        // the last receiver was found gone.
+        let mut gate = Gate::new(t);
+        gate.counted(t, Some(1));
+        gate.picture(picture(2));
+        assert_eq!(sent(&mut gate, t), Some(2));
+        gate.picture(picture(6));
+        gate.counted(t + SECOND, Some(0));
+        assert_eq!(gate.blank_due(), Some((2, 1)));
+        assert_eq!(sent(&mut gate, t + SECOND), None);
+        // A source that never sent a picture has nothing to cover.
+        let mut gate = Gate::new(t);
+        gate.counted(t, Some(0));
+        gate.forget();
+        assert_eq!(gate.blank_due(), None);
+    }
+
+    #[test]
+    fn black_is_never_sent_over_what_someone_is_watching() {
+        let t = Instant::now();
+        let mut gate = Gate::new(t);
+        gate.counted(t, Some(1));
+        gate.picture(picture(2));
+        assert_eq!(sent(&mut gate, t), Some(2));
+        gate.counted(t + SECOND, Some(0));
+        // Told to forget, but counted again first (as the thread does) there is a receiver:
+        // it was given that picture as it connected, and a new one is being drawn for it.
+        assert!(gate.counted(t + SECOND + SECOND / 2, Some(1)), "wake whoever draws");
+        gate.forget();
+        assert_eq!(gate.blank_due(), None);
+        assert_eq!(sent(&mut gate, t + 2 * SECOND), None, "and the picture forgotten is not sent again");
+        gate.picture(picture(3));
+        assert_eq!(sent(&mut gate, t + 2 * SECOND), Some(3));
+        // Nor later, when that receiver leaves: what NDI has then is the newest.
+        gate.counted(t + 3 * SECOND, Some(0));
+        assert_eq!(gate.blank_due(), None);
+        // Told to forget with a receiver there, and no new picture comes (it could not be
+        // drawn, say) before the receiver leaves: black then, for whoever comes next.
+        gate.counted(t + 4 * SECOND, Some(1));
+        gate.forget();
+        assert_eq!(gate.blank_due(), None);
+        gate.counted(t + 5 * SECOND, Some(0));
+        assert_eq!(gate.blank_due(), Some((3, 1)));
+        assert_eq!(gate.blank_due(), None);
+        // With the count unknown, someone may always be watching.
+        let mut gate = Gate::new(t);
+        gate.picture(picture(2));
+        assert_eq!(sent(&mut gate, t), Some(2));
+        gate.forget();
+        assert_eq!(gate.blank_due(), None);
     }
 
     #[test]
@@ -414,41 +626,55 @@ mod tests {
     fn with_receivers_pictures_go_as_they_always_have() {
         let t = Instant::now();
         let mut gate = Gate::new(t);
-        assert!(!gate.counted(t, Some(2)));
+        assert!(gate.counted(t, Some(2)), "the first count known is told");
         gate.picture(picture(1));
         assert_eq!(sent(&mut gate, t), Some(1));
         assert_eq!(sent(&mut gate, t + SECOND / 2), None);
         assert_eq!(sent(&mut gate, t + SECOND), Some(1));
-        assert!(!gate.counted(t + SECOND, Some(1)), "fewer receivers, but some, change nothing");
+        assert!(gate.counted(t + SECOND, Some(1)), "fewer receivers are told");
+        assert!(!gate.counted(t + SECOND, Some(1)), "the same count again is not");
+        assert_eq!(sent(&mut gate, t + SECOND + SECOND / 2), None, "and change nothing of what is sent");
         assert_eq!(sent(&mut gate, t + 2 * SECOND), Some(1));
     }
 
     #[test]
-    fn with_nobody_watching_nothing_goes_and_the_newest_picture_is_kept() {
+    fn with_nobody_watching_nothing_goes_and_no_picture_is_kept() {
         let t = Instant::now();
         let mut gate = Gate::new(t);
-        assert!(!gate.counted(t, Some(0)));
+        assert!(gate.counted(t, Some(0)));
         gate.picture(picture(1));
         assert_eq!(sent(&mut gate, t), None);
         gate.picture(picture(2));
         assert_eq!(sent(&mut gate, t + 5 * SECOND), None, "nor is anything sent again");
-        assert_eq!(gate.current.as_ref().map(|kept| kept.width), Some(2));
+        assert!(gate.current.is_none(), "a picture handed over for nobody is dropped");
     }
 
     #[test]
-    fn a_receiver_connecting_gets_the_newest_picture_at_once_and_the_drawing_is_woken() {
+    fn a_receiver_connecting_is_sent_nothing_from_before_it_came_and_the_drawing_is_woken() {
         let t = Instant::now();
         let mut gate = Gate::new(t);
-        gate.counted(t, Some(0));
+        // A picture sent while someone watched, and two handed over after they left.
+        gate.counted(t, Some(1));
         gate.picture(picture(1));
+        assert_eq!(sent(&mut gate, t), Some(1));
+        assert!(gate.counted(t + SECOND, Some(0)));
+        assert!(gate.current.is_none(), "the picture kept is let go with the last receiver");
         gate.picture(picture(2));
-        assert_eq!(sent(&mut gate, t + SECOND / 2), None);
-        assert!(gate.count_due(t + SECOND));
-        assert!(gate.counted(t + SECOND, Some(1)), "wake whoever draws");
-        assert_eq!(sent(&mut gate, t + SECOND), Some(2), "the newest picture, at once");
+        gate.picture(picture(3));
         assert_eq!(sent(&mut gate, t + SECOND + SECOND / 2), None);
-        assert_eq!(sent(&mut gate, t + 2 * SECOND), Some(2), "then as always");
-        assert!(!gate.counted(t + 2 * SECOND, Some(2)), "more receivers wake nobody");
+        // A receiver connects: whoever draws is woken, and none of those pictures goes, then
+        // or when it would be time to send again.
+        assert!(gate.count_due(t + 2 * SECOND));
+        assert!(gate.counted(t + 2 * SECOND, Some(1)), "wake whoever draws");
+        assert_eq!(sent(&mut gate, t + 2 * SECOND), None, "nothing from before it came");
+        assert_eq!(sent(&mut gate, t + 4 * SECOND), None, "however long the fresh one takes");
+        // The picture drawn for it goes at once, then as always.
+        gate.picture(picture(4));
+        assert_eq!(sent(&mut gate, t + 4 * SECOND), Some(4));
+        assert_eq!(sent(&mut gate, t + 4 * SECOND + SECOND / 2), None);
+        assert_eq!(sent(&mut gate, t + 5 * SECOND), Some(4));
+        assert!(gate.counted(t + 5 * SECOND, Some(2)), "more receivers are told too");
+        assert_eq!(sent(&mut gate, t + 6 * SECOND), Some(4), "and are sent the picture kept");
     }
 
     #[test]
@@ -468,8 +694,11 @@ mod tests {
         let mut gate = Gate::new(t);
         gate.counted(t, Some(0));
         gate.picture(picture(1));
-        assert!(gate.counted(t + SECOND, None));
-        assert_eq!(sent(&mut gate, t + SECOND), Some(1));
+        assert!(gate.counted(t + SECOND, None), "wake whoever draws");
+        assert_eq!(sent(&mut gate, t + SECOND), None, "nothing from before");
+        gate.picture(picture(2));
+        assert_eq!(sent(&mut gate, t + SECOND), Some(2));
+        assert_eq!(sent(&mut gate, t + 2 * SECOND), Some(2), "kept and sent again, as always");
         assert!(!gate.counted(t + 2 * SECOND, None), "unknown to unknown wakes nobody");
     }
 
@@ -480,7 +709,7 @@ mod tests {
         gate.counted(t, Some(1));
         gate.picture(picture(1));
         assert_eq!(sent(&mut gate, t), Some(1));
-        assert!(!gate.counted(t + SECOND / 2, Some(0)));
+        assert!(gate.counted(t + SECOND / 2, Some(0)), "told, so the drawing for it can stop");
         assert_eq!(sent(&mut gate, t + SECOND), None, "not sent again");
         gate.picture(picture(2));
         assert_eq!(sent(&mut gate, t + SECOND), None, "nor a new one");
@@ -517,6 +746,8 @@ mod tests {
         gate.picture(picture(1));
         assert_eq!(gate.wait(t), SECOND, "nobody watching: only the next count");
         gate.counted(t + SECOND / 2, Some(1));
+        assert_eq!(gate.wait(t + SECOND / 2), SECOND, "watched, with no picture yet: the next count");
+        gate.picture(picture(1));
         assert_eq!(sent(&mut gate, t + SECOND / 2), Some(1));
         assert_eq!(gate.wait(t + SECOND / 2), SECOND, "the next count and the next send coincide");
         gate.counted(t + SECOND, Some(1));
@@ -524,16 +755,16 @@ mod tests {
     }
 
     /// Stands in for NDI: counts as many receivers as the test says (`UNKNOWN` for a runtime
-    /// that can't count), and says what it was sent and when it was asked for the count.
+    /// that can't count), and says what it was sent: the pictures, and apart from them the
+    /// black ones.
     struct Stand {
         receivers: Arc<AtomicU32>,
-        counted: Sender<()>,
         sent: Sender<(u32, usize)>,
+        black: Sender<u32>,
     }
 
     impl Sink for Stand {
         fn receivers(&self) -> Option<u32> {
-            let _ = self.counted.send(());
             match self.receivers.load(Ordering::Relaxed) {
                 UNKNOWN => None,
                 count => Some(count),
@@ -541,32 +772,36 @@ mod tests {
         }
 
         fn send(&self, width: u32, _height: u32, rgba: &[u8]) {
-            let _ = self.sent.send((width, rgba.as_ptr().addr()));
+            if rgba.iter().all(|byte| *byte == 0) {
+                let _ = self.black.send(width);
+            } else {
+                let _ = self.sent.send((width, rgba.as_ptr().addr()));
+            }
         }
     }
 
-    /// An output sending to a stand-in, with the count it gives, its word that it counted, and
-    /// what it sent: each picture's width and where its pixels are.
+    /// An output sending to a stand-in, with the count it gives and what it sent: each
+    /// picture's width and where its pixels are, and each black picture's width.
     struct Standing {
         output: NdiOutput,
         receivers: Arc<AtomicU32>,
-        counted: Receiver<()>,
         sent: Receiver<(u32, usize)>,
+        black: Receiver<u32>,
     }
 
     fn standing(receivers: u32, wake: impl FnMut() + Send + 'static) -> Standing {
         let receivers = Arc::new(AtomicU32::new(receivers));
-        let ((counted_tx, counted), (sent_tx, sent)) = (channel(), channel());
+        let ((sent_tx, sent), (black_tx, black)) = (channel(), channel());
         let theirs = receivers.clone();
-        let open = move |_: &str| Ok(Stand { receivers: theirs, counted: counted_tx, sent: sent_tx });
+        let open = move |_: &str| Ok(Stand { receivers: theirs, sent: sent_tx, black: black_tx });
         let output = spawn("SoftPresenter test", open, wake).unwrap();
-        Standing { output, receivers, counted, sent }
+        Standing { output, receivers, sent, black }
     }
 
     #[test]
     fn one_picture_shown_on_two_sources_is_sent_by_both_from_the_same_pixels() {
         let (one, two) = (standing(UNKNOWN, || {}), standing(1, || {}));
-        let pixels = Arc::new(vec![7; 4 * 2 * 4]);
+        let pixels = Arc::new(vec![9; 4 * 2 * 4]);
         let at = pixels.as_ptr().addr();
         one.output.show_shared(4, 2, pixels.clone());
         two.output.show_shared(4, 2, pixels.clone());
@@ -577,7 +812,7 @@ mod tests {
     #[test]
     fn a_picture_shown_as_its_own_pixels_is_sent_without_a_copy() {
         let source = standing(UNKNOWN, || {});
-        let pixels = vec![1; 2 * 2 * 4];
+        let pixels = vec![9; 2 * 2 * 4];
         let at = pixels.as_ptr().addr();
         source.output.show(2, 2, pixels);
         assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap(), (2, at));
@@ -586,30 +821,127 @@ mod tests {
     #[test]
     fn a_picture_whose_size_and_pixels_disagree_is_ignored() {
         let source = standing(UNKNOWN, || {});
-        source.output.show_shared(3, 2, Arc::new(vec![0; 5]));
+        source.output.show_shared(3, 2, Arc::new(vec![9; 5]));
         source.output.show(0, 2, Vec::new());
-        source.output.show(1, 1, vec![0; 4]);
+        source.output.show(1, 1, vec![9; 4]);
         assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 1, "only the good picture goes");
     }
 
     #[test]
-    fn a_receiver_connecting_to_a_quiet_source_gets_the_newest_picture_within_about_a_second() {
+    fn a_receiver_connecting_to_a_quiet_source_is_sent_only_what_is_drawn_for_it() {
         let (woken_tx, woken) = channel();
-        let source = standing(0, move || {
+        let source = standing(1, move || {
             let _ = woken_tx.send(());
         });
-        source.counted.recv_timeout(PATIENCE).unwrap();
-        let until = Instant::now() + PATIENCE;
-        while source.output.receivers() != Some(0) {
-            assert!(Instant::now() < until, "the count of none is told");
-            std::thread::yield_now();
-        }
-        source.output.show(1, 1, vec![0; 4]);
-        source.output.show(2, 1, vec![0; 8]);
+        woken.recv_timeout(PATIENCE).unwrap();
+        assert_eq!(source.output.receivers(), Some(1), "woken for the first count, which can be read");
+        source.output.show(1, 1, vec![9; 4]);
+        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 1);
+        source.receivers.store(0, Ordering::Relaxed);
+        woken.recv_timeout(PATIENCE).unwrap();
+        while source.sent.try_recv().is_ok() {}
+        // A picture handed over for nobody is dropped; the black one says that it has been.
+        source.output.show(2, 1, vec![9; 8]);
+        assert_eq!(source.black.recv_timeout(PATIENCE).unwrap(), 1);
         // How soon is the gate tests' to say; a busy computer may take longer here.
         source.receivers.store(1, Ordering::Relaxed);
         woken.recv_timeout(PATIENCE).unwrap();
         assert_eq!(source.output.receivers(), Some(1), "the new count is there for whoever is woken");
-        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 2, "the newest picture, and nothing before it");
+        // Whoever was woken hands over a fresh picture. Had either picture from before been
+        // kept, the thread would have sent it as it woke us, ahead of this one.
+        source.output.show(3, 1, vec![9; 12]);
+        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 3, "the fresh picture, and nothing before it");
+    }
+
+    #[test]
+    fn a_picture_handed_over_just_as_a_receiver_connects_is_sent_not_dropped() {
+        let (woken_tx, woken) = channel();
+        let source = standing(0, move || {
+            let _ = woken_tx.send(());
+        });
+        woken.recv_timeout(PATIENCE).unwrap();
+        // A receiver connects, and before the source next counts it is handed a picture: it
+        // counts there and then, and the picture goes.
+        source.receivers.store(1, Ordering::Relaxed);
+        source.output.show(2, 1, vec![9; 8]);
+        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 2);
+        woken.recv_timeout(PATIENCE).unwrap();
+        assert!(source.black.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_source_is_woken_when_its_last_receiver_leaves_and_when_more_come() {
+        let (woken_tx, woken) = channel();
+        let source = standing(1, move || {
+            let _ = woken_tx.send(());
+        });
+        woken.recv_timeout(PATIENCE).unwrap();
+        source.output.show(1, 1, vec![9; 4]);
+        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 1);
+        for receivers in [2, 0] {
+            source.receivers.store(receivers, Ordering::Relaxed);
+            woken.recv_timeout(PATIENCE).unwrap();
+            assert_eq!(source.output.receivers(), Some(receivers));
+        }
+        // Woken for the count of none, the picture it had is gone: nothing more of it is sent,
+        // to nobody or to whoever comes next.
+        while source.sent.try_recv().is_ok() {}
+        source.receivers.store(1, Ordering::Relaxed);
+        woken.recv_timeout(PATIENCE).unwrap();
+        source.output.show(2, 1, vec![9; 8]);
+        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 2, "only the picture drawn for the newcomer");
+    }
+
+    #[test]
+    fn a_source_told_to_forget_sends_black_once_and_a_receiver_that_comes_gets_only_a_fresh_picture() {
+        let (woken_tx, woken) = channel();
+        let source = standing(1, move || {
+            let _ = woken_tx.send(());
+        });
+        woken.recv_timeout(PATIENCE).unwrap();
+        source.output.show(2, 1, vec![9; 8]);
+        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 2);
+        source.receivers.store(0, Ordering::Relaxed);
+        woken.recv_timeout(PATIENCE).unwrap();
+        assert!(source.black.try_recv().is_err(), "the picture NDI has is still the newest");
+        // The slide changes with nobody watching, three times: said each time, done once.
+        for _ in 0..3 {
+            source.output.forget();
+        }
+        assert_eq!(source.black.recv_timeout(PATIENCE).unwrap(), 2, "black, the size of the picture it covers");
+        while source.sent.try_recv().is_ok() {}
+        source.receivers.store(1, Ordering::Relaxed);
+        woken.recv_timeout(PATIENCE).unwrap();
+        source.output.show(3, 1, vec![9; 12]);
+        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 3);
+        assert!(source.black.try_recv().is_err(), "black went once");
+        // After a picture, forgetting is said and done anew.
+        source.receivers.store(0, Ordering::Relaxed);
+        woken.recv_timeout(PATIENCE).unwrap();
+        source.output.forget();
+        assert_eq!(source.black.recv_timeout(PATIENCE).unwrap(), 3);
+    }
+
+    #[test]
+    fn told_to_forget_just_as_a_receiver_connects_a_source_counts_again_and_sends_no_black() {
+        let (woken_tx, woken) = channel();
+        let source = standing(1, move || {
+            let _ = woken_tx.send(());
+        });
+        woken.recv_timeout(PATIENCE).unwrap();
+        source.output.show(2, 1, vec![9; 8]);
+        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 2);
+        source.receivers.store(0, Ordering::Relaxed);
+        woken.recv_timeout(PATIENCE).unwrap();
+        // A receiver connects, and before the source next counts it is told to forget: it
+        // counts there and then, wakes whoever draws, and sends no black picture to the
+        // receiver, now or after.
+        source.receivers.store(1, Ordering::Relaxed);
+        source.output.forget();
+        woken.recv_timeout(PATIENCE).unwrap();
+        assert_eq!(source.output.receivers(), Some(1));
+        source.output.show(3, 1, vec![9; 12]);
+        assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 3, "the fresh picture, and not the old one");
+        assert!(source.black.try_recv().is_err());
     }
 }

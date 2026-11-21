@@ -1,10 +1,15 @@
-//! Receives one picture from the NDI source whose name contains the given words and says what
-//! it holds. Used to check that SoftPresenter's NDI picture really arrives:
+//! Receives pictures from the NDI source whose name contains the given words and says what
+//! they hold. Used to check that SoftPresenter's NDI picture really arrives:
 //! `cargo run -p sp-ndi --features sdk-examples --example receive -- "SoftPresenter"`.
+//!
+//! With a number of seconds after the name it stays connected that long, and says when each
+//! picture that differs from the one before it came, counted from when it connected, with a
+//! fingerprint that tells one picture from another:
+//! `cargo run -p sp-ndi --features sdk-examples --example receive -- "SoftPresenter" 10`.
 
 #[cfg(feature = "sdk-examples")]
 fn main() {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use grafton_ndi::{Finder, FinderOptions, NDI, Receiver, ReceiverColorFormat, ReceiverOptions};
 
@@ -32,17 +37,42 @@ fn main() {
         Ok(receiver) => receiver,
         Err(e) => return eprintln!("Could not connect: {e}"),
     };
-    match receiver.video().capture(Duration::from_secs(8)) {
-        Ok(frame) => {
-            let data = frame.data();
-            let pixels = data.len() / 4;
-            let bright = data.as_chunks::<4>().0.iter().filter(|p| p[0] > 200 && p[1] > 200 && p[2] > 200).count();
-            let lit = data.as_chunks::<4>().0.iter().filter(|p| p[0] > 40 || p[1] > 40 || p[2] > 40).count();
-            println!("picture: {}x{} {:?}", frame.width(), frame.height(), frame.pixel_format());
-            println!("pixels: {pixels} total, {lit} not black, {bright} white");
+    let connected = Instant::now();
+    // What a picture holds, and a fingerprint of its pixels (FNV-1a) to tell pictures apart.
+    let describe = |data: &[u8]| {
+        let pixels = data.as_chunks::<4>().0;
+        let bright = pixels.iter().filter(|p| p[0] > 200 && p[1] > 200 && p[2] > 200).count();
+        let lit = pixels.iter().filter(|p| p[0] > 40 || p[1] > 40 || p[2] > 40).count();
+        let print = data
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3));
+        (format!("pixels: {} total, {lit} not black, {bright} white", pixels.len()), print)
+    };
+    let Some(stay) = std::env::args().nth(2).and_then(|seconds| seconds.parse::<f32>().ok()) else {
+        return match receiver.video().capture(Duration::from_secs(8)) {
+            Ok(frame) => {
+                println!("picture: {}x{} {:?}", frame.width(), frame.height(), frame.pixel_format());
+                println!("{}", describe(frame.data()).0);
+            }
+            Err(e) => println!("no picture arrived: {e}"),
+        };
+    };
+    let (mut pictures, mut last) = (0_u32, None);
+    while connected.elapsed().as_secs_f32() < stay {
+        let Ok(frame) = receiver.video().capture(Duration::from_millis(200)) else { continue };
+        pictures += 1;
+        let (holds, print) = describe(frame.data());
+        if last != Some(print) {
+            last = Some(print);
+            let after = connected.elapsed().as_secs_f32();
+            println!(
+                "{after:.2} s: picture {pictures}, {}x{}, fingerprint {print:016x}; {holds}",
+                frame.width(),
+                frame.height()
+            );
         }
-        Err(e) => println!("no picture arrived: {e}"),
     }
+    println!("{pictures} pictures in {stay} s");
 }
 
 #[cfg(not(feature = "sdk-examples"))]

@@ -380,6 +380,13 @@ feature changes, this page changes in the same commit.
   all showing the same picture, set up in the Screens window (**Option-Command-1**).
 - Stage screens for the people on stage: the words on screen now, the next slide's words, the
   time, a running timer and the stage message.
+- A screen sent over NDI is drawn and sent only while someone is watching it. With no receiver
+  connected it costs nothing; when one connects, it has the picture on the screens within
+  about a second. It is never shown a slide that has gone: if anything changed while nobody
+  was watching, it sees black until its picture comes. The Screens window and `sp screens` say
+  how many receivers each NDI screen has, or that nobody is watching. The number is NDI's own
+  (NDI's monitor app, for one, counts as two receivers); with an NDI too old to count them, the
+  screen is drawn and sent all the time.
 - Screens fill displays by the names System Settings shows ("3DTV", "HP 27f"). The main
   display, with the menu bar, is never offered and never filled: it is where SoftPresenter's
   own window is. A fresh start puts the first screen on the first other display, or in a

@@ -94,6 +94,10 @@ pub enum OutputMsg {
         id: Uuid,
         name: Option<String>,
     },
+    /// An NDI source has found that its count of receivers changed: the first receivers want a
+    /// picture drawn for them, and a source the last one left is drawn for no longer. Sent by
+    /// the sources' own threads.
+    NdiReceivers,
     /// Stop drawing in a screen's window.
     RemoveSurface(Uuid),
     /// What the Announcements layer shows now, or nothing.
@@ -121,10 +125,26 @@ pub enum OutputMsg {
 pub enum NdiStatus {
     #[default]
     Off,
-    /// Sending under this name.
-    On(String),
+    /// On the network under this name, with this many receivers connected when NDI can count
+    /// them. It sends only while there are some.
+    On(String, Option<u32>),
     /// Asked for, but it could not start; the reason in plain words.
     Failed(String),
+}
+
+impl NdiStatus {
+    /// What a source that is on says of itself in the Screens window and to `sp screens`. The
+    /// number is NDI's own: its monitor app, for one, counts as two receivers. Kept short: the
+    /// Screens window shows it on one line inside a small picture of the screen.
+    pub fn sending_in_words(name: &str, receivers: Option<u32>) -> String {
+        let (w, h) = NDI_SIZE;
+        match receivers {
+            None => format!("Sending as \"{name}\" at {w} x {h}"),
+            Some(0) => format!("On NDI as \"{name}\"; nobody is watching"),
+            Some(1) => format!("Sending as \"{name}\" to 1 receiver"),
+            Some(count) => format!("Sending as \"{name}\" to {count} receivers"),
+        }
+    }
 }
 
 /// An NDI picture being copied back from the GPU: the sources it is for, the buffer it is
@@ -306,6 +326,12 @@ impl Shown {
         self.waiting = true;
     }
 
+    /// No picture is asked of it any more (the NDI sources, once nobody is watching any of
+    /// them): nothing is owed, whatever went wrong before, and nothing is waited for.
+    fn not_asked(&mut self) {
+        *self = Shown::default();
+    }
+
     /// The tries are used up: a picture still waiting is not coming for now.
     fn given_up(&mut self) {
         if std::mem::take(&mut self.waiting) {
@@ -351,6 +377,61 @@ fn output_room(asked: &str) -> Option<vello::ScratchSizes> {
 
 /// The size of the picture sent over NDI, whatever size any window is.
 const NDI_SIZE: (u32, u32) = (1920, 1080);
+
+/// How the NDI pictures asked for now may differ from the ones last asked for. It decides
+/// which sources nobody is watching are told that the picture they last sent is out of date
+/// (see `Output::send_ndi`). In order: a later one covers the ones before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum NdiChange {
+    /// Not at all: they are drawn only because receivers came or went, or for a new source.
+    Nothing,
+    /// The stage screens' may: they are drawn again for the time, at the start of a second.
+    Stage,
+    /// Any of them may.
+    Any,
+}
+
+impl NdiChange {
+    /// Whether a source's picture may differ; `stage` says the source is a stage screen.
+    fn touches(self, stage: bool) -> bool {
+        match self {
+            NdiChange::Nothing => false,
+            NdiChange::Stage => stage,
+            NdiChange::Any => true,
+        }
+    }
+}
+
+/// One NDI source as a drawing finds it: whether a picture is wanted for it, and whether it
+/// shows the show its own way (a stage screen, one being identified, one with a look or a
+/// theme of its own) and so needs a picture of its own.
+#[derive(Clone, Copy, Debug)]
+struct NdiSeen {
+    id: Uuid,
+    wanted: bool,
+    alone: bool,
+}
+
+/// Whether a picture is to be drawn for an NDI source. Not for one that could not start (NDI
+/// not installed, say), and not for one nobody is watching: it would be drawn, read back from
+/// the GPU and thrown away. A count that isn't known (the source is still starting, or its
+/// NDI can't count) is drawn for, as if someone were watching.
+fn ndi_wanted(state: &sp_ndi::State, receivers: Option<u32>) -> bool {
+    !matches!(state, sp_ndi::State::Failed(_)) && receivers != Some(0)
+}
+
+/// The pictures to draw for the NDI sources, each with the sources it goes to: one for each
+/// source that needs its own, then one shared by all the rest. Sources no picture is wanted
+/// for are in none, and a picture nobody wants is not there at all.
+fn ndi_groups(sources: &[NdiSeen]) -> Vec<Vec<Uuid>> {
+    let wanted = || sources.iter().filter(|source| source.wanted);
+    let mut groups: Vec<Vec<Uuid>> = wanted().filter(|source| source.alone).map(|source| vec![source.id]).collect();
+    let shared: Vec<Uuid> = wanted().filter(|source| !source.alone).map(|source| source.id).collect();
+    if !shared.is_empty() {
+        groups.push(shared);
+    }
+    groups
+}
 
 /// Each screen's NDI source as the window sees it: started (by its name, and how it is doing
 /// now), or refused before it could start.
@@ -420,13 +501,15 @@ impl OutputHandle {
         let shared = live_preview.clone();
         // A picture read for the screens meanwhile has them drawn again once it is there.
         let wake = tx.clone();
+        // The NDI sources tell the thread when their receivers come and go, on the same channel.
+        let from_ndi = tx.clone();
         let thread = std::thread::Builder::new()
             .name("output".to_owned())
             .spawn(move || {
                 sp_render::draw_kept_pictures_only(move || {
                     let _ = wake.send(OutputMsg::Redraw);
                 });
-                run(device, queue, theme, rx, status, shared, waker)
+                run(device, queue, theme, (from_ndi, rx), status, shared, waker)
             })
             .map_err(|e| format!("could not start the output thread: {e}"))?;
         Ok(OutputHandle { tx, thread: Some(thread), ndi_status, live_preview })
@@ -465,7 +548,7 @@ impl OutputHandle {
             Some(NdiEntry::Refused(reason)) => NdiStatus::Failed(reason),
             Some(NdiEntry::Started(name, watch)) => match watch.state() {
                 sp_ndi::State::Starting => NdiStatus::Off,
-                sp_ndi::State::Sending => NdiStatus::On(name),
+                sp_ndi::State::Sending => NdiStatus::On(name, watch.receivers()),
                 sp_ndi::State::Failed(reason) => NdiStatus::Failed(reason),
             },
         }
@@ -566,12 +649,18 @@ struct Output {
     fading: Option<(Instant, sp_model::Transition)>,
     /// The NDI sources that are switched on, and the texture their picture is drawn into.
     ndi: Vec<(Uuid, NdiOutput)>,
+    /// A way into this thread's own messages, a copy of which each NDI source is started with
+    /// to say that its receivers have come or gone. (It keeps the channel open for as long as
+    /// the thread runs, as the picture loader's copy does: the thread ends when it is told to
+    /// shut down, and then drops the sources and this with them.)
+    from_ndi: Sender<OutputMsg>,
     ndi_target: Option<wgpu::Texture>,
     /// NDI pictures on their way back from the GPU, buffers kept to copy the next ones into,
-    /// and whether a newer picture is waiting for the round under way to finish.
+    /// and whether a newer picture is waiting for the round under way to finish: if one is,
+    /// how it may differ from the last (see `send_ndi`).
     ndi_pending: Vec<NdiReadback>,
     ndi_buffers: Vec<wgpu::Buffer>,
-    ndi_dirty: bool,
+    ndi_dirty: Option<NdiChange>,
     ndi_status: NdiStatuses,
     /// While screens are being identified: the name each one shows instead of the show.
     /// While screens are identified: each screen's name (as a slide), its colour, and when it
@@ -633,7 +722,7 @@ fn run(
     device: wgpu::Device,
     queue: wgpu::Queue,
     theme: Arc<Theme>,
-    rx: Receiver<OutputMsg>,
+    (from_ndi, rx): (Sender<OutputMsg>, Receiver<OutputMsg>),
     ndi_status: NdiStatuses,
     live_preview: Arc<LivePreview>,
     waker: Option<Waker>,
@@ -666,10 +755,11 @@ fn run(
         targets: Vec::new(),
         fading: None,
         ndi: Vec::new(),
+        from_ndi,
         ndi_target: None,
         ndi_pending: Vec::new(),
         ndi_buffers: Vec::new(),
-        ndi_dirty: false,
+        ndi_dirty: None,
         ndi_status,
         identify: Vec::new(),
         identify_since: Instant::now(),
@@ -854,7 +944,10 @@ fn run(
         // Take everything that has queued up, so a burst of changes costs one draw.
         let mut next = Some(first);
         let mut new_picture = false;
+        // Whether NDI receivers came or went, and whether that is all these messages say.
+        let (mut receivers_changed, mut nothing_else) = (false, true);
         while let Some(msg) = next {
+            nothing_else &= matches!(msg, OutputMsg::NdiReceivers);
             match msg {
                 OutputMsg::Show(frame) => {
                     let now = Instant::now();
@@ -916,6 +1009,7 @@ fn run(
                 OutputMsg::Resized(id, w, h) => output.resize(id, w, h),
                 OutputMsg::Redraw => {}
                 OutputMsg::SetNdi { id, name } => output.set_ndi(id, name),
+                OutputMsg::NdiReceivers => receivers_changed = true,
                 OutputMsg::RemoveSurface(id) => output.targets.retain(|target| target.id != id),
                 OutputMsg::Announcement(announcement) => {
                     // A new announcement dissolves in over what is there, and gets all its tries.
@@ -950,7 +1044,17 @@ fn run(
             }
             next = rx.try_recv().ok();
         }
-        output.draw(new_picture);
+        // The Screens window says how many are watching each source: it looks again.
+        if receivers_changed && let Some(wake) = &output.waker {
+            wake();
+        }
+        if nothing_else {
+            // Only the NDI pictures are drawn. Drawing the windows too would cut short a fade
+            // under way in them, for something the audience in the room has no part in.
+            output.draw_ndi();
+        } else {
+            output.draw(new_picture);
+        }
     }
 }
 
@@ -1010,13 +1114,20 @@ impl Output {
         // Stop the old source first, so a renamed one does not appear twice.
         self.ndi.retain(|(have, _)| *have != id);
         // Starting never waits on NDI: the source starts on its own thread.
-        let status = name.map(|name| match NdiOutput::start(&name) {
-            Ok(ndi) => {
-                let entry = NdiEntry::Started(ndi.name().to_owned(), ndi.watch());
-                self.ndi.push((id, ndi));
-                entry
+        let status = name.map(|name| {
+            // Its thread says when its receivers come and go; it only passes the word on.
+            let tell = self.from_ndi.clone();
+            let started = NdiOutput::start_with_wake(&name, move || {
+                let _ = tell.send(OutputMsg::NdiReceivers);
+            });
+            match started {
+                Ok(ndi) => {
+                    let entry = NdiEntry::Started(ndi.name().to_owned(), ndi.watch());
+                    self.ndi.push((id, ndi));
+                    entry
+                }
+                Err(reason) => NdiEntry::Refused(reason),
             }
-            Err(reason) => NdiEntry::Refused(reason),
         });
         if self.ndi.is_empty() {
             // Nothing is sent: whatever NDI picture could not be drawn is no longer owed.
@@ -1025,12 +1136,12 @@ impl Output {
             self.ndi_target = None;
             self.ndi_pending.clear();
             self.ndi_buffers.clear();
-            self.ndi_dirty = false;
+            self.ndi_dirty = None;
         }
         // A new source gets the picture on screen now.
         if !self.ndi.is_empty() {
             let frame = self.frame.clone();
-            self.send_ndi(&frame);
+            self.send_ndi(&frame, NdiChange::Nothing);
         }
         if let Ok(mut shared) = self.ndi_status.lock() {
             shared.retain(|(have, _)| *have != id);
@@ -1154,55 +1265,96 @@ impl Output {
         !self.identify.is_empty() && self.identify_since.elapsed().as_secs_f32() < IDENTIFY_BREATHS * IDENTIFY_BREATH
     }
 
-    /// Draws the picture at NDI's size for every NDI source and starts copying it back from the
-    /// GPU, without waiting for the copy: `finish_ndi` hands it over once it is there. One
-    /// round of copies is under way at a time; a picture that comes while one is under way is
-    /// not waited for, and the newest is drawn as soon as the round is done. This does not
-    /// depend on any window: with none open, NDI still sends.
-    fn send_ndi(&mut self, frame: &Frame) {
+    /// Draws the picture at NDI's size for every NDI source anyone is watching and starts
+    /// copying it back from the GPU, without waiting for the copy: `finish_ndi` hands it over
+    /// once it is there. One round of copies is under way at a time; a picture that comes while
+    /// one is under way is not waited for, and the newest is drawn as soon as the round is
+    /// done. This does not depend on any window: with none open, NDI still sends.
+    ///
+    /// A source nobody is watching gets nothing: no picture is drawn or read back for it. It
+    /// says when a receiver connects (`OutputMsg::NdiReceivers`), which has this picture drawn
+    /// for it then. Meanwhile NDI gives a receiver the last picture the source sent, the
+    /// moment it connects. `changed` says which pictures asked for now may be other than the
+    /// last ones asked for: the sources of those that nobody is watching are told to forget
+    /// theirs, which puts black in its place. So a receiver that connects is never sent a
+    /// slide that has gone: it sees black until its picture comes, or, when nothing has
+    /// changed since the last receiver left, the picture sent then, which is still the one on
+    /// the screens.
+    fn send_ndi(&mut self, frame: &Frame, changed: NdiChange) {
         self.finish_ndi();
         if self.ndi.is_empty() {
             return;
         }
-        if !self.ndi_pending.is_empty() {
-            self.ndi_dirty = true;
-            return;
-        }
-        self.ndi_dirty = false;
-        let (w, h) = NDI_SIZE;
         // The show is drawn once for every source that shows it as it is; a screen being
         // identified, a stage screen or one with its own look gets its own picture.
-        let mut shared: Vec<Uuid> = Vec::new();
-        let mut own: Vec<Uuid> = Vec::new();
+        let seen: Vec<NdiSeen> = self
+            .ndi
+            .iter()
+            .map(|(id, ndi)| NdiSeen {
+                id: *id,
+                wanted: ndi_wanted(&ndi.state(), ndi.receivers()),
+                alone: self.identify.iter().any(|(have, ..)| have == id)
+                    || self.is_stage(*id)
+                    || self.looks.iter().any(|(have, _)| have == id)
+                    || self.themes.iter().any(|(have, _)| have == id),
+            })
+            .collect();
+        // Another picture is asked for, which a source nobody is watching will not get: the
+        // one it had is out of date. (Said for every such picture; the source acts on it once.)
         for (id, ndi) in &self.ndi {
-            // A source that couldn't start (NDI not installed, say) gets nothing drawn for it.
-            if matches!(ndi.state(), sp_ndi::State::Failed(_)) {
-                continue;
+            if changed.touches(self.is_stage(*id)) && ndi.receivers() == Some(0) {
+                ndi.forget();
             }
-            let alone = self.identify.iter().any(|(have, ..)| have == id)
-                || self.is_stage(*id)
-                || self.looks.iter().any(|(have, _)| have == id)
-                || self.themes.iter().any(|(have, _)| have == id);
-            if alone { own.push(*id) } else { shared.push(*id) }
         }
-        let mut groups: Vec<Vec<Uuid>> = own.into_iter().map(|id| vec![id]).collect();
-        if !shared.is_empty() {
-            groups.push(shared);
+        // A picture still on its way back from the GPU does not go to a source nobody is
+        // watching any more, which would throw it away. It was newer than the one the source
+        // has, so that one is out of date.
+        for readback in &mut self.ndi_pending {
+            for (id, ndi) in &self.ndi {
+                let wanted = seen.iter().any(|source| source.id == *id && source.wanted);
+                if !wanted && readback.ids.contains(id) {
+                    readback.ids.retain(|have| have != id);
+                    ndi.forget();
+                }
+            }
         }
+        let groups = ndi_groups(&seen);
+        if groups.is_empty() {
+            // Nobody is watching (or no source could start): no picture is owed, so none is
+            // undrawn, whatever went wrong while someone watched.
+            self.ndi_dirty = None;
+            self.ndi_state.not_asked();
+            self.ndi_trouble = crate::applog::Lasting::default();
+            return;
+        }
+        if !self.ndi_pending.is_empty() {
+            // As different from the last as the most different of the drawings put off.
+            self.ndi_dirty = Some(self.ndi_dirty.map_or(changed, |before| before.max(changed)));
+            return;
+        }
+        self.ndi_dirty = None;
+        let (w, h) = NDI_SIZE;
+        let mut all_painted = true;
         for ids in groups {
+            // Not asked for after a picture the GPU was too slow with: it waits for the next
+            // try, and so do the pictures after it.
+            if self.round.slow {
+                self.ndi_state.skipped();
+                all_painted = false;
+                break;
+            }
             let scene = self.scene_for(ids[0], frame, w, h);
             let target = self.ndi_target.get_or_insert_with(|| target_texture(&self.device, w, h)).clone();
             let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-            // Not asked for after a picture the GPU was too slow with: it waits for the next try.
-            if self.round.slow {
-                return self.ndi_state.skipped();
-            }
             if let Err(e) = self.paint(&scene, &view, w, h) {
                 let message = format!("The NDI picture could not be drawn: {e}");
                 if self.ndi_trouble.is_news(&message) {
                     crate::applog::problem("output", &message);
                 }
-                return self.ndi_state.failed(&e);
+                // The other sources' pictures are still drawn, unless the GPU was too slow.
+                self.ndi_state.failed(&e);
+                all_painted = false;
+                continue;
             }
             // The copy is queued after the drawing, so it takes this picture even though the next
             // group is drawn into the same texture straight after.
@@ -1239,11 +1391,38 @@ impl Output {
             });
             self.ndi_pending.push(NdiReadback { ids, buffer, padded_row, done });
         }
+        if !all_painted {
+            return;
+        }
         // Every picture was drawn: whatever went wrong before is over.
         self.ndi_state.painted();
         if let Some(more) = self.ndi_trouble.over() {
             crate::applog::event("output", &format!("The NDI picture is drawn again, after {more} more not drawn"));
         }
+    }
+
+    /// A picture for these sources was lost on its way back from the GPU. Their receivers keep
+    /// the picture before it until the next is drawn (nothing draws it again for them: a GPU
+    /// that goes on failing would have it drawn without end). The sources are told that what
+    /// they last sent is out of date, so that once their receivers leave, whoever connects
+    /// next is not given it.
+    fn ndi_lost(&self, ids: &[Uuid]) {
+        for (_, ndi) in self.ndi.iter().filter(|(id, _)| ids.contains(id)) {
+            ndi.forget();
+        }
+    }
+
+    /// Draws the NDI pictures alone, as a drawing of its own (like one that had to wait for
+    /// the picture before it): one the GPU is too slow with is drawn again, and the operator
+    /// is told of one that cannot be drawn, or that all is well again.
+    fn draw_ndi(&mut self) {
+        self.round.begin_part();
+        let frame = self.frame.clone();
+        // The picture is the one last asked for. If that could not be drawn, though, the
+        // sources still have the one before it, which is out of date for any nobody watches.
+        let owed = if self.ndi_state == Shown::default() { NdiChange::Nothing } else { NdiChange::Any };
+        self.send_ndi(&frame, owed);
+        self.end_round();
     }
 
     /// True while pictures for NDI are on their way back from the GPU.
@@ -1265,23 +1444,42 @@ impl Output {
             let done = readback.done.lock().ok().and_then(|done| *done);
             match done {
                 None => still.push(readback),
-                Some(false) => crate::applog::problem("output", "An NDI picture could not be read back."),
+                Some(false) => {
+                    crate::applog::problem("output", "An NDI picture could not be read back.");
+                    self.ndi_lost(&readback.ids);
+                }
                 Some(true) => {
-                    let pixels = {
-                        let slice = readback.buffer.slice(..);
-                        let Ok(mapped) = slice.get_mapped_range() else { continue };
-                        let mut pixels = Vec::with_capacity(row * h as usize);
-                        for padded in mapped.chunks(readback.padded_row) {
-                            pixels.extend_from_slice(&padded[..row]);
-                        }
-                        pixels
-                    };
-                    readback.buffer.unmap();
-                    for id in &readback.ids {
-                        if let Some((_, ndi)) = self.ndi.iter().find(|(have, _)| have == id) {
-                            ndi.show(w, h, pixels.clone());
+                    // The sources it is for that still want it. One that nobody is watching
+                    // any more would only throw it away: it is told that the picture it had
+                    // is out of date, which is all this one would have told it.
+                    let mut sources: Vec<&NdiOutput> = Vec::new();
+                    for (_, ndi) in self.ndi.iter().filter(|(id, _)| readback.ids.contains(id)) {
+                        if ndi_wanted(&ndi.state(), ndi.receivers()) {
+                            sources.push(ndi);
+                        } else {
+                            ndi.forget();
                         }
                     }
+                    if !sources.is_empty() {
+                        // The rows are copied out of the buffer once, without the padding, and
+                        // every source sends those same pixels.
+                        let pixels = {
+                            let slice = readback.buffer.slice(..);
+                            let Ok(mapped) = slice.get_mapped_range() else {
+                                self.ndi_lost(&readback.ids);
+                                continue;
+                            };
+                            let mut pixels = Vec::with_capacity(row * h as usize);
+                            for padded in mapped.chunks(readback.padded_row) {
+                                pixels.extend_from_slice(&padded[..row]);
+                            }
+                            Arc::new(pixels)
+                        };
+                        for ndi in sources {
+                            ndi.show_shared(w, h, pixels.clone());
+                        }
+                    }
+                    readback.buffer.unmap();
                     // Kept for the next picture, two at most.
                     if self.ndi_buffers.len() < 2 {
                         self.ndi_buffers.push(readback.buffer);
@@ -1290,9 +1488,11 @@ impl Output {
             }
         }
         self.ndi_pending = still;
-        if self.ndi_pending.is_empty() && self.ndi_dirty {
+        if self.ndi_pending.is_empty()
+            && let Some(changed) = self.ndi_dirty
+        {
             let frame = self.frame.clone();
-            self.send_ndi(&frame);
+            self.send_ndi(&frame, changed);
         }
     }
 
@@ -1392,7 +1592,7 @@ impl Output {
         self.round.begin();
         // Cheap copies: the picture and the slide are shared, not duplicated.
         let frame = self.frame.clone();
-        self.send_ndi(&frame);
+        self.send_ndi(&frame, NdiChange::Any);
         self.capture(&frame);
         // How far a fade already under way has got, before the clock is started again.
         let amount = self.fading.map(|(started, look)| fade_amount(started, look.duration()));
@@ -1639,7 +1839,7 @@ impl Output {
         // A stage screen sent over NDI gets the new time too, the same way as every NDI picture
         // (never waited on).
         if self.ndi.iter().any(|(id, _)| self.is_stage(*id)) {
-            self.send_ndi(&frame);
+            self.send_ndi(&frame, NdiChange::Stage);
         }
         self.end_round();
     }
@@ -1992,6 +2192,131 @@ mod tests {
         assert_eq!(round.end(now), Ended::Drawn);
         assert_eq!(worst_undrawn([ndi]), None);
         assert_eq!(round.tries, DRAW_AGAIN_TRIES);
+    }
+
+    fn seen(wanted: bool, alone: bool) -> NdiSeen {
+        NdiSeen { id: Uuid::new_v4(), wanted, alone }
+    }
+
+    #[test]
+    fn no_ndi_picture_is_drawn_for_a_source_nobody_is_watching() {
+        let (sending, starting) = (sp_ndi::State::Sending, sp_ndi::State::Starting);
+        assert!(!ndi_wanted(&sending, Some(0)), "nobody watching: nothing drawn");
+        assert!(ndi_wanted(&sending, Some(1)) && ndi_wanted(&sending, Some(2)));
+        assert!(ndi_wanted(&sending, None), "a count that isn't known is drawn for, as before");
+        assert!(ndi_wanted(&starting, None), "and so is a source still starting");
+        assert!(!ndi_wanted(&sp_ndi::State::Failed("NDI stopped.".to_owned()), None));
+        assert!(!ndi_wanted(&sp_ndi::State::Failed("NDI stopped.".to_owned()), Some(3)));
+        // Two sources showing the show as it is share one picture; one with a look of its own
+        // has its own, drawn first.
+        let (one, two, lower) = (seen(true, false), seen(true, false), seen(true, true));
+        assert_eq!(ndi_groups(&[one, lower, two]), vec![vec![lower.id], vec![one.id, two.id]]);
+        // A source nobody is watching is in no picture's list...
+        let unwatched = seen(false, false);
+        assert_eq!(ndi_groups(&[one, unwatched]), vec![vec![one.id]]);
+        // ...and a picture nobody is watching is not drawn at all: not the shared one, not a
+        // source's own.
+        assert_eq!(ndi_groups(&[unwatched, seen(false, false), lower]), vec![vec![lower.id]]);
+        assert_eq!(ndi_groups(&[one, seen(false, true)]), vec![vec![one.id]]);
+        assert!(ndi_groups(&[unwatched, seen(false, true)]).is_empty());
+        assert!(ndi_groups(&[]).is_empty());
+    }
+
+    /// With nobody watching, a drawing asks for no NDI picture (as `send_ndi` does when
+    /// `ndi_groups` is empty): that is neither undrawn nor waited for.
+    #[test]
+    fn ndi_nobody_is_watching_is_not_undrawn_and_owes_nothing_from_before() {
+        let now = Instant::now();
+        // A drawing of the windows with the NDI sources unwatched: no picture of theirs is
+        // noted, nothing is said, and nothing is set to be drawn again.
+        let (mut round, mut ndi) = (Round::default(), Shown::default());
+        round.begin();
+        round.note(&Ok(()));
+        ndi.not_asked();
+        assert_eq!(round.end(now), Ended::Drawn);
+        assert_eq!((round.again_at, round.failed, worst_undrawn([ndi])), (None, false, None));
+        // Refused as too heavy while someone watched, then the last receiver leaves: the
+        // operator is no longer told of a picture nobody is owed.
+        ndi.failed(&sp_render::PaintError::TooHeavy);
+        assert_eq!(worst_undrawn([ndi]), Some(Undrawn::TooMuch));
+        ndi.not_asked();
+        assert_eq!(worst_undrawn([ndi]), None);
+        // Too slow and given up, then unwatched: the same.
+        ndi.failed(&slow().unwrap_err());
+        ndi.given_up();
+        assert_eq!(worst_undrawn([ndi]), Some(Undrawn::NotInTime));
+        ndi.not_asked();
+        assert_eq!(ndi, Shown::default());
+        // Still waiting for another try when the receiver left: it is not waited for any
+        // more, so when the tries of the windows' drawing are used up, nothing is said of NDI.
+        ndi.skipped();
+        ndi.not_asked();
+        ndi.given_up();
+        assert_eq!(worst_undrawn([ndi]), None);
+    }
+
+    /// A receiver comes back and the picture drawn for it (a drawing of the NDI pictures
+    /// alone, as `draw_ndi` makes) cannot be painted: tried again and told like any other.
+    #[test]
+    fn an_ndi_picture_drawn_for_a_receiver_that_came_back_is_tried_again_and_told() {
+        let now = Instant::now();
+        let (mut round, mut ndi) = (Round::default(), Shown::default());
+        ndi.not_asked();
+        // The GPU too slow with it: a time is set for another try, and nothing said yet.
+        round.begin_part();
+        let painted = slow();
+        round.note(&painted);
+        ndi.failed(&painted.unwrap_err());
+        assert_eq!(round.end(now), Ended::TryAgain);
+        assert_eq!(round.again_at, Some(now + DRAW_AGAIN_AFTER));
+        assert_eq!(worst_undrawn([ndi]), None);
+        // The tries that follow are drawings of everything; slow every time, it is given up
+        // and the operator told, and it goes on being tried now and then.
+        let mut ended = Ended::TryAgain;
+        while ended == Ended::TryAgain {
+            round.begin();
+            round.note(&slow());
+            ndi.skipped();
+            ended = round.end(now);
+        }
+        ndi.given_up();
+        assert_eq!(worst_undrawn([ndi]), Some(Undrawn::NotInTime));
+        assert_eq!(round.again_at, Some(now + GIVEN_UP_AGAIN_AFTER));
+        // Painted at last: nothing is left to tell.
+        round.begin();
+        round.note(&Ok(()));
+        ndi.painted();
+        assert_eq!(round.end(now), Ended::Drawn);
+        assert_eq!((worst_undrawn([ndi]), round.again_at), (None, None));
+        // Too heavy for the receiver that came back: told at the end of that drawing.
+        round.begin_part();
+        let too_heavy = sp_render::PaintError::TooHeavy;
+        ndi.failed(&too_heavy);
+        round.note(&Err(too_heavy));
+        assert_eq!(round.end(now), Ended::Drawn);
+        assert_eq!(worst_undrawn([ndi]), Some(Undrawn::TooMuch));
+    }
+
+    #[test]
+    fn only_the_ndi_pictures_that_may_have_changed_are_out_of_date_for_whoever_was_not_watching() {
+        // Receivers coming and going change no picture.
+        assert!(!NdiChange::Nothing.touches(false) && !NdiChange::Nothing.touches(true));
+        // The time on the stage screens changes theirs, not the audience screens'.
+        assert!(NdiChange::Stage.touches(true) && !NdiChange::Stage.touches(false));
+        assert!(NdiChange::Any.touches(false) && NdiChange::Any.touches(true));
+        // Of drawings put off while a picture was on its way back, the most different counts.
+        assert_eq!(NdiChange::Nothing.max(NdiChange::Stage), NdiChange::Stage);
+        assert_eq!(NdiChange::Any.max(NdiChange::Stage), NdiChange::Any);
+        assert_eq!(NdiChange::Nothing.max(NdiChange::Nothing), NdiChange::Nothing);
+    }
+
+    #[test]
+    fn an_ndi_source_says_how_many_are_watching_it() {
+        let words = |receivers| NdiStatus::sending_in_words("Sanctuary", receivers);
+        assert_eq!(words(None), "Sending as \"Sanctuary\" at 1920 x 1080");
+        assert_eq!(words(Some(0)), "On NDI as \"Sanctuary\"; nobody is watching");
+        assert_eq!(words(Some(1)), "Sending as \"Sanctuary\" to 1 receiver");
+        assert_eq!(words(Some(2)), "Sending as \"Sanctuary\" to 2 receivers");
     }
 
     #[test]

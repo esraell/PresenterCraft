@@ -1,6 +1,7 @@
 //! Sends a moving test pattern as the NDI source "SoftPresenter NDI check", says once a second
-//! how many receivers are watching it, and says when it stops and starts sending because of
-//! that. For watching in an NDI receiver on the same computer, such as NDI's own monitor app:
+//! how many receivers are watching it, and says when it stops and starts drawing and sending
+//! because of that, as the app's screens do. For watching in an NDI receiver on the same
+//! computer, such as NDI's own monitor app:
 //!
 //!     cargo run -p sp-ndi --example ndi_check -- 120
 //!
@@ -28,7 +29,8 @@ fn main() {
             std::process::exit(2);
         }
     };
-    // The source tells this thread when receivers come back, as it will tell the app's screens.
+    // The source tells this thread when its count of receivers changes, as it tells the app's
+    // screens.
     let (joined_tx, joined) = channel();
     let output = match NdiOutput::start_with_wake(NAME, move || {
         let _ = joined_tx.send(());
@@ -50,12 +52,18 @@ fn main() {
         let next = started + Duration::from_secs(tick + 1);
         match joined.recv_timeout(next.saturating_duration_since(Instant::now())) {
             Ok(()) => {
-                println!(
-                    "{:>4} s  a receiver connected: started sending again (the newest picture went at once)",
-                    at()
-                );
-                // What the app's screens will do: draw a fresh picture straight away.
-                output.show_shared(WIDTH, HEIGHT, pattern(tick));
+                // What the app's screens do: draw a fresh picture straight away for receivers
+                // that have come; draw nothing once the last has gone.
+                match output.receivers() {
+                    Some(0) => println!("{:>4} s  told: nobody is watching", at()),
+                    Some(count) => {
+                        println!("{:>4} s  told: receivers: {count}; a fresh picture is drawn for them", at());
+                    }
+                    None => println!("{:>4} s  told: receivers can't be counted", at()),
+                }
+                if output.receivers() != Some(0) {
+                    output.show_shared(WIDTH, HEIGHT, pattern(tick));
+                }
                 continue;
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -66,17 +74,23 @@ fn main() {
         if matches!(output.state(), State::Failed(_)) {
             give_up(&output);
         }
-        output.show_shared(WIDTH, HEIGHT, pattern(tick));
         let receivers = output.receivers();
+        if receivers == Some(0) {
+            // The bar has moved and nobody sees it: the picture the source last sent is out
+            // of date, and a receiver that connects is shown black until a fresh one is drawn.
+            output.forget();
+        } else {
+            output.show_shared(WIDTH, HEIGHT, pattern(tick));
+        }
         match receivers {
             Some(count) => println!("{tick:>4} s  receivers: {count}"),
             None => println!("{tick:>4} s  receivers: not known"),
         }
         if receivers == Some(0) && before != Some(0) {
             if before.is_some() {
-                println!("{tick:>4} s  the last receiver left: stopped sending (the newest picture is kept)");
+                println!("{tick:>4} s  the last receiver left: nothing is drawn or sent (no picture is kept)");
             } else {
-                println!("{tick:>4} s  nobody is watching: not sending (the newest picture is kept)");
+                println!("{tick:>4} s  nobody is watching: nothing is drawn or sent");
             }
         }
         ever_counted |= receivers.is_some();

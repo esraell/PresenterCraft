@@ -5428,7 +5428,9 @@ impl App {
             .zip(&placed)
             .map(|(screen, place)| match place {
                 Placed::Ndi(_) => match output.ndi_status(screen.id) {
-                    output::NdiStatus::On(name) => (format!("Sending as \"{name}\" at 1920 x 1080"), true),
+                    output::NdiStatus::On(name, receivers) => {
+                        (output::NdiStatus::sending_in_words(&name, receivers), true)
+                    }
                     output::NdiStatus::Failed(reason) if reason == sp_ndi::NOT_INSTALLED => {
                         ("NDI isn't installed on this computer".to_owned(), false)
                     }
