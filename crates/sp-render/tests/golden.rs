@@ -748,11 +748,178 @@ fn a_layouts_shapes_are_drawn_behind_the_words_of_its_slides() {
     assert_eq!(saved.boxes, theme.templates[0].boxes);
 }
 
+/// The scene of a picture behind an empty slide, filling it.
+fn media_scene(media: &sp_render::Picture, w: u32, h: u32) -> sp_render::vello::Scene {
+    let layers = sp_render::Layers {
+        media_fit: sp_model::ImageFit::Fill,
+        media: Some(media),
+        slide: None,
+        overlay: None,
+        time: 0.0,
+        backdrop: None,
+        mask: [0.0; 4],
+        announcement: None,
+    };
+    sp_render::build_layers(&mut Fonts::new(), &layers, &Theme::builtin(), w, h).scene
+}
+
 /// Rows of a picture eight pixels by four, its left half one colour and its right half another,
 /// each pixel's four bytes as given, with four bytes of padding after each row.
 fn two_halves(left: [u8; 4], right: [u8; 4]) -> (Vec<u8>, usize) {
     let row: Vec<u8> = [left.repeat(4), right.repeat(4), vec![0xEE; 4]].concat();
     (row.repeat(4), 36)
+}
+
+/// A playing video's pixels go to the GPU as the system's player decodes them: blue first, in
+/// rows with padding. They are drawn in their true colours; pixels sent later take their place;
+/// and a scene kept after the video has gone still shows its last picture.
+#[test]
+fn a_moving_picture_shows_the_pixels_sent_last_in_their_true_colours() {
+    use sp_render::PixelOrder;
+    let (w, h) = (64, 36);
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let texture = target_texture(device, w, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let paint = |painter: &mut Painter, scene: &sp_render::vello::Scene| {
+        painter.paint(device, queue, scene, &view, w, h).expect("paint");
+        let pixels = read_pixels(device, queue, &texture).expect("read back");
+        (pixel(&pixels, w, 8, 18), pixel(&pixels, w, 56, 18))
+    };
+    let (red, blue, green) = ([200, 40, 10], [10, 40, 220], [20, 200, 60]);
+    let bgra = |rgb: [u8; 3]| [rgb[2], rgb[1], rgb[0], 255];
+
+    let moving = painter.moving_picture(device, 8, 4, PixelOrder::Bgra).expect("moving picture");
+    assert!(moving.fits(8, 4, PixelOrder::Bgra));
+    assert!(!moving.fits(8, 4, PixelOrder::Rgba) && !moving.fits(8, 2, PixelOrder::Bgra));
+    let (rows, stride) = two_halves(bgra(red), bgra(blue));
+    assert!(!painter.show_rows(queue, &moving, &rows[..rows.len() - 8], stride), "too few bytes");
+    assert!(painter.show_rows(queue, &moving, &rows, stride));
+    let scene = media_scene(&moving.picture(), w, h);
+    let (left, right) = paint(&mut painter, &scene);
+    assert!(is_about(left, red) && is_about(right, blue), "first picture: {left:?} {right:?}");
+
+    // New pixels, the same picture: a scene built before they came shows them too.
+    let (rows, stride) = two_halves(bgra(green), bgra(red));
+    assert!(painter.show_rows(queue, &moving, &rows, stride));
+    let (left, right) = paint(&mut painter, &scene);
+    assert!(is_about(left, green) && is_about(right, red), "second picture: {left:?} {right:?}");
+
+    // A scene of plain colour in between (the renderer's own picture texture is thrown away
+    // by such a scene) doesn't leave the video black.
+    let plain = build_scene(&mut Fonts::new(), None, &Theme::builtin(), w, h).scene;
+    let (left, _) = paint(&mut painter, &plain);
+    assert_eq!(left, [0, 0, 0, 255]);
+    let (left, right) = paint(&mut painter, &scene);
+    assert!(is_about(left, green) && is_about(right, red), "after a plain scene: {left:?} {right:?}");
+
+    // The video goes, but a scene drawn with it is kept (a fade starts from it): it shows
+    // the last picture for as long as it is kept, with other scenes drawn in between.
+    drop(moving);
+    for _ in 0..3 {
+        let (left, right) = paint(&mut painter, &scene);
+        assert!(is_about(left, green) && is_about(right, red), "kept scene: {left:?} {right:?}");
+        paint(&mut painter, &plain);
+    }
+    assert_eq!(painter.moving_pictures(), 1, "its texture stays while a scene shows it");
+    // Once nothing shows it, its texture is let go.
+    drop(scene);
+    for _ in 0..3 {
+        paint(&mut painter, &plain);
+    }
+    assert_eq!(painter.moving_pictures(), 0, "and goes when nothing does");
+}
+
+/// A moving picture made and let go without ever being painted leaves nothing behind, and a
+/// scene drawn with a picture whose texture has gone (which the app never keeps) is drawn
+/// clear, not as a failure.
+#[test]
+fn a_moving_picture_let_go_leaves_no_texture_behind() {
+    use sp_render::PixelOrder;
+    let (w, h) = (64, 36);
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let texture = target_texture(device, w, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let plain = build_scene(&mut Fonts::new(), None, &Theme::builtin(), w, h).scene;
+
+    let never_painted = painter.moving_picture(device, 8, 4, PixelOrder::Bgra).expect("moving picture");
+    assert_eq!(painter.moving_pictures(), 1);
+    painter.paint(device, queue, &plain, &view, w, h).expect("paint");
+    assert_eq!(painter.moving_pictures(), 1, "kept while more pixels may come");
+    let picture = never_painted.picture();
+    drop(never_painted);
+    painter.paint(device, queue, &plain, &view, w, h).expect("paint");
+    assert_eq!(painter.moving_pictures(), 1, "and while its picture is held");
+    let late = media_scene(&picture, w, h);
+    drop(picture);
+    drop(late);
+    painter.paint(device, queue, &plain, &view, w, h).expect("paint");
+    assert_eq!(painter.moving_pictures(), 0);
+
+    // Another painter (the operator's window has its own) draws a moving picture clear.
+    let moving = painter.moving_picture(device, 8, 4, PixelOrder::Bgra).expect("moving picture");
+    let (rows, stride) = two_halves([10, 40, 200, 255], [10, 40, 200, 255]);
+    assert!(painter.show_rows(queue, &moving, &rows, stride));
+    let mut other = Painter::new(device).expect("painter");
+    other.paint(device, queue, &media_scene(&moving.picture(), w, h), &view, w, h).expect("paint");
+    let pixels = read_pixels(device, queue, &texture).expect("read back");
+    assert_eq!(pixel(&pixels, w, 8, 18), [0, 0, 0, 255]);
+}
+
+/// Two videos at once (one fading out as the next comes in) each keep their own pictures.
+#[test]
+fn two_moving_pictures_keep_their_own_pixels() {
+    use sp_render::PixelOrder;
+    let (w, h) = (64, 36);
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let (red, blue, green) = ([200, 40, 10], [10, 40, 220], [20, 200, 60]);
+    let bgra = |rgb: [u8; 3]| [rgb[2], rgb[1], rgb[0], 255];
+    let old = painter.moving_picture(device, 8, 4, PixelOrder::Bgra).expect("moving picture");
+    let new = painter.moving_picture(device, 8, 4, PixelOrder::Bgra).expect("moving picture");
+    let (rows, stride) = two_halves(bgra(red), bgra(red));
+    assert!(painter.show_rows(queue, &old, &rows, stride));
+    let (rows, stride) = two_halves(bgra(blue), bgra(green));
+    assert!(painter.show_rows(queue, &new, &rows, stride));
+    // Half-way through a wipe from the left, the new video is on the left and the old on the right.
+    let (from, to) = (media_scene(&old.picture(), w, h), media_scene(&new.picture(), w, h));
+    let wipe =
+        sp_render::transition(sp_model::TransitionKind::Wipe, sp_model::Direction::FromLeft, &from, &to, 0.5, w, h);
+    let texture = target_texture(device, w, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    painter.paint(device, queue, &wipe, &view, w, h).expect("paint");
+    let pixels = read_pixels(device, queue, &texture).expect("read back");
+    let (left, right) = (pixel(&pixels, w, 8, 18), pixel(&pixels, w, 56, 18));
+    assert!(is_about(left, blue) && is_about(right, red), "half-way: {left:?} {right:?}");
+}
+
+/// A moving picture's fourth bytes are its alpha (a web page, a video with clear parts played
+/// by FFmpeg): where they are 0, what is behind it shows.
+#[test]
+fn a_moving_picture_with_alpha_lets_what_is_behind_it_show() {
+    use sp_render::PixelOrder;
+    let (w, h) = (64, 36);
+    let mut cx = RenderContext::new();
+    let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+    let (device, queue) = (&cx.devices[id].device, &cx.devices[id].queue);
+    let mut painter = Painter::new(device).expect("painter");
+    let moving = painter.moving_picture(device, 8, 4, PixelOrder::Rgba).expect("moving picture");
+    let (rows, stride) = two_halves([200, 40, 10, 255], [10, 40, 220, 0]);
+    assert!(painter.show_rows(queue, &moving, &rows, stride));
+    let texture = target_texture(device, w, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    painter.paint(device, queue, &media_scene(&moving.picture(), w, h), &view, w, h).expect("paint");
+    let pixels = read_pixels(device, queue, &texture).expect("read back");
+    let (left, right) = (pixel(&pixels, w, 8, 18), pixel(&pixels, w, 56, 18));
+    assert!(is_about(left, [200, 40, 10]), "the opaque half: {left:?}");
+    assert!(is_about(right, [0, 0, 0]), "the clear half shows the black behind: {right:?}");
 }
 
 /// A video in a box on a slide is copied as the system's player decodes it, blue first, and

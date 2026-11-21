@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use sp_model::{Slide, Theme, Uuid};
 use sp_ndi::NdiOutput;
-use sp_render::{Fonts, Layers, Painter, Picture, build_layers, read_pixels, target_texture, vello, wgpu};
+use sp_render::{
+    Fonts, Layers, MovingPicture, Painter, Picture, build_layers, read_pixels, target_texture, vello, wgpu,
+};
 
 /// How often a playing video is looked at for a new picture: more often than any video's
 /// frame rate.
@@ -362,8 +364,10 @@ struct Output {
     slide_on: Instant,
     step_at: Instant,
     overlay: Overlay,
-    /// The playing video's latest picture.
+    /// The playing video's latest picture, and the texture on the GPU its pixels are sent
+    /// into: one for each video, so the picture a fade starts from keeps the old video's.
     video_picture: Option<Picture>,
+    video_texture: Option<MovingPicture>,
     /// The Announcements layer's slide, if one is on.
     announcement: Option<Announcement>,
     /// How the next new picture fades in: the slides' transition, or the media's when only the
@@ -435,6 +439,7 @@ fn run(
         step_at: Instant::now(),
         overlay: Overlay::default(),
         video_picture: None,
+        video_texture: None,
         announcement: None,
         look: sp_model::Transition::of(sp_model::TransitionKind::Cut),
         timing: crate::applog::Timing::new("screen drawings"),
@@ -593,6 +598,7 @@ fn run(
                     };
                     if !same_video {
                         output.video_picture = None;
+                        output.video_texture = None;
                     }
                     // A video box that stops playing goes back to its still.
                     for (file, _) in &output.frame.slide_video {
@@ -1149,8 +1155,34 @@ impl Output {
 
     fn take_video_picture(&mut self) -> bool {
         let mut new = false;
-        if let Some(copy) = self.frame.video.as_ref().and_then(|frames| frames.next_with(copied)) {
-            self.video_picture = copy;
+        // The video behind the slide: its pixels go straight from the player into a texture on
+        // the GPU, the same one for every picture, with nothing copied or put in another order
+        // on the way. Only this thread's painter draws it (the screens, the live preview, NDI).
+        let Output { frame, painter, device, queue, video_texture, .. } = self;
+        let shown = frame.video.as_ref().and_then(|frames| {
+            frames.next_with(|lent| {
+                // The GPU draws each pixel's fourth byte as its alpha. A picture shown opaque
+                // whatever those bytes say goes there as it is only when every one is full
+                // (as the system's player decodes all but a video with clear parts); a picture
+                // where one isn't is drawn from a copy made opaque.
+                if lent.opaque && !lent.fourth_bytes_full() {
+                    return copied(lent);
+                }
+                let order = pixel_order(lent.order);
+                // The video's first picture, or one of another size than its last: a new texture.
+                if !video_texture.as_ref().is_some_and(|kept| kept.fits(lent.width, lent.height, order)) {
+                    *video_texture = painter.moving_picture(device, lent.width, lent.height, order);
+                }
+                video_texture
+                    .as_ref()
+                    .filter(|kept| painter.show_rows(queue, kept, lent.bytes, lent.bytes_per_row))
+                    .map(MovingPicture::picture)
+                    // A picture too large for a texture is drawn from a copy.
+                    .or_else(|| copied(lent))
+            })
+        });
+        if let Some(shown) = shown {
+            self.video_picture = shown;
             self.video_pictures += 1;
             new |= self.video_picture.is_some();
         }

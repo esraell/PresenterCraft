@@ -168,6 +168,28 @@ pub struct Lent<'a> {
 }
 
 impl<'a> Lent<'a> {
+    /// True when every pixel's fourth byte is 255: the picture is opaque as its bytes stand,
+    /// with nothing to put right before the GPU draws them. Every pixel is looked at, which
+    /// takes far less time than copying them; the first row with a pixel that isn't ends it.
+    pub fn fourth_bytes_full(&self) -> bool {
+        let row = self.width as usize * 4;
+        if row == 0 || self.bytes_per_row < row {
+            return false;
+        }
+        let mut rows = self.bytes.chunks(self.bytes_per_row).take(self.height as usize);
+        rows.len() == self.height as usize
+            && rows.all(|line| {
+                line.len() >= row && {
+                    let all = line[..row]
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .fold(u32::MAX, |all, pixel| all & u32::from_ne_bytes(*pixel));
+                    all.to_ne_bytes()[3] == 255
+                }
+            })
+    }
+
     fn rgba(frame: &'a Frame) -> Lent<'a> {
         Lent {
             width: frame.width,
@@ -354,6 +376,28 @@ mod tests {
         assert_eq!(out, [0, 1, 2, 3]);
         assert_eq!(halved_rows(&rows, 1, 1, 19, &mut out), (0, 0));
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_lent_picture_is_opaque_only_when_every_fourth_byte_is_full() {
+        // Three pixels a row, two rows, two bytes of padding (which aren't pixels) after each.
+        let rows = [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 0, 0, 1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 0, 0];
+        fn lend(bytes: &[u8]) -> Lent<'_> {
+            Lent { width: 3, height: 2, bytes_per_row: 14, bytes, order: PixelOrder::Bgra, opaque: true }
+        }
+        assert!(lend(&rows).fourth_bytes_full());
+        // The last row may stop where its pixels do.
+        assert!(lend(&rows[..26]).fourth_bytes_full());
+        for at in [3, 11, 17, 25] {
+            let mut clear = rows;
+            clear[at] = 254;
+            assert!(!lend(&clear).fourth_bytes_full(), "a fourth byte of 254 at {at}");
+        }
+        // Colours of 255 don't stand in for a fourth byte, and too few rows are not opaque.
+        let mut bright = [255u8; 28];
+        bright[7] = 0;
+        assert!(!lend(&bright).fourth_bytes_full());
+        assert!(!lend(&rows[..20]).fourth_bytes_full());
     }
 
     #[test]

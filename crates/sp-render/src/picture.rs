@@ -130,7 +130,7 @@ impl Picture {
 
 /// True when `len` bytes hold `height` rows of `width` four-byte pixels, each row starting
 /// `bytes_per_row` after the last, and neither side is zero.
-fn rows_hold(width: u32, height: u32, len: usize, bytes_per_row: usize) -> bool {
+pub(crate) fn rows_hold(width: u32, height: u32, len: usize, bytes_per_row: usize) -> bool {
     let needed = (|| {
         let row = (width as usize).checked_mul(4)?;
         if width == 0 || height == 0 || bytes_per_row < row {
