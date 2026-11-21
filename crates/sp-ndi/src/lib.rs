@@ -34,8 +34,12 @@
 //!   the picture for that source need not be drawn or read back from the GPU at all. `None`
 //!   means the count isn't known (the source is still starting, or its runtime can't count):
 //!   draw for it as usual.
-//! - [`NdiOutput::forget`]: said for a source nobody is watching whenever a picture that may
-//!   differ from the last is not drawn for it.
+//! - [`NdiOutput::forget`]: said whenever the newest picture is not going to reach a source:
+//!   for a source nobody is watching, when a picture that may differ from the last is not
+//!   drawn for it; and for one somebody is watching, when its picture was lost on the way. The
+//!   first is sent black in place of what it last sent. The second goes on sending the picture
+//!   it has (its receivers are looking at it, and nothing newer exists), and is sent black
+//!   only if they all leave before a newer picture comes.
 //! - [`NdiOutput::start_with_wake`]: `wake` is called each time the count of receivers is
 //!   found to have changed, the first time it is known included. It runs on the source's own
 //!   thread, after the new count can be read, and should only pass the word on (send a message
@@ -110,11 +114,13 @@ struct Shared {
     state: Mutex<State>,
     /// How many receivers were connected when last counted, or `UNKNOWN`.
     receivers: AtomicU32,
+    /// How many times receivers have been found after a count of none.
+    arrivals: AtomicU32,
 }
 
 impl Shared {
     fn new() -> Shared {
-        Shared { state: Mutex::new(State::Starting), receivers: AtomicU32::new(UNKNOWN) }
+        Shared { state: Mutex::new(State::Starting), receivers: AtomicU32::new(UNKNOWN), arrivals: AtomicU32::new(0) }
     }
 
     fn state(&self) -> State {
@@ -199,6 +205,15 @@ impl NdiOutput {
         self.shared.receivers()
     }
 
+    /// How many times receivers have come to the source after a spell with none. Each time,
+    /// the source has no picture and waits to be handed one; whoever draws them remembers the
+    /// number it last drew for, and draws again when it has moved on. (The count of receivers
+    /// alone can't say this: read after they left and others came, it looks unchanged.) It
+    /// moves on before `wake` is called for that change. Never waits.
+    pub fn arrivals(&self) -> u32 {
+        self.shared.arrivals.load(Ordering::Relaxed)
+    }
+
     /// A way to see what the source is doing from another thread.
     pub fn watch(&self) -> Watch {
         Watch(self.shared.clone())
@@ -226,11 +241,14 @@ impl NdiOutput {
     }
 
     /// Says that the picture last handed over is no longer what should be seen, and that no
-    /// newer one is being handed over, because nobody is watching. NDI itself keeps the last
-    /// picture a source sent and gives it to a receiver the moment it connects; after this, a
-    /// receiver that connects is given a black picture instead, until one is handed over for
-    /// it. Never blocks. Said again before the next picture is handed over, it does nothing,
-    /// so it can be said for every picture that is not drawn.
+    /// newer one is being handed over for now: nobody is watching, so it was not drawn, or it
+    /// was lost on the way. NDI itself keeps the last picture a source sent and gives it to a
+    /// receiver the moment it connects; after this, a receiver that connects to a source nobody
+    /// was watching is given a black picture instead, until one is handed over for it. A source
+    /// somebody is watching goes on sending the picture it has, once a second as always; the
+    /// black picture follows only if its receivers all leave before a newer one is handed over.
+    /// Never blocks. Said again before the next picture is handed over, it does nothing, so it
+    /// can be said for every picture that is not drawn.
     pub fn forget(&self) {
         if !self.forgotten.swap(true, Ordering::Relaxed)
             && let Some(tx) = &self.tx
@@ -327,8 +345,13 @@ fn serve(sink: &impl Sink, rx: &Receiver<Told>, shared: &Shared, wake: &mut impl
     // woken reads the new one.
     let mut count = |gate: &mut Gate| {
         let receivers = sink.receivers();
+        let nobody_was = !gate.watched();
+        let changed = gate.counted(Instant::now(), receivers);
+        if nobody_was && gate.watched() {
+            shared.arrivals.fetch_add(1, Ordering::Relaxed);
+        }
         shared.set_receivers(receivers);
-        if gate.counted(Instant::now(), receivers) {
+        if changed {
             wake();
         }
     };
@@ -423,9 +446,14 @@ impl Gate {
     }
 
     /// The picture last handed over is out of date, and no newer one is coming for now.
+    /// With somebody watching it is still kept and sent again each second: it is what they
+    /// are looking at, and a mixer expects a steady source. (With nobody watching none is
+    /// kept anyway.) Either way it is marked, so that black takes its place once nobody is.
     fn forget(&mut self) {
-        self.current = None;
-        self.fresh = false;
+        if !self.watched() {
+            self.current = None;
+            self.fresh = false;
+        }
         self.stale = true;
     }
 
@@ -586,7 +614,7 @@ mod tests {
         assert!(gate.counted(t + SECOND + SECOND / 2, Some(1)), "wake whoever draws");
         gate.forget();
         assert_eq!(gate.blank_due(), None);
-        assert_eq!(sent(&mut gate, t + 2 * SECOND), None, "and the picture forgotten is not sent again");
+        assert_eq!(sent(&mut gate, t + 2 * SECOND), None, "and the picture from before they came is not sent");
         gate.picture(picture(3));
         assert_eq!(sent(&mut gate, t + 2 * SECOND), Some(3));
         // Nor later, when that receiver leaves: what NDI has then is the newest.
@@ -595,8 +623,11 @@ mod tests {
         // Told to forget with a receiver there, and no new picture comes (it could not be
         // drawn, say) before the receiver leaves: black then, for whoever comes next.
         gate.counted(t + 4 * SECOND, Some(1));
+        gate.picture(picture(3));
+        assert_eq!(sent(&mut gate, t + 4 * SECOND), Some(3));
         gate.forget();
         assert_eq!(gate.blank_due(), None);
+        assert_eq!(sent(&mut gate, t + 5 * SECOND), Some(3), "what they are looking at is still sent each second");
         gate.counted(t + 5 * SECOND, Some(0));
         assert_eq!(gate.blank_due(), Some((3, 1)));
         assert_eq!(gate.blank_due(), None);
@@ -847,6 +878,7 @@ mod tests {
         source.receivers.store(1, Ordering::Relaxed);
         woken.recv_timeout(PATIENCE).unwrap();
         assert_eq!(source.output.receivers(), Some(1), "the new count is there for whoever is woken");
+        assert_eq!(source.output.arrivals(), 1, "and that receivers have come after none");
         // Whoever was woken hands over a fresh picture. Had either picture from before been
         // kept, the thread would have sent it as it woke us, ahead of this one.
         source.output.show(3, 1, vec![9; 12]);
@@ -882,6 +914,7 @@ mod tests {
             source.receivers.store(receivers, Ordering::Relaxed);
             woken.recv_timeout(PATIENCE).unwrap();
             assert_eq!(source.output.receivers(), Some(receivers));
+            assert_eq!(source.output.arrivals(), 0, "more receivers, or none, are not an arrival after none");
         }
         // Woken for the count of none, the picture it had is gone: nothing more of it is sent,
         // to nobody or to whoever comes next.
@@ -903,7 +936,8 @@ mod tests {
         assert_eq!(source.sent.recv_timeout(PATIENCE).unwrap().0, 2);
         source.receivers.store(0, Ordering::Relaxed);
         woken.recv_timeout(PATIENCE).unwrap();
-        assert!(source.black.try_recv().is_err(), "the picture NDI has is still the newest");
+        // (The thread wakes us before it would send black, so this waits a while for it.)
+        assert!(source.black.recv_timeout(SECOND / 3).is_err(), "the picture NDI has is still the newest");
         // The slide changes with nobody watching, three times: said each time, done once.
         for _ in 0..3 {
             source.output.forget();

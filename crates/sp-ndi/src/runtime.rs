@@ -255,10 +255,12 @@ impl Source {
         };
         // SAFETY: the instance is a live source from NDIlib_send_create; `frame` describes
         // `rgba` exactly (its size was checked), and the synchronous send has finished with the
-        // data when it returns. NDI only reads the picture it is sent (the frame is handed over
-        // as `const`, and sending converts and compresses it into NDI's own buffers), so nothing
-        // is written through a pointer made from a shared slice, and other sources reading the
-        // same picture on their own threads at the same time is sound.
+        // data when it returns. NDI's header declares the frame's data pointer without
+        // `const` (only the frame itself is handed over as `const`), so the declaration promises
+        // nothing; this rests on what a synchronous send does, which is only to read the
+        // picture, converting and compressing it into NDI's own buffers. So nothing is written
+        // through a pointer made from a shared slice, and other sources reading the same
+        // picture on their own threads at the same time is sound.
         unsafe { (self.runtime.send_video)(self.instance, &frame) };
     }
 }

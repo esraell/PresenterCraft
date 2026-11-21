@@ -3,8 +3,9 @@
 //! `cargo run -p sp-ndi --features sdk-examples --example receive -- "SoftPresenter"`.
 //!
 //! With a number of seconds after the name it stays connected that long, and says when each
-//! picture that differs from the one before it came, counted from when it connected, with a
-//! fingerprint that tells one picture from another:
+//! picture that differs from the one before it came, counted from when it connected and by the
+//! clock (seconds into the UTC day, to set beside when something was done), with a fingerprint
+//! that tells one picture from another:
 //! `cargo run -p sp-ndi --features sdk-examples --example receive -- "SoftPresenter" 10`.
 
 #[cfg(feature = "sdk-examples")]
@@ -65,8 +66,11 @@ fn main() {
         if last != Some(print) {
             last = Some(print);
             let after = connected.elapsed().as_secs_f32();
+            let clock = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |since| since.as_secs_f64() % 86_400.0);
             println!(
-                "{after:.2} s: picture {pictures}, {}x{}, fingerprint {print:016x}; {holds}",
+                "{after:.2} s (clock {clock:.2}): picture {pictures}, {}x{}, fingerprint {print:016x}; {holds}",
                 frame.width(),
                 frame.height()
             );
