@@ -245,6 +245,20 @@ pub fn item(screens: &[Screen]) -> sp_model::Presentation {
     }
 }
 
+/// A key's first characters, to show which key it is.
+fn hint_of(key: &str) -> String {
+    format!("{}…", key.chars().take(12).collect::<String>())
+}
+
+/// True when `shown` is the hint of `key` (both none, or `hint_of` the key).
+fn hint_is(key: Option<&str>, shown: Option<&str>) -> bool {
+    match (key, shown) {
+        (None, None) => true,
+        (Some(key), Some(shown)) => shown.strip_suffix('…').is_some_and(|start| start.chars().eq(key.chars().take(12))),
+        _ => false,
+    }
+}
+
 /// An id made from a screen's id, the same each time, so the item's slides keep their ids.
 fn stable_id(part: &str, screen: &str) -> sp_model::Uuid {
     // FNV-1a, 128 bits: not for secrecy, only to be the same every time.
@@ -395,7 +409,13 @@ impl Client {
 
     /// The key's first characters (VoxLive's own handle for it), to show which key it is.
     pub fn key_hint(&self) -> Option<String> {
-        self.key.as_ref().map(|key| format!("{}…", key.chars().take(12).collect::<String>()))
+        self.key.as_deref().map(hint_of)
+    }
+
+    /// True when `shown` is what `key_hint` gives now, found without making a new string (it
+    /// is asked each time the app wakes).
+    pub fn key_hint_is(&self, shown: Option<&str>) -> bool {
+        hint_is(self.key.as_deref(), shown)
     }
 
     /// Takes a key: keeps it, and checks it by asking for the screens. The error is a sentence.
@@ -773,6 +793,17 @@ mod store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_keys_hint_is_recognised_without_being_made_again() {
+        for key in ["vxk_abcdefghijklmnopqrstuvwx", "vxk_short", "", "ключ_абвгдежзийклмн"] {
+            assert!(hint_is(Some(key), Some(&hint_of(key))), "{key}");
+            assert!(!hint_is(Some(key), Some(&hint_of("vxk_another_key_entirely"))), "{key}");
+            assert!(!hint_is(Some(key), None));
+            assert!(!hint_is(None, Some(&hint_of(key))));
+        }
+        assert!(hint_is(None, None));
+    }
 
     #[test]
     fn a_key_is_shaped_like_voxlives_and_nothing_else_is_taken() {

@@ -600,6 +600,20 @@ fn log_placement(screen: &str, place: &Placed, window: &Window, displays: &[Disp
     );
 }
 
+/// The displays as last asked of the system: when, the displays connected then, and what
+/// `display_list` and `operator_displays` said of them.
+struct DisplaysSeen {
+    at: Instant,
+    monitors: Vec<winit::monitor::MonitorHandle>,
+    displays: Vec<DisplayInfo>,
+    operator: Vec<usize>,
+}
+
+impl DisplaysSeen {
+    /// How long what was seen is used before the system is asked again.
+    const KEPT_FOR: Duration = Duration::from_secs(1);
+}
+
 /// The displays the operator works on, by their place in `monitors`: the one the home window is
 /// on and the one with the menu bar (macOS's main display). Empty when neither is known yet,
 /// as when the home window has just opened: no output then fills a display by guesswork.
@@ -877,6 +891,8 @@ struct Running {
     preview: Option<egui::TextureId>,
     /// When it was last looked whether NDI is installed.
     ndi_checked: Option<Instant>,
+    /// The displays as last asked of the system (see `sync_screens`).
+    displays_seen: Option<DisplaysSeen>,
     /// The live preview's two textures, as the window knows them.
     live_preview_ids: Vec<egui::TextureId>,
 
@@ -936,6 +952,8 @@ struct App {
     bible_slots: [usize; 2],
     /// Where the VoxLive item is among the presentations (see `voxlive::item`).
     voxlive_slot: usize,
+    /// The VoxLive screens the item in its place was last made from, and that item.
+    voxlive_item_from: Option<(Vec<voxlive::Screen>, Arc<sp_model::Presentation>)>,
     /// PDFs and folders of pictures being made into slides, each on a thread of its own.
     decks: deck::Decks,
     /// The decoded picture of each media item, in the show's order: full size for the screens,
@@ -1181,6 +1199,7 @@ impl App {
             preview,
             live_preview_ids,
             ndi_checked: None,
+            displays_seen: None,
 
             preview_before: None,
             preview_changed: Instant::now(),
@@ -1963,14 +1982,23 @@ impl App {
             let next = if settling { Duration::from_millis(100) } else { Duration::from_secs(1) };
             at = [at, Some(now + next)].into_iter().flatten().min();
         }
-        // The VoxLive item follows the screens VoxLive lists.
-        let item = Arc::new(voxlive::item(&self.voxlive.screens));
-        if self.show.presentations().get(self.voxlive_slot).is_some_and(|have| **have != *item) {
-            self.show.replace_presentation(self.voxlive_slot, item);
-            if let Some(running) = self.running.as_mut() {
-                running.thumbs.forget(voxlive::ITEM_ID, &mut running.egui_renderer);
+        // The VoxLive item follows the screens VoxLive lists. It is made again only when they
+        // have changed, or something else has taken its place, not each time the app wakes.
+        let in_place = self.show.presentations().get(self.voxlive_slot);
+        let up_to_date = self.voxlive_item_from.as_ref().is_some_and(|(screens, item)| {
+            *screens == self.voxlive.screens && in_place.is_some_and(|have| Arc::ptr_eq(have, item))
+        });
+        if !up_to_date {
+            let item = Arc::new(voxlive::item(&self.voxlive.screens));
+            if in_place.is_some_and(|have| **have != *item) {
+                self.show.replace_presentation(self.voxlive_slot, item);
+                if let Some(running) = self.running.as_mut() {
+                    running.thumbs.forget(voxlive::ITEM_ID, &mut running.egui_renderer);
+                }
+                self.refresh_output();
             }
-            self.refresh_output();
+            let now = self.show.presentations().get(self.voxlive_slot).cloned();
+            self.voxlive_item_from = now.map(|item| (self.voxlive.screens.clone(), item));
         }
         // A screen chosen in the VoxLive tab goes on screen, in place of what was there.
         let chosen = self.running.as_mut().and_then(|running| running.home_state.voxlive_go.take());
@@ -1981,14 +2009,16 @@ impl App {
         }
         if let Some(running) = self.running.as_mut() {
             let view = &mut running.home_state.voxlive;
-            let hint = self.voxlive.key_hint();
             if view.schema != self.voxlive.schema {
                 view.schema = self.voxlive.schema.clone();
             }
-            if view.status != self.voxlive.status || view.screens != self.voxlive.screens || view.key_hint != hint {
+            if view.status != self.voxlive.status
+                || view.screens != self.voxlive.screens
+                || !self.voxlive.key_hint_is(view.key_hint.as_deref())
+            {
                 view.status = self.voxlive.status.clone();
                 view.screens = self.voxlive.screens.clone();
-                view.key_hint = hint;
+                view.key_hint = self.voxlive.key_hint();
                 running.home_window.request_redraw();
                 for panel in &running.panels {
                     panel.window.request_redraw();
@@ -4782,9 +4812,30 @@ impl App {
             running.home_state.ndi_available = sp_ndi::installed();
             running.ndi_checked = Some(Instant::now());
         }
+        // The displays connected, their names and places, and which the operator works on. The
+        // list of displays is cheap to ask for and is looked at every time, so one plugged in or
+        // out is seen at once; the rest (each display's name and size, which display the window
+        // is on) costs more and is asked again only when that list changes, or after a second.
         let monitors: Vec<_> = el.available_monitors().collect();
-        let displays = display_list(monitors.iter().cloned(), el.primary_monitor());
-        let operator = operator_displays(&monitors, running.home_window.current_monitor(), el.primary_monitor());
+        let fresh = running
+            .displays_seen
+            .as_ref()
+            .is_some_and(|seen| seen.monitors == monitors && seen.at.elapsed() < DisplaysSeen::KEPT_FOR);
+        if !fresh {
+            let displays = display_list(monitors.iter().cloned(), el.primary_monitor());
+            let operator = operator_displays(&monitors, running.home_window.current_monitor(), el.primary_monitor());
+            running.displays_seen =
+                Some(DisplaysSeen { at: Instant::now(), monitors: monitors.clone(), displays, operator });
+        }
+        let Some(seen) = running.displays_seen.as_ref() else { return };
+        let (displays, operator) = (seen.displays.clone(), seen.operator.clone());
+        if fresh {
+            // A frame drawn with what was seen a moment ago: one more once that is a second old,
+            // so a change seen in the meantime (a display's size, the window moved to another
+            // display) is never left until something else happens.
+            let due = seen.at + DisplaysSeen::KEPT_FOR;
+            running.next_repaint = Some(running.next_repaint.map_or(due, |at| at.min(due)));
+        }
         // A screen set up as Automatic (no longer offered) is given the first display that isn't
         // the main one and isn't taken; one saved under a display's old name ("Monitor #0") is
         // given the name System Settings shows ("3DTV"). Either way it is saved so.
@@ -4885,6 +4936,7 @@ impl App {
                     kept.placed_at = Instant::now();
                     kept.put_back = 0;
                 } else if let Placed::Fullscreen(index) = place
+                    && !fresh
                     && let Some(monitor) = monitors.get(*index)
                     && kept.put_back < 3
                     && kept.placed_at.elapsed() >= Duration::from_secs(2)
@@ -5927,7 +5979,7 @@ impl App {
             state.notice = Some(problem);
         }
         // Props that clear themselves, once their time is up.
-        let props = state.props.clone();
+        let props = &state.props;
         state.props_live.retain(|(id, since)| {
             let after = props.iter().find(|prop| prop.id == *id).and_then(|prop| prop.auto_clear);
             props.iter().any(|prop| prop.id == *id)
@@ -5940,22 +5992,35 @@ impl App {
         {
             state.message_live = None;
         }
+        // What is to be shown over the slides, compared with what was sent last as it stands,
+        // so nothing is copied (props are whole slides) on the many wakes when it is the same.
         let message = state
             .message_live
             .and_then(|(id, _)| state.messages.iter().find(|message| message.id == id))
-            .map(|message| (message.text.clone(), message.look));
-        let overlay = output::Overlay {
-            message,
-            stage_message: state.stage_message_live.then(|| state.stage_message.clone()),
-            timers: state.timers.clone(),
-            props: state
+            .map(|message| (&message.text, message.look));
+        let stage_message = state.stage_message_live.then_some(&state.stage_message);
+        let props_live = || {
+            state
                 .props_live
                 .iter()
-                .filter_map(|(id, _)| state.props.iter().find(|prop| prop.id == *id).map(|prop| prop.slide.clone()))
-                .collect(),
+                .filter_map(|(id, _)| state.props.iter().find(|prop| prop.id == *id).map(|p| &p.slide))
+        };
+        let unchanged = running.overlay_sent.as_ref().is_some_and(|sent| {
+            sent.message.as_ref().map(|(text, look)| (text, *look)) == message
+                && sent.stage_message.as_ref() == stage_message
+                && sent.timers == state.timers
+                && sent.props.iter().eq(props_live())
+                && sent.copyright == copyright_line
+                && sent.test_pattern == state.test_pattern
+        });
+        let overlay = (!unchanged).then(|| output::Overlay {
+            message: message.map(|(text, look)| (text.clone(), look)),
+            stage_message: stage_message.cloned(),
+            timers: state.timers.clone(),
+            props: props_live().cloned().collect(),
             copyright: copyright_line,
             test_pattern: state.test_pattern,
-        };
+        });
         // While a timer runs, or a message counts down to leaving, the window shows it each second.
         let ticking = state.timers.iter().any(Timer::running)
             || state.message_live.is_some()
@@ -5973,12 +6038,12 @@ impl App {
             let soon = Instant::now() + Duration::from_millis(500);
             running.next_repaint = Some(running.next_repaint.map_or(soon, |at| at.min(soon)));
         }
-        if running.overlay_sent.as_ref() == Some(&overlay) {
+        let Some(overlay) = overlay else {
             if switched || stage_tick {
                 self.refresh_preview(switched);
             }
             return;
-        }
+        };
         let message_changed = running.overlay_sent.as_ref().is_none_or(|sent| {
             sent.message != overlay.message || sent.props != overlay.props || sent.copyright != overlay.copyright
         });
@@ -7138,6 +7203,7 @@ fn main() -> ExitCode {
         sources,
         bible_slots,
         voxlive_slot,
+        voxlive_item_from: None,
         decks: deck::Decks::default(),
         pictures: Vec::new(),
         unsaved: Vec::new(),
