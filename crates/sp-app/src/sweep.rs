@@ -538,11 +538,21 @@ fn list_files(library: &Path, folder: &Path, depth: usize, files: &mut Vec<PathB
             let at_top = folder == library;
             let skipped = at_top
                 && (NOT_READ.iter().any(|kept| name.eq_ignore_ascii_case(kept)) || name.starts_with(OPENING_PACK));
-            // A folder reached through a link isn't followed: it could lead back here.
-            let linked = entry.file_type().is_ok_and(|kind| kind.is_symlink());
-            if !skipped && !linked && depth < DEEPEST {
-                list_files(library, &path, depth + 1, files)?;
+            if skipped {
+                continue;
             }
+            // A folder reached through a link isn't followed (it could lead back here), and one
+            // nested deeper than the app ever makes isn't read: either stops the tidy, since a
+            // song or theme kept in it would go unread and its pictures would look unused (a
+            // Songs folder linked to another place, say).
+            let linked = entry.file_type().is_ok_and(|kind| kind.is_symlink());
+            if linked {
+                return Err(format!("{} is a link to another folder", shown(library, &path)));
+            }
+            if depth >= DEEPEST {
+                return Err(format!("{} is nested too deep to read", shown(library, &path)));
+            }
+            list_files(library, &path, depth + 1, files)?;
         } else if meta.is_file() {
             files.push(path);
         }
@@ -762,6 +772,23 @@ mod tests {
         let outcome = run(library, &[], now, &mut trash);
         moved.sort();
         (outcome, moved)
+    }
+
+    #[test]
+    fn a_folder_linked_from_elsewhere_stops_the_tidy() {
+        // A Songs folder that is a link would go unread, and every picture its songs show would
+        // look unused: nothing may move.
+        let base = std::env::temp_dir().join(format!("sweep-linked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let library = base.join("library");
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir_all(library.join("Images")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, library.join("Songs")).unwrap();
+        let mut files = Vec::new();
+        let result = list_files(&library, &library, 0, &mut files);
+        assert!(result.is_err_and(|why| why.contains("link")), "a linked folder stops it");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
