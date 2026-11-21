@@ -1591,7 +1591,10 @@ fn a_picture_not_settled_in_one_go_is_not_refused_and_settles_over_a_few() {
 
 /// A picture worked out again has already given its outgrown memory back by the time it is
 /// drawn. The GPU still holds that memory until the device is looked at after the picture has
-/// left it, so the painter must not say it has rested before then.
+/// left it, so the painter must not say it has rested before then: not on the call that finds
+/// the memory was given back, and not on the calls after it while the GPU is still busy. Here
+/// the GPU is kept busy with thirty more 4K pictures, sent without waiting, each a few
+/// milliseconds of work; the calls to rest follow within microseconds.
 #[test]
 fn a_painter_has_not_rested_while_the_gpu_holds_memory_a_picture_gave_back() {
     let (w, h) = (3840, 2160);
@@ -1603,11 +1606,21 @@ fn a_painter_has_not_rested_while_the_gpu_holds_memory_a_picture_gave_back() {
     easel.painter.paint(&easel.device, &easel.queue, &heavy, &view, w, h).expect("paint");
     assert!(easel.painter.reruns() > 0, "the picture was worked out again, with more room");
     assert_eq!(easel.painter.spare_bytes(), 0, "and has given back the room it outgrew");
+    // The same picture again and again: known to fit, so each is sent without a wait.
+    let runs = easel.painter.runs();
+    for _ in 0..30 {
+        easel.painter.paint(&easel.device, &easel.queue, &heavy, &view, w, h).expect("paint");
+    }
+    assert_eq!(easel.painter.runs(), runs + 30);
     // The painter finds that the picture gave memory back, and asks the device to say when it
     // has left the GPU. That call never says the painter has rested, however fast the GPU is:
     // the device is first looked at on the call after.
     let rested = easel.painter.rest(&easel.device, &easel.queue);
     assert!(!rested, "the GPU may still hold what the picture gave back");
+    for call in 0..3 {
+        let rested = easel.painter.rest(&easel.device, &easel.queue);
+        assert!(!rested, "call {call}: the GPU has thirty pictures still to draw");
+    }
     easel.rest();
     assert!(easel.painter.rest(&easel.device, &easel.queue), "and then it has rested");
 }
