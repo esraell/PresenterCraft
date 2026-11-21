@@ -1,7 +1,9 @@
 # SoftPresenter
 
-**Free, open-source software for putting songs, Bible verses and media on the screens in a church
-service, made for services in two languages.**
+**Fast, free, open-source software for putting songs, Bible verses and media on the screens in a
+church service. Everything you can click, a script or an AI agent can do.**
+
+Website: [softpresenter.com](https://softpresenter.com)
 
 [![Licence: GPL-3.0-or-later](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue)](LICENSE)
 [![Checks](https://github.com/esraell/SoftPresenter/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/esraell/SoftPresenter/actions/workflows/ci.yml)
