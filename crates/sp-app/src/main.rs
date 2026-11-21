@@ -6190,7 +6190,7 @@ impl App {
                 if let (Some(Some(path)), Some(own)) = (self.sources.get(index), own)
                     && path.starts_with(&own)
                     && path.exists()
-                    && let Err(e) = trash::delete(path)
+                    && let Err(e) = sweep::to_trash(path)
                 {
                     problem = Some(format!("Could not move the song to the Trash: {e}"));
                 }

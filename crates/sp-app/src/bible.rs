@@ -105,7 +105,7 @@ impl Shelf {
             Kept::Shipped(_) => return Err(format!("The {} comes with the app and stays.", shelved.name)),
             Kept::File(path) => {
                 if path.exists() {
-                    trash::delete(path)
+                    crate::sweep::to_trash(path)
                         .map_err(|e| format!("Could not move the {} to the Trash: {e}", shelved.name))?;
                 }
             }

@@ -106,8 +106,10 @@ pub fn start(quiet: bool, outside_songs: Vec<PathBuf>, told: impl FnOnce(String)
 }
 
 /// Moves a file or folder to the Trash. The `trash` crate's usual way on a Mac asks the Finder,
-/// which can ask the operator's permission and plays the Trash sound; from a thread working in
-/// the background the system's own call is used instead, which does neither.
+/// which can ask the operator's permission, plays the Trash sound, and holds the caller up for
+/// as long as the Finder takes to answer (minutes, when it doesn't). The system's own call is
+/// used instead, which does none of that; everything the app puts in the Trash goes this way.
+/// What it costs: the Finder offers no "Put Back" for a file moved so.
 pub fn to_trash(path: &Path) -> Result<(), String> {
     #[allow(unused_mut)]
     let mut context = trash::TrashContext::default();
