@@ -43,10 +43,14 @@
 //! - [`NdiOutput::start_with_wake`]: `wake` is called each time the count of receivers is
 //!   found to have changed, the first time it is known included. It runs on the source's own
 //!   thread, after the new count can be read, and should only pass the word on (send a message
-//!   on a channel, say) and return. Whoever it wakes reads the count: when receivers have come
-//!   to a source that had none, it draws a fresh picture and hands it over. A source started
-//!   with [`NdiOutput::start`] has nobody to wake, so a receiver that connects to it waits for
-//!   the next picture handed over.
+//!   on a channel, say) and return. Whoever it wakes shows the new count, and looks at
+//!   `arrivals` to see whether to draw. A source started with [`NdiOutput::start`] has nobody
+//!   to wake, so a receiver that connects to it waits for the next picture handed over.
+//! - [`NdiOutput::arrivals`]: how many times receivers have come to the source after a spell
+//!   with none. Each time, the source has no picture and waits to be handed a fresh one.
+//!   Whoever draws remembers the number it last drew for and draws again when it has moved
+//!   on. The count of receivers can't say this by itself: read after the receivers left and
+//!   others came, it is the same number.
 //! - [`NdiOutput::show_shared`]: one picture for several sources, handed to each without
 //!   copying it.
 //!

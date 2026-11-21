@@ -457,6 +457,32 @@ fn ndi_strip(ids: &mut Vec<Uuid>, sources: &[NdiSeen]) -> Vec<Uuid> {
     stripped
 }
 
+/// Whether a picture lost on its way back from the GPU is still owed to anyone: to a source
+/// it was for that a picture is still wanted for. Lost for sources nobody is watching any
+/// more, it is not undrawn, and not drawn again.
+fn ndi_lost_is_owed(ids: &[Uuid], sources: &[NdiSeen]) -> bool {
+    sources.iter().any(|source| source.wanted && ids.contains(&source.id))
+}
+
+/// Something done once more after it failed, and not again until there is a new reason to:
+/// drawing an NDI picture that was lost on its way back from the GPU.
+#[derive(Debug, Default)]
+struct OnceMore {
+    done: bool,
+}
+
+impl OnceMore {
+    /// It failed. True when it is to be done once more now; false when that was done already.
+    fn now(&mut self) -> bool {
+        !std::mem::replace(&mut self.done, true)
+    }
+
+    /// There is a new reason: it worked, something else is asked for, or nobody wants it.
+    fn afresh(&mut self) {
+        self.done = false;
+    }
+}
+
 /// Whether the NDI pictures are to be drawn because receivers came or went. Only when
 /// receivers have come to a source since it was last drawn for (`drawn_for` has each source
 /// with its count of arrivals then: a source whose receivers left and came back between two
@@ -725,7 +751,7 @@ struct Output {
     /// True from a picture lost on its way back from the GPU, which is drawn once more, until
     /// one comes back or another picture is asked for: a GPU that goes on losing them is not
     /// asked for the same picture again and again.
-    ndi_lost_retried: bool,
+    ndi_lost_retried: OnceMore,
     /// Testing aid: SOFTPRESENTER_NDI_LOSE=N has the next N NDI pictures count as lost on
     /// their way back from the GPU.
     pretend_lost: u32,
@@ -830,7 +856,7 @@ fn run(
         ndi_dirty: None,
         ndi_drawn_for: Vec::new(),
         ndi_tried_at: Instant::now(),
-        ndi_lost_retried: false,
+        ndi_lost_retried: OnceMore::default(),
         // Testing aid: SOFTPRESENTER_NDI_LOSE (see `Output::pretend_lost`).
         pretend_lost: std::env::var("SOFTPRESENTER_NDI_LOSE").ok().and_then(|n| n.trim().parse().ok()).unwrap_or(0),
         ndi_status,
@@ -1214,7 +1240,7 @@ impl Output {
             self.ndi_pending.clear();
             self.ndi_buffers.clear();
             self.ndi_dirty = None;
-            self.ndi_lost_retried = false;
+            self.ndi_lost_retried.afresh();
         }
         self.ndi_drawn_for.retain(|(have, _)| *have != id);
         // A new source gets the picture on screen now.
@@ -1386,7 +1412,7 @@ impl Output {
             // undrawn, whatever went wrong while someone watched.
             self.ndi_dirty = None;
             self.ndi_drawn_for.clear();
-            self.ndi_lost_retried = false;
+            self.ndi_lost_retried.afresh();
             self.ndi_state.not_asked();
             self.ndi_trouble = crate::applog::Lasting::default();
             return;
@@ -1398,7 +1424,7 @@ impl Output {
         self.ndi_dirty = None;
         // Another picture: should it be lost on its way back, it is drawn once more.
         if changed != NdiChange::Nothing {
-            self.ndi_lost_retried = false;
+            self.ndi_lost_retried.afresh();
         }
         self.ndi_drawn_for =
             seen.iter().filter(|source| source.wanted).map(|source| (source.id, source.arrivals)).collect();
@@ -1493,19 +1519,23 @@ impl Output {
             .collect()
     }
 
-    /// A picture for these sources was lost on its way back from the GPU. Their receivers
-    /// keep the picture before it, so the operator is told that NDI is not showing what it
-    /// was asked to, until a picture is painted for it again. The sources are told that what
-    /// they last sent is out of date: they go on sending it to whoever is watching, but once
-    /// those leave, whoever connects next is not given it. And the pictures are drawn once
-    /// more, now; if that one is lost too, not again until one comes back or another picture
-    /// is asked for (a GPU that goes on losing them would have them drawn without end).
+    /// A picture for these sources was lost on its way back from the GPU. The sources are told
+    /// that what they last sent is out of date: they go on sending it to whoever is watching,
+    /// but once those leave, whoever connects next is not given it. If any of them still has
+    /// receivers, those keep the picture before it, so the operator is told that NDI is not
+    /// showing what it was asked to, until a picture is painted for it again; and the pictures
+    /// are drawn once more, now. If that one is lost too, not again until one comes back or
+    /// another picture is asked for (a GPU that goes on losing them would have them drawn
+    /// without end). A picture nobody is watching for any more is owed to nobody.
     fn ndi_lost(&mut self, ids: &[Uuid]) {
         for (_, ndi) in self.ndi.iter().filter(|(id, _)| ids.contains(id)) {
             ndi.forget();
         }
+        if !ndi_lost_is_owed(ids, &self.ndi_seen()) {
+            return;
+        }
         self.ndi_state.lost();
-        if !std::mem::replace(&mut self.ndi_lost_retried, true) {
+        if self.ndi_lost_retried.now() {
             self.ndi_dirty = Some(NdiChange::Nothing.with(self.ndi_dirty));
         }
     }
@@ -1586,7 +1616,7 @@ impl Output {
                         }
                     }
                     // One came back: the next one lost is drawn once more again.
-                    self.ndi_lost_retried = false;
+                    self.ndi_lost_retried.afresh();
                     readback.buffer.unmap();
                     // Kept for the next picture, two at most.
                     if self.ndi_buffers.len() < 2 {
@@ -2405,6 +2435,25 @@ mod tests {
         // Too slow again after it was said to be too heavy: tries are left.
         ndi.skipped();
         assert!(ndi_tried_again_in_a_fade(ndi, later));
+    }
+
+    #[test]
+    fn an_ndi_picture_lost_is_drawn_once_more_and_owed_only_to_sources_still_watched() {
+        let mut again = OnceMore::default();
+        assert!(again.now(), "lost: drawn once more");
+        assert!(!again.now(), "lost again: not a third time");
+        assert!(!again.now());
+        // One comes back, another picture is asked for, or nobody is watching: afresh.
+        again.afresh();
+        assert!(again.now());
+        assert!(!again.now());
+        // Owed only to a source it was for that still wants a picture.
+        let (watched, left, other) = (seen(true, false), seen(false, false), seen(true, false));
+        let all = [watched, left, other];
+        assert!(ndi_lost_is_owed(&[watched.id, left.id], &all));
+        assert!(!ndi_lost_is_owed(&[left.id], &all), "its receivers have left: nobody is told, nothing is drawn");
+        assert!(!ndi_lost_is_owed(&[Uuid::new_v4()], &all), "its source was switched off");
+        assert!(!ndi_lost_is_owed(&[], &all));
     }
 
     #[test]

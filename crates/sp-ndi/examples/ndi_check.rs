@@ -47,21 +47,24 @@ fn main() {
     let mut tick: u64 = 0;
     let mut before: Option<u32> = None;
     let mut ever_counted = false;
+    // How many times receivers had come after none when a picture was last drawn for them.
+    let mut drawn_for = output.arrivals();
     output.show_shared(WIDTH, HEIGHT, pattern(tick));
     while tick < seconds {
         let next = started + Duration::from_secs(tick + 1);
         match joined.recv_timeout(next.saturating_duration_since(Instant::now())) {
             Ok(()) => {
-                // What the app's screens do: draw a fresh picture straight away for receivers
-                // that have come; draw nothing once the last has gone.
+                // What the app's screens do: draw a fresh picture straight away when receivers
+                // have come to a source that had none; draw nothing for a change of count that
+                // is not that.
                 match output.receivers() {
                     Some(0) => println!("{:>4} s  told: nobody is watching", at()),
-                    Some(count) => {
-                        println!("{:>4} s  told: receivers: {count}; a fresh picture is drawn for them", at());
-                    }
+                    Some(count) => println!("{:>4} s  told: receivers: {count}", at()),
                     None => println!("{:>4} s  told: receivers can't be counted", at()),
                 }
-                if output.receivers() != Some(0) {
+                if output.arrivals() != drawn_for {
+                    drawn_for = output.arrivals();
+                    println!("{:>4} s  receivers have come after none: a fresh picture is drawn for them", at());
                     output.show_shared(WIDTH, HEIGHT, pattern(tick));
                 }
                 continue;
