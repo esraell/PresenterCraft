@@ -23,9 +23,18 @@ struct Thumb {
     overflow: bool,
     /// The frame this thumbnail was last shown in.
     last_used: u64,
+    /// The addresses of the web page boxes it shows (its slide's and its layout's), so it can be
+    /// drawn again when one of those pages has its first picture.
+    pages: Vec<String>,
+    /// When drawing it failed: it is left blank, and tried again a while later rather than on
+    /// every frame.
+    failed: Option<std::time::Instant>,
     // Kept alive for as long as the interface may show it.
     _texture: wgpu::Texture,
 }
+
+/// How long a thumbnail that couldn't be drawn waits before it is tried again.
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct Thumbs {
     painter: Painter,
@@ -132,8 +141,12 @@ impl Thumbs {
         theme: &Theme,
     ) -> Option<(egui::TextureId, bool)> {
         if let Some(thumb) = self.cache.get_mut(&key) {
-            thumb.last_used = self.frame;
-            return Some((thumb.id, thumb.overflow));
+            let retry = thumb.failed.is_some_and(|at| at.elapsed() >= RETRY_AFTER);
+            if !retry {
+                thumb.last_used = self.frame;
+                return Some((thumb.id, thumb.overflow));
+            }
+            self.forget(key, egui_renderer);
         }
         if self.drawn_this_frame >= PER_FRAME {
             return None;
@@ -142,19 +155,40 @@ impl Thumbs {
         let built = build_layers(&mut self.fonts, layers, theme, THUMB_W, THUMB_H);
         let texture = target_texture(&gpu.device, THUMB_W, THUMB_H);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if let Err(e) = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, THUMB_W, THUMB_H) {
-            eprintln!("Could not draw a thumbnail: {e}");
-            return None;
-        }
+        // One that can't be drawn is kept blank (a new texture is clear), so the window doesn't
+        // try again, and ask to be drawn again, on every frame.
+        let failed = match self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, THUMB_W, THUMB_H) {
+            Ok(()) => None,
+            Err(e) => {
+                eprintln!("Could not draw a thumbnail: {e}");
+                Some(std::time::Instant::now())
+            }
+        };
+        let overflow = built.overflow && failed.is_none();
         let id = egui_renderer.register_native_texture(&gpu.device, &view, wgpu::FilterMode::Linear);
-        self.cache.insert(key, Thumb { id, overflow: built.overflow, last_used: self.frame, _texture: texture });
+        let pages = web_pages(layers.slide, theme);
+        self.cache.insert(key, Thumb { id, overflow, last_used: self.frame, pages, failed, _texture: texture });
         let ages: Vec<(Uuid, u64)> = self.cache.iter().map(|(id, thumb)| (*id, thumb.last_used)).collect();
         for old in to_evict(&ages, MAX_CACHED, self.frame) {
             if let Some(thumb) = self.cache.remove(&old) {
                 egui_renderer.free_texture(&thumb.id);
             }
         }
-        Some((id, built.overflow))
+        Some((id, overflow))
+    }
+
+    /// Forgets the thumbnails that show a web page box whose address `shows` says yes to, so
+    /// they are drawn again (with the page's picture in place of the placeholder).
+    pub fn forget_showing(&mut self, egui_renderer: &mut egui_wgpu::Renderer, shows: impl Fn(&str) -> bool) {
+        let gone: Vec<Uuid> = self
+            .cache
+            .iter()
+            .filter(|(_, thumb)| thumb.pages.iter().any(|url| shows(url)))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            self.forget(id, egui_renderer);
+        }
     }
 
     /// Forgets the thumbnails of slides that are no longer shown, for when another song is
@@ -239,6 +273,22 @@ impl Thumbs {
     }
 }
 
+/// The addresses of the web page boxes a slide shows: its own and those its layout puts
+/// behind it (hidden ones too, which costs nothing but an extra redraw).
+pub fn web_pages(slide: Option<&Slide>, theme: &Theme) -> Vec<String> {
+    let Some(slide) = slide else { return Vec::new() };
+    let behind = theme.template_for(slide).map_or(&[][..], |template| template.objects.as_slice());
+    slide
+        .objects
+        .iter()
+        .chain(behind)
+        .filter_map(|object| match &object.kind {
+            sp_model::ObjectKind::Web { url } => Some(url.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Which thumbnails to drop so that at most `max` remain: the ones shown longest ago, and
 /// never one shown in the current frame (it is on screen right now).
 fn to_evict(ages: &[(Uuid, u64)], max: usize, current_frame: u64) -> Vec<Uuid> {
@@ -275,5 +325,18 @@ mod tests {
     fn thumbnails_on_screen_now_are_kept_even_over_the_cap() {
         let all = ages(&[7, 7, 7, 2]);
         assert_eq!(to_evict(&all, 1, 7), vec![all[3].0]);
+    }
+
+    #[test]
+    fn a_thumbnail_knows_the_web_pages_of_its_slide_and_of_its_layout() {
+        let mut theme = Theme::builtin();
+        theme.templates[0].objects.push(sp_model::Object::web("https://example.org/behind".to_owned()));
+        let mut slide = Slide::new(vec![
+            sp_model::Object::web("https://example.org/own".to_owned()),
+            sp_model::Object::text(sp_model::Role::primary(), "Words".to_owned()),
+        ]);
+        slide.template = Some(theme.templates[0].id);
+        assert_eq!(web_pages(Some(&slide), &theme), ["https://example.org/own", "https://example.org/behind"]);
+        assert!(web_pages(None, &theme).is_empty(), "a picture in the media bin shows no page");
     }
 }

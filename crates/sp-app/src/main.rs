@@ -1777,8 +1777,9 @@ impl App {
             return None;
         }
         let now = Instant::now();
-        let mut fresh = false;
-        let mut first = false;
+        // The addresses of the pages with a new picture, and of those with their first.
+        let mut fresh: Vec<String> = Vec::new();
+        let mut first: Vec<String> = Vec::new();
         let editing = self.running.as_ref().is_some_and(|running| running.home_state.editing.is_some());
         for web in &mut self.web_pages {
             // A page runs while it is on the screens, until its first picture (for the
@@ -1801,18 +1802,37 @@ impl App {
             {
                 sp_render::show_picture(&web.key, picture);
                 web.pictures += 1;
-                first |= web.pictures == 1;
-                fresh = true;
+                if web.pictures == 1 {
+                    first.push(web.page.address().to_owned());
+                }
+                fresh.push(web.page.address().to_owned());
             }
         }
+        // A box shows a page by its own address, or (in this window) by its stand-in's.
+        let shows = |pages: &[String], url: &str| {
+            pages.iter().any(|page| page == url || web_stand_in(url).is_some_and(|stand_in| stand_in == *page))
+        };
+        // The Edit view's picture of the slide is drawn again with each new picture of a page it
+        // shows (its slide's or its layout's); a picture of another page leaves it be.
+        let canvas_shows = !fresh.is_empty()
+            && self.running.as_ref().and_then(|running| running.home_state.editing.as_ref()).is_some_and(|draft| {
+                let edited = self.running.as_ref().and_then(|r| r.home_state.theme_edit.as_ref());
+                // As `update_canvas` draws it: a theme's layout with that theme, a slide with its
+                // song's.
+                let theme: &Theme = match edited {
+                    Some(edit) => self.themes.get(edit.index).unwrap_or(&self.theme),
+                    None => self.theme_of(draft.at.presentation),
+                };
+                thumbs::web_pages(Some(&draft.slide), theme).iter().any(|url| shows(&fresh, url))
+            });
         if let Some(running) = self.running.as_mut() {
-            // A page's first picture replaces its placeholder in the thumbnails, drawn again.
-            if first {
-                running.thumbs.clear_except(&mut running.egui_renderer, |_| false);
+            // A page's first picture replaces its placeholder in the thumbnails that show it,
+            // drawn again; the others are kept.
+            if !first.is_empty() {
+                running.thumbs.forget_showing(&mut running.egui_renderer, |url| shows(&first, url));
                 running.home_window.request_redraw();
             }
-            // The Edit view's picture of the slide is drawn again with each new one.
-            if fresh && running.home_state.editing.is_some() {
+            if canvas_shows {
                 running.canvas_for = None;
                 running.home_window.request_redraw();
             }
