@@ -330,14 +330,20 @@ fn spawn<S: Sink + 'static>(
     })
 }
 
-/// The newest of what has queued up, `first` included: only the last matters, a picture or
-/// the word that there is none any more.
-fn newest(rx: &Receiver<Told>, first: Told) -> Told {
-    let mut newest = first;
-    while let Ok(later) = rx.try_recv() {
-        newest = later;
+/// What has queued up comes to, `first` included: the newest picture, if there is one, and
+/// whether the word to forget came after it (or with no picture at all). Word to forget from
+/// before the newest picture is overtaken by it.
+fn newest(rx: &Receiver<Told>, first: Told) -> (Option<Picture>, bool) {
+    let (mut picture, mut forget) = (None, false);
+    let mut next = Some(first);
+    while let Some(told) = next {
+        match told {
+            Told::Picture(newer) => (picture, forget) = (Some(newer), false),
+            Told::Forget => forget = true,
+        }
+        next = rx.try_recv().ok();
     }
-    newest
+    (picture, forget)
 }
 
 /// Sends the pictures handed over to `sink` until the output is dropped: each new one at once
@@ -362,17 +368,15 @@ fn serve(sink: &impl Sink, rx: &Receiver<Told>, shared: &Shared, wake: &mut impl
     loop {
         match rx.recv_timeout(gate.wait(Instant::now())) {
             Ok(first) => {
-                let told = newest(rx, first);
+                let (picture, forget) = newest(rx, first);
                 // Word for a source nobody was watching when last counted. Someone may have
                 // come since: counted again now, a picture is sent to them rather than
                 // dropped, and a black one is not sent over what they are looking at.
-                if !gate.watched() {
+                let watched_before = gate.watched();
+                if !watched_before {
                     count(&mut gate);
                 }
-                match told {
-                    Told::Picture(picture) => gate.picture(picture),
-                    Told::Forget => gate.forget(),
-                }
+                gate.told(picture, forget, watched_before);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
@@ -446,6 +450,24 @@ impl Gate {
             self.stale = false;
         } else {
             self.stale = true;
+        }
+    }
+
+    /// What has queued up: the newest picture, and whether word to forget came after it.
+    /// `watched_before` says somebody was watching when the source last counted, before it
+    /// counted again for this. A picture followed by word to forget is still the newest there
+    /// is for a source that was being watched all along (a newer one was lost on the way): it
+    /// is sent, and marked out of date. For a source nobody was watching, the word means a
+    /// newer picture was not drawn: that picture is from before whoever has come since, and
+    /// is not sent to them.
+    fn told(&mut self, picture: Option<Picture>, forget: bool, watched_before: bool) {
+        if let Some(picture) = picture
+            && (!forget || watched_before)
+        {
+            self.picture(picture);
+        }
+        if forget {
+            self.forget();
         }
     }
 
@@ -542,16 +564,49 @@ mod tests {
     #[test]
     fn the_newest_queued_picture_wins() {
         let (tx, rx) = channel();
+        let width = |(picture, forget): (Option<Picture>, bool)| (picture.map(|picture| picture.width), forget);
         for width in [2, 3] {
             tx.send(Told::Picture(picture(width))).unwrap();
         }
-        assert!(matches!(newest(&rx, Told::Picture(picture(1))), Told::Picture(Picture { width: 3, .. })));
+        assert_eq!(width(newest(&rx, Told::Picture(picture(1)))), (Some(3), false));
         assert!(rx.try_recv().is_err(), "the older ones are gone");
-        // The word to forget, coming last, is what matters; a picture after it is.
+        // Word to forget after a picture: both are kept, for the gate to weigh.
         tx.send(Told::Forget).unwrap();
-        assert!(matches!(newest(&rx, Told::Picture(picture(1))), Told::Forget));
+        assert_eq!(width(newest(&rx, Told::Picture(picture(1)))), (Some(1), true));
+        // A picture after it overtakes it; with no picture, there is only the word.
         tx.send(Told::Picture(picture(4))).unwrap();
-        assert!(matches!(newest(&rx, Told::Forget), Told::Picture(Picture { width: 4, .. })));
+        assert_eq!(width(newest(&rx, Told::Forget)), (Some(4), false));
+        assert_eq!(width(newest(&rx, Told::Forget)), (None, true));
+    }
+
+    #[test]
+    fn a_picture_and_then_word_to_forget_is_sent_only_to_those_who_were_watching_all_along() {
+        let t = Instant::now();
+        // Somebody watching: picture 2 is handed over, then a newer one is lost on its way
+        // and the source told to forget, before it has looked at either. Picture 2 is the
+        // newest there is, and goes; had only the word been kept, picture 1 would go on
+        // being sent each second.
+        let mut gate = Gate::new(t);
+        gate.counted(t, Some(1));
+        gate.picture(picture(1));
+        assert_eq!(sent(&mut gate, t), Some(1));
+        gate.told(Some(picture(2)), true, true);
+        assert_eq!(sent(&mut gate, t), Some(2));
+        assert_eq!(sent(&mut gate, t + SECOND), Some(2), "and again each second");
+        // It is marked out of date: black, if they leave before a newer one comes.
+        gate.counted(t + 2 * SECOND, Some(0));
+        assert_eq!(gate.blank_due(), Some((2, 1)));
+        // Nobody was watching: the picture was handed over, then the next was not drawn. A
+        // receiver has come since (counted again, as the thread does): the picture is from
+        // before it came, and is not sent to it.
+        let mut gate = Gate::new(t);
+        gate.counted(t, Some(0));
+        gate.counted(t + SECOND / 2, Some(1));
+        gate.told(Some(picture(3)), true, false);
+        assert_eq!(sent(&mut gate, t + SECOND), None);
+        // A picture alone, or after the word, goes as always.
+        gate.told(Some(picture(4)), false, false);
+        assert_eq!(sent(&mut gate, t + SECOND), Some(4));
     }
 
     #[test]
