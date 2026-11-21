@@ -167,9 +167,15 @@ feature changes, this page changes in the same commit.
 
 ![The media bin: three pictures and a video, the picture on screen outlined in red](images/media.png)
 
-- A media playlist can **Follow a Folder**: the pictures and videos in it join the playlist as
-  they appear, and one written over (such as a fresh announcements export from Canva) is read
-  again and, if on screen, played again. **Play This Playlist** shows its items in turn on the
+- A media playlist can **Follow a Folder**: the pictures and videos in it join the playlist (and
+  the bin) as they appear, once each has been read, and one written over (such as a fresh
+  announcements export from Canva) is read again and, if on screen, played again. One that
+  leaves the folder leaves the playlist, and the bin too if the folder brought it in and nothing
+  else uses it (another media playlist, a slide, a playlist of the service, a macro, or the
+  screens, until it is taken off them); one added to the bin by hand stays. A file that can't be
+  read is tried again only once it changes, and a folder that can't be read (a drive not
+  plugged in) leaves the playlist as it was. The folder is looked at every few seconds on a
+  thread of its own. **Play This Playlist** shows its items in turn on the
   media layer (pictures for 8 seconds, videos to their end), round and round, until other
   media is put on or cleared.
 - Settings, Screens, **When SoftPresenter Opens**: play nothing, a media playlist, or a song on

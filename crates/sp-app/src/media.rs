@@ -1,7 +1,10 @@
 //! Loading pictures and videos for the media bin.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
+use sp_model::Uuid;
 use sp_render::Picture;
 
 /// Pictures larger than this on their longer side are scaled down when loaded. A screen is at
@@ -48,6 +51,10 @@ pub struct Entry {
     pub fit: sp_model::ImageFit,
     #[serde(default = "yes")]
     pub looping: bool,
+    /// Brought into the bin by a media playlist following a folder (not added by hand): it
+    /// leaves the bin when its file leaves the folder, unless something else uses it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub followed: bool,
 }
 
 fn filled() -> sp_model::ImageFit {
@@ -110,10 +117,11 @@ pub fn place_after_removal(at: usize, removed: usize) -> Option<usize> {
 }
 
 /// The pictures and videos in a folder, by name, with when each last changed. Hidden files
-/// (such as one still being downloaded) are left out.
-pub fn folder_files(folder: &Path) -> Vec<(PathBuf, std::time::SystemTime)> {
-    let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
-    let mut files: Vec<(PathBuf, std::time::SystemTime)> = entries
+/// (such as one still being downloaded) are left out. `None` when the folder can't be read (a
+/// drive not plugged in, a share not connected), which is not the same as an empty folder.
+pub fn folder_files(folder: &Path) -> Option<Vec<(PathBuf, SystemTime)>> {
+    let entries = std::fs::read_dir(folder).ok()?;
+    let mut files: Vec<(PathBuf, SystemTime)> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| is_media(path))
@@ -124,7 +132,110 @@ pub fn folder_files(folder: &Path) -> Vec<(PathBuf, std::time::SystemTime)> {
         })
         .collect();
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    files
+    Some(files)
+}
+
+/// A look at a followed folder: the media playlist following it, the folder, and the files in
+/// it (`None` when it couldn't be read).
+pub type Listing = (Uuid, PathBuf, Option<Vec<(PathBuf, SystemTime)>>);
+
+/// What a look at the followed folders asks for.
+#[derive(Debug, Default, PartialEq)]
+pub struct FolderChanges {
+    /// Files new to the bin, to read before they go in, with when each last changed.
+    pub read_new: Vec<(PathBuf, SystemTime)>,
+    /// Bin items whose file was written over, to read again.
+    pub read_again: Vec<Uuid>,
+    /// Followed playlists whose files are now these.
+    pub playlists: Vec<(Uuid, Vec<PathBuf>)>,
+    /// Items a folder brought in whose file has left it, which nothing else uses: they leave the
+    /// bin.
+    pub leave: Vec<Uuid>,
+}
+
+/// What the app knows of the files in followed folders between looks.
+#[derive(Debug, Default)]
+pub struct FolderNotes {
+    /// Each file in the bin with when it last changed, as last seen.
+    pub seen: HashMap<PathBuf, SystemTime>,
+    /// Files that couldn't be read, as they were then: tried again only once they change (a file
+    /// still being written changes as it grows), never every few seconds.
+    pub refused: HashMap<PathBuf, SystemTime>,
+    /// Files new to the bin being read, by the id they will have, with when each last changed.
+    pub coming: HashMap<Uuid, (PathBuf, SystemTime)>,
+}
+
+impl FolderNotes {
+    /// Works out what a look at the followed folders changes. `bin` is the media bin's items,
+    /// `brought` those a folder brought in, and `in_use` those used other than by a playlist (on
+    /// a slide, in a playlist of the service, in a macro, or on screen). A folder that couldn't be
+    /// read changes nothing, so a drive not plugged in doesn't empty its playlist or the bin.
+    pub fn look(
+        &mut self,
+        listings: &[Listing],
+        bin: &[(Uuid, PathBuf)],
+        playlists: &[Playlist],
+        brought: &HashSet<Uuid>,
+        in_use: &HashSet<Uuid>,
+    ) -> FolderChanges {
+        let mut changes = FolderChanges::default();
+        let coming: HashSet<&Path> = self.coming.values().map(|(path, _)| path.as_path()).collect();
+        for (playlist, _, files) in listings {
+            let Some(files) = files else { continue };
+            for (path, changed) in files {
+                match bin.iter().find(|(_, have)| have == path) {
+                    Some((item, _)) => {
+                        if self.seen.get(path).is_some_and(|seen| seen != changed) && !changes.read_again.contains(item)
+                        {
+                            changes.read_again.push(*item);
+                        }
+                        self.seen.insert(path.clone(), *changed);
+                    }
+                    None if self.refused.get(path) == Some(changed)
+                        || coming.contains(path.as_path())
+                        || changes.read_new.iter().any(|(new, _)| new == path) => {}
+                    None => changes.read_new.push((path.clone(), *changed)),
+                }
+            }
+            let now: Vec<PathBuf> = files.iter().map(|(path, _)| path.clone()).collect();
+            if playlists.iter().any(|p| p.id == *playlist && p.files != now)
+                && !changes.playlists.iter().any(|(id, _)| id == playlist)
+            {
+                changes.playlists.push((*playlist, now));
+            }
+        }
+        // The playlists as they will be.
+        let files_of = |playlist: &Playlist| {
+            changes
+                .playlists
+                .iter()
+                .find(|(id, _)| *id == playlist.id)
+                .map_or(&playlist.files, |(_, files)| files)
+                .clone()
+        };
+        let listed: Vec<Vec<PathBuf>> = playlists.iter().map(files_of).collect();
+        // The files of each folder read just now.
+        let folder_of = |path: &Path| {
+            let parent = path.parent()?;
+            listings.iter().find_map(|(_, folder, files)| files.as_ref().filter(|_| folder == parent))
+        };
+        for (item, path) in bin {
+            if !brought.contains(item) || in_use.contains(item) {
+                continue;
+            }
+            let Some(files) = folder_of(path) else { continue };
+            if files.iter().any(|(have, _)| have == path) || listed.iter().any(|files| files.contains(path)) {
+                continue;
+            }
+            changes.leave.push(*item);
+        }
+        // Notes of files gone from the folders read are let go; a folder that couldn't be read
+        // keeps its notes until it can be.
+        let gone = |path: &PathBuf| folder_of(path).is_some_and(|files| !files.iter().any(|(have, _)| have == path));
+        self.seen.retain(|path, _| !gone(path));
+        self.refused.retain(|path, _| !gone(path));
+        changes
+    }
 }
 
 /// What `media.json` keeps: the files in the media bin with how each is shown, and the
@@ -142,7 +253,7 @@ impl List {
         if let Ok(paths) = serde_json::from_str::<Vec<PathBuf>>(text) {
             let entries = paths
                 .into_iter()
-                .map(|path| Entry { id: sp_model::Uuid::new_v4(), path, fit: filled(), looping: true })
+                .map(|path| Entry { id: sp_model::Uuid::new_v4(), path, fit: filled(), looping: true, followed: false })
                 .collect();
             return Some(List { entries, playlists: Vec::new() });
         }
@@ -273,15 +384,102 @@ mod tests {
         backgrounds.toggle(Path::new("/a/sky.png"));
         assert_eq!(new_playlist_name(std::slice::from_ref(&backgrounds)), "New Playlist 2");
         let list = List {
-            entries: vec![Entry {
-                id: sp_model::Uuid::new_v4(),
-                path: "/a/sky.png".into(),
-                fit: sp_model::ImageFit::Fit,
-                looping: false,
-            }],
+            entries: vec![
+                Entry {
+                    id: sp_model::Uuid::new_v4(),
+                    path: "/a/sky.png".into(),
+                    fit: sp_model::ImageFit::Fit,
+                    looping: false,
+                    followed: false,
+                },
+                Entry {
+                    id: sp_model::Uuid::new_v4(),
+                    path: "/notices/week.png".into(),
+                    fit: sp_model::ImageFit::Fill,
+                    looping: true,
+                    followed: true,
+                },
+            ],
             playlists: vec![backgrounds],
         };
-        assert_eq!(List::from_json(&serde_json::to_string(&list).unwrap()), Some(list));
+        let text = serde_json::to_string(&list).unwrap();
+        assert_eq!(text.matches("followed").count(), 1, "only an item a folder brought in says so");
+        assert_eq!(List::from_json(&text), Some(list));
+        // A list saved before items said where they came from: every item was added by hand.
+        let before = r#"{"entries":[{"id":"6f9619ff-8b86-d011-b42d-00c04fc964ff","path":"/a/sky.png","fit":"fill","looping":true}]}"#;
+        assert!(List::from_json(before).is_some_and(|list| !list.entries[0].followed));
+    }
+
+    fn at(seconds: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds)
+    }
+
+    #[test]
+    fn a_followed_folder_brings_files_in_reads_changed_ones_again_and_takes_gone_ones_out() {
+        let (notices, hand) = (Uuid::new_v4(), Uuid::new_v4());
+        let folder = PathBuf::from("/notices");
+        let file = |name: &str| folder.join(name);
+        let mut followed = Playlist::new("Notices".to_owned());
+        followed.id = notices;
+        followed.folder = Some(folder.clone());
+        followed.files = vec![file("a.png"), file("b.png"), file("c.png"), file("d.png")];
+        let mut by_hand = Playlist::new("Backgrounds".to_owned());
+        by_hand.id = hand;
+        by_hand.files = vec![file("c.png")];
+        let playlists = [followed, by_hand];
+        // In the bin: a and b, c and d came with the folder; e was added by hand from it.
+        let ids: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();
+        let bin: Vec<(Uuid, PathBuf)> = ["a.png", "b.png", "c.png", "d.png", "e.png"]
+            .iter()
+            .zip(&ids)
+            .map(|(name, id)| (*id, file(name)))
+            .collect();
+        let brought: HashSet<Uuid> = ids[..4].iter().copied().collect();
+        let mut notes = FolderNotes::default();
+        for (_, path) in &bin {
+            notes.seen.insert(path.clone(), at(1));
+        }
+        notes.refused.insert(file("broken.png"), at(1));
+        notes.refused.insert(file("gone.png"), at(1));
+        // Now the folder has a (written over), b, a new file f, and broken.png as it was. c, d and
+        // e have gone: c is still in another playlist, d nothing uses, e was added by hand.
+        let listing: Vec<(PathBuf, SystemTime)> =
+            vec![(file("a.png"), at(2)), (file("b.png"), at(1)), (file("broken.png"), at(1)), (file("f.png"), at(2))];
+        let listings = vec![(notices, folder.clone(), Some(listing.clone()))];
+        let changes = notes.look(&listings, &bin, &playlists, &brought, &HashSet::new());
+        assert_eq!(changes.read_new, vec![(file("f.png"), at(2))]);
+        assert_eq!(changes.read_again, vec![ids[0]]);
+        assert_eq!(changes.playlists, vec![(notices, listing.iter().map(|(path, _)| path.clone()).collect())]);
+        assert_eq!(changes.leave, vec![ids[3]], "only d leaves the bin");
+        assert!(notes.refused.contains_key(&file("broken.png")) && !notes.refused.contains_key(&file("gone.png")));
+        assert!(!notes.seen.contains_key(&file("d.png")) && notes.seen[&file("a.png")] == at(2));
+        // Used on a slide (or on screen), d stays too.
+        let used: HashSet<Uuid> = [ids[3]].into();
+        let mut again = FolderNotes::default();
+        assert!(again.look(&listings, &bin, &playlists, &brought, &used).leave.is_empty());
+        // A file being read isn't asked for twice.
+        notes.coming.insert(Uuid::new_v4(), (file("f.png"), at(2)));
+        assert!(notes.look(&listings, &bin, &playlists, &brought, &HashSet::new()).read_new.is_empty());
+    }
+
+    #[test]
+    fn a_folder_that_cant_be_read_changes_nothing() {
+        let notices = Uuid::new_v4();
+        let folder = PathBuf::from("/Volumes/Unplugged/notices");
+        let mut followed = Playlist::new("Notices".to_owned());
+        followed.id = notices;
+        followed.folder = Some(folder.clone());
+        followed.files = vec![folder.join("a.png")];
+        let item = Uuid::new_v4();
+        let bin = vec![(item, folder.join("a.png"))];
+        let mut notes = FolderNotes::default();
+        notes.seen.insert(folder.join("a.png"), at(1));
+        let changes =
+            notes.look(&[(notices, folder.clone(), None)], &bin, &[followed], &[item].into(), &HashSet::new());
+        assert_eq!(changes, FolderChanges::default());
+        assert!(notes.seen.contains_key(&folder.join("a.png")));
+        // A real folder that can't be read is told from an empty one.
+        assert!(folder_files(&folder).is_none());
     }
 
     #[test]
@@ -292,10 +490,14 @@ mod tests {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
         let names: Vec<String> = folder_files(&dir)
+            .unwrap()
             .into_iter()
             .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["a.png", "b.mp4"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(folder_files(&dir), Some(Vec::new()), "an empty folder is not one that can't be read");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

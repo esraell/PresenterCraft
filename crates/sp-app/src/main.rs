@@ -421,6 +421,8 @@ enum AppEvent {
     PackDone,
     /// A media bin picture was read on a thread of its own.
     MediaRead,
+    /// The followed folders were looked at on a thread of their own.
+    FoldersRead,
 }
 
 /// The most web pages kept running at once: those on screen, then those loaded ahead. Each is a
@@ -1010,13 +1012,18 @@ struct App {
     /// The song on the Announcements layer: which, the slide shown, since when, and what was
     /// sent to the screens.
     announcing: Option<Announcing>,
-    /// A media playlist playing, the files seen in followed folders with when each changed, and
-    /// when the folders were last looked at.
+    /// A media playlist playing.
     media_cycle: Option<MediaCycle>,
-    folders_seen: std::collections::HashMap<std::path::PathBuf, std::time::SystemTime>,
-    /// Files in followed folders that couldn't be read, as they were then.
-    folders_refused: std::collections::HashMap<std::path::PathBuf, std::time::SystemTime>,
+    /// What is known of the files in followed folders, and when the folders were last looked
+    /// at. A look is taken on a thread of its own (a folder on a network share can take a
+    /// while); the window takes in what it found when it is done, and one asked for meanwhile
+    /// is taken after it.
+    folder_notes: media::FolderNotes,
     folders_checked: Instant,
+    folder_look: Option<std::sync::mpsc::Receiver<Vec<media::Listing>>>,
+    look_again: bool,
+    /// The media bin items a followed folder brought in (not added by hand).
+    followed_items: std::collections::HashSet<Uuid>,
     /// The media playlists read at the start, handed to the window's state once it is made.
     media_playlists: Vec<media::Playlist>,
     unsaved_since: Option<Instant>,
@@ -1451,15 +1458,19 @@ impl App {
         Some(Instant::now() + Duration::from_millis(if is_video { 200 } else { 500 }))
     }
 
-    /// Keeps the media playlists that follow folders up to date: new files are added to the
-    /// media bin and the playlist, gone ones leave the playlist, and a file that changed (a new
-    /// export written over the old) is read again, and played again if it is on screen. Looks
-    /// every few seconds, or at once when `now`.
+    /// Keeps the media playlists that follow folders up to date: has the folders looked at, on
+    /// a thread of its own, every few seconds, or at once when `now`. `finish_folder_look` takes
+    /// in what was found.
     fn check_folders(&mut self, now: bool) {
         if !now && self.folders_checked.elapsed() < Duration::from_secs(5) {
             return;
         }
         self.folders_checked = Instant::now();
+        // One look at a time; one asked for now while another is being taken follows it.
+        if self.folder_look.is_some() {
+            self.look_again |= now;
+            return;
+        }
         let Some(running) = self.running.as_ref() else { return };
         let followed: Vec<(Uuid, std::path::PathBuf)> = running
             .home_state
@@ -1467,59 +1478,87 @@ impl App {
             .iter()
             .filter_map(|playlist| playlist.folder.clone().map(|folder| (playlist.id, folder)))
             .collect();
-        let mut changed_list = false;
-        for (id, folder) in followed {
-            let files = media::folder_files(&folder);
-            for (path, modified) in &files {
-                let known = self.folders_seen.get(path).copied();
-                let in_bin = self.show.media().iter().position(|item| &item.path == path);
-                match (in_bin, known) {
-                    // One that couldn't be read is tried again only once it has changed (a file
-                    // still being written changes as it grows), not every few seconds.
-                    (None, _) if self.folders_refused.get(path) == Some(modified) => {}
-                    (None, _) => match media::load_small(path) {
-                        Ok((picture, whole)) => {
-                            let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-                            let item = MediaItem::new(name, path.clone());
-                            self.bin_pictures.set_small(item.id, picture, whole);
-                            self.show.add_media(item);
-                            applog::event("media", &format!("{} appeared in a followed folder", path.display()));
-                            self.folders_refused.remove(path);
-                            changed_list = true;
-                        }
-                        Err(_) => {
-                            self.folders_refused.insert(path.clone(), *modified);
-                        }
-                    },
-                    (Some(index), Some(seen)) if seen != *modified => {
-                        // Written over: read it again; if it is on screen, show the new one.
-                        if let Ok((picture, whole)) = media::load_small(path)
-                            && let Some(id) = self.show.media().get(index).map(|item| item.id)
-                        {
-                            self.bin_pictures.set_small(id, picture, whole);
-                            applog::event("media", &format!("{} changed in a followed folder", path.display()));
-                            if let Some(running) = self.running.as_mut() {
-                                running.thumbs.forget(id, &mut running.egui_renderer);
-                            }
-                            if self.show.live_media() == Some(index) {
-                                self.video = None;
-                                self.refresh_output();
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                self.folders_seen.insert(path.clone(), *modified);
-            }
-            if let Some(running) = self.running.as_mut()
-                && let Some(playlist) = running.home_state.media_playlists.iter_mut().find(|p| p.id == id)
+        if followed.is_empty() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waker = self.waker.clone();
+        let started = std::thread::Builder::new().name("followed folders".to_owned()).spawn(move || {
+            let listings: Vec<media::Listing> = followed
+                .into_iter()
+                .map(|(id, folder)| {
+                    let files = media::folder_files(&folder);
+                    (id, folder, files)
+                })
+                .collect();
+            if tx.send(listings).is_ok()
+                && let Some(waker) = waker
             {
-                let now_files: Vec<std::path::PathBuf> = files.into_iter().map(|(path, _)| path).collect();
-                if playlist.files != now_files {
-                    playlist.files = now_files;
+                let _ = waker.send_event(AppEvent::FoldersRead);
+            }
+        });
+        match started {
+            Ok(_) => self.folder_look = Some(rx),
+            Err(e) => applog::event("media", &format!("could not look at the followed folders: {e}")),
+        }
+    }
+
+    /// Takes in a look at the followed folders: files new to the bin are read (on the readers'
+    /// threads) and go in once they have been; one written over is read again (a video on
+    /// screen starts again from the new file); the playlists list what their folders hold; and
+    /// an item a folder brought in whose file has gone leaves the bin, unless something else
+    /// uses it.
+    fn finish_folder_look(&mut self) {
+        let Some(listings) = self.folder_look.as_ref().and_then(|rx| rx.try_recv().ok()) else { return };
+        self.folder_look = None;
+        let Some(running) = self.running.as_ref() else { return };
+        // A playlist that stopped following that folder while it was looked at is left alone.
+        let playlists = &running.home_state.media_playlists;
+        let listings: Vec<media::Listing> = listings
+            .into_iter()
+            .filter(|(id, folder, _)| playlists.iter().any(|p| p.id == *id && p.folder.as_ref() == Some(folder)))
+            .collect();
+        let bin: Vec<(Uuid, std::path::PathBuf)> = self.show.media().iter().map(|i| (i.id, i.path.clone())).collect();
+        let in_use = self.media_in_use();
+        let playlists = &running.home_state.media_playlists;
+        let changes = self.folder_notes.look(&listings, &bin, playlists, &self.followed_items, &in_use);
+        let mut changed_list = false;
+        let mut media_changed = false;
+        for (path, changed) in changes.read_new {
+            let id = Uuid::new_v4();
+            self.bin_pictures.read(id, &path);
+            self.folder_notes.coming.insert(id, (path, changed));
+        }
+        let live = self.show.live_media().and_then(|index| self.show.media().get(index)).map(|item| item.id);
+        for id in changes.read_again {
+            let Some(path) = self.show.media().iter().find(|item| item.id == id).map(|item| item.path.clone()) else {
+                continue;
+            };
+            applog::event("media", &format!("{} changed in a followed folder", path.display()));
+            // The old picture shows until the new one has been read.
+            self.bin_pictures.read(id, &path);
+            if live == Some(id) && media::is_video(&path) {
+                self.video = None;
+                media_changed = true;
+            }
+        }
+        if let Some(running) = self.running.as_mut() {
+            for (id, files) in changes.playlists {
+                if let Some(playlist) = running.home_state.media_playlists.iter_mut().find(|p| p.id == id) {
+                    playlist.files = files;
                     changed_list = true;
                 }
             }
+        }
+        for id in changes.leave {
+            if let Some(index) = self.show.media().iter().position(|item| item.id == id) {
+                applog::event("media", &format!("{} left a followed folder", self.show.media()[index].path.display()));
+                media_changed |= self.remove_bin_item(index);
+                changed_list = true;
+            }
+        }
+        if media_changed {
+            self.refresh_output();
         }
         if changed_list {
             self.save_media_list();
@@ -1527,6 +1566,61 @@ impl App {
                 running.home_window.request_redraw();
             }
         }
+        if std::mem::take(&mut self.look_again) {
+            self.check_folders(true);
+        }
+    }
+
+    /// A file new to the bin from a followed folder has been read: it goes in, as an item the
+    /// folder brought, if a followed playlist still lists it and it isn't in the bin already.
+    /// True when it went in.
+    fn add_from_folder(&mut self, id: Uuid, path: std::path::PathBuf, changed: std::time::SystemTime) -> bool {
+        let listed = self.running.as_ref().is_some_and(|running| {
+            running.home_state.media_playlists.iter().any(|p| p.folder.is_some() && p.has(&path))
+        });
+        if !listed || self.show.media().iter().any(|item| item.path == path) {
+            self.bin_pictures.forget(id);
+            return false;
+        }
+        applog::event("media", &format!("{} appeared in a followed folder", path.display()));
+        let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        self.show.add_media(MediaItem { id, ..MediaItem::new(name, path.clone()) });
+        self.followed_items.insert(id);
+        self.folder_notes.seen.insert(path, changed);
+        true
+    }
+
+    /// The media bin items used other than by a media playlist: shown by a slide (in any song)
+    /// or a prop, in a playlist of the service, in a macro, or on screen.
+    fn media_in_use(&self) -> std::collections::HashSet<Uuid> {
+        let shown = |actions: &[sp_model::ShowAction]| {
+            actions
+                .iter()
+                .filter_map(|action| match action {
+                    sp_model::ShowAction::Media { id } => Some(*id),
+                    _ => None,
+                })
+                .collect::<Vec<Uuid>>()
+        };
+        let mut used: std::collections::HashSet<Uuid> = self
+            .show
+            .presentations()
+            .iter()
+            .flat_map(|song| song.slides().flat_map(|(_, slide)| shown(&slide.actions)).collect::<Vec<_>>())
+            .collect();
+        used.extend(self.show.live_media().and_then(|index| self.show.media().get(index)).map(|item| item.id));
+        if let Some(running) = self.running.as_ref() {
+            let state = &running.home_state;
+            for service in &state.services.list {
+                used.extend(service.items.iter().filter_map(|item| match item {
+                    service::Item::Media { id, .. } => Some(*id),
+                    _ => None,
+                }));
+            }
+            used.extend(state.macros.iter().flat_map(|m| shown(&m.actions)));
+            used.extend(state.props.iter().flat_map(|prop| shown(&prop.slide.actions)));
+        }
+        used
     }
 
     /// Starts what Settings says to play when the app opens.
@@ -2597,8 +2691,14 @@ impl App {
     /// Ok(true) when it was added, Ok(false) when it was in the bin already; the error says
     /// why it couldn't be.
     fn add_media_file(&mut self, path: &std::path::Path) -> Result<bool, String> {
-        // A file already in the bin isn't added twice; it joins the playlist shown, if any.
-        let already = self.show.media().iter().any(|item| item.path == path);
+        // A file already in the bin isn't added twice; it joins the playlist shown, if any. One a
+        // followed folder brought in counts from now on as added by hand, so it stays in the bin
+        // when it leaves the folder.
+        let already = self.show.media().iter().find(|item| item.path == path).map(|item| item.id);
+        if let Some(id) = already {
+            self.followed_items.remove(&id);
+        }
+        let already = already.is_some();
         let started = Instant::now();
         // Only the small copy is kept; the full-size picture is read when it goes on screen.
         let result = if already { Ok(None) } else { media::load_small(path).map(Some) };
@@ -2654,8 +2754,24 @@ impl App {
             return;
         }
         let live = self.show.live_media().and_then(|index| self.show.media().get(index)).map(|item| item.id);
-        let (mut refresh, mut preview) = (false, false);
+        let (mut refresh, mut preview, mut added) = (false, false, false);
         for arrived in arrived {
+            // A file new to the bin from a followed folder goes in once it has been read; one
+            // that can't be read is noted, and tried again only once it changes.
+            let from_folder = match &arrived {
+                Arrived::Small(id) | Arrived::Refused(id, _) => self.folder_notes.coming.remove(id).map(|f| (*id, f)),
+                Arrived::Full(_) => None,
+            };
+            if let Some((id, (path, changed))) = from_folder {
+                if let Arrived::Refused(_, problem) = &arrived {
+                    applog::event("media", problem);
+                    self.bin_pictures.forget(id);
+                    self.folder_notes.refused.insert(path, changed);
+                } else {
+                    added |= self.add_from_folder(id, path, changed);
+                }
+                continue;
+            }
             match arrived {
                 Arrived::Full(id) => {
                     refresh |= live == Some(id);
@@ -2697,6 +2813,9 @@ impl App {
             applog::event("media", &format!("read the bin's {count} pictures in {:?}", started.elapsed()));
             self.bin_started = None;
         }
+        if added {
+            self.save_media_list();
+        }
         if let Some(running) = self.running.as_ref() {
             running.home_window.request_redraw();
         }
@@ -2728,6 +2847,7 @@ impl App {
         let Some(id) = self.show.media().get(index).map(|item| item.id) else { return false };
         let changed = self.show.remove_media(index).media;
         self.bin_pictures.forget(id);
+        self.followed_items.remove(&id);
         if let Some(cycle) = self.media_cycle.as_mut()
             && let Some(at) = media::place_after_removal(cycle.shown, index)
         {
@@ -2749,7 +2869,13 @@ impl App {
             .show
             .media()
             .iter()
-            .map(|item| media::Entry { id: item.id, path: item.path.clone(), fit: item.fit, looping: item.looping })
+            .map(|item| media::Entry {
+                id: item.id,
+                path: item.path.clone(),
+                fit: item.fit,
+                looping: item.looping,
+                followed: self.followed_items.contains(&item.id),
+            })
             .collect();
         let playlists = self.running.as_ref().map(|r| r.home_state.media_playlists.clone()).unwrap_or_default();
         if let Err(problem) = media::save_list(&media::List { entries, playlists })
@@ -3148,7 +3274,7 @@ impl App {
                     applog::event("media", &format!("playlist {} follows {:?}", playlist.name, folder));
                     playlist.folder = folder;
                 }
-                self.folders_seen.clear();
+                self.folder_notes.seen.clear();
                 self.check_folders(true);
                 self.save_media_list();
             }
@@ -6710,6 +6836,10 @@ impl ApplicationHandler<AppEvent> for App {
                 self.take_media_read();
                 return;
             }
+            AppEvent::FoldersRead => {
+                self.finish_folder_look();
+                return;
+            }
         };
         // The output thread drew a new live preview: the window shows it.
         if id.is_empty() {
@@ -7404,9 +7534,11 @@ fn main() -> ExitCode {
         held_songs: Vec::new(),
         held_themes: Vec::new(),
         media_cycle: None,
-        folders_seen: std::collections::HashMap::new(),
-        folders_refused: std::collections::HashMap::new(),
+        folder_notes: media::FolderNotes::default(),
         folders_checked: Instant::now(),
+        folder_look: None,
+        look_again: false,
+        followed_items: std::collections::HashSet::new(),
         unsaved_since: None,
         was_editing: false,
         theme: Arc::new(themes[songs_theme].clone()),
@@ -7443,6 +7575,7 @@ fn main() -> ExitCode {
                 path: path.clone(),
                 fit: sp_model::ImageFit::Fill,
                 looping: true,
+                followed: false,
             });
         }
     }
@@ -7466,6 +7599,9 @@ fn main() -> ExitCode {
             ..MediaItem::new(name, path.clone())
         });
         app.bin_pictures.read(entry.id, path);
+        if entry.followed {
+            app.followed_items.insert(entry.id);
+        }
     }
     app.bin_started = Some((Instant::now(), app.show.media().len()));
     if let Err(e) = event_loop.run_app(&mut app) {

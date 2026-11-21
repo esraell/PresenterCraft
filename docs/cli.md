@@ -220,7 +220,7 @@ with Continuous Playlist on; open it with `playlist go` to run through the playl
 | `video play\|pause\|restart`, `video seek SECONDS`, `video loop on\|off`, `video mute on\|off` | The video behind the words |
 | `media-playlist play NAME`, `media-playlist stop` | Plays a media playlist item after item |
 | `media-playlist new NAME`, `media-playlist add ITEM… to NAME`, `media-playlist remove ITEM… from NAME`, `media-playlist delete NAME --yes` | Makes and fills media playlists |
-| `media-playlist follow NAME FOLDER\|off` | A media playlist that follows a folder: its pictures and videos come and go with the folder's |
+| `media-playlist follow NAME FOLDER\|off` | A media playlist that follows a folder: its pictures and videos come and go with the folder's (each joins the bin a moment later, once it has been read; one the folder brought in leaves the bin with its file unless something else uses it) |
 
     $ sp media add pics/Blue.png pics/Bars.mp4
     Added 2 to the media bin: Blue.png, Bars.mp4.
