@@ -42,6 +42,7 @@ mod song_ids;
 mod stage;
 mod stage_editor;
 mod studio;
+mod sweep;
 mod theme_cli;
 mod theme_store;
 mod thumbs;
@@ -423,6 +424,8 @@ enum AppEvent {
     MediaRead,
     /// The followed folders were looked at on a thread of their own.
     FoldersRead,
+    /// The library was tidied on its own thread: what to tell the operator.
+    Tidied(String),
 }
 
 /// The most web pages kept running at once: those on screen, then those loaded ahead. Each is a
@@ -6770,6 +6773,15 @@ impl ApplicationHandler<AppEvent> for App {
                 if let Some(said) = library_folder::take_notice() {
                     running.home_state.notice = Some(said);
                 }
+                // Pictures, videos and leftovers nothing in the library uses go to the Trash, at
+                // most once a day, on a thread of their own; the window says so if any went.
+                let open_songs = self.sources.iter().flatten().map(|path| load::song_file_for(path)).collect();
+                let waker = self.waker.clone();
+                sweep::start(self.quiet(), open_songs, move |said| {
+                    if let Some(waker) = waker {
+                        let _ = waker.send_event(AppEvent::Tidied(said));
+                    }
+                });
                 running.home_window.request_redraw();
                 self.running = Some(running);
                 if start_off {
@@ -6838,6 +6850,13 @@ impl ApplicationHandler<AppEvent> for App {
             }
             AppEvent::FoldersRead => {
                 self.finish_folder_look();
+                return;
+            }
+            AppEvent::Tidied(said) => {
+                if let Some(running) = self.running.as_mut() {
+                    running.home_state.notice = Some(said);
+                    running.home_window.request_redraw();
+                }
                 return;
             }
         };

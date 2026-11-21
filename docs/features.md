@@ -489,6 +489,19 @@ feature changes, this page changes in the same commit.
   Documents)"; the window says so. A folder called SoftPresenter already in Documents that isn't
   the library is never moved into, and the window says why. The command line's connection stays
   outside Documents, in Library › Caches, so `sp` works from any terminal or over ssh.
+- **The library tidies itself.** Once a day, a few seconds after it starts, SoftPresenter moves to
+  the Trash the pictures and videos in the library's Images and Media folders that nothing uses
+  any more (the pages of a sermon deck whose song was deleted, a picture taken off a slide), and
+  what a crash or a quit left behind: the folder of a song pack that was being opened, and
+  settings or song files half-saved. First it reads everything that can name a picture: every
+  song, theme, playlist and library, the media bin and media playlists (a folder one follows is
+  left whole), props, stage layouts, macros, settings, Not saved and the backups, and songs kept
+  elsewhere that a playlist, library or macro names. If any of them can't be read whole, or a
+  folder such a song is in can't be reached, nothing moves and the log says why. Only files the
+  app named itself go (a picture put in the folder by hand stays), never one changed in the last
+  week, never while a song pack is being opened, and it stops if a song or setting is saved while
+  it works. A half-saved file stays if it may be the only copy of what was being saved. The log
+  names every file moved; the window says how many went, only when some did.
 - A menu bar with the usual menus and shortcuts (New Song, Import Songs…, Undo, Cut/Copy/Paste, the views,
   Clear, Audience and Stage Output on/off with Cmd+1 and Cmd+2, Configure Screens), showing
   only what works.

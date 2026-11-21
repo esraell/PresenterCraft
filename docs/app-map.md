@@ -166,8 +166,8 @@ of this one copies it to Documents, checks the copy, and keeps the old folder as
 |---|---|
 | `Songs/*.sppres` | Songs made or changed in the app (JSON), each named by its id |
 | `Themes/*.sptheme` | Themes (JSON); `themes-in-use.txt` says which theme songs and Bible slides use |
-| `Images/` | Pictures put on slides |
-| `Media/` | Videos brought in by song packs (a slide names one as `Media/<file>`) |
+| `Images/` | Pictures put on slides, and slides made from PDFs and presentations; any nothing uses goes to the Trash after a week (`sweep.rs`) |
+| `Media/` | Videos brought in by song packs (a slide names one as `Media/<file>`); tidied as `Images/` is |
 | `Bibles/` | Downloaded Bibles |
 | `services.json` | Playlists; a song in them is named by its id |
 | `libraries.json` | Libraries, each a list of song ids |
@@ -178,6 +178,8 @@ of this one copies it to Documents, checks the copy, and keeps the old folder as
 | `.softpresenter-library` | Says the folder is SoftPresenter's library |
 | `Not saved/` | SoftPresenter's version of a song or theme whose file changed outside the app, kept on quitting before Reload or Keep mine was chosen |
 | `Backup before song ids/` | Files as they were before songs were named by id (only where that was done in place) |
+| `.opening-pack-<id>/` | A song pack being opened; one a quit left behind goes to the Trash after a day |
+| `.last-tidy` | When the library was last tidied (at most once a day: pictures and videos nothing uses, and files left half-saved, go to the Trash) |
 
 The command line's socket, while the app runs, is `~/Library/Caches/SoftPresenter/control/ctl.sock`
 (outside Documents, so `sp` reaches the app from any terminal or over ssh), or
@@ -212,6 +214,11 @@ problems, and once a minute how long drawing took.
   `_CAPTURE_EDITOR`, `_CAPTURE_BIBLE`, `_CAPTURE_THEMES`, `_CAPTURE_SETTINGS`,
   `_PLAYLIST`, `_OPEN_ITEM=N`, `_MENU=ItemId,ItemId`, `_DROP=FILE`, `_PICK=songs:0,2`,
   `_WINDOW_SIZE=WxH`, `_NDI=NAME`, `_HIDE_NDI=1`, `_TRACE_PREVIEW=1`.
+- A quiet copy never tidies the library (moves unused pictures to the Trash) unless
+  `SOFTPRESENTER_SWEEP=DAYS` is set with a data folder of its own; it then tidies as if every file
+  were that many days older. `touch -t` can't make a file look old to it: it goes by the newest of
+  a file's modified, created and status-changed times, and a copied picture keeps its original's
+  first two.
 - The command line drives a quiet copy as it would the real one:
   `SOFTPRESENTER_DATA=… SOFTPRESENTER_CONTROL_SOCKET=… sp status` (see
   [cli.md](cli.md#trying-it-safely)).
