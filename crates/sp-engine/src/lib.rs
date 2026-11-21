@@ -80,6 +80,15 @@ pub struct Show {
     media: Vec<MediaItem>,
     live_media: Option<usize>,
     output_enabled: bool,
+    /// Changes each time a presentation is added or replaced; see [`Show::version`].
+    version: u64,
+}
+
+/// The next number a show's presentations are given when they change, shared by every show so
+/// that two shows never give the same number to different songs.
+fn next_version() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Show {
@@ -95,7 +104,15 @@ impl Show {
             media: Vec::new(),
             live_media: None,
             output_enabled: true,
+            version: next_version(),
         }
+    }
+
+    /// A number that changes whenever a presentation is added or replaced, and only then: a
+    /// list worked out from the presentations (titles, words) needs working out again exactly
+    /// when this has changed since.
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn presentations(&self) -> &[Arc<Presentation>] {
@@ -186,6 +203,7 @@ impl Show {
     /// Adds a presentation after the others and returns its index. Nothing on screen changes.
     pub fn add_presentation(&mut self, presentation: Arc<Presentation>) -> usize {
         self.presentations.push(presentation);
+        self.version = next_version();
         self.presentations.len() - 1
     }
 
@@ -267,6 +285,7 @@ impl Show {
         let Some(slot) = self.presentations.get_mut(index) else { return Changes::default() };
         let count = presentation.slide_count();
         *slot = presentation;
+        self.version = next_version();
         if self.cursor.is_some_and(|c| c.presentation == index && c.slide >= count) {
             self.cursor = None;
         }

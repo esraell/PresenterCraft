@@ -14,6 +14,7 @@ mod icons;
 mod images;
 mod inspector;
 mod integrations;
+mod kept;
 mod libraries;
 mod library_folder;
 mod links;
@@ -5199,17 +5200,6 @@ impl App {
         let (show, pictures) = (&self.show, &self.pictures);
         let (songs_theme, bible_theme): (&Theme, &Theme) = (&front_theme, &self.theme_for_bible);
         running.home_state.song_templates = song_templates(songs_theme);
-        // Every song by its key and title, for choosing one in Settings.
-        let removed = &running.home_state.removed_songs;
-        running.home_state.song_choices = show
-            .presentations()
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| {
-                !self.bible_slots.contains(index) && *index != self.voxlive_slot && !removed.contains(index)
-            })
-            .filter_map(|(index, song)| Some((running.home_state.song_keys.get(index)?.clone(), song.title.clone())))
-            .collect();
         // The theme the part of the window in front works with: the one being edited, the
         // Bible's on the Bible page or when a Bible slide is being edited, otherwise the songs'.
         let state = &running.home_state;
@@ -5598,6 +5588,22 @@ impl App {
         let Some(running) = self.running.as_mut() else {
             return Vec::new();
         };
+        // Every song by its key and title, for choosing one in Settings › General: made only
+        // while Settings is drawn, not on every frame of the main window.
+        if running.panels.iter().any(|panel| panel.window.id() == id && panel.kind == Panel::Settings) {
+            let state = &mut running.home_state;
+            let removed = &state.removed_songs;
+            state.song_choices = self
+                .show
+                .presentations()
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    !self.bible_slots.contains(index) && *index != self.voxlive_slot && !removed.contains(index)
+                })
+                .filter_map(|(index, song)| Some((state.song_keys.get(index)?.clone(), song.title.clone())))
+                .collect();
+        }
         let Running { panels, gpu, home_state, .. } = running;
         let Some(panel) = panels.iter_mut().find(|panel| panel.window.id() == id) else {
             return Vec::new();

@@ -21,6 +21,22 @@ fn starts_with_nothing_live() {
 }
 
 #[test]
+fn the_version_changes_when_a_song_is_added_or_replaced_and_only_then() {
+    let mut s = show();
+    let first = s.version();
+    s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 1 }));
+    s.apply(Command::Select(1));
+    assert_eq!(s.version(), first, "going live and selecting change no song");
+    s.add_presentation(Arc::new(parse_song_text("Three", "F\n")));
+    let added = s.version();
+    assert_ne!(added, first);
+    s.replace_presentation(2, Arc::new(parse_song_text("Three", "G\n")));
+    assert_ne!(s.version(), added);
+    // Another show never shares a number with this one.
+    assert_ne!(show().version(), s.version());
+}
+
+#[test]
 fn goto_reports_slide_change() {
     let mut s = show();
     let c = s.apply(Command::GoTo(SlideRef { presentation: 0, slide: 1 }));

@@ -839,33 +839,57 @@ fn library_of<'a>(state: &'a HomeState, key: &str) -> Option<&'a str> {
     state.libraries.iter().find(|library| library.has(key)).map(|library| library.name.as_str())
 }
 
-/// The songs of the library chosen (or every song), each with a + to put it in the playlist in
-/// front; a song can also be dragged onto a playlist or a library above.
-fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
-    use crate::service::Item;
+/// The songs the left column lists: how many the library (or All Songs) has, and those whose
+/// titles have what is typed in the filter, by their place among the songs, in order.
+fn song_list(show: &Show, state: &HomeState, library: Option<&crate::libraries::Library>) -> crate::kept::SongList {
     let hidden = state.hidden_slots();
-    let removed = state.removed_songs.clone();
-    let listed = |index: usize| !hidden.contains(&index) && !removed.contains(&index);
-    let library = state.library_shown.and_then(|id| state.libraries.iter().find(|library| library.id == id)).cloned();
-    if library.is_none() {
-        state.library_shown = None;
-    }
-    // The songs in the library shown, found once with a set rather than row by row, so a
-    // library of thousands of songs doesn't slow every frame.
-    let in_set: Option<std::collections::HashSet<usize>> = library.as_ref().map(|library| {
+    let listed = |index: usize| !hidden.contains(&index) && !state.removed_songs.contains(&index);
+    // The songs in the library shown, found once with a set rather than row by row.
+    let in_set: Option<std::collections::HashSet<usize>> = library.map(|library| {
         let wanted: std::collections::HashSet<&str> = library.songs.iter().map(String::as_str).collect();
         state.song_keys.iter().enumerate().filter(|(_, key)| wanted.contains(key.as_str())).map(|(at, _)| at).collect()
     });
     let in_library = |index: usize| in_set.as_ref().is_none_or(|set| set.contains(&index));
-    let total = (0..show.presentations().len()).filter(|index| listed(*index) && in_library(*index)).count();
-    let shown: Vec<usize> = show
-        .presentations()
-        .iter()
-        .enumerate()
-        .filter(|(index, song)| listed(*index) && in_library(*index) && matches_filter(&song.title, &state.filter))
-        .map(|(index, _)| index)
-        .collect();
-    let heading = library.as_ref().map_or_else(|| "ALL SONGS".to_owned(), |library| library.name.to_uppercase());
+    let mut total = 0;
+    let mut shown = Vec::new();
+    for (index, song) in show.presentations().iter().enumerate() {
+        if listed(index) && in_library(index) {
+            total += 1;
+            if matches_filter(&song.title, &state.filter) {
+                shown.push(index);
+            }
+        }
+    }
+    crate::kept::SongList { total, shown }
+}
+
+/// The songs of the library chosen (or every song), each with a + to put it in the playlist in
+/// front; a song can also be dragged onto a playlist or a library above.
+fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
+    use crate::service::Item;
+    let library = state.library_shown.and_then(|id| state.libraries.iter().position(|library| library.id == id));
+    if library.is_none() {
+        state.library_shown = None;
+    }
+    // The list is made again only when the songs, the library shown or the filter change, so
+    // a library of thousands of songs doesn't slow every frame.
+    let epoch = state.lists.songs.epoch();
+    let songs_of =
+        |at: Option<usize>| at.and_then(|at| state.libraries.get(at)).map(|library| library.songs.as_slice());
+    let kept = state.lists.song_list.get(|(made_in, made_of, filter)| {
+        *made_in == epoch && made_of.as_deref() == songs_of(library) && *filter == state.filter
+    });
+    let list = match kept {
+        Some(list) => list,
+        None => {
+            let made = song_list(show, state, library.and_then(|at| state.libraries.get(at)));
+            let made_of = songs_of(library).map(<[String]>::to_vec);
+            state.lists.song_list.keep((epoch, made_of, state.filter.clone()), made)
+        }
+    };
+    let (total, shown) = (list.total, &list.shown);
+    let library = library.and_then(|at| state.libraries.get(at)).map(|library| library.name.to_uppercase());
+    let heading = library.clone().unwrap_or_else(|| "ALL SONGS".to_owned());
     let live_in = show.live().map(|at| at.presentation);
     let mut add = None;
     let mut add_to: Option<(usize, Option<usize>)> = None;
@@ -886,8 +910,8 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
     let list = ui.available_rect_before_wrap();
     let (pointer, mods, down) =
         ui.input(|input| (input.pointer.interact_pos(), input.modifiers, input.pointer.primary_down()));
-    // Songs picked out lose the ones no longer listed.
-    state.picked_songs.retain(|at| shown.contains(at));
+    // Songs picked out lose the ones no longer listed (`shown` is in order).
+    state.picked_songs.retain(|at| shown.binary_search(at).is_ok());
     let spacing = ui.spacing().item_spacing.y;
     ui.spacing_mut().item_spacing.y = 2.0;
     // ↑ and ↓ open the song above or below in the list, as a click on it does; with Shift they
@@ -915,7 +939,7 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
                 if state.song_anchor.is_none() {
                     state.song_anchor = Some(show.selected());
                 }
-                crate::home::pick(&mut state.picked_songs, &mut state.song_anchor, &shown, song, mods);
+                crate::home::pick(&mut state.picked_songs, &mut state.song_anchor, shown, song, mods);
             } else {
                 state.picked_songs = vec![song];
                 state.song_anchor = Some(song);
@@ -1006,7 +1030,7 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
             }
             if response.clicked() {
                 state.picking = crate::home::Picking::Songs;
-                crate::home::pick(&mut state.picked_songs, &mut state.song_anchor, &shown, index, mods);
+                crate::home::pick(&mut state.picked_songs, &mut state.song_anchor, shown, index, mods);
                 // A plain click opens the song; with Command or Shift only the picking changes,
                 // unless one song is left picked.
                 let open = if mods.command || mods.shift {
@@ -1023,7 +1047,7 @@ fn library_songs(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands
             response.context_menu(|ui| song_menu(ui, show, state, commands, index, &mut add));
         }
         let ctx = ui.ctx().clone();
-        sweep_rows(ui, state, crate::home::Picking::Songs, &rows, &shown, list, pointer, down, |picked| {
+        sweep_rows(ui, state, crate::home::Picking::Songs, &rows, shown, list, pointer, down, |picked| {
             egui::DragAndDrop::set_payload(&ctx, SongDrag(picked));
         });
         if total == 0 {
@@ -1510,6 +1534,28 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
             .filter(|index| listed(*index))
     };
     let items = state.services.front().items.clone();
+    // Each song item's song and library, looked up again only when the songs, the items or
+    // the libraries change, not for every row on every frame.
+    let epoch = state.lists.songs.epoch();
+    let kept = state
+        .lists
+        .playlist_rows
+        .get(|(made_in, made_of, libraries)| *made_in == epoch && *made_of == items && *libraries == state.libraries);
+    let looked_up = match kept {
+        Some(looked_up) => looked_up,
+        None => {
+            let looked_up = items
+                .iter()
+                .map(|item| match item {
+                    Item::Song { key, .. } => {
+                        (song_at(&state.song_keys, key), library_of(state, key).map(str::to_owned))
+                    }
+                    _ => (None, None),
+                })
+                .collect();
+            state.lists.playlist_rows.keep((epoch, items.clone(), state.libraries.clone()), looked_up)
+        }
+    };
     let live_in = show.live().map(|at| at.presentation);
     let filtering = !state.filter.trim().is_empty();
     ui.horizontal(|ui| {
@@ -1632,10 +1678,9 @@ fn playlist_items(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, command
             // Each kind's mark; whether what it names is still here, and on screen now; and a
             // word at the right (the library a song is in, or what kind of item it is).
             let (icon, missing, live, beside, gone) = match item {
-                Item::Song { key, .. } => {
-                    let found = song_at(&state.song_keys, key);
+                Item::Song { .. } => {
+                    let (found, library) = looked_up.get(index).cloned().unwrap_or_default();
                     let live = found.is_some() && found == live_in;
-                    let library = library_of(state, key).map(str::to_owned);
                     (Icon::Document, found.is_none(), live, library, "This song is not open in the library")
                 }
                 Item::Passage(_) => (Icon::Book, false, false, None, ""),

@@ -286,8 +286,11 @@ pub struct HomeState {
     pub start_audience_off: bool,
     /// What starts playing by itself when the app opens.
     pub start_with: crate::service::StartWith,
-    /// Every song by its key and title, for choosing one in Settings.
+    /// Every song by its key and title, for choosing one in Settings › General; made while
+    /// Settings is drawn.
     pub song_choices: Vec<(String, String)>,
+    /// Lists worked out from the songs, kept from one frame to the next.
+    pub lists: crate::kept::Lists,
     /// The media playlist playing item after item on the media layer, if one is.
     pub media_playing: Option<sp_model::Uuid>,
     /// New copyright details for a song, from its Info pop-over.
@@ -1009,6 +1012,7 @@ impl Default for HomeState {
             start_audience_off: false,
             start_with: crate::service::StartWith::Nothing,
             song_choices: Vec::new(),
+            lists: crate::kept::Lists::default(),
             media_playing: None,
             copyright_request: None,
             edit_request: None,
@@ -1270,6 +1274,9 @@ pub fn home_ui(
     canvas: Option<TextureId>,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
+    // The lists made from the songs are made again only once the songs have changed.
+    let hidden = state.hidden_slots();
+    state.lists.songs.check(show, &state.song_keys, hidden, &state.removed_songs);
     // Text boxes are dark wells in the lighter side columns.
     ui.visuals_mut().extreme_bg_color = FIELD;
     crate::studio::toolbar(ui, show, state, &mut commands);
@@ -3259,8 +3266,17 @@ fn search_songs(show: &Show, listed: impl Fn(usize) -> bool, query: &str) -> Vec
 fn library_search(ui: &mut egui::Ui, show: &Show, state: &mut HomeState, commands: &mut Vec<Command>) {
     let hidden = state.hidden_slots();
     let Some((query, picked)) = state.library_search.as_mut() else { return };
-    let removed = state.removed_songs.clone();
-    let found = search_songs(show, |index| !hidden.contains(&index) && !removed.contains(&index), query);
+    // Worked out again only when what is typed, or the songs, change: not on every frame the
+    // pop-up is open (the cursor blinking, the mouse moving).
+    let epoch = state.lists.songs.epoch();
+    let found = match state.lists.search.get(|(made_in, typed)| *made_in == epoch && typed == query) {
+        Some(found) => found,
+        None => {
+            let removed = &state.removed_songs;
+            let found = search_songs(show, |index| !hidden.contains(&index) && !removed.contains(&index), query);
+            state.lists.search.keep((epoch, query.clone()), found)
+        }
+    };
     *picked = (*picked).min(found.len().saturating_sub(1));
     let (up, down, enter, command, escape) = ui.input(|input| {
         (
@@ -5360,10 +5376,24 @@ fn slide_area(
                 let count = if slides == 1 { "1 slide".to_owned() } else { format!("{slides} slides") };
                 ui.label(egui::RichText::new(count).size(12.0).color(crate::studio::TEXT_FAINT));
                 let from_bible = state.app_made(show.selected());
-                missing_font_notice(
-                    ui,
-                    &sp_model::missing_fonts(&sp_model::fonts_used(presentation, theme), &state.fonts),
-                );
+                // Every slide's text is looked through again only when the song, its theme or
+                // the fonts installed change.
+                let epoch = state.lists.songs.epoch();
+                let song = show.selected();
+                let kept = state.lists.missing_fonts.get(|(made_in, made_for, look, fonts)| {
+                    *made_in == epoch
+                        && *made_for == song
+                        && look == theme
+                        && std::sync::Arc::ptr_eq(fonts, &state.fonts)
+                });
+                let missing = match kept {
+                    Some(missing) => missing,
+                    None => {
+                        let missing = sp_model::missing_fonts(&sp_model::fonts_used(presentation, theme), &state.fonts);
+                        state.lists.missing_fonts.keep((epoch, song, theme.clone(), state.fonts.clone()), missing)
+                    }
+                };
+                missing_font_notice(ui, &missing);
                 // The song's tools, as small icons at the right, lit
                 // while what they show is on. Laid out right to left: Notes is rightmost.
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -5768,13 +5798,21 @@ fn playlist_sections(show: &Show, state: &mut HomeState, which: usize) -> Vec<Se
     use crate::service::Item;
     let Some(chosen) = state.services.chosen else { return Vec::new() };
     let items = state.services.front().items.clone();
-    let songs: Vec<Option<usize>> = items
-        .iter()
-        .map(|item| match item {
-            Item::Song { key, .. } => crate::studio::playlist_song(show, state, key),
-            _ => None,
-        })
-        .collect();
+    // The song each item names, looked up again only when the songs or the items change.
+    let epoch = state.lists.songs.epoch();
+    let songs = match state.lists.playlist_songs.get(|(made_in, made_of)| *made_in == epoch && *made_of == items) {
+        Some(songs) => songs,
+        None => {
+            let songs = items
+                .iter()
+                .map(|item| match item {
+                    Item::Song { key, .. } => crate::studio::playlist_song(show, state, key),
+                    _ => None,
+                })
+                .collect();
+            state.lists.playlist_songs.keep((epoch, items.clone()), songs)
+        }
+    };
     // A picture or video, a media playlist or a placeholder chosen in the playlist is shown
     // with the rest of the playlist, whatever song is open: it has no slides of its own to open.
     let other =
@@ -5790,7 +5828,7 @@ fn playlist_sections(show: &Show, state: &mut HomeState, which: usize) -> Vec<Se
     }
     items
         .into_iter()
-        .zip(songs)
+        .zip(songs.iter().copied())
         .enumerate()
         .map(|(item, (entry, at))| match (entry, at) {
             (Item::Header { name }, _) => Section::Header(name),
@@ -6327,9 +6365,8 @@ fn song_slides(
                     });
                     // What the slide does when it goes on screen.
                     ui.menu_button("Actions", |ui| {
-                        let names = crate::live_tabs::action_names(show, state);
                         for (at, action) in slide.actions.iter().enumerate() {
-                            let words = crate::live_tabs::describe_action(state, &names, action);
+                            let words = crate::live_tabs::describe_action(show, state, action);
                             if ui.button(format!("Remove: {words}")).clicked() {
                                 let mut kept = slide.clone();
                                 kept.actions.remove(at);
@@ -6341,7 +6378,7 @@ fn song_slides(
                             ui.separator();
                         }
                         ui.menu_button("Add Action", |ui| {
-                            if let Some(action) = crate::live_tabs::add_action_menu(ui, state, &names) {
+                            if let Some(action) = crate::live_tabs::add_action_menu(ui, show, state) {
                                 let mut more = slide.clone();
                                 more.actions.push(action);
                                 state.pending_edit = Some((here, more));

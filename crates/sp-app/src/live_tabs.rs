@@ -629,42 +629,42 @@ fn props_tab(ui: &mut egui::Ui, state: &mut HomeState) {
     }
 }
 
-/// What actions can name besides the window's own lists: the library's songs (by key and
-/// title) and the media bin's pictures (by id and name).
-pub struct ActionNames {
-    pub songs: Vec<(String, String)>,
-    pub media: Vec<(sp_model::Uuid, String)>,
+/// The title of the song an action names by its key, among the songs in the library.
+fn song_title(show: &sp_engine::Show, state: &HomeState, key: &str) -> Option<String> {
+    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+    listed_songs(show, state, hidden).find(|(have, _)| *have == key).map(|(_, song)| song.title.clone())
 }
 
-pub fn action_names(show: &sp_engine::Show, state: &HomeState) -> ActionNames {
-    let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
-    let songs = state
+/// The songs an action can name, each with its key: those in the library, in order.
+fn listed_songs<'a>(
+    show: &'a sp_engine::Show,
+    state: &'a HomeState,
+    hidden: [usize; 2],
+) -> impl Iterator<Item = (&'a str, &'a sp_model::Presentation)> {
+    state
         .song_keys
         .iter()
         .enumerate()
-        .filter(|(index, _)| !hidden.contains(index) && !state.removed_songs.contains(index))
-        .filter_map(|(index, key)| Some((key.clone(), show.presentations().get(index)?.title.clone())))
-        .collect();
-    let media = show.media().iter().map(|item| (item.id, item.name.clone())).collect();
-    ActionNames { songs, media }
+        .filter(move |(index, _)| !hidden.contains(index) && !state.removed_songs.contains(index))
+        .filter_map(|(index, key)| Some((key.as_str(), &**show.presentations().get(index)?)))
 }
 
-/// An action in words.
-pub fn describe_action(state: &HomeState, names: &ActionNames, action: &sp_model::ShowAction) -> String {
+/// An action in words. Songs and pictures are looked up only for the actions that name one, so
+/// the Macros tab doesn't copy the whole library on every frame.
+pub fn describe_action(show: &sp_engine::Show, state: &HomeState, action: &sp_model::ShowAction) -> String {
     crate::macros::describe(
         action,
         |id| state.messages.iter().find(|m| m.id == id).map(|m| m.name.clone()),
         |id| state.props.iter().find(|p| p.id == id).map(|p| p.name.clone()),
         |id| state.timers.iter().find(|t| t.id == id).map(|t| t.name.clone()),
-        |key| names.songs.iter().find(|(have, _)| have == key).map(|(_, title)| title.clone()),
-        |id| names.media.iter().find(|(have, _)| *have == id).map(|(_, name)| name.clone()),
+        |key| song_title(show, state, key),
+        |id| show.media().iter().find(|item| item.id == id).map(|item| item.name.clone()),
     )
 }
 
 /// The menu of actions to add: clearing, messages, props, timers, the audience screens, songs.
 /// Returns the one chosen.
-pub fn add_action_menu(ui: &mut egui::Ui, state: &HomeState, names: &ActionNames) -> Option<sp_model::ShowAction> {
-    let songs = &names.songs;
+pub fn add_action_menu(ui: &mut egui::Ui, show: &sp_engine::Show, state: &HomeState) -> Option<sp_model::ShowAction> {
     use sp_model::{ClearWhat, ShowAction, TimerDo};
     let mut chosen = None;
     ui.menu_button("Clear", |ui| {
@@ -720,20 +720,21 @@ pub fn add_action_menu(ui: &mut egui::Ui, state: &HomeState, names: &ActionNames
         }
     });
     ui.menu_button("Media", |ui| {
-        if names.media.is_empty() {
+        if show.media().is_empty() {
             ui.label("No pictures in the media bin yet");
         }
-        for (id, name) in &names.media {
-            if ui.button(format!("Show {name}")).clicked() {
-                chosen = Some(ShowAction::Media { id: *id });
+        for item in show.media() {
+            if ui.button(format!("Show {}", item.name)).clicked() {
+                chosen = Some(ShowAction::Media { id: item.id });
             }
         }
     });
     ui.menu_button("Go to Song", |ui| {
         egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-            for (key, title) in songs {
-                if ui.button(title.as_str()).clicked() {
-                    chosen = Some(ShowAction::Song { key: key.clone() });
+            let hidden = state.bible.slots.unwrap_or([usize::MAX; 2]);
+            for (key, song) in listed_songs(show, state, hidden) {
+                if ui.button(song.title.as_str()).clicked() {
+                    chosen = Some(ShowAction::Song { key: key.to_owned() });
                 }
             }
         });
@@ -762,7 +763,6 @@ fn macros_tab(ui: &mut egui::Ui, show: &sp_engine::Show, state: &mut HomeState) 
         );
         return;
     }
-    let names = action_names(show, state);
     enum Ask {
         Run,
         Rename,
@@ -824,8 +824,7 @@ fn macros_tab(ui: &mut egui::Ui, show: &sp_engine::Show, state: &mut HomeState) 
                     );
                 }
             }
-            let summary: Vec<String> =
-                made.actions.iter().map(|action| describe_action(state, &names, action)).collect();
+            let summary: Vec<String> = made.actions.iter().map(|action| describe_action(show, state, action)).collect();
             let hint = if summary.is_empty() {
                 "No actions yet: right-click to add one".to_owned()
             } else {
@@ -836,7 +835,7 @@ fn macros_tab(ui: &mut egui::Ui, show: &sp_engine::Show, state: &mut HomeState) 
             }
             response.on_hover_text(hint).context_menu(|ui| {
                 ui.menu_button("Add Action", |ui| {
-                    if let Some(action) = add_action_menu(ui, state, &names) {
+                    if let Some(action) = add_action_menu(ui, show, state) {
                         asked = Some((index, Ask::Add(action)));
                         ui.close();
                     }
