@@ -284,6 +284,19 @@ struct Target {
     configured: bool,
 }
 
+/// A copy of the picture a video lends, to draw: its pixels as they are, in whichever order
+/// their bytes come (the GPU reads either), so copying is all the work there is.
+fn copied(lent: &sp_video::Lent<'_>) -> Option<Picture> {
+    Picture::from_rows(lent.width, lent.height, lent.bytes, lent.bytes_per_row, pixel_order(lent.order), lent.opaque)
+}
+
+fn pixel_order(order: sp_video::PixelOrder) -> sp_render::PixelOrder {
+    match order {
+        sp_video::PixelOrder::Rgba => sp_render::PixelOrder::Rgba,
+        sp_video::PixelOrder::Bgra => sp_render::PixelOrder::Bgra,
+    }
+}
+
 /// A window's next picture to draw into. The graphics library panics when the window's surface
 /// isn't set up (its setup failed); that is caught here, so one window that can't be drawn this
 /// moment doesn't stop the thread drawing every screen. `None` then: set it up and try again.
@@ -1136,16 +1149,16 @@ impl Output {
 
     fn take_video_picture(&mut self) -> bool {
         let mut new = false;
-        if let Some(frame) = self.frame.video.as_ref().and_then(sp_video::Frames::next) {
-            self.video_picture = Picture::from_rgba(frame.width, frame.height, frame.rgba);
+        if let Some(copy) = self.frame.video.as_ref().and_then(|frames| frames.next_with(copied)) {
+            self.video_picture = copy;
             self.video_pictures += 1;
             new |= self.video_picture.is_some();
         }
         // Each video in a box on the slide: its newest picture stands in for the box's still.
+        // It is a copy, because every thread that draws the slide (the operator's window too)
+        // shows it.
         for (file, frames) in &self.frame.slide_video {
-            if let Some(frame) = frames.next()
-                && let Some(picture) = Picture::from_rgba(frame.width, frame.height, frame.rgba)
-            {
+            if let Some(Some(picture)) = frames.next_with(copied) {
                 sp_render::show_picture(file, picture);
                 self.video_pictures += 1;
                 new = true;

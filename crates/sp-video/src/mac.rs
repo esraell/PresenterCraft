@@ -1,6 +1,7 @@
 //! AVFoundation and ImageIO.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use objc2::rc::Retained;
@@ -18,8 +19,9 @@ use objc2_core_graphics::{
 use objc2_core_media::{CMTime, kCMTimeZero};
 use objc2_core_video::{
     CVGetCurrentHostTime, CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
-    CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
-    CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
+    CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
+    kCVPixelFormatType_32BGRA,
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 use objc2_image_io::{
@@ -27,7 +29,7 @@ use objc2_image_io::{
     kCGImageSourceThumbnailMaxPixelSize,
 };
 
-use crate::Frame;
+use crate::{Frame, Lent, PixelOrder};
 
 /// Video pictures wider than this are copied at half size.
 const MAX_VIDEO_WIDTH: usize = 2048;
@@ -66,6 +68,7 @@ pub struct Player {
     player: Retained<AVPlayer>,
     item: Retained<AVPlayerItem>,
     output: Retained<AVPlayerItemVideoOutput>,
+    halved: Arc<Mutex<Vec<u8>>>,
     looping: bool,
     ended: bool,
 }
@@ -95,12 +98,12 @@ impl Player {
         // At the end the player stays where it is, so it can be looped or left on its last picture.
         // SAFETY: a plain setter on a live object.
         unsafe { player.setActionAtItemEnd(AVPlayerActionAtItemEnd::None) };
-        Ok(Player { player, item, output, looping: false, ended: false })
+        Ok(Player { player, item, output, halved: Arc::default(), looping: false, ended: false })
     }
 
     /// Where its pictures are taken from, on any thread.
     pub fn frames(&self) -> Frames {
-        Frames { output: self.output.clone() }
+        Frames { output: self.output.clone(), halved: self.halved.clone() }
     }
 
     pub fn play(&mut self) {
@@ -205,6 +208,8 @@ impl Drop for Player {
 #[derive(Clone)]
 pub struct Frames {
     output: Retained<AVPlayerItemVideoOutput>,
+    /// Room for the half-size copy of a picture too wide, used again for each.
+    halved: Arc<Mutex<Vec<u8>>>,
 }
 
 impl Frames {
@@ -215,6 +220,38 @@ impl Frames {
 
     /// The picture to show now, if there is a new one since the last was taken.
     pub fn next(&self) -> Option<Frame> {
+        let buffer = self.newest()?;
+        let locked = Locked::read(&buffer)?;
+        let (bytes, width, height, bytes_per_row) = locked.rows()?;
+        Some(crate::bgra_rows_to_rgba(bytes, width, height, bytes_per_row, MAX_VIDEO_WIDTH))
+    }
+
+    /// Lends the picture to show now, as [`crate::Frames::next_with`] says: the decoder's own
+    /// rows of BGRA pixels while they are held, or a half-size copy of a picture too wide.
+    pub fn next_with<R>(&self, show: impl FnOnce(&Lent<'_>) -> R) -> Option<R> {
+        let buffer = self.newest()?;
+        let locked = Locked::read(&buffer)?;
+        let (bytes, width, height, bytes_per_row) = locked.rows()?;
+        let lend = |bytes, width: usize, height: usize, bytes_per_row| Lent {
+            width: width as u32,
+            height: height as u32,
+            bytes_per_row,
+            bytes,
+            order: PixelOrder::Bgra,
+            opaque: true,
+        };
+        if width <= MAX_VIDEO_WIDTH {
+            return Some(show(&lend(bytes, width, height, bytes_per_row)));
+        }
+        // The copy is made into the same room each time; a thread that died holding it left
+        // nothing a new copy doesn't replace.
+        let mut halved = self.halved.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (width, height) = crate::halved_rows(bytes, width, height, bytes_per_row, &mut halved);
+        (width > 0 && height > 0).then(|| show(&lend(&halved, width, height, width * 4)))
+    }
+
+    /// The newest picture's pixel buffer, if there is a new one since the last was taken.
+    fn newest(&self) -> Option<Retained<CVPixelBuffer>> {
         let host = i64::try_from(CVGetCurrentHostTime()).unwrap_or(i64::MAX);
         // SAFETY: a video output may be asked for pictures from any thread; these are plain values.
         let time = unsafe { self.output.itemTimeForMachAbsoluteTime(host) };
@@ -223,29 +260,48 @@ impl Frames {
             return None;
         }
         // SAFETY: as above; a null pointer says the display time isn't wanted.
-        let buffer = unsafe { self.output.copyPixelBufferForItemTime_itemTimeForDisplay(time, std::ptr::null_mut()) }?;
-        copy_pixels(&buffer)
+        unsafe { self.output.copyPixelBufferForItemTime_itemTimeForDisplay(time, std::ptr::null_mut()) }
     }
 }
 
-/// Copies a BGRA pixel buffer's picture out as RGBA.
-fn copy_pixels(buffer: &CVPixelBuffer) -> Option<Frame> {
-    // SAFETY: the buffer is alive; it is locked for reading and unlocked below.
-    if unsafe { CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly) } != 0 {
-        return None;
+/// A pixel buffer locked for reading, and unlocked when this is let go, however the code
+/// reading it ends.
+struct Locked<'a>(&'a CVPixelBuffer);
+
+impl<'a> Locked<'a> {
+    fn read(buffer: &'a CVPixelBuffer) -> Option<Locked<'a>> {
+        // SAFETY: the buffer is alive; it is locked for reading, and unlocked when the value
+        // made here is dropped.
+        let locked = unsafe { CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly) } == 0;
+        locked.then_some(Locked(buffer))
     }
-    let (width, height) = (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer));
-    let bytes_per_row = CVPixelBufferGetBytesPerRow(buffer);
-    let base = CVPixelBufferGetBaseAddress(buffer);
-    let frame = (!base.is_null() && width > 0 && height > 0 && bytes_per_row >= width * 4).then(|| {
-        // SAFETY: while locked, the base address points at `height` rows of `bytes_per_row`
-        // bytes, which stay valid until the unlock below.
-        let bytes = unsafe { std::slice::from_raw_parts(base.cast::<u8>(), bytes_per_row * height) };
-        crate::bgra_rows_to_rgba(bytes, width, height, bytes_per_row, MAX_VIDEO_WIDTH)
-    });
-    // SAFETY: unlocks the lock taken above.
-    unsafe { CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly) };
-    frame
+
+    /// The picture's rows of BGRA pixels, with its width, height and bytes from one row to the
+    /// next. `None` for a buffer that isn't one plane of 32-bit BGRA pixels, or is empty.
+    fn rows(&self) -> Option<(&[u8], usize, usize, usize)> {
+        let buffer = self.0;
+        if CVPixelBufferGetPixelFormatType(buffer) != kCVPixelFormatType_32BGRA {
+            return None;
+        }
+        let (width, height) = (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer));
+        let bytes_per_row = CVPixelBufferGetBytesPerRow(buffer);
+        let base = CVPixelBufferGetBaseAddress(buffer);
+        if base.is_null() || width == 0 || height == 0 || bytes_per_row < width.checked_mul(4)? {
+            return None;
+        }
+        let length = bytes_per_row.checked_mul(height)?;
+        // SAFETY: while locked, the base address of a one-plane buffer points at `height` rows
+        // of `bytes_per_row` bytes. They stay valid and unchanged until the unlock, which
+        // comes when `self` is dropped, after the slice borrowed from it is let go.
+        Some((unsafe { std::slice::from_raw_parts(base.cast::<u8>(), length) }, width, height, bytes_per_row))
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        // SAFETY: unlocks the lock taken in `read`, with the same flags.
+        unsafe { CVPixelBufferUnlockBaseAddress(self.0, CVPixelBufferLockFlags::ReadOnly) };
+    }
 }
 
 /// Draws a picture the system decoded into RGBA rows.

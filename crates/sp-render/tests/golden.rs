@@ -747,3 +747,26 @@ fn a_layouts_shapes_are_drawn_behind_the_words_of_its_slides() {
     assert_eq!(saved.objects, vec![bar]);
     assert_eq!(saved.boxes, theme.templates[0].boxes);
 }
+
+/// Rows of a picture eight pixels by four, its left half one colour and its right half another,
+/// each pixel's four bytes as given, with four bytes of padding after each row.
+fn two_halves(left: [u8; 4], right: [u8; 4]) -> (Vec<u8>, usize) {
+    let row: Vec<u8> = [left.repeat(4), right.repeat(4), vec![0xEE; 4]].concat();
+    (row.repeat(4), 36)
+}
+
+/// A video in a box on a slide is copied as the system's player decodes it, blue first, and
+/// drawn in its true colours, opaque: at its full size, and as the small copy a thumbnail draws.
+#[test]
+fn a_picture_copied_blue_first_is_drawn_in_its_true_colours() {
+    use sp_render::{Picture, PixelOrder};
+    let (red, blue) = ([200, 40, 10], [10, 40, 220]);
+    let bgr0 = |rgb: [u8; 3]| [rgb[2], rgb[1], rgb[0], 0];
+    let (rows, stride) = two_halves(bgr0(red), bgr0(blue));
+    let picture = Picture::from_rows(8, 4, &rows, stride, PixelOrder::Bgra, true).expect("picture");
+    for (name, drawn) in [("full size", picture.clone()), ("small", picture.shrunk(4))] {
+        let px = render_layers(Some(&drawn), None, 64, 36);
+        let (left, right) = (pixel(&px, 64, 8, 18), pixel(&px, 64, 56, 18));
+        assert!(is_about(left, red) && is_about(right, blue), "{name}: {left:?} {right:?}");
+    }
+}

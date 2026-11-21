@@ -1,5 +1,7 @@
 //! Opens each file given: a picture is decoded; a video gives a still, then plays for two
-//! seconds while another thread counts its pictures. For checking by hand:
+//! seconds while another thread counts its pictures as the screens take them (lent, not
+//! copied) and looks at every pixel's fourth byte, which says whether the player's pictures
+//! come opaque. For checking by hand:
 //!
 //!     cargo run -p sp-video --example check -- clip.mp4 photo.heic
 
@@ -38,15 +40,26 @@ fn main() {
         };
         let frames = player.frames();
         let counter = std::thread::spawn(move || {
-            let (mut count, mut size, started) = (0, None, Instant::now());
+            let (mut count, mut seen, started) = (0, None, Instant::now());
+            // The lowest and highest fourth byte of any pixel of any picture.
+            let mut fourth = (u8::MAX, u8::MIN);
             while started.elapsed() < Duration::from_millis(*RUN_MS) {
-                if let Some(frame) = frames.next() {
+                let lent = frames.next_with(|lent| {
+                    let row = lent.width as usize * 4;
+                    for line in lent.bytes.chunks(lent.bytes_per_row).take(lent.height as usize) {
+                        for pixel in line[..row].as_chunks::<4>().0 {
+                            fourth = (fourth.0.min(pixel[3]), fourth.1.max(pixel[3]));
+                        }
+                    }
+                    (lent.width, lent.height, lent.bytes_per_row, lent.order, lent.opaque)
+                });
+                if let Some(lent) = lent {
                     count += 1;
-                    size = Some((frame.width, frame.height));
+                    seen = Some(lent);
                 }
                 std::thread::sleep(Duration::from_millis(4));
             }
-            (count, size)
+            (count, seen, fourth)
         });
         player.set_looping(true);
         player.set_volume(0.0);
@@ -63,10 +76,19 @@ fn main() {
             // run loop, which the app's event loop keeps turning; here it is turned by hand.
             spin(wait.min(Duration::from_millis(50)));
         }
-        let (count, size) = counter.join().unwrap_or((0, None));
+        let (count, seen, fourth) = counter.join().unwrap_or((0, None, (0, 0)));
+        let lent = seen.map_or_else(
+            || "nothing".to_owned(),
+            |(w, h, bytes_per_row, order, opaque)| {
+                let kind = if opaque { "shown opaque" } else { "shown with its alpha" };
+                format!("{w}x{h}, {bytes_per_row} bytes a row, {order:?}, {kind}")
+            },
+        );
         println!(
-            "{arg}: {} {count} pictures of {size:?}, at {:.2} s of {:?} s, playing {}, problem {:?}",
+            "{arg}: {} {count} pictures of {lent}, fourth bytes {} to {}, at {:.2} s of {:?} s, playing {}, problem {:?}",
             if player.uses_ffmpeg() { "FFmpeg" } else { "system" },
+            fourth.0,
+            fourth.1,
             player.position(),
             player.duration(),
             player.playing(),

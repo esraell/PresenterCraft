@@ -130,6 +130,54 @@ impl Frames {
             Frames::Web(frames) => frames.next(),
         }
     }
+
+    /// Lends the picture to show now to `show`, if there is a new one since the last was taken,
+    /// and hands back what `show` made of it. Nothing is copied for a video the system plays
+    /// (one wider than 2048 pixels is lent at half size), and FFmpeg's picture goes back to be
+    /// filled again: for the thread drawing the screens, which sends the pixels straight to the
+    /// GPU.
+    pub fn next_with<R>(&self, show: impl FnOnce(&Lent<'_>) -> R) -> Option<R> {
+        match self {
+            #[cfg(target_os = "macos")]
+            Frames::System(frames) => frames.next_with(show),
+            Frames::Ffmpeg(frames) => frames.next_with(show),
+            Frames::Web(frames) => frames.next().map(|frame| show(&Lent::rgba(&frame))),
+        }
+    }
+}
+
+/// The order of the four bytes of a lent picture's pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelOrder {
+    Rgba,
+    Bgra,
+}
+
+/// A picture lent for the length of a call (see [`Frames::next_with`]): rows of four-byte
+/// pixels, each row starting `bytes_per_row` after the last, which may be more than its pixels
+/// fill.
+pub struct Lent<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub bytes_per_row: usize,
+    pub bytes: &'a [u8],
+    pub order: PixelOrder,
+    /// True when the picture is shown opaque whatever its pixels' fourth bytes say (a video the
+    /// system plays); otherwise they are its straight alpha.
+    pub opaque: bool,
+}
+
+impl<'a> Lent<'a> {
+    fn rgba(frame: &'a Frame) -> Lent<'a> {
+        Lent {
+            width: frame.width,
+            height: frame.height,
+            bytes_per_row: frame.width as usize * 4,
+            bytes: &frame.rgba,
+            order: PixelOrder::Rgba,
+            opaque: false,
+        }
+    }
 }
 
 /// Runs the same call on whichever player it is.
@@ -269,9 +317,56 @@ fn bgra_rows_to_rgba(bytes: &[u8], width: usize, height: usize, bytes_per_row: u
     Frame { width: out_w as u32, height: out_h as u32, rgba }
 }
 
+/// Copies every second pixel of every second row of four-byte pixels into `out`, tightly
+/// packed, in the order they came. Returns the size of the copy.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn halved_rows(bytes: &[u8], width: usize, height: usize, bytes_per_row: usize, out: &mut Vec<u8>) -> (usize, usize) {
+    let (out_w, out_h) = (width / 2, height / 2);
+    out.resize(out_w * out_h * 4, 0);
+    if out_w == 0 {
+        return (out_w, out_h);
+    }
+    for (row, line) in out.chunks_exact_mut(out_w * 4).enumerate() {
+        let start = row * 2 * bytes_per_row;
+        let pairs = bytes[start..start + out_w * 8].as_chunks::<8>().0;
+        for (pixel, pair) in line.as_chunks_mut::<4>().0.iter_mut().zip(pairs) {
+            *pixel = [pair[0], pair[1], pair[2], pair[3]];
+        }
+    }
+    (out_w, out_h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn halved_rows_keep_every_second_pixel_in_the_order_it_came() {
+        // Four pixels a row, two rows, three bytes of padding after each row; the buffer starts
+        // with other bytes, which a copy of the right size replaces.
+        let row = |first: u8| -> Vec<u8> { (first..first + 16).chain([99, 99, 99]).collect() };
+        let rows = [row(0), row(100)].concat();
+        let mut out = vec![7; 3];
+        assert_eq!(halved_rows(&rows, 4, 2, 19, &mut out), (2, 1));
+        assert_eq!(out, [0, 1, 2, 3, 8, 9, 10, 11]);
+        // An odd width leaves its last pixel out; nothing at all is an empty copy.
+        assert_eq!(halved_rows(&rows, 3, 2, 19, &mut out), (1, 1));
+        assert_eq!(out, [0, 1, 2, 3]);
+        assert_eq!(halved_rows(&rows, 1, 1, 19, &mut out), (0, 0));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_web_page_lends_its_picture_once_with_its_own_alpha() {
+        let page = web::WebFrames::default();
+        page.put(Frame { width: 1, height: 2, rgba: vec![1, 2, 3, 4, 5, 6, 7, 8] });
+        let frames = Frames::Web(page);
+        let seen = frames.next_with(|lent| {
+            (lent.width, lent.height, lent.bytes_per_row, lent.bytes.to_vec(), lent.order, lent.opaque)
+        });
+        assert_eq!(seen, Some((1, 2, 4, vec![1, 2, 3, 4, 5, 6, 7, 8], PixelOrder::Rgba, false)));
+        assert!(frames.next_with(|_| ()).is_none(), "the same picture is not lent twice");
+    }
 
     #[test]
     fn a_black_opening_counts_as_dark_and_a_scene_does_not() {

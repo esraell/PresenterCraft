@@ -272,7 +272,28 @@ impl rodio::Source for SoundSource {
 /// thread.
 #[derive(Clone)]
 pub struct Frames {
-    slot: Arc<Mutex<Option<Frame>>>,
+    slot: Arc<Mutex<Slot>>,
+}
+
+/// The newest picture, waiting to be taken, and the room of one already shown, to fill again.
+#[derive(Default)]
+struct Slot {
+    frame: Option<Frame>,
+    spare: Option<Vec<u8>>,
+}
+
+impl Slot {
+    /// Puts the newest picture in, keeping the room of one never taken to fill again.
+    fn put(&mut self, frame: Frame) {
+        if let Some(missed) = self.frame.replace(frame) {
+            self.spare = Some(missed.rgba);
+        }
+    }
+
+    /// Room for a picture of `len` bytes: a picture's that has been shown, or new.
+    fn room(&mut self, len: usize) -> Vec<u8> {
+        self.spare.take().filter(|spare| spare.len() == len).unwrap_or_else(|| vec![0u8; len])
+    }
 }
 
 impl Frames {
@@ -282,7 +303,18 @@ impl Frames {
 
     /// The newest picture, if one has come since the last was taken.
     pub fn next(&self) -> Option<Frame> {
-        self.slot.lock().ok()?.take()
+        self.slot.lock().ok()?.frame.take()
+    }
+
+    /// Lends the newest picture, as [`crate::Frames::next_with`] says; its room is then filled
+    /// with a later picture, not let go.
+    pub fn next_with<R>(&self, show: impl FnOnce(&crate::Lent<'_>) -> R) -> Option<R> {
+        let frame = self.next()?;
+        let made = show(&crate::Lent::rgba(&frame));
+        if let Ok(mut slot) = self.slot.lock() {
+            slot.spare = Some(frame.rgba);
+        }
+        Some(made)
     }
 }
 
@@ -323,7 +355,7 @@ pub struct Player {
     looping: bool,
     paused: bool,
     volume: f32,
-    slot: Arc<Mutex<Option<Frame>>>,
+    slot: Arc<Mutex<Slot>>,
     stream: Option<rodio::OutputStream>,
     run: Option<Run>,
 }
@@ -350,7 +382,7 @@ impl Player {
             looping: false,
             paused: true,
             volume: 1.0,
-            slot: Arc::new(Mutex::new(None)),
+            slot: Arc::default(),
             stream,
             run: None,
         };
@@ -436,7 +468,7 @@ impl Player {
         run.threads.push(std::thread::spawn(move || {
             let mut shown: u64 = 0;
             loop {
-                let mut rgba = vec![0u8; frame_len];
+                let mut rgba = slot.lock().map_or_else(|_| vec![0u8; frame_len], |mut slot| slot.room(frame_len));
                 if out.read_exact(&mut rgba).is_err() {
                     if shown == 0 && !stop_v.load(Ordering::Relaxed) {
                         // FFmpeg has stopped, so what it said is all read in a moment.
@@ -475,7 +507,7 @@ impl Player {
                     eprintln!("sync picture {due:.3}s clock {clock:.3}s");
                 }
                 if let Ok(mut slot) = slot.lock() {
-                    *slot = Some(Frame { width: w, height: h, rgba });
+                    slot.put(Frame { width: w, height: h, rgba });
                 }
             }
         }));
