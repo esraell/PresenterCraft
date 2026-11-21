@@ -155,6 +155,9 @@ struct Kept {
     id: Uuid,
     picture: Picture,
     used: u64,
+    /// The item's stamp when it was read: one read before its file changed is let go once the
+    /// new small copy comes.
+    stamp: u64,
 }
 
 /// The media bin's pictures, by item: the small copies, the few full-size pictures kept, and
@@ -233,6 +236,15 @@ impl BinPictures {
     /// Lets go of an item's full-size picture and whatever is being read of it.
     fn drop_full(&mut self, id: Uuid) {
         self.full.retain(|kept| kept.id != id);
+        if self.on_screen == Some(id) {
+            self.screens_full = false;
+        }
+        self.stop_full_reads(id);
+    }
+
+    /// Stops waiting for an item's full-size picture (one being read is let go when it comes,
+    /// by its stamp), and lets it be tried again if it couldn't be read.
+    fn stop_full_reads(&mut self, id: Uuid) {
         self.full_coming.remove(&id);
         self.full_refused.remove(&id);
         self.full_reader.drop_waiting(|job| job.id == id);
@@ -254,11 +266,12 @@ impl BinPictures {
     }
 
     /// Has an item's small copy read by a reader (the items in the bin when the app starts, a
-    /// file come into a followed folder). Its full-size picture, if one was kept, is let go:
-    /// the file may have changed. A small copy there already is shown until the new one comes.
+    /// file come into a followed folder, one written over). Whatever it had (its small copy, and
+    /// its full-size picture if one is kept) is shown until the new small copy comes, so a file
+    /// half written, which can't be read, leaves the item as it was.
     pub fn read(&mut self, id: Uuid, path: &Path) {
         let stamp = self.new_stamp(id);
-        self.drop_full(id);
+        self.stop_full_reads(id);
         self.small_readers.drop_waiting(|job| job.id == id);
         self.small_coming.insert(id);
         let job = Job { id, path: path.to_owned(), want: Want::Small, stamp };
@@ -351,10 +364,10 @@ impl BinPictures {
 
     /// Keeps a full-size picture, letting go of the one shown longest ago past [`FULL_KEPT`]
     /// (never the one on screen, nor this one).
-    fn keep_full(&mut self, id: Uuid, picture: Picture) {
+    fn keep_full(&mut self, id: Uuid, picture: Picture, stamp: u64) {
         self.full.retain(|kept| kept.id != id);
         self.clock += 1;
-        self.full.push(Kept { id, picture, used: self.clock });
+        self.full.push(Kept { id, picture, used: self.clock, stamp });
         while self.full.len() > FULL_KEPT {
             let on_screen = self.on_screen;
             let oldest = self
@@ -396,6 +409,11 @@ impl BinPictures {
                         } else {
                             self.whole.remove(&id);
                         }
+                        // A full-size picture of the file as it was before is let go (the screens
+                        // then take the new small copy, and the new full-size picture is read).
+                        if self.full.iter().any(|kept| kept.id == id && kept.stamp != read.stamp) {
+                            self.drop_full(id);
+                        }
                         Some(Arrived::Small(id))
                     }
                     Err(problem) => Some(Arrived::Refused(id, problem)),
@@ -405,7 +423,7 @@ impl BinPictures {
                 self.full_coming.remove(&id);
                 match read.result {
                     Ok((picture, _)) => {
-                        self.keep_full(id, picture);
+                        self.keep_full(id, picture, read.stamp);
                         Some(Arrived::Full(id))
                     }
                     Err(problem) => {
@@ -506,6 +524,40 @@ mod tests {
         pictures.forget(id);
         assert_eq!(pictures.arrived(fresh), None, "the item left the bin");
         assert!(pictures.small(id).is_none() && pictures.full_kept().is_empty());
+    }
+
+    #[test]
+    fn a_picture_written_over_on_screen_stays_until_the_new_one_has_been_read() {
+        let mut pictures = quiet();
+        let id = Uuid::new_v4();
+        let path = Path::new("/x/notice.png");
+        pictures.set_small(id, picture(8), false);
+        let read = full_read(&pictures, id, 16);
+        pictures.arrived(read);
+        assert_eq!(pictures.for_screens(Some((id, path))).map(|p| p.width()), Some(16));
+        // Written over: until the new small copy comes, the screens keep the old picture.
+        pictures.read(id, path);
+        assert_eq!(pictures.for_screens(Some((id, path))).map(|p| p.width()), Some(16));
+        assert!(pictures.screens_have_full());
+        // Half written, it can't be read yet: still the old picture.
+        let refused = Read { id, want: Want::Small, stamp: pictures.stamps[&id], result: Err("half written".into()) };
+        assert!(matches!(pictures.arrived(refused), Some(Arrived::Refused(..))));
+        assert_eq!(pictures.for_screens(Some((id, path))).map(|p| p.width()), Some(16));
+        // Read at last: the old full-size picture goes, so the screens take the new small copy
+        // (the app is told the screens don't have the full one), and the new full one is read.
+        pictures.read(id, path);
+        let new = Read { id, want: Want::Small, stamp: pictures.stamps[&id], result: Ok((picture(9), false)) };
+        assert_eq!(pictures.arrived(new), Some(Arrived::Small(id)));
+        assert!(!pictures.screens_have_full() && pictures.full_kept().is_empty());
+        assert_eq!(pictures.for_screens(Some((id, path))).map(|p| p.width()), Some(9));
+        assert!(pictures.full_coming.contains(&id));
+        // At the start the full-size picture can come before the small copy: the same file, kept.
+        let other = Uuid::new_v4();
+        pictures.read(other, Path::new("/x/none.png"));
+        let stamp = pictures.stamps[&other];
+        pictures.arrived(Read { id: other, want: Want::FullNow, stamp, result: Ok((picture(16), false)) });
+        pictures.arrived(Read { id: other, want: Want::Small, stamp, result: Ok((picture(8), false)) });
+        assert!(pictures.full_kept().contains(&other));
     }
 
     #[test]
