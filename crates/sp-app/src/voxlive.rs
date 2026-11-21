@@ -314,6 +314,8 @@ enum Answer {
     Schema(u64, Result<Vec<(String, serde_json::Value)>, Problem>),
     /// A look saved (the screen as VoxLive stored it), or why not.
     Saved(String, Result<Screen, Saving>),
+    /// The key kept in the Keychain, read at start-up (for the connection numbered so).
+    KeyRead(u64, Option<String>),
 }
 
 /// Why a look wasn't saved.
@@ -369,6 +371,8 @@ pub struct Client {
     /// Counts connections (each key given or forgotten), so an answer that comes back after
     /// its key was replaced or forgotten is let go.
     generation: u64,
+    /// The kept key is still being read from the Keychain.
+    key_reading: bool,
     /// A look being saved, by its screen.
     pub saving: Option<String>,
     /// The last look saved or refused: its screen, and how it went.
@@ -381,15 +385,21 @@ impl Client {
     /// The connection as it was left: with the key kept, if there is one, being checked.
     pub fn new() -> Client {
         let (tx, rx) = channel();
-        let key = store::load();
-        let status = if key.is_some() { Status::Checking } else { Status::NoKey };
-        let next = key.as_ref().map(|_| Instant::now());
+        // The key is read from the Keychain on a thread of its own: macOS may first ask the
+        // operator whether the app may have it (it asks again for each new build until the app
+        // is signed), and the window must not wait for that answer.
+        let reader = tx.clone();
+        let started = std::thread::Builder::new().name("voxlive key".to_owned()).spawn(move || {
+            let _ = reader.send(Answer::KeyRead(0, store::load()));
+        });
+        let key_reading = started.is_ok();
         Client {
-            key,
-            status,
+            key: None,
+            status: if key_reading { Status::Checking } else { Status::NoKey },
+            key_reading,
             screens: Vec::new(),
             found_at: None,
-            next,
+            next: None,
             busy: false,
             schema: Vec::new(),
             schema_asking: false,
@@ -451,6 +461,8 @@ impl Client {
     /// Starts afresh: requests still under way for the key before are let go when they answer.
     fn new_connection(&mut self) {
         self.generation += 1;
+        // A key given or forgotten meanwhile wins over the one still being read.
+        self.key_reading = false;
         self.busy = false;
         self.schema_asking = false;
         self.schema_next = self.schema.is_empty().then(Instant::now);
@@ -494,9 +506,22 @@ impl Client {
     pub fn tick(&mut self) -> Option<Instant> {
         while let Ok(answer) = self.rx.try_recv() {
             // An answer for a key since replaced or forgotten changes nothing.
-            if let Answer::Screens(generation, _) | Answer::Schema(generation, _) = &answer
+            if let Answer::Screens(generation, _) | Answer::Schema(generation, _) | Answer::KeyRead(generation, _) =
+                &answer
                 && *generation != self.generation
             {
+                continue;
+            }
+            if let Answer::KeyRead(_, key) = answer {
+                self.key_reading = false;
+                match key {
+                    Some(key) => {
+                        self.key = Some(key);
+                        self.status = Status::Checking;
+                        self.next = Some(Instant::now());
+                    }
+                    None => self.status = Status::NoKey,
+                }
                 continue;
             }
             match answer {
@@ -535,6 +560,8 @@ impl Client {
                     continue;
                 }
                 Answer::Screens(..) => self.busy = false,
+                // Taken in above.
+                Answer::KeyRead(..) => continue,
             }
             match answer {
                 Answer::Screens(_, Ok(screens)) => {
@@ -557,7 +584,7 @@ impl Client {
                     self.status = Status::Trouble(why);
                     self.next = Some(Instant::now() + POLL_EVERY);
                 }
-                Answer::Schema(..) | Answer::Saved(..) => {}
+                Answer::Schema(..) | Answer::Saved(..) | Answer::KeyRead(..) => {}
             }
         }
         // The look settings, once connected.
@@ -585,7 +612,7 @@ impl Client {
                 let _ = tx.send(Answer::Screens(generation, get_screens(&base, &key)));
             });
         }
-        if self.busy || self.saving.is_some() || self.schema_asking {
+        if self.busy || self.saving.is_some() || self.schema_asking || self.key_reading {
             Some(Instant::now() + Duration::from_millis(250))
         } else {
             let schema = self.schema_next.filter(|_| self.status == Status::Connected);
