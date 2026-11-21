@@ -75,6 +75,34 @@ pub fn problem(area: &str, message: &str) {
     event(area, message);
 }
 
+/// A problem that may come back with every picture drawn (thirty times a second, under a
+/// playing video): said once when it starts, and once more when it is over, never for every
+/// picture.
+#[derive(Debug, Default)]
+pub struct Lasting {
+    said: Option<String>,
+    repeats: u64,
+}
+
+impl Lasting {
+    /// Notes the problem. True when it should be said: it is new, or not the one said last.
+    pub fn is_news(&mut self, message: &str) -> bool {
+        if self.said.as_deref() == Some(message) {
+            self.repeats += 1;
+            return false;
+        }
+        self.said = Some(message.to_owned());
+        self.repeats = 0;
+        true
+    }
+
+    /// Notes that the problem did not happen this time. If one was said, gives how many more
+    /// times it happened after that, for saying that it is over.
+    pub fn over(&mut self) -> Option<u64> {
+        self.said.take().map(|_| std::mem::take(&mut self.repeats))
+    }
+}
+
 /// How the app's own resident memory stands, in megabytes, as the system reports it.
 pub fn memory_mb() -> Option<u64> {
     let out =
@@ -144,5 +172,20 @@ mod tests {
         // Under a minute nothing is written and the counts stay.
         assert!(!timing.report_each_minute("test", String::new));
         assert_eq!(timing.count, 2);
+    }
+
+    #[test]
+    fn a_lasting_problem_is_said_when_it_starts_and_when_it_is_over() {
+        let mut trouble = Lasting::default();
+        assert_eq!(trouble.over(), None, "nothing was wrong");
+        assert!(trouble.is_news("too heavy"));
+        for _ in 0..1800 {
+            assert!(!trouble.is_news("too heavy"), "a minute of video says it once");
+        }
+        assert!(trouble.is_news("too slow"), "another problem is news");
+        assert!(!trouble.is_news("too slow"));
+        assert_eq!(trouble.over(), Some(1), "over, after happening once more than was said");
+        assert_eq!(trouble.over(), None, "and that is said once too");
+        assert!(trouble.is_news("too slow"), "coming back, it is news again");
     }
 }

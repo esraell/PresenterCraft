@@ -20,6 +20,19 @@ enum AtlasProxyAction {
     Resized,
 }
 
+/// SoftPresenter: an addition. Of a coarse recording that will not be run, the commands that
+/// put pictures in the atlas (and free an atlas that was outgrown). The resolver counts a
+/// picture as being in the atlas from the moment it has made the recording, so these must run
+/// even when the rest of the frame does not, or the next frame would draw the picture from an
+/// atlas it never reached. Nothing else is kept: the other commands make and fill the frame's
+/// buffers.
+pub(crate) fn pictures_only(recording: Recording) -> Recording {
+    use crate::recording::Command;
+    let mut commands = recording.commands;
+    commands.retain(|command| matches!(command, Command::WriteImage(..) | Command::FreeImage(_)));
+    Recording { commands }
+}
+
 /// State for a render in progress.
 pub struct Render {
     fine_wg_count: Option<WorkgroupSize>,
@@ -109,8 +122,15 @@ pub(crate) fn render_encoding_full(
     params: &RenderParams,
 ) -> (Recording, ResourceProxy) {
     let mut render = Render::new();
-    let mut recording =
-        render.render_encoding_coarse(encoding, resolver, shaders, image_atlas, params, false, None);
+    let mut recording = render.render_encoding_coarse(
+        encoding,
+        resolver,
+        shaders,
+        image_atlas,
+        params,
+        false,
+        None,
+    );
     let out_image = render.out_image();
     render.record_fine(shaders, &mut recording);
     (recording, out_image.into())
@@ -251,12 +271,7 @@ impl Render {
         // SoftPresenter: the scratch room a frame uses follows from these bytes and the target's
         // size alone, so a scene seen before is known by them.
         if scratch.is_some() {
-            use std::hash::Hasher;
-            let mut print = std::hash::DefaultHasher::new();
-            print.write(&packed);
-            print.write_u32(params.width);
-            print.write_u32(params.height);
-            self.scene_print = print.finish();
+            self.scene_print = crate::scratch::fingerprint(&packed, params.width, params.height);
         }
         let scene_buf = ResourceProxy::Buffer(recording.upload("vello.scene", packed));
         let config_buf = ResourceProxy::Buffer(

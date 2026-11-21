@@ -21,8 +21,9 @@ It ships as part of the app like the rest of the code, so [NOTICE.md](../../NOTI
 [`third_party/vello/PROVENANCE.md`](../../third_party/vello/PROVENANCE.md) has the exact
 source and the list of changes. In short: Vello 0.12 keeps about 165 MB of GPU working memory
 for every renderer whatever is drawn, and silently draws nothing when a picture needs more.
-The copy sizes that memory from what is drawn, checks every picture, draws a picture again
-with more room when it needs it, and gives the memory back afterwards.
+The copy sizes that memory from what is drawn, checks each picture the first time it is drawn
+at a size, draws a picture again with more room when it needs it, says so when one cannot be
+drawn, and gives the memory back afterwards.
 
 `vello_encoding` and `vello_shaders`, which `vello` is built on, are the published crates,
-unchanged.
+unchanged. The copy compiles Vello's shaders with bounds checks, which Vello leaves off.

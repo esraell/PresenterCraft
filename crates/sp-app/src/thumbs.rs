@@ -37,9 +37,22 @@ struct Thumb {
 /// How long a thumbnail that couldn't be drawn waits before it is tried again.
 const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The kinds of picture the window's painter draws.
+#[derive(Clone, Copy)]
+enum Kind {
+    WaitingTile,
+    Thumbnail,
+    Canvas,
+    Preview,
+}
+
 pub struct Thumbs {
     painter: Painter,
     device: wgpu::Device,
+    queue: wgpu::Queue,
+    /// Pictures that could not be drawn, by kind (see `note_drawn`): each said once while it
+    /// lasts, not at every drawing.
+    trouble: [crate::applog::Lasting; 4],
     /// How many pictures the painter had drawn when it was last looked at, and when to let it
     /// rest if it draws no more.
     painted: u64,
@@ -57,10 +70,12 @@ pub struct Thumbs {
 }
 
 impl Thumbs {
-    pub fn new(device: &wgpu::Device) -> Result<Thumbs, String> {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Thumbs, String> {
         Ok(Thumbs {
             painter: Painter::new(device)?,
             device: device.clone(),
+            queue: queue.clone(),
+            trouble: Default::default(),
             painted: 0,
             rest_at: None,
             fonts: Fonts::new(),
@@ -83,18 +98,41 @@ impl Thumbs {
     /// Call whenever the app is about to wait. A second after the last thumbnail, preview or
     /// canvas was drawn, GPU memory that a heavy slide made the painter take is given back
     /// (ordinary slides take none worth giving back). Returns when to call again, if that is
-    /// still to come.
+    /// still to come: the settling, or, since giving memory back never waits for the GPU, a
+    /// moment later while the GPU still holds some of it.
     pub fn rest_when_settled(&mut self, now: Instant) -> Option<Instant> {
         const SETTLED_AFTER: Duration = Duration::from_secs(1);
+        const LOOK_AGAIN_AFTER: Duration = Duration::from_millis(50);
         if self.painter.paints() != self.painted {
             self.painted = self.painter.paints();
             self.rest_at = Some(now + SETTLED_AFTER);
         }
         if self.rest_at.is_some_and(|at| at <= now) {
-            self.rest_at = None;
-            self.painter.rest(&self.device);
+            let rested = self.painter.rest(&self.device, &self.queue);
+            self.rest_at = (!rested).then_some(now + LOOK_AGAIN_AFTER);
         }
         self.rest_at
+    }
+
+    /// Notes whether a picture of one kind was drawn, and says that it could not be, once for as
+    /// long as the same thing goes wrong with that kind.
+    fn note_drawn(&mut self, kind: Kind, drawn: &Result<(), sp_render::PaintError>) {
+        let trouble = &mut self.trouble[kind as usize];
+        match drawn {
+            Ok(()) => drop(trouble.over()),
+            Err(error) => {
+                let what = match kind {
+                    Kind::WaitingTile => "a waiting tile",
+                    Kind::Thumbnail => "a thumbnail",
+                    Kind::Canvas => "the slide being edited",
+                    Kind::Preview => "the preview",
+                };
+                let message = format!("Could not draw {what}: {error}");
+                if trouble.is_news(&message) {
+                    crate::applog::problem("window", &message);
+                }
+            }
+        }
     }
 
     /// The thumbnail for a slide and whether its text overflows. `None` means it will be
@@ -165,10 +203,9 @@ impl Thumbs {
         const H: u32 = 9;
         let texture = target_texture(&gpu.device, W, H);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if let Err(e) = self.painter.paint(&gpu.device, &gpu.queue, &sp_render::vello::Scene::new(), &view, W, H) {
-            eprintln!("Could not draw a waiting tile: {e}");
-            return None;
-        }
+        let drawn = self.painter.paint(&gpu.device, &gpu.queue, &sp_render::vello::Scene::new(), &view, W, H);
+        self.note_drawn(Kind::WaitingTile, &drawn);
+        drawn.ok()?;
         let id = egui_renderer.register_native_texture(&gpu.device, &view, wgpu::FilterMode::Linear);
         self.waiting = Some((texture, id));
         Some(id)
@@ -206,13 +243,9 @@ impl Thumbs {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         // One that can't be drawn is kept blank (a new texture is clear), so the window doesn't
         // try again, and ask to be drawn again, on every frame.
-        let failed = match self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, THUMB_W, THUMB_H) {
-            Ok(()) => None,
-            Err(e) => {
-                eprintln!("Could not draw a thumbnail: {e}");
-                Some(std::time::Instant::now())
-            }
-        };
+        let drawn = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, THUMB_W, THUMB_H);
+        self.note_drawn(Kind::Thumbnail, &drawn);
+        let failed = drawn.is_err().then(std::time::Instant::now);
         let overflow = built.overflow && failed.is_none();
         let id = egui_renderer.register_native_texture(&gpu.device, &view, wgpu::FilterMode::Linear);
         let pages = web_pages(layers.slide, theme);
@@ -284,10 +317,10 @@ impl Thumbs {
         }
         let (texture, id) = self.canvas.as_ref()?;
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if let Err(e) = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, W, H) {
-            eprintln!("Could not draw the slide being edited: {e}");
-        }
-        Some(*id)
+        let id = *id;
+        let drawn = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, W, H);
+        self.note_drawn(Kind::Canvas, &drawn);
+        Some(id)
     }
 
     /// Draws the audience screen's picture for the preview. Returns it, and the picture that
@@ -314,11 +347,11 @@ impl Thumbs {
         }
         let Some((texture, id)) = self.previews[back].as_ref() else { return (before, None) };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if let Err(e) = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, PREVIEW_W, PREVIEW_H) {
-            eprintln!("Could not draw the preview: {e}");
-        }
+        let id = *id;
+        let drawn = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, PREVIEW_W, PREVIEW_H);
+        self.note_drawn(Kind::Preview, &drawn);
         self.preview_front = back;
-        (Some(*id), before)
+        (Some(id), before)
     }
 }
 

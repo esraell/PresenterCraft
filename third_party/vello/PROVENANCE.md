@@ -11,7 +11,8 @@ under the same two licences, so the folder stays usable on Vello's own terms.
 
 The workspace's `Cargo.toml` puts this copy in place of the published crate with
 `[patch.crates-io]`. `vello_encoding` and `vello_shaders` are still the published 0.12.0
-crates, unchanged; no shader is changed.
+crates, unchanged; no shader's source is changed. The shaders are compiled differently, though:
+with bounds checks (see below).
 
 ## Why
 
@@ -38,32 +39,60 @@ Everything is marked `SoftPresenter:` in the source. Removed from the published 
 
 - **`src/scratch.rs` (new, SoftPresenter's own):** the sizes of the scratch buffers for one
   frame (a resting size, what recent frames used, and a guess from the scene's path count for
-  one not drawn yet), how they are judged against the counters the GPU kept, how they grow
-  after a frame that ran out of room (never past 1 GiB for one frame), how long a heavy
-  frame's sizes are remembered, and which scenes are known to fit already. Its tests run with
-  `cargo test -p vello --lib scratch`.
+  one not drawn yet); the one place every frame's sizes go through, which keeps each buffer
+  within what the GPU allows and the segments buffer no shorter than the segment counts; how
+  the counters the GPU kept are read and judged, counters it never wrote being told apart from
+  a frame that fitted; how the sizes grow after a frame that ran out of room; the most one
+  frame may have (1 GiB in all, counted as the buffers really made, for the first run of a
+  frame as for the ones after, and never by refusing a scene for room that other scenes
+  left behind); how long a heavy frame's sizes are remembered; and which scenes are known to
+  fit, or to be too heavy, already, by a fingerprint of the scene.
 - **`src/lib.rs`:**
   - `Renderer::render_to_texture` now draws in two submissions. The coarse stages run first
-    with scratch sizes taken from what recent frames used; their counters are read back
-    (waiting for this frame's own submission only, by asking the device again and again and
-    never waiting inside it, where a lock would hold up another thread presenting a window);
-    if anything ran out of room the frame is
-    run again with more, and only a frame that fitted goes on to the fine stage. `Ok` now
-    means the scene was drawn. A scene that was drawn before at the same size and fitted (a
-    playing video, frame after frame) is not waited for: the same scene always counts the
-    same.
+    with scratch sizes taken from what recent frames used; their counters are read back; if
+    anything ran out of room the frame is run again with more, and only a frame that fitted
+    goes on to the fine stage. An error means nothing was drawn: `Error::SceneTooHeavy` (the
+    scene needs more than a frame may have; remembered, so the same scene is refused at once
+    the next time without being sent to the GPU), `Error::GpuTooSlow` (see the wait, below) or
+    `Error::FrameDropped` (the GPU never ran the frame: the counters were not written).
+  - `Ok` means the scene was sent to be drawn in full, with one case taken on trust: a scene
+    that was drawn before at the same size and fitted (a playing video, frame after frame) is
+    not read back again, since the same scene always counts the same. Nothing checks that
+    frame; the bounds checks below are what keep a wrong guess there from doing harm.
+  - The wait for the counters only ever asks the device how far the GPU has got
+    (`PollType::Poll`), again and again; the renderer never waits inside the device. A wait
+    with a time limit for one submission, which an earlier version of this change made, trips
+    an assertion inside wgpu 30 when another thread submits and polls the same device (tried
+    by itself, within five hundred waits). One call waits 0.4 seconds at most, over all the
+    runs of its frame, and then gives the frame up with `Error::GpuTooSlow`, keeping the room
+    found so far for the next try. The longest whole call seen in the tests, for a heavy 4K
+    slide run again, with other threads working the same device as hard as they could, was
+    about 100 ms (103 ms).
   - Vello's own single pass is kept as `Renderer::render_to_texture_unchecked`, and is still
     what a renderer with `use_cpu` runs.
-  - New: `Renderer::rest` (give back what a heavy frame took, when drawing stops),
-    `Renderer::set_fixed_scratch`, `Renderer::spare_bytes`, `Renderer::scratch_wanted`,
-    `Renderer::scratch_reruns`, `Renderer::scratch_unwaited`; `Error::SceneTooHeavy` and
+  - New: `Renderer::rest` (give back what a heavy frame took, when drawing stops; it never
+    waits, and says whether the GPU still holds some of it), `Renderer::set_fixed_scratch`,
+    `Renderer::spare_bytes`, `Renderer::scratch_wanted`, `Renderer::scratch_reruns`,
+    `Renderer::scratch_runs`, `Renderer::scratch_unwaited`; the errors above and
     `Error::GpuWait`; the types `ScratchSizes`, `ScratchPlan` and `ScratchRoom`.
 - **`src/render.rs`:** `Render::render_encoding_coarse` takes the scratch room for the frame
-  and writes it over the constants `RenderConfig::new` starts with, and takes a fingerprint
+  and writes it over the constants `RenderConfig::new` starts with, and takes the fingerprint
   of the scene as it is sent to the GPU; `Render::abandon_fine` frees a frame that will be
-  run again; `Render::scratch_plan` and `Render::scene_print`.
+  run again; `pictures_only` keeps, of a frame that is refused before it is run, the commands
+  that put its pictures in the atlas; `Render::scratch_plan` and `Render::scene_print`.
 - **`src/wgpu_engine.rs`:**
-  - `run_recording` returns the submission it made, so that a caller can wait for it.
+  - The shaders are compiled with bounds checks (`ShaderRuntimeChecks::bounds_checks`), which
+    upstream leaves off. Not every stage stops writing when its scratch buffer is full
+    (`tile_alloc.wgsl` clears the tiles it could not allocate; `path_tiling.wgsl` trusts that
+    the segments fit). With upstream's constant sizes that is rare; with sizes that follow
+    the drawing a frame runs out of room as a matter of course, and an unchecked write past a
+    buffer faults the GPU: macOS drops the frame, restarts the GPU under every app on the
+    computer, and after a few faults ignores the process. Measured on an Apple GPU, the
+    checks cost nothing that shows: a song slide and a full reading, at 1080p and 4K, took the
+    same time with and without them to within 2%, which is the difference between two runs.
+  - The buffer the counters are copied into is made for that one copy with every byte set to
+    0xFF (`unread_download`), where upstream takes a zeroed buffer from the pool: a copy the
+    GPU never made would otherwise read as "everything fitted".
   - The buffer pool notes when each spare buffer was handed back and can give buffers back to
     the GPU (`release_idle`, `release_larger_than`, `release_spare`, `spare_bytes`). Upstream
     keeps every buffer it ever made.
@@ -71,6 +100,22 @@ Everything is marked `SoftPresenter:` in the source. Removed from the published 
     half, which matters for buffers of tens of megabytes.
 - **`src/util.rs`:** `RenderContext` asks the GPU for its largest storage buffer sizes (up to
   1 GiB) in place of the default 128 MiB, so that a heavy frame's buffers are allowed.
+
+The crate has one `unsafe` block, upstream's own: creating the shader modules as trusted, in
+`wgpu_engine.rs`. SoftPresenter's changes add none; the bounds checks are turned on inside
+that block, which asks for more checking than upstream does, not less.
+
+## Checking it
+
+From the repository's root (inside this folder Cargo wants a lock file of the folder's own,
+which is not kept, and so goes to the network and fails without one):
+
+    cargo test -p vello --lib scratch
+
+runs the tests of `src/scratch.rs`; one of them uses a GPU if there is one. The tests that
+draw are in `crates/sp-render/tests/golden.rs`: pictures that outgrow their room many times
+over, one too heavy to draw, more slides than are kept in mind, and several threads drawing
+with one device.
 
 ## Updating
 

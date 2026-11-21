@@ -1179,7 +1179,7 @@ impl App {
         );
         let mut egui_renderer =
             egui_wgpu::Renderer::new(&gpu.device, home_format, egui_wgpu::RendererOptions::default());
-        let mut thumbs = Thumbs::new(&gpu.device)?;
+        let mut thumbs = Thumbs::new(&gpu.device, &gpu.queue)?;
         let (preview, _) = thumbs.preview(&gpu, &mut egui_renderer, &Layers::default(), &self.theme);
         // The live preview: two small textures the output thread draws the audience picture
         // into, turn about, for the Program preview to show what the screens show.

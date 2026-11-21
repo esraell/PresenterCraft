@@ -309,13 +309,31 @@ pub enum Error {
 
     // SoftPresenter: an addition.
     /// The scene needs more scratch room than the renderer may use: more than one GPU buffer
-    /// can hold, or more than the fixed sizes it was told to keep to. Nothing was drawn.
+    /// can hold, more than one frame may have in all (1 GiB), or more than the fixed sizes the
+    /// renderer was told to keep to. Nothing was drawn, and the same scene on the same target
+    /// will be refused again.
     #[cfg(feature = "wgpu")]
     #[error("The scene is too heavy to draw: it needs more scratch memory than is allowed")]
     SceneTooHeavy,
-    /// Waiting for the GPU to finish part of a frame failed, or went on for seconds.
+    /// The GPU did not finish working out the frame in the time one call may take (see
+    /// `GPU_WAIT`): it is busy with something else, or stuck. Nothing was drawn. Unlike
+    /// [`SceneTooHeavy`](Self::SceneTooHeavy) this says nothing about the scene: drawing it
+    /// again later may well work, and goes on from the room found so far.
     #[cfg(feature = "wgpu")]
-    #[error("Waiting for the GPU failed: {0}")]
+    #[error("The GPU took too long to work out the picture")]
+    GpuTooSlow,
+    /// The GPU never ran the frame's commands: the counters read back were not written. macOS
+    /// does that to the frames of a process whose GPU work faulted. Nothing was drawn, and the
+    /// frame is not taken for one that fitted.
+    #[cfg(feature = "wgpu")]
+    #[error("The GPU dropped the picture without working it out")]
+    FrameDropped,
+    /// Asking the device how far the GPU has got failed. The renderer only ever asks without
+    /// waiting ([`wgpu::PollType::Poll`]), for which wgpu 30 has no error to give (its two
+    /// errors, a timeout and a wrong submission, belong to waits), so this is not expected to
+    /// be seen; it exists because the call can fail by its type.
+    #[cfg(feature = "wgpu")]
+    #[error("Asking the GPU how far it has got failed: {0}")]
     GpuWait(#[from] wgpu::PollError),
 
     /// Failed to compile the shaders.
@@ -350,10 +368,15 @@ pub struct Renderer {
     resolver: Resolver,
     image_atlas: Option<recording::ImageProxy>,
     shaders: FullShaders,
-    // SoftPresenter: how much scratch room recent frames used, and the last frame sent to the
-    // GPU.
+    // SoftPresenter: how much scratch room recent frames used; how many times the coarse
+    // stages were sent to the GPU; and, while spare buffers given back are still held by
+    // frames on the GPU, the flag the device sets when those frames have left it.
     scratch: scratch::Scratch,
-    last_submitted: Option<wgpu::SubmissionIndex>,
+    coarse_runs: u64,
+    giving_back: Option<std::sync::Arc<AtomicBool>>,
+    // SoftPresenter: the longest one call waits for the GPU (`GPU_WAIT`, unless a test set
+    // another).
+    longest_wait: std::time::Duration,
     #[cfg(feature = "debug_layers")]
     debug: debug::DebugRenderer,
     #[cfg(feature = "wgpu-profiler")]
@@ -441,39 +464,17 @@ impl Default for RendererOptions {
     }
 }
 
-/// SoftPresenter: the longest a frame's earlier stages are waited for before the frame is given
-/// up as an error, and how often the GPU is looked at meanwhile.
+/// SoftPresenter: the longest one call to `render_to_texture` waits for the GPU, over all the
+/// runs of its frame, before it gives the frame up with [`Error::GpuTooSlow`]; and how often
+/// the device is looked at meanwhile.
+///
+/// The wait is for the coarse stages only. A thread that draws for an audience must not stand
+/// still for long behind a GPU that is stuck, so this is a few times the longest wait seen
+/// with a GPU that is merely busy, and no more (`PROVENANCE.md` has the measurements).
 #[cfg(feature = "wgpu")]
-const GPU_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const GPU_WAIT: std::time::Duration = std::time::Duration::from_millis(400);
 #[cfg(feature = "wgpu")]
 const GPU_LOOK: std::time::Duration = std::time::Duration::from_micros(200);
-
-/// SoftPresenter: waits until one submission has left the GPU, for no longer than `longest`.
-///
-/// The device is asked again and again without waiting inside it. A wait inside the device
-/// holds a lock that presenting a window and destroying a texture need, so another thread
-/// drawing with the same device would stand still for as long as this one waited.
-#[cfg(feature = "wgpu")]
-fn wait_for_gpu(
-    device: &Device,
-    submitted: &wgpu::SubmissionIndex,
-    longest: std::time::Duration,
-) -> Result<()> {
-    let started = std::time::Instant::now();
-    loop {
-        let looked = device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submitted.clone()),
-            timeout: Some(std::time::Duration::ZERO),
-        });
-        match looked {
-            Ok(_) => return Ok(()),
-            Err(wgpu::PollError::Timeout) if started.elapsed() < longest => {
-                std::thread::sleep(GPU_LOOK);
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-}
 
 #[cfg(feature = "wgpu")]
 struct RenderResult {
@@ -510,7 +511,9 @@ impl Renderer {
             image_atlas: None,
             shaders,
             scratch: scratch::Scratch::new(largest_buffer),
-            last_submitted: None,
+            coarse_runs: 0,
+            giving_back: None,
+            longest_wait: GPU_WAIT,
             #[cfg(feature = "debug_layers")]
             debug,
             #[cfg(feature = "wgpu-profiler")]
@@ -539,10 +542,14 @@ impl Renderer {
     /// is kept as [`render_to_texture_unchecked`](Self::render_to_texture_unchecked). The
     /// scratch buffers are sized from what recent frames used; the frame's counters are read
     /// back before its last stage, and a frame that ran out of room is run again with more.
-    /// `Ok` means the whole scene was drawn. The call waits for the GPU to finish the frame's
-    /// earlier stages (this frame's work only, and without holding the device, so another
-    /// thread drawing with the same device is not held up), unless the same scene was drawn at
-    /// this size before and fitted.
+    ///
+    /// `Ok` means the scene was sent to be drawn in full, with one exception that is taken on
+    /// trust: a scene that was drawn at this size before and fitted (a playing video, frame
+    /// after frame) is not checked again, since the same scene always counts the same.
+    /// Otherwise the call waits for the GPU to finish the frame's earlier stages, by asking
+    /// the device again and again and never waiting inside it, and for no longer than
+    /// `GPU_WAIT` in all. The errors SoftPresenter added say why nothing was drawn:
+    /// [`Error::SceneTooHeavy`], [`Error::GpuTooSlow`] and [`Error::FrameDropped`].
     pub fn render_to_texture(
         &mut self,
         device: &Device,
@@ -579,14 +586,19 @@ impl Renderer {
         texture: &TextureView,
         params: &RenderParams,
     ) -> Result<()> {
-        // Each run at least doubles what was short, so this is far more than any scene the GPU
-        // can hold needs.
+        // A stage that runs out of room still counts all it needed, so each run settles at
+        // least the first stage that was short: five stages, and the segments, which have no
+        // flag of their own, are settled in seven runs at most. This is the end for a frame
+        // that somehow is not.
         const RUNS: usize = 16;
         let now = std::time::Instant::now();
+        let give_up_at = now + self.longest_wait;
         if !self.scratch.allows(params.width, params.height) {
             return Err(Error::SceneTooHeavy);
         }
-        let mut wanted = self.scratch.wanted(now);
+        let mut room = self.scratch.room(now);
+        // The room an earlier run of this frame found it needs.
+        let mut found = None;
         for run in 0..RUNS {
             let mut render = Render::new();
             let coarse = render.render_encoding_coarse(
@@ -596,13 +608,40 @@ impl Renderer {
                 &mut self.image_atlas,
                 params,
                 true,
-                Some(self.scratch.room(wanted)),
+                Some(room),
             );
             let plan = *render
                 .scratch_plan()
                 .expect("a render given scratch sizes has a plan");
+            let print = render.scene_print();
+            self.scratch.drawing(&plan, now);
+            // A frame that would take more than one frame may have even in the least room it
+            // could be given, or a scene already found too heavy, is not sent to the GPU at
+            // all. Only its pictures are: the resolver has counted them as sent.
+            if !plan.within_the_most() || self.scratch.refused_before(print) {
+                let pictures = render::pictures_only(coarse);
+                if !pictures.commands.is_empty() {
+                    self.engine.run_recording(
+                        device,
+                        queue,
+                        &pictures,
+                        &[],
+                        "render_to_texture refused",
+                        #[cfg(feature = "wgpu-profiler")]
+                        &mut self.profiler,
+                    )?;
+                }
+                // Spare buffers still age while a scene is refused frame after frame.
+                self.engine.release_idle(
+                    now,
+                    scratch::KEPT_SPARE,
+                    self.scratch.largest_resting_buffer(),
+                    scratch::KEPT_LARGE_SPARE,
+                );
+                return Err(Error::SceneTooHeavy);
+            }
             let bump_buf = render.bump_buf();
-            let submitted = self.engine.run_recording(
+            self.engine.run_recording(
                 device,
                 queue,
                 &coarse,
@@ -611,26 +650,24 @@ impl Renderer {
                 #[cfg(feature = "wgpu-profiler")]
                 &mut self.profiler,
             )?;
-            let print = render.scene_print();
+            self.coarse_runs += 1;
             // A scene that was drawn before and fitted, given no less room now, fits again: its
             // counters need not be waited for. A playing video is this case, frame after frame.
-            let known = self.scratch.fitted_before(print, &plan, now);
-            let bump = if known {
+            // Any other frame is judged by its own counters, and only by counters the GPU
+            // really wrote: a frame it was too slow with or dropped is an error, never a fit,
+            // and is not remembered as either fitting or too heavy.
+            let verdict = if self.scratch.fitted_before(print, &plan, now) {
                 self.engine.free_download(bump_buf);
-                Ok(BumpAllocators::default())
+                Ok(scratch::Verdict::Fits)
             } else {
-                self.read_bump(device, bump_buf, submitted)
-            };
-            let verdict = match &bump {
-                _ if known => scratch::Verdict::Fits,
-                Ok(bump) => self.scratch.judge(&plan, bump, print, now),
-                Err(_) => scratch::Verdict::TooHeavy,
+                self.read_bump(device, bump_buf, give_up_at)
+                    .map(|bump| self.scratch.judge(&plan, &bump, print, now))
             };
             let mut rest = Recording::default();
-            if matches!(verdict, scratch::Verdict::Fits) {
+            if matches!(verdict, Ok(scratch::Verdict::Fits)) {
                 let target = render.out_image();
                 render.record_fine(&self.shaders, &mut rest);
-                let fine = self.engine.run_recording(
+                self.engine.run_recording(
                     device,
                     queue,
                     &rest,
@@ -639,7 +676,6 @@ impl Renderer {
                     #[cfg(feature = "wgpu-profiler")]
                     &mut self.profiler,
                 )?;
-                self.last_submitted = Some(fine);
                 if run > 0 {
                     // The stages that could not say what they needed were given room by guess,
                     // often far too much. The next frame asks for what this one used, so these
@@ -649,7 +685,7 @@ impl Renderer {
                     self.engine.release_idle(
                         now,
                         scratch::KEPT_SPARE,
-                        scratch::LARGEST_RESTING_BUFFER,
+                        self.scratch.largest_resting_buffer(),
                         scratch::KEPT_LARGE_SPARE,
                     );
                 }
@@ -667,22 +703,46 @@ impl Renderer {
             )?;
             // The buffers that were too small are of no more use.
             self.engine.release_spare();
-            bump?;
             match verdict {
-                scratch::Verdict::Again(more) => wanted = more,
-                _ => return Err(Error::SceneTooHeavy),
+                Ok(scratch::Verdict::Again(more)) if std::time::Instant::now() < give_up_at => {
+                    found = Some(more);
+                    room = self.scratch.room_to_run_again(more);
+                }
+                // Out of time between two runs: the next frame starts with the room found.
+                Ok(scratch::Verdict::Again(more)) => {
+                    self.scratch.keep(more, now);
+                    return Err(Error::GpuTooSlow);
+                }
+                Ok(_) => return Err(Error::SceneTooHeavy),
+                Err(e) => {
+                    if let Some(more) = found {
+                        self.scratch.keep(more, now);
+                    }
+                    return Err(e);
+                }
             }
         }
         Err(Error::SceneTooHeavy)
     }
 
-    /// SoftPresenter: waits for the coarse stages of this frame and reads their counters.
+    /// SoftPresenter: reads the counters the coarse stages of this frame kept, once the GPU
+    /// has finished them, or gives up at `give_up_at`.
+    ///
+    /// The device is only ever asked how far it has got ([`wgpu::PollType::Poll`]), again and
+    /// again; it is never waited in. A wait holds a lock that presenting a window and
+    /// destroying a texture need, so another thread drawing with the same device would stand
+    /// still meanwhile; and a wait for one submission with a time limit, while another thread
+    /// submits and polls, can trip an assertion inside wgpu 30 (in `Device::maintain`: the
+    /// queue is found empty with the awaited submission not yet counted as finished), which
+    /// would take the calling thread down. The mapping asked for here finishes when the
+    /// frame's submission has, so looking for it is all the waiting that is needed.
     fn read_bump(
         &mut self,
         device: &Device,
         bump_buf: recording::BufferProxy,
-        submitted: wgpu::SubmissionIndex,
+        give_up_at: std::time::Instant,
     ) -> Result<BumpAllocators> {
+        use std::sync::mpsc::TryRecvError;
         let read = |engine: &WgpuEngine| -> Result<BumpAllocators> {
             let buffer = engine
                 .get_download(bump_buf)
@@ -692,28 +752,34 @@ impl Renderer {
             slice.map_async(wgpu::MapMode::Read, move |mapped| {
                 let _ = sender.send(mapped);
             });
-            wait_for_gpu(device, &submitted, GPU_WAIT)?;
-            // The mapping is nearly always done by now; if not, it follows at once.
-            let started = std::time::Instant::now();
-            let mapped = loop {
+            loop {
+                device.poll(wgpu::PollType::Poll)?;
                 match receiver.try_recv() {
-                    Ok(mapped) => break mapped,
-                    Err(std::sync::mpsc::TryRecvError::Empty) if started.elapsed() < GPU_WAIT => {
-                        device.poll(wgpu::PollType::Poll)?;
+                    Ok(mapped) => break mapped?,
+                    Err(TryRecvError::Empty) if std::time::Instant::now() < give_up_at => {
                         std::thread::sleep(GPU_LOOK);
                     }
-                    Err(_) => break Err(wgpu::BufferAsyncError),
+                    Err(TryRecvError::Empty) => return Err(Error::GpuTooSlow),
+                    Err(TryRecvError::Disconnected) => return Err(wgpu::BufferAsyncError.into()),
                 }
-            };
-            mapped?;
+            }
             let bytes = slice
                 .get_mapped_range()
                 .map_err(|_| wgpu::BufferAsyncError)?;
-            Ok(bytemuck::pod_read_unaligned(&bytes))
+            // A buffer still as it was made was never written: the GPU dropped the frame.
+            scratch::counters_read_back(&bytes).ok_or(Error::FrameDropped)
         };
         let bump = read(&self.engine);
         self.engine.free_download(bump_buf);
         bump
+    }
+
+    /// SoftPresenter: sets the longest one call to `render_to_texture` waits for the GPU before
+    /// it gives the frame up with [`Error::GpuTooSlow`], in place of `GPU_WAIT`. For tests of
+    /// what happens when the GPU is too slow: with no time at all, every frame that has to be
+    /// waited for is given up.
+    pub fn set_longest_wait(&mut self, wait: std::time::Duration) {
+        self.longest_wait = wait;
     }
 
     /// SoftPresenter: draws every frame with these scratch sizes as they are, never reading
@@ -724,28 +790,40 @@ impl Renderer {
     }
 
     /// SoftPresenter: call when nothing more will be drawn for a while. What a heavy frame made
-    /// the scratch buffers grow to is given back to the GPU now: every spare buffer if a heavy
+    /// the scratch buffers grow to is given back to the GPU: every spare buffer if a heavy
     /// frame was drawn lately, and any large one left over from an earlier one. The sizes stay
     /// remembered for a few seconds, so drawing the same thing again soon does not have to find
     /// them out again. After light frames this does nothing.
-    pub fn rest(&mut self, device: &Device) {
+    ///
+    /// This never waits. A buffer given back is freed once the last frame that used it has
+    /// left the GPU, and only when the device is next looked at, which may be long after if
+    /// nothing is being drawn. So the call returns `false` while that is still to come: call
+    /// it again in a moment (each call looks at the device once), until it returns `true`.
+    pub fn rest(&mut self, device: &Device, queue: &Queue) -> bool {
+        use std::sync::atomic::Ordering;
         let before = self.engine.spare_bytes();
         if self.scratch.is_heavy(std::time::Instant::now()) {
             self.engine.release_spare();
         } else {
-            self.engine.release_larger_than(scratch::LARGEST_RESTING_BUFFER);
+            self.engine
+                .release_larger_than(self.scratch.largest_resting_buffer());
         }
         if self.engine.spare_bytes() < before {
-            // A buffer is freed once the last frame that used it has left the GPU, and only
-            // when the device is next looked at: that may be long after, with nothing being
-            // drawn. So wait for this renderer's last frame to leave the GPU (a few
-            // milliseconds; given up on after a fifth of a second) and let the device free them
-            // now.
-            if let Some(last) = &self.last_submitted {
-                let _ = wait_for_gpu(device, last, std::time::Duration::from_millis(200));
-            }
-            let _ = device.poll(wgpu::PollType::Poll);
+            // The device sets this when everything sent to the GPU so far has left it.
+            let left = std::sync::Arc::new(AtomicBool::new(false));
+            let flag = left.clone();
+            queue.on_submitted_work_done(move || flag.store(true, Ordering::Release));
+            self.giving_back = Some(left);
         }
+        let Some(left) = &self.giving_back else {
+            return true;
+        };
+        let _ = device.poll(wgpu::PollType::Poll);
+        if !left.load(Ordering::Acquire) {
+            return false;
+        }
+        self.giving_back = None;
+        true
     }
 
     /// SoftPresenter: the bytes of GPU memory this renderer keeps in spare buffers between
@@ -769,6 +847,13 @@ impl Renderer {
     /// SoftPresenter: how many times a frame had to be run again for want of scratch room.
     pub fn scratch_reruns(&self) -> u64 {
         self.scratch.reruns()
+    }
+
+    /// SoftPresenter: how many times the coarse stages of a frame were sent to the GPU: once
+    /// for a frame that fitted, once more for each time it was run again, and not at all for
+    /// a scene already known to be too heavy.
+    pub fn scratch_runs(&self) -> u64 {
+        self.coarse_runs
     }
 
     /// Vello 0.12's own `render_to_texture`: one pass with constant scratch sizes, which does

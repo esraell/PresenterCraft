@@ -16,6 +16,54 @@ pub struct Painter {
     paints: u64,
 }
 
+/// Why a picture was not painted. The texture it was to go into is left as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaintError {
+    /// The picture needs more working memory on the GPU than one picture may take (a slide
+    /// with a whole book pasted into it, say). The same picture at the same size is refused
+    /// every time, at once, so asking again is no use.
+    TooHeavy,
+    /// The GPU did not work the picture out: it was too slow this time, or dropped it. That
+    /// says nothing about the picture, so it is worth asking for again in a moment.
+    NotNow(String),
+    /// Anything else the renderer reports.
+    Failed(String),
+}
+
+impl PaintError {
+    /// True when the same picture may well be painted if asked for again in a moment.
+    pub fn worth_trying_again(&self) -> bool {
+        matches!(self, PaintError::NotNow(_))
+    }
+}
+
+impl std::fmt::Display for PaintError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PaintError::TooHeavy => f.write_str("there is too much on it to draw"),
+            PaintError::NotNow(why) | PaintError::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for PaintError {}
+
+impl From<PaintError> for String {
+    fn from(error: PaintError) -> String {
+        error.to_string()
+    }
+}
+
+impl From<vello::Error> for PaintError {
+    fn from(error: vello::Error) -> PaintError {
+        match error {
+            vello::Error::SceneTooHeavy => PaintError::TooHeavy,
+            vello::Error::GpuTooSlow | vello::Error::FrameDropped => PaintError::NotNow(error.to_string()),
+            other => PaintError::Failed(other.to_string()),
+        }
+    }
+}
+
 /// A picture that changes many times a second (a playing video), kept in a GPU texture of its
 /// own: each new picture's pixels are sent straight into it, where a [`Picture`] made new each
 /// time would be copied once more and take a new place in the renderer's own texture. The
@@ -184,10 +232,18 @@ impl Painter {
         });
     }
 
-    /// Paints into a view of a texture made by [`target_texture`] with the same size. `Ok` means
-    /// the whole picture was drawn: the painter's working memory on the GPU is sized from what
-    /// it draws, and a picture that needs more than the one before is worked out again with
-    /// more. The call waits for the GPU to work the picture out (not to fill in its pixels).
+    /// Paints into a view of a texture made by [`target_texture`] with the same size.
+    ///
+    /// The painter's working memory on the GPU is sized from what it draws. The call waits for
+    /// the GPU to work the picture out (not to fill in its pixels), looks at whether it had the
+    /// room, and works it out again with more if not. So `Ok` means the whole picture was sent
+    /// to be drawn, and an error that nothing was: the texture keeps what it had.
+    ///
+    /// Two things are taken on trust. A picture that was painted at this size before and had
+    /// room (a playing video, frame after frame) is not looked at again. And the wait is short:
+    /// for at most four tenths of a second in all, after which the picture is given up with
+    /// [`PaintError::NotNow`], so that a thread drawing for an audience is never held for long
+    /// by a GPU that is stuck.
     pub fn paint(
         &mut self,
         device: &wgpu::Device,
@@ -196,7 +252,7 @@ impl Painter {
         target: &wgpu::TextureView,
         w: u32,
         h: u32,
-    ) -> Result<(), String> {
+    ) -> Result<(), PaintError> {
         self.paints += 1;
         let params =
             RenderParams { base_color: Color::BLACK, width: w, height: h, antialiasing_method: AaConfig::Area };
@@ -217,17 +273,21 @@ impl Painter {
             );
             let done = self.renderer.render_to_texture(device, queue, &padded, target, &params);
             self.forget_unused_moving_pictures(scene);
-            return done.map_err(|e| e.to_string());
+            return done.map_err(PaintError::from);
         }
         let done = self.renderer.render_to_texture(device, queue, scene, target, &params);
         self.forget_unused_moving_pictures(scene);
-        done.map_err(|e| e.to_string())
+        done.map_err(PaintError::from)
     }
 
     /// Call when nothing more will be drawn for a while: GPU memory that a heavy picture made
-    /// the painter take is given back. Costs nothing after ordinary slides.
-    pub fn rest(&mut self, device: &wgpu::Device) {
-        self.renderer.rest(device);
+    /// the painter take is given back. Costs nothing after ordinary slides, and never waits.
+    ///
+    /// The GPU lets the memory go once the last picture that used it has left it, and only
+    /// when the device is next looked at. So this returns `false` while that is still to come:
+    /// call it again in a moment (each call looks at the device), until it returns `true`.
+    pub fn rest(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+        self.renderer.rest(device, queue)
     }
 
     /// How many pictures the painter has been asked for.
@@ -244,6 +304,19 @@ impl Painter {
     /// pictures before it.
     pub fn reruns(&self) -> u64 {
         self.renderer.scratch_reruns()
+    }
+
+    /// How many times a picture was sent to the GPU to be worked out: once for one that had
+    /// room, once more for each time it was worked out again, and not at all for one already
+    /// known to be too heavy.
+    pub fn runs(&self) -> u64 {
+        self.renderer.scratch_runs()
+    }
+
+    /// Sets how long one [`Painter::paint`] waits for the GPU before it gives the picture up
+    /// with [`PaintError::NotNow`]. For tests of what happens when the GPU is too slow.
+    pub fn wait_at_most(&mut self, wait: std::time::Duration) {
+        self.renderer.set_longest_wait(wait);
     }
 
     /// Keeps the painter's working memory at these sizes whatever is drawn, as the renderer did

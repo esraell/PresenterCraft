@@ -1031,10 +1031,11 @@ fn heavy_scenes(w: u32, h: u32, sentences: usize) -> Vec<(&'static str, sp_rende
     vec![("reading", first), ("dissolve", dissolve), ("wipe", wipe), ("shapes", shapes), ("photo", over_photo)]
 }
 
-/// A painter on a GPU of its own, as each drawing thread of the app has.
+/// A painter with a GPU device, its own or one it shares with another painter as the app's two
+/// drawing threads do.
 struct Easel {
-    cx: RenderContext,
-    id: usize,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     painter: Painter,
 }
 
@@ -1042,8 +1043,15 @@ impl Easel {
     fn new() -> Easel {
         let mut cx = RenderContext::new();
         let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
-        let painter = Painter::new(&cx.devices[id].device).expect("painter");
-        Easel { cx, id, painter }
+        let (device, queue) = (cx.devices[id].device.clone(), cx.devices[id].queue.clone());
+        let painter = Painter::new(&device).expect("painter");
+        Easel { device, queue, painter }
+    }
+
+    /// Another painter drawing with the same device.
+    fn sharing_the_device_of(other: &Easel) -> Easel {
+        let painter = Painter::new(&other.device).expect("painter");
+        Easel { device: other.device.clone(), queue: other.queue.clone(), painter }
     }
 
     /// A painter whose working memory stays at these sizes, as the renderer's did before it
@@ -1055,20 +1063,26 @@ impl Easel {
     }
 
     fn paint(&mut self, scene: &sp_render::vello::Scene, w: u32, h: u32) -> Result<Vec<u8>, String> {
-        let (device, queue) = (&self.cx.devices[self.id].device, &self.cx.devices[self.id].queue);
-        let texture = target_texture(device, w, h);
+        let texture = target_texture(&self.device, w, h);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.painter.paint(device, queue, scene, &view, w, h)?;
-        read_pixels(device, queue, &texture)
+        self.painter.paint(&self.device, &self.queue, scene, &view, w, h)?;
+        read_pixels(&self.device, &self.queue, &texture)
     }
 
+    /// Lets the painter give memory back, and waits until the GPU has let it go.
     fn rest(&mut self) {
-        self.painter.rest(&self.cx.devices[self.id].device);
+        let started = std::time::Instant::now();
+        while !self.painter.rest(&self.device, &self.queue) {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "the GPU lets the memory go");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 }
 
-/// Passes when two drawings of one scene are the same picture: the GPU may round a pixel's
-/// edge one step differently from run to run, and nothing more.
+/// Passes when two drawings of one scene are the same picture. The GPU adds up the edges
+/// crossing a pixel in whatever order its threads reach them, so a pixel may come out a step
+/// or so differently from run to run: one step of 255 on up to a hundredth of the pixels, or
+/// three steps on up to a thousandth. Anything missing or misplaced differs by far more.
 fn assert_same_picture(name: &str, a: &[u8], b: &[u8]) {
     assert_eq!(a.len(), b.len(), "{name}: sizes differ");
     let mut differing = 0usize;
@@ -1081,7 +1095,7 @@ fn assert_same_picture(name: &str, a: &[u8], b: &[u8]) {
     }
     let share = differing as f64 / (a.len() / 4) as f64;
     assert!(
-        worst <= 3 && share < 0.001,
+        (worst <= 1 && share < 0.01) || (worst <= 3 && share < 0.001),
         "{name}: {differing} pixels differ ({:.3}%), by up to {worst} of 255",
         share * 100.0
     );
@@ -1179,4 +1193,346 @@ fn a_painter_goes_from_heavy_to_light_and_back_and_gives_memory_back() {
     let resting = small.painter.spare_bytes();
     assert!(resting > 0 && resting < 48 << 20, "a light slide's memory stays ready, and is small: {resting} bytes");
     assert_eq!(small.painter.reruns(), 0, "a light slide fits the resting room");
+}
+
+/// Draws `count` rectangles over a scene, each covering the whole picture, each in a colour of
+/// its own. Every one of them touches every tile, so a few hundred need far more room for
+/// tiles and command lists than text ever does.
+fn cover_many_times(scene: &mut sp_render::vello::Scene, count: u32, w: u32, h: u32) {
+    use sp_render::vello::{kurbo, peniko};
+    let whole = kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+    for i in 0..count {
+        let colour = cover_colour(i);
+        let colour = peniko::Color::from_rgb8(colour[0], colour[1], colour[2]);
+        scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, colour, None, &whole);
+    }
+}
+
+/// The colour of the `i`th rectangle of [`cover_many_times`].
+fn cover_colour(i: u32) -> [u8; 3] {
+    [(40 + i * 37 % 200) as u8, (40 + i * 91 % 200) as u8, (40 + i * 53 % 200) as u8]
+}
+
+/// Room for a picture covered a few hundred times, kept whatever is drawn: 430 MB.
+const ROOM_FOR_COVERS: ScratchSizes = ScratchSizes {
+    lines: 1 << 19,
+    bin_data: 1 << 18,
+    tiles: 1 << 24,
+    seg_counts: 1 << 19,
+    segments: 1 << 19,
+    blend_spill: 1 << 12,
+    ptcl: 1 << 26,
+};
+
+/// A picture covered three hundred times over needs many times the room a painter starts with,
+/// in stage after stage. It is drawn all the same, exactly as by a painter given the room from
+/// the start, and never comes back as drawn while the screen stays empty.
+#[test]
+fn a_picture_that_outgrows_its_room_many_times_over_is_still_drawn() {
+    let (w, h) = (3840, 2160);
+    let mut scene = sp_render::vello::Scene::new();
+    cover_many_times(&mut scene, 300, w, h);
+    let mut fresh = Easel::new();
+    let drawn = fresh.paint(&scene, w, h).expect("the painter finds the room");
+    let top = cover_colour(299);
+    for (x, y) in [(0, 0), (w / 2, h / 2), (w - 1, h - 1), (17, h - 40)] {
+        assert!(is_about(pixel(&drawn, w, x, y), top), "the top rectangle shows at {x},{y}");
+    }
+    assert!(fresh.painter.reruns() > 0, "it needed more than the room a painter starts with");
+    let roomy = Easel::kept_at(ROOM_FOR_COVERS).paint(&scene, w, h).expect("paint with plenty of room");
+    assert_same_picture("covered 300 times", &drawn, &roomy);
+    // Drawn again, and again after a rest, it is the same picture.
+    let again = fresh.paint(&scene, w, h).expect("paint again");
+    assert_same_picture("covered 300 times, again", &again, &roomy);
+    fresh.rest();
+    let rested = fresh.paint(&scene, w, h).expect("paint after a rest");
+    assert_same_picture("covered 300 times, after a rest", &rested, &roomy);
+}
+
+/// A picture covered twelve thousand times over needs more memory than one picture may take.
+/// It is refused, every time it is asked for; it is never reported as drawn. A picture that can
+/// be drawn, asked for next, is drawn in full, its photograph included.
+#[test]
+fn a_picture_too_heavy_to_draw_is_refused_and_the_next_one_is_drawn() {
+    let (w, h) = (3840, 2160);
+    let (name, over_photo) = heavy_scenes(w, h, 3).swap_remove(4);
+    assert_eq!(name, "photo");
+    let mut too_heavy = over_photo.clone();
+    cover_many_times(&mut too_heavy, 12_000, w, h);
+    let expected = Easel::new().paint(&over_photo, w, h).expect("paint");
+    assert!(count_lit(&expected) > 1_000, "the words over the photograph are drawn");
+
+    // The first thing a new painter is asked for, photograph and all.
+    let mut easel = Easel::new();
+    let texture = target_texture(&easel.device, w, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let refuse = |easel: &mut Easel| easel.painter.paint(&easel.device, &easel.queue, &too_heavy, &view, w, h);
+    assert_eq!(refuse(&mut easel), Err(sp_render::PaintError::TooHeavy), "too heavy, and says so");
+    // Asked for again and again, as for a slide with a video playing behind it, it is refused
+    // without being sent to the GPU, and takes no memory.
+    let (runs, spare) = (easel.painter.runs(), easel.painter.spare_bytes());
+    let started = std::time::Instant::now();
+    for attempt in 0..200 {
+        assert_eq!(refuse(&mut easel), Err(sp_render::PaintError::TooHeavy), "attempt {attempt}");
+    }
+    assert_eq!(easel.painter.runs(), runs, "known to be too heavy: not tried again");
+    assert_eq!(easel.painter.spare_bytes(), spare, "and nothing is kept for it");
+    eprintln!("a refusal already known takes {:?}", started.elapsed() / 200);
+    assert!(read_pixels(&easel.device, &easel.queue, &texture).expect("read back").iter().all(|byte| *byte == 0));
+
+    let after = easel.paint(&over_photo, w, h).expect("a picture that fits is drawn after one that did not");
+    assert_same_picture("after a refusal", &after, &expected);
+    // The same once more, and the refusal is still remembered.
+    assert_eq!(refuse(&mut easel), Err(sp_render::PaintError::TooHeavy), "still too heavy");
+    assert_eq!(easel.painter.runs(), runs + 1, "only the picture that fitted was sent to the GPU");
+    let after = easel.paint(&over_photo, w, h).expect("paint");
+    assert_same_picture("after a second refusal", &after, &expected);
+    easel.rest();
+    assert!(easel.painter.spare_bytes() < 64 << 20, "a refused picture leaves little behind");
+}
+
+/// Twelve different slides drawn in turn, three times round: more than a painter keeps in mind
+/// as known to fit. Each is the right picture every time.
+#[test]
+fn more_slides_than_a_painter_keeps_in_mind_are_each_drawn_right() {
+    let (w, h) = (480, 270);
+    let theme = Theme::builtin();
+    let mut fonts = Fonts::new();
+    let scenes: Vec<_> =
+        (0..12).map(|seed| build_scene(&mut fonts, Some(&dense_passage(seed, 3)), &theme, w, h).scene).collect();
+    let mut reference = Easel::kept_at(ROOMY);
+    let expected: Vec<_> = scenes.iter().map(|scene| reference.paint(scene, w, h).expect("paint")).collect();
+    let mut easel = Easel::new();
+    for round in 0..3 {
+        for (i, scene) in scenes.iter().enumerate() {
+            let drawn = easel.paint(scene, w, h).expect("paint");
+            assert_same_picture(&format!("slide {i}, round {round}"), &drawn, &expected[i]);
+        }
+    }
+    assert_eq!(easel.painter.reruns(), 0, "thumbnails of short readings fit the room a painter starts with");
+}
+
+/// A scene with the size it is drawn at.
+type Sized = (u32, u32, sp_render::vello::Scene);
+
+/// The app's two drawing threads, each with a painter of its own on one shared device: one
+/// draws thumbnails of light slides, the other heavy slides on 4K and 1440p screens, and both
+/// ask the device to tidy up after every picture, as the app does. Two more threads make it
+/// harder than the app does: a third painter drawing tiny pictures without a pause, and a
+/// thread that only sends the device empty work and asks it to tidy up. No thread panics and
+/// every picture looked at is the right one. More slides go round on each thread than a
+/// painter keeps in mind, so every picture waits for the GPU to say whether it fitted.
+fn threads_draw_with_one_device(for_how_long: std::time::Duration) {
+    use std::time::{Duration, Instant};
+    let theme = Theme::builtin();
+    let mut fonts = Fonts::new();
+    let light: Vec<Sized> = (0..10)
+        .map(|seed| (480, 270, build_scene(&mut fonts, Some(&dense_passage(seed, 3)), &theme, 480, 270).scene))
+        .collect();
+    let heavy: Vec<Sized> = [(3840, 2160), (2560, 1440)]
+        .into_iter()
+        .flat_map(|(w, h)| heavy_scenes(w, h, 14).into_iter().map(move |(_, scene)| (w, h, scene)))
+        .collect();
+    // What each should look like, from a painter with plenty of room on a device of its own.
+    let mut reference = Easel::kept_at(ROOMY);
+    let mut expect = |scenes: &[Sized]| -> Vec<Vec<u8>> {
+        scenes.iter().map(|(w, h, scene)| reference.paint(scene, *w, *h).expect("paint the reference")).collect()
+    };
+    let (light_expected, heavy_expected) = (expect(&light), expect(&heavy));
+
+    let light_easel = Easel::new();
+    let heavy_easel = Easel::sharing_the_device_of(&light_easel);
+    let until = Instant::now() + for_how_long;
+    let draw = |name: &'static str, mut easel: Easel, scenes: &[Sized], expected: &[Vec<u8>]| {
+        let (mut drawn, mut longest) = (0usize, Duration::ZERO);
+        while Instant::now() < until {
+            let i = drawn % scenes.len();
+            let (w, h, scene) = &scenes[i];
+            let texture = target_texture(&easel.device, *w, *h);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let started = Instant::now();
+            easel.painter.paint(&easel.device, &easel.queue, scene, &view, *w, *h).expect("paint");
+            longest = longest.max(started.elapsed());
+            let pixels = read_pixels(&easel.device, &easel.queue, &texture).expect("read back");
+            assert_same_picture(&format!("{name} picture {i}, the {drawn}th drawn"), &pixels, &expected[i]);
+            let _ = easel.device.poll(wgpu::PollType::Poll);
+            drawn += 1;
+        }
+        (drawn, longest, easel.painter.reruns())
+    };
+    // A third painter draws tiny pictures as fast as it can, so that some painter is waiting
+    // for the GPU at every moment; every hundredth of its pictures is looked at.
+    let tiny: Vec<Sized> = (0..10)
+        .map(|seed| (64, 36, build_scene(&mut fonts, Some(&dense_passage(seed, 1)), &theme, 64, 36).scene))
+        .collect();
+    let tiny_expected = expect(&tiny);
+    let mut tiny_easel = Easel::sharing_the_device_of(&light_easel);
+    let scribble = move || {
+        let mut drawn = 0usize;
+        let texture = target_texture(&tiny_easel.device, 64, 36);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        while Instant::now() < until {
+            let i = drawn % tiny.len();
+            tiny_easel.painter.paint(&tiny_easel.device, &tiny_easel.queue, &tiny[i].2, &view, 64, 36).expect("paint");
+            if drawn.is_multiple_of(100) {
+                let pixels = read_pixels(&tiny_easel.device, &tiny_easel.queue, &texture).expect("read back");
+                assert_same_picture(&format!("tiny picture {i}, the {drawn}th drawn"), &pixels, &tiny_expected[i]);
+            }
+            drawn += 1;
+        }
+        drawn
+    };
+    // A fourth thread does nothing but send the device empty work and ask it to tidy up, as fast
+    // as it can: the device is looked at from two threads at every moment a painter waits.
+    let (device, queue) = (light_easel.device.clone(), light_easel.queue.clone());
+    let pester = move || {
+        let mut asked = 0u64;
+        while Instant::now() < until {
+            queue.submit([device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default()).finish()]);
+            let _ = device.poll(wgpu::PollType::Poll);
+            asked += 1;
+        }
+        asked
+    };
+    let (light_done, heavy_done, scribbled, asked) = std::thread::scope(|threads| {
+        let light_thread = threads.spawn(|| draw("light", light_easel, &light, &light_expected));
+        let heavy_thread = threads.spawn(|| draw("heavy", heavy_easel, &heavy, &heavy_expected));
+        let scribbling = threads.spawn(scribble);
+        let pestering = threads.spawn(pester);
+        (light_thread.join(), heavy_thread.join(), scribbling.join(), pestering.join())
+    });
+    let light_done = light_done.expect("the thread drawing light slides did not panic");
+    let heavy_done = heavy_done.expect("the thread drawing heavy slides did not panic");
+    let scribbled = scribbled.expect("the thread drawing tiny pictures did not panic");
+    let asked = asked.expect("the thread pestering the device did not panic");
+    eprintln!(
+        "threads sharing a device for {for_how_long:?}: light drew {} (longest paint {:?}, {} run again), heavy \
+         drew {} (longest paint {:?}, {} run again), {scribbled} tiny pictures were drawn, and the device was sent \
+         empty work and looked at {asked} times meanwhile",
+        light_done.0, light_done.1, light_done.2, heavy_done.0, heavy_done.1, heavy_done.2
+    );
+    assert!(light_done.0 > 5 && heavy_done.0 > 2 && scribbled > 5, "every thread kept drawing");
+}
+
+#[test]
+fn threads_drawing_with_one_device_do_not_trip_each_other() {
+    threads_draw_with_one_device(std::time::Duration::from_secs(3));
+}
+
+#[test]
+#[ignore = "takes most of a minute: the test above, for long enough to meet timing that is rare"]
+fn threads_drawing_with_one_device_do_not_trip_each_other_for_forty_seconds() {
+    threads_draw_with_one_device(std::time::Duration::from_secs(40));
+}
+
+/// One painter draws tiny pictures as fast as it can while another thread sends the same device
+/// empty work and asks it to tidy up, as fast as it can: tens of thousands of waits for the GPU,
+/// each with the device being looked at from another thread. The painter's wait must never trip
+/// the GPU library's own checks (a wait with a time limit did, and took the thread down).
+fn a_painter_waits_while_the_device_is_pestered(for_how_long: std::time::Duration) {
+    use std::time::Instant;
+    let (w, h) = (64, 36);
+    let theme = Theme::builtin();
+    let mut fonts = Fonts::new();
+    let scenes: Vec<_> =
+        (0..10).map(|seed| build_scene(&mut fonts, Some(&dense_passage(seed, 1)), &theme, w, h).scene).collect();
+    let mut reference = Easel::kept_at(ROOMY);
+    let expected: Vec<_> = scenes.iter().map(|scene| reference.paint(scene, w, h).expect("paint")).collect();
+    let mut easel = Easel::new();
+    let (device, queue) = (easel.device.clone(), easel.queue.clone());
+    let until = Instant::now() + for_how_long;
+    let (drawn, asked) = std::thread::scope(|threads| {
+        let pestering = threads.spawn(move || {
+            let mut asked = 0u64;
+            while Instant::now() < until {
+                queue.submit([device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default()).finish()]);
+                let _ = device.poll(wgpu::PollType::Poll);
+                asked += 1;
+            }
+            asked
+        });
+        let painting = threads.spawn(move || {
+            let texture = target_texture(&easel.device, w, h);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut drawn = 0usize;
+            while Instant::now() < until {
+                let i = drawn % scenes.len();
+                easel.painter.paint(&easel.device, &easel.queue, &scenes[i], &view, w, h).expect("paint");
+                if drawn.is_multiple_of(500) {
+                    let pixels = read_pixels(&easel.device, &easel.queue, &texture).expect("read back");
+                    assert_same_picture(&format!("picture {i}, the {drawn}th drawn"), &pixels, &expected[i]);
+                }
+                drawn += 1;
+            }
+            drawn
+        });
+        (painting.join(), pestering.join())
+    });
+    let drawn = drawn.expect("the painting thread did not panic");
+    let asked = asked.expect("the pestering thread did not panic");
+    eprintln!("{drawn} pictures waited for in {for_how_long:?}, the device pestered {asked} times meanwhile");
+    assert!(drawn > 10, "the painter kept drawing: {drawn}");
+}
+
+#[test]
+fn a_painter_waiting_for_the_gpu_is_not_tripped_by_another_thread_asking_it() {
+    a_painter_waits_while_the_device_is_pestered(std::time::Duration::from_secs(2));
+}
+
+#[test]
+#[ignore = "takes most of a minute: the test above, for long enough to meet timing that is rare"]
+fn a_painter_waiting_for_the_gpu_is_not_tripped_by_another_thread_asking_it_for_forty_seconds() {
+    a_painter_waits_while_the_device_is_pestered(std::time::Duration::from_secs(40));
+}
+
+/// A GPU too slow to work a picture out in the time a painter waits (here no time at all, so
+/// every picture is one): the picture is given up as worth asking for again, nothing of it is
+/// drawn, and nothing is learnt from it, right or wrong. Asked for again with time to wait, the
+/// same picture is drawn in full; and one that outgrows its room many times over, given up
+/// part-way again and again with a little more time each try, is drawn right in the end.
+#[test]
+fn a_picture_the_gpu_is_too_slow_with_is_given_up_and_drawn_when_asked_again() {
+    use std::time::Duration;
+    let (w, h) = (3840, 2160);
+    let (name, reading) = heavy_scenes(w, h, 14).swap_remove(0);
+    assert_eq!(name, "reading");
+    let expected = Easel::kept_at(ROOMY).paint(&reading, w, h).expect("paint with plenty of room");
+
+    let mut easel = Easel::new();
+    let texture = target_texture(&easel.device, w, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    easel.painter.wait_at_most(Duration::ZERO);
+    for attempt in 0..3 {
+        let given_up = easel.painter.paint(&easel.device, &easel.queue, &reading, &view, w, h);
+        let again = given_up.expect_err("no time to wait").worth_trying_again();
+        assert!(again, "attempt {attempt}: too slow is not too heavy");
+    }
+    let untouched = read_pixels(&easel.device, &easel.queue, &texture).expect("read back");
+    assert!(untouched.iter().all(|byte| *byte == 0), "nothing of a picture given up is drawn");
+    // With time to wait, the picture is drawn; it was not taken for one that fits, or for one
+    // too heavy.
+    easel.painter.wait_at_most(Duration::from_secs(5));
+    let runs = easel.painter.runs();
+    let drawn = easel.paint(&reading, w, h).expect("paint, with time to wait");
+    assert!(easel.painter.runs() > runs, "it was sent to the GPU and waited for");
+    assert_same_picture("after being given up", &drawn, &expected);
+
+    // A picture that needs to be worked out several times, given a little more time at each
+    // try: whichever run each try is given up in, what is left behind does no harm to the next.
+    let mut covered = sp_render::vello::Scene::new();
+    cover_many_times(&mut covered, 300, w, h);
+    let expected = Easel::kept_at(ROOM_FOR_COVERS).paint(&covered, w, h).expect("paint with plenty of room");
+    let mut easel = Easel::new();
+    easel.painter.wait_at_most(Duration::from_micros(1));
+    let mut tries = 0;
+    let drawn = loop {
+        tries += 1;
+        assert!(tries < 200, "with a tenth of a second and more to wait, it is drawn");
+        match easel.paint(&covered, w, h) {
+            Ok(drawn) => break drawn,
+            Err(error) => assert_ne!(error, sp_render::PaintError::TooHeavy.to_string(), "try {tries}"),
+        }
+        easel.painter.wait_at_most(Duration::from_millis(tries));
+    };
+    assert_same_picture("after being given up between runs", &drawn, &expected);
 }

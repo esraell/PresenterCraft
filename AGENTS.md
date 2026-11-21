@@ -86,6 +86,9 @@ message.
   it is sound. `web_mac` also calls two web view settings outside Apple's published interface
   (window occlusion detection and the page background), only when the web view answers to them;
   the owner agreed to that on 2026-11-20. Anywhere else, find a safe way or ask the owner.
+  The copy of Vello in `third_party/vello` is not a workspace crate and carries the one
+  `unsafe` block Vello itself has (it creates the shader modules); changes made to it here
+  add none.
 - **Live safety.** Nothing slow (reading files, decoding, network, waiting on NDI) runs on the
   thread that draws the screens. The audience must never see a freeze or the wrong slide because
   the operator's window was busy.

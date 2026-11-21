@@ -387,7 +387,7 @@ impl WgpuEngine {
         external_resources: &[ExternalResource<'_>],
         label: &'static str,
         #[cfg(feature = "wgpu-profiler")] profiler: &mut wgpu_profiler::GpuProfiler,
-    ) -> Result<wgpu::SubmissionIndex> {
+    ) -> Result<()> {
         let mut free_bufs: HashSet<ResourceId> = HashSet::default();
         let mut free_images: HashSet<ResourceId> = HashSet::default();
         let mut transient_map = TransientBindMap::new(external_resources);
@@ -722,8 +722,9 @@ impl WgpuEngine {
                         .bind_map
                         .get_gpu_buf(proxy.id)
                         .ok_or(Error::UnavailableBufferUsed(proxy.name, "download"))?;
-                    let usage = BufferUsages::MAP_READ | BufferUsages::COPY_DST;
-                    let buf = self.pool.get_buf(proxy.size, "download", usage, device);
+                    // SoftPresenter: a buffer of its own, marked as not yet written, in place of
+                    // one from the pool (see `unread_download`).
+                    let buf = unread_download(device, proxy.size)?;
                     encoder.copy_buffer_to_buffer(src_buf, 0, &buf, 0, proxy.size);
                     self.downloads.insert(proxy.id, buf);
                 }
@@ -756,8 +757,7 @@ impl WgpuEngine {
         // TODO: This only actually needs to happen once per frame, but run_recording happens two or three times
         #[cfg(feature = "wgpu-profiler")]
         profiler.resolve_queries(&mut encoder);
-        // SoftPresenter: the submission is handed back, so a caller can wait for exactly this work.
-        let submitted = queue.submit(Some(encoder.finish()));
+        queue.submit(Some(encoder.finish()));
         for id in free_bufs {
             if let Some(buf) = self.bind_map.buf_map.remove(&id)
                 && let MaterializedBuffer::Gpu(gpu_buf) = buf.buffer
@@ -780,7 +780,7 @@ impl WgpuEngine {
                 texture.destroy();
             }
         }
-        Ok(submitted)
+        Ok(())
     }
 
     // SoftPresenter: the three functions below are additions.
@@ -886,13 +886,26 @@ impl WgpuEngine {
         cache: Option<&PipelineCache>,
     ) -> WgpuShader {
         // SAFETY: We only call this with trusted shaders (written by Vello developers)
+        //
+        // SoftPresenter: with bounds checks, where upstream has none. The stages do not all
+        // stop writing when their scratch buffer is full (`tile_alloc` clears the tiles it could
+        // not allocate; `path_tiling` trusts that the segments fit), and upstream's constant
+        // sizes only make that rare. With sizes that follow the drawing a frame runs out of room
+        // as a matter of course, and an unchecked write past a buffer faults the GPU: macOS then
+        // drops the frame, restarts the GPU under every app, and after a few such faults ignores
+        // the process. Checked, such a write lands inside the buffer of a frame that is thrown
+        // away and run again anyway. The other checks stay off, as upstream has them: the
+        // shaders are still Vello's own.
         let shader_module = unsafe {
             device.create_shader_module_trusted(
                 wgpu::ShaderModuleDescriptor {
                     label: Some(label),
                     source: wgpu::ShaderSource::Wgsl(wgsl),
                 },
-                wgpu::ShaderRuntimeChecks::unchecked(),
+                wgpu::ShaderRuntimeChecks {
+                    bounds_checks: true,
+                    ..wgpu::ShaderRuntimeChecks::unchecked()
+                },
             )
         };
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1009,6 +1022,34 @@ impl BindMap {
             }
         }
     }
+}
+
+/// SoftPresenter: an addition. A buffer for the GPU to copy something into and the CPU to read,
+/// every byte of it set to [`UNREAD`](crate::scratch::UNREAD) first.
+///
+/// A copy the GPU never makes (macOS drops a frame's commands when the GPU faults, and all of a
+/// process's commands after a few faults) leaves the buffer as it was made. A new buffer is all
+/// zeros, which for the counters of a frame reads as "nothing ran out of room", and one from
+/// the pool would still hold the counters of an earlier frame. The bytes are written while the
+/// buffer is being made, on the CPU, so they are there whether or not the GPU ever runs
+/// anything again.
+pub(crate) fn unread_download(device: &Device, size: u64) -> Result<Buffer> {
+    // A buffer mapped as it is made must be a whole number of words.
+    let size = size.max(1).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("download"),
+        size,
+        usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+        mapped_at_creation: true,
+    });
+    let unread = vec![crate::scratch::UNREAD; size as usize];
+    buffer
+        .slice(..)
+        .get_mapped_range_mut()
+        .map_err(|_| Error::UnavailableBufferUsed("download", "marking as unread"))?
+        .copy_from_slice(&unread);
+    buffer.unmap();
+    Ok(buffer)
 }
 
 // SoftPresenter: 2, not 1: buffers are made at 1, 1.25, 1.5 and 1.75 times a power of two, so
