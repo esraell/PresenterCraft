@@ -46,6 +46,8 @@ pub struct Thumbs {
     previews: [Option<(wgpu::Texture, egui::TextureId)>; 2],
     preview_front: usize,
     canvas: Option<(wgpu::Texture, egui::TextureId)>,
+    /// A plain dark tile, shown for a media item whose picture is still being read.
+    waiting: Option<(wgpu::Texture, egui::TextureId)>,
 }
 
 impl Thumbs {
@@ -59,6 +61,7 @@ impl Thumbs {
             previews: [None, None],
             preview_front: 0,
             canvas: None,
+            waiting: None,
         })
     }
 
@@ -123,6 +126,26 @@ impl Thumbs {
             theme,
         )
         .map(|(id, _)| id)
+    }
+
+    /// A plain dark tile for a media item whose picture is still being read: drawn once, and
+    /// shared by every item waiting. It is not kept under the item, so the item's own thumbnail
+    /// is drawn as soon as its picture is there.
+    pub fn waiting(&mut self, gpu: &Gpu, egui_renderer: &mut egui_wgpu::Renderer) -> Option<egui::TextureId> {
+        if let Some((_, id)) = &self.waiting {
+            return Some(*id);
+        }
+        const W: u32 = 16;
+        const H: u32 = 9;
+        let texture = target_texture(&gpu.device, W, H);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        if let Err(e) = self.painter.paint(&gpu.device, &gpu.queue, &sp_render::vello::Scene::new(), &view, W, H) {
+            eprintln!("Could not draw a waiting tile: {e}");
+            return None;
+        }
+        let id = egui_renderer.register_native_texture(&gpu.device, &view, wgpu::FilterMode::Linear);
+        self.waiting = Some((texture, id));
+        Some(id)
     }
 
     /// Drops one thumbnail so it is drawn again, for when a slide's words change.

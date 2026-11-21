@@ -4,6 +4,7 @@ mod applog;
 mod audio;
 mod bible;
 mod bible_store;
+mod bin_pictures;
 mod control;
 mod convert;
 mod deck;
@@ -418,6 +419,8 @@ enum AppEvent {
     DeckDone,
     /// A song pack was written or read on its own thread.
     PackDone,
+    /// A media bin picture was read on a thread of its own.
+    MediaRead,
 }
 
 /// The most web pages kept running at once: those on screen, then those loaded ahead. Each is a
@@ -956,9 +959,12 @@ struct App {
     voxlive_item_from: Option<(Vec<voxlive::Screen>, Arc<sp_model::Presentation>)>,
     /// PDFs and folders of pictures being made into slides, each on a thread of its own.
     decks: deck::Decks,
-    /// The decoded picture of each media item, in the show's order: full size for the screens,
-    /// and small for the window.
-    pictures: Vec<media::MediaPicture>,
+    /// The media items' pictures, by item: a small copy of each for the window, and the
+    /// full-size pictures of the item on screen and a few others for the screens.
+    bin_pictures: bin_pictures::BinPictures,
+    /// When the bin's small copies started being read at the start, and how many there are,
+    /// until they all have been (for the log).
+    bin_started: Option<(Instant, usize)>,
     /// Songs changed in the Edit view and not yet written to their files, and when the last
     /// change was made.
     unsaved: Vec<usize>,
@@ -1385,6 +1391,21 @@ impl App {
         }
         applog::event("media", &format!("playing media playlist {id}"));
         self.apply(vec![Command::ShowMedia(first)]);
+        self.read_ahead_in_cycle();
+    }
+
+    /// Has the full-size picture of what a playing media playlist shows next read ahead, so it
+    /// goes on screen sharp.
+    fn read_ahead_in_cycle(&mut self) {
+        let Some(cycle) = self.media_cycle.as_ref() else { return };
+        let items = self.playlist_media(cycle.playlist);
+        if items.len() < 2 {
+            return;
+        }
+        let next = items[(cycle.at + 1) % items.len()];
+        if let Some(item) = self.show.media().get(next) {
+            self.bin_pictures.read_ahead(item.id, &item.path);
+        }
     }
 
     fn stop_media_playlist(&mut self) {
@@ -1425,6 +1446,7 @@ impl App {
             let next = items[next_at];
             self.media_cycle = Some(MediaCycle { playlist: id, at: next_at, since: Instant::now(), shown: next });
             self.apply(vec![Command::ShowMedia(next)]);
+            self.read_ahead_in_cycle();
         }
         Some(Instant::now() + Duration::from_millis(if is_video { 200 } else { 500 }))
     }
@@ -1455,11 +1477,12 @@ impl App {
                     // One that couldn't be read is tried again only once it has changed (a file
                     // still being written changes as it grows), not every few seconds.
                     (None, _) if self.folders_refused.get(path) == Some(modified) => {}
-                    (None, _) => match media::load_picture(path) {
-                        Ok(picture) => {
+                    (None, _) => match media::load_small(path) {
+                        Ok((picture, whole)) => {
                             let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-                            self.show.add_media(MediaItem::new(name, path.clone()));
-                            self.pictures.push(media::MediaPicture::of(picture));
+                            let item = MediaItem::new(name, path.clone());
+                            self.bin_pictures.set_small(item.id, picture, whole);
+                            self.show.add_media(item);
                             applog::event("media", &format!("{} appeared in a followed folder", path.display()));
                             self.folders_refused.remove(path);
                             changed_list = true;
@@ -1470,13 +1493,13 @@ impl App {
                     },
                     (Some(index), Some(seen)) if seen != *modified => {
                         // Written over: read it again; if it is on screen, show the new one.
-                        if let Ok(picture) = media::load_picture(path)
-                            && let Some(slot) = self.pictures.get_mut(index)
+                        if let Ok((picture, whole)) = media::load_small(path)
+                            && let Some(id) = self.show.media().get(index).map(|item| item.id)
                         {
-                            *slot = media::MediaPicture::of(picture);
+                            self.bin_pictures.set_small(id, picture, whole);
                             applog::event("media", &format!("{} changed in a followed folder", path.display()));
-                            if let (Some(running), Some(item)) = (self.running.as_mut(), self.show.media().get(index)) {
-                                running.thumbs.forget(item.id, &mut running.egui_renderer);
+                            if let Some(running) = self.running.as_mut() {
+                                running.thumbs.forget(id, &mut running.egui_renderer);
                             }
                             if self.show.live_media() == Some(index) {
                                 self.video = None;
@@ -2352,7 +2375,10 @@ impl App {
             let song = self.show.presentations().get(at.presentation)?;
             song.slide(at.slide).map(|(_, slide)| Arc::new(slide.clone()))
         });
-        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).map(|p| p.full.clone());
+        // The screens get the item's full-size picture; until it is read, its small copy.
+        let live_item = self.show.live_media().and_then(|index| self.show.media().get(index));
+        let media = self.bin_pictures.for_screens(live_item.map(|item| (item.id, item.path.as_path())));
+        let next_media = next.as_deref().and_then(home::media_of);
         // The audience comes first: tell the output before drawing anything for the operator.
         if let Some(output) = &running.output {
             let frame = Frame {
@@ -2380,6 +2406,10 @@ impl App {
             }
         }
         self.refresh_preview(true);
+        // The picture or video the slide Next would show is read ahead, so it goes on sharp.
+        if let Some(item) = next_media.and_then(|id| self.show.media().iter().find(|item| item.id == id)) {
+            self.bin_pictures.read_ahead(item.id, &item.path);
+        }
     }
 
     /// The song on screen's title and its slide's group, for the stage screens.
@@ -2404,7 +2434,12 @@ impl App {
             return;
         };
         // The preview is small: it takes the small copy.
-        let media = self.show.live_media().and_then(|index| self.pictures.get(index)).map(|p| p.small.clone());
+        let media = self
+            .show
+            .live_media()
+            .and_then(|index| self.show.media().get(index))
+            .and_then(|item| self.bin_pictures.small(item.id))
+            .cloned();
         let state = &running.home_state;
         // The slide as far as its builds have got, with nothing moving, and its linked text filled in.
         let step = self.show.build_step();
@@ -2565,7 +2600,8 @@ impl App {
         // A file already in the bin isn't added twice; it joins the playlist shown, if any.
         let already = self.show.media().iter().any(|item| item.path == path);
         let started = Instant::now();
-        let result = if already { Ok(None) } else { media::load_picture(path).map(Some) };
+        // Only the small copy is kept; the full-size picture is read when it goes on screen.
+        let result = if already { Ok(None) } else { media::load_small(path).map(Some) };
         let Some(running) = self.running.as_mut() else {
             return Err("The window isn't open.".to_owned());
         };
@@ -2576,11 +2612,12 @@ impl App {
         };
         match result {
             Ok(loaded) => {
-                if let Some(picture) = loaded {
+                if let Some((picture, whole)) = loaded {
                     let name =
                         path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
-                    self.show.add_media(MediaItem::new(name, path.to_owned()));
-                    self.pictures.push(media::MediaPicture::of(picture));
+                    let item = MediaItem::new(name, path.to_owned());
+                    self.bin_pictures.set_small(item.id, picture, whole);
+                    self.show.add_media(item);
                     running.home_state.notice = None;
                     applog::event("media", &format!("added {} in {:?}", path.display(), started.elapsed()));
                 } else {
@@ -2605,6 +2642,105 @@ impl App {
             running.home_window.request_redraw();
         }
         outcome
+    }
+
+    /// Takes in the media bin pictures read on their threads since the last look. The item on
+    /// screen goes to the screens again once its full-size picture (or a new small copy) is
+    /// there.
+    fn take_media_read(&mut self) {
+        use bin_pictures::Arrived;
+        let arrived = self.bin_pictures.take_arrived();
+        if arrived.is_empty() {
+            return;
+        }
+        let live = self.show.live_media().and_then(|index| self.show.media().get(index)).map(|item| item.id);
+        let (mut refresh, mut preview) = (false, false);
+        for arrived in arrived {
+            match arrived {
+                Arrived::Full(id) => {
+                    refresh |= live == Some(id);
+                    if let Some(took) = self.bin_pictures.stood_in(id) {
+                        applog::event("media", &format!("full-size picture on screen {took:?} after it was asked for"));
+                    }
+                }
+                Arrived::Small(id) => {
+                    // The screens take a new small copy only while it stands in for the full one.
+                    if live == Some(id) {
+                        refresh |= !self.bin_pictures.screens_have_full();
+                        preview = true;
+                    }
+                    self.forget_thumbs_showing(id);
+                }
+                Arrived::Refused(id, problem) => {
+                    applog::event("media", &problem);
+                    // An item whose picture was never read (its file is gone, or isn't a picture)
+                    // leaves the bin, as such a file was never let in; one read before keeps the
+                    // copy it has.
+                    if self.bin_pictures.small(id).is_none()
+                        && let Some(index) = self.show.media().iter().position(|item| item.id == id)
+                    {
+                        eprintln!("{problem}");
+                        // A media playlist that was to start with it starts with the next instead.
+                        let playing =
+                            self.media_cycle.as_ref().filter(|cycle| cycle.shown == index).map(|c| c.playlist);
+                        refresh |= self.remove_bin_item(index);
+                        if let Some(playlist) = playing {
+                            self.play_media_playlist(playlist);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((started, count)) = self.bin_started
+            && !self.bin_pictures.any_coming()
+        {
+            applog::event("media", &format!("read the bin's {count} pictures in {:?}", started.elapsed()));
+            self.bin_started = None;
+        }
+        if let Some(running) = self.running.as_ref() {
+            running.home_window.request_redraw();
+        }
+        if refresh {
+            self.refresh_output();
+        } else if preview {
+            self.refresh_preview(false);
+        }
+    }
+
+    /// Lets go of the thumbnails that show a media item (its own, and those of slides with it
+    /// behind their words), so they are drawn again with its picture as it is now.
+    fn forget_thumbs_showing(&mut self, id: Uuid) {
+        let Some(running) = self.running.as_mut() else { return };
+        running.thumbs.forget(id, &mut running.egui_renderer);
+        for song in self.show.presentations() {
+            for (_, slide) in song.slides() {
+                if home::media_of(slide) == Some(id) {
+                    running.thumbs.forget(slide.id, &mut running.egui_renderer);
+                }
+            }
+        }
+    }
+
+    /// Takes the item at `index` out of the media bin, with its pictures, and moves what names
+    /// bin items by their place (the media playlist playing, the items picked out) along with
+    /// it. True when that took media off the screens.
+    fn remove_bin_item(&mut self, index: usize) -> bool {
+        let Some(id) = self.show.media().get(index).map(|item| item.id) else { return false };
+        let changed = self.show.remove_media(index).media;
+        self.bin_pictures.forget(id);
+        if let Some(cycle) = self.media_cycle.as_mut()
+            && let Some(at) = media::place_after_removal(cycle.shown, index)
+        {
+            cycle.shown = at;
+        }
+        if let Some(running) = self.running.as_mut() {
+            let state = &mut running.home_state;
+            state.picked_media =
+                state.picked_media.iter().filter_map(|at| media::place_after_removal(*at, index)).collect();
+            state.media_anchor = state.media_anchor.and_then(|at| media::place_after_removal(at, index));
+            running.thumbs.forget(id, &mut running.egui_renderer);
+        }
+        changed
     }
 
     /// Remembers what is in the media bin, how each item is shown, and the media playlists.
@@ -3069,10 +3205,7 @@ impl App {
                     if let Some(item) = self.show.media().get(index) {
                         applog::event("media", &format!("deleted {} from the bin", item.path.display()));
                     }
-                    media_changed |= self.show.remove_media(index).media;
-                    if index < self.pictures.len() {
-                        self.pictures.remove(index);
-                    }
+                    media_changed |= self.remove_bin_item(index);
                 }
                 if media_changed {
                     self.refresh_output();
@@ -3791,15 +3924,15 @@ impl App {
             if let Some(have) = self.show.media().iter().find(|item| item.path == path) {
                 return Some(have.id);
             }
-            let picture = media::load_picture(&path).ok()?;
+            let (picture, whole) = media::load_small(&path).ok()?;
             let mut name = entry.name.clone();
             name.retain(|c| !c.is_control());
             let mut item = MediaItem::new(name, path);
             item.fit = entry.fit;
             item.looping = entry.looping;
             let new = item.id;
+            self.bin_pictures.set_small(new, picture, whole);
             self.show.add_media(item);
-            self.pictures.push(media::MediaPicture::of(picture));
             seen.added += 1;
             Some(new)
         });
@@ -5269,7 +5402,7 @@ impl App {
             }
             _ => home::Preview { now: running.preview, before: running.preview_before, amount },
         };
-        let (show, pictures) = (&self.show, &self.pictures);
+        let (show, pictures) = (&self.show, &self.bin_pictures);
         let (songs_theme, bible_theme): (&Theme, &Theme) = (&front_theme, &self.theme_for_bible);
         running.home_state.song_templates = song_templates(songs_theme);
         // The theme the part of the window in front works with: the one being edited, the
@@ -5289,8 +5422,8 @@ impl App {
             // A slide that shows a media item has it behind its words in its thumbnail.
             let media_for = |slide: &Slide| {
                 let id = home::media_of(slide)?;
-                let at = show.media().iter().position(|item| item.id == id)?;
-                Some((&pictures.get(at)?.small, show.media()[at].fit))
+                let item = show.media().iter().find(|item| item.id == id)?;
+                Some((pictures.small(id)?, item.fit))
             };
             let mut thumb = |which: ThumbOf| match which {
                 ThumbOf::Slide(slide) => thumbs.get(gpu, egui_renderer, slide, media_for(slide), songs_theme),
@@ -5303,8 +5436,15 @@ impl App {
                     thumbs.get(gpu, egui_renderer, &kept, None, theme)
                 }
                 ThumbOf::Media(index) => {
-                    let (item, picture) = (show.media().get(index)?, &pictures.get(index)?.small);
-                    thumbs.get_media(gpu, egui_renderer, item.id, picture, songs_theme).map(|texture| (texture, false))
+                    let item = show.media().get(index)?;
+                    match pictures.small(item.id) {
+                        Some(picture) => thumbs
+                            .get_media(gpu, egui_renderer, item.id, picture, songs_theme)
+                            .map(|texture| (texture, false)),
+                        // Still being read: a plain dark tile until it is there (the window is
+                        // woken then), rather than asking to be drawn again and again.
+                        None => thumbs.waiting(gpu, egui_renderer).map(|texture| (texture, false)),
+                    }
                 }
             };
             commands.extend(home_ui(ui, show, home_state, theme, &mut thumb, preview, canvas));
@@ -5343,7 +5483,9 @@ impl App {
             static STARTED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
             let started = *STARTED.get_or_init(Instant::now);
             let wait = std::env::var("SOFTPRESENTER_CAPTURE_AFTER").ok().and_then(|s| s.parse::<f32>().ok());
-            let waited = wait.is_none_or(|seconds| started.elapsed().as_secs_f32() >= seconds);
+            // The picture waits for the media bin's pictures, read on their own threads.
+            let waited = wait.is_none_or(|seconds| started.elapsed().as_secs_f32() >= seconds)
+                && !self.bin_pictures.any_coming();
             if running.frames == GO_LIVE_AT {
                 commands.push(Command::GoTo(sp_engine::SlideRef { presentation: 0, slide: 2 }));
                 // Testing aid: SOFTPRESENTER_CAPTURE_MEDIA=N puts the media bin's Nth item on
@@ -6564,6 +6706,10 @@ impl ApplicationHandler<AppEvent> for App {
                 self.finish_packs();
                 return;
             }
+            AppEvent::MediaRead => {
+                self.take_media_read();
+                return;
+            }
         };
         // The output thread drew a new live preview: the window shows it.
         if id.is_empty() {
@@ -7225,7 +7371,16 @@ fn main() -> ExitCode {
         voxlive_slot,
         voxlive_item_from: None,
         decks: deck::Decks::default(),
-        pictures: Vec::new(),
+        // A picture read on a reader's thread wakes the window's thread to take it in.
+        bin_pictures: {
+            let proxy = std::sync::Mutex::new(event_loop.create_proxy());
+            bin_pictures::BinPictures::new(move || {
+                if let Ok(proxy) = proxy.lock() {
+                    let _ = proxy.send_event(AppEvent::MediaRead);
+                }
+            })
+        },
+        bin_started: None,
         unsaved: Vec::new(),
         history: SongHistory::default(),
         edit_song: None,
@@ -7291,27 +7446,28 @@ fn main() -> ExitCode {
             });
         }
     }
+    // Every item is in the bin from the start, in its place and with its id, so slide actions,
+    // playlists and what plays at the start find it; its small copy is read on a reader's
+    // thread, so the window opens at once and the bin fills in. One whose file can't be read
+    // leaves the bin then, as it was never let in before.
+    let mut seen = std::collections::HashSet::new();
     for entry in &pictures_to_load {
         let path = &entry.path;
         // A file listed twice (as an earlier version could save it) is shown once.
-        if app.show.media().iter().any(|item| &item.path == path) {
+        if !seen.insert(path.clone()) || app.show.media().iter().any(|item| item.id == entry.id) {
             continue;
         }
-        match media::load_picture(path) {
-            Ok(picture) => {
-                let name = path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
-                // Its id is kept between runs, so a slide's action that shows it still finds it.
-                app.show.add_media(MediaItem {
-                    id: entry.id,
-                    fit: entry.fit,
-                    looping: entry.looping,
-                    ..MediaItem::new(name, path.clone())
-                });
-                app.pictures.push(media::MediaPicture::of(picture));
-            }
-            Err(message) => eprintln!("{message}"),
-        }
+        let name = path.file_name().map_or_else(|| "Picture".to_owned(), |n| n.to_string_lossy().into_owned());
+        // Its id is kept between runs, so a slide's action that shows it still finds it.
+        app.show.add_media(MediaItem {
+            id: entry.id,
+            fit: entry.fit,
+            looping: entry.looping,
+            ..MediaItem::new(name, path.clone())
+        });
+        app.bin_pictures.read(entry.id, path);
     }
+    app.bin_started = Some((Instant::now(), app.show.media().len()));
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("The window system stopped: {e}");
         return ExitCode::FAILURE;

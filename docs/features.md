@@ -141,6 +141,12 @@ feature changes, this page changes in the same commit.
 - Pictures and videos dropped on the window, or added with the media bin's +, go into the media
   bin, are kept between runs, and can be shown behind the words; Delete, or Delete… on an item's
   right-click menu, takes it out of the bin after asking (the file stays where it is).
+  The bin keeps a small copy of each picture for its thumbnail and the Program preview; the
+  full-size picture is read when the item goes on screen (a few hundredths of a second, its
+  small copy standing in meanwhile), or before, for the next item of a media playlist playing
+  and the media of the slide Next would show, and only the last few are kept, so a big bin
+  costs little memory. At the start the window opens at once and the bin fills in as its
+  pictures are read; a file that is gone or can't be read leaves the bin.
   Pictures can be PNG, JPEG, WebP, GIF, BMP, and on the Mac also HEIC (iPhone photos), TIFF,
   Photoshop, AVIF and JPEG 2000. Videos play with their sound and loop: MP4, MOV and M4V
   (including HEVC and ProRes) through macOS's own player, and everything else (MKV, WebM, AVI,

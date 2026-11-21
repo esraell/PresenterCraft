@@ -12,23 +12,10 @@ pub const MAX_SIDE: u32 = 2560;
 /// kept smaller.
 const VIDEO_STILL_SIDE: u32 = 1280;
 
-/// How big the copy of a picture used for thumbnails and the Program preview is.
+/// How big the copy of a picture kept for thumbnails and the Program preview is. The media bin
+/// keeps this copy of each item; the full-size picture is read when the item goes on screen
+/// (see `bin_pictures`).
 pub const SMALL_SIDE: u32 = 960;
-
-/// A media item's picture at full size, for the screens, and a small copy, for thumbnails and
-/// the Program preview, so the window doesn't hold full-size pictures it shows small.
-#[derive(Clone)]
-pub struct MediaPicture {
-    pub full: Picture,
-    pub small: Picture,
-}
-
-impl MediaPicture {
-    pub fn of(full: Picture) -> MediaPicture {
-        let small = full.shrunk(SMALL_SIDE);
-        MediaPicture { full, small }
-    }
-}
 
 /// Pictures decoded here.
 const OWN_PICTURES: [&str; 6] = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
@@ -110,6 +97,16 @@ pub fn new_playlist_name(playlists: &[Playlist]) -> String {
         .chain((2..).map(|n| format!("New Playlist {n}")))
         .find(|name| !taken(name))
         .unwrap_or_default()
+}
+
+/// Where the media bin item at `at` is once the one at `removed` has been taken out: one place
+/// up if it was after it, nowhere if it was that one.
+pub fn place_after_removal(at: usize, removed: usize) -> Option<usize> {
+    match at.cmp(&removed) {
+        std::cmp::Ordering::Less => Some(at),
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(at - 1),
+    }
 }
 
 /// The pictures and videos in a folder, by name, with when each last changed. Hidden files
@@ -227,6 +224,31 @@ pub fn load_picture(path: &Path) -> Result<Picture, String> {
     Picture::from_rgba(width, height, rgba.into_raw()).ok_or_else(|| format!("{name}: the picture is empty."))
 }
 
+/// Reads a picture file, or a video's still, as the small copy the media bin keeps. True with
+/// it when the copy is the whole picture (it was no larger), or a video's still (shown on the
+/// screens only until the video's first picture comes), so the screens can show it as it is.
+pub fn load_small(path: &Path) -> Result<(Picture, bool), String> {
+    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let from_system = |frame: Result<sp_video::Frame, String>| {
+        let frame = frame?;
+        Picture::from_rgba(frame.width, frame.height, frame.rgba)
+            .ok_or_else(|| format!("{name}: the picture is empty."))
+    };
+    let ext = extension(path);
+    if VIDEOS.contains(&ext.as_str()) {
+        return Ok((from_system(sp_video::still(path, SMALL_SIDE))?, true));
+    }
+    if SYSTEM_PICTURES.contains(&ext.as_str()) {
+        // The system makes a copy no larger than asked; one smaller is the whole picture.
+        let picture = from_system(sp_video::picture(path, SMALL_SIDE))?;
+        let whole = picture.width().max(picture.height()) < SMALL_SIDE;
+        return Ok((picture, whole));
+    }
+    let full = load_picture(path)?;
+    let whole = full.width().max(full.height()) <= SMALL_SIDE;
+    Ok((full.shrunk(SMALL_SIDE), whole))
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -278,6 +300,13 @@ mod tests {
     }
 
     #[test]
+    fn places_after_an_item_leaves_the_bin_move_up_and_its_own_is_gone() {
+        let picked: Vec<usize> = [0, 2, 3, 5].iter().filter_map(|at| place_after_removal(*at, 3)).collect();
+        assert_eq!(picked, [0, 2, 4]);
+        assert_eq!(place_after_removal(3, 3), None);
+    }
+
+    #[test]
     fn media_files_are_told_from_songs_by_their_names() {
         assert!(is_media(Path::new("a/Sunrise.JPG")));
         assert!(is_media(Path::new("clip.mov")));
@@ -291,6 +320,18 @@ mod tests {
         write_png(&path, 64, 36);
         let picture = load_picture(&path).unwrap();
         assert_eq!((picture.width(), picture.height()), (64, 36));
+    }
+
+    #[test]
+    fn the_small_copy_keeps_the_shape_and_says_when_it_is_the_whole_picture() {
+        let (big, small) = (temp("small-copy-big.png"), temp("small-copy-small.png"));
+        write_png(&big, 1920, 1080);
+        write_png(&small, 640, 360);
+        let (copy, whole) = load_small(&big).unwrap();
+        assert_eq!((copy.width(), copy.height(), whole), (SMALL_SIDE, 540, false));
+        let (copy, whole) = load_small(&small).unwrap();
+        assert_eq!((copy.width(), copy.height(), whole), (640, 360, true));
+        assert!(load_small(Path::new("/x/notes.txt")).unwrap_err().contains("not a picture"));
     }
 
     #[test]
