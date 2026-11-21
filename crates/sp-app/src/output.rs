@@ -1890,6 +1890,15 @@ impl Output {
         self.step_live_preview(Some(amount));
         if amount >= 1.0 || self.targets.iter().all(|target| target.fade.is_none()) {
             self.fading = None;
+            // An NDI picture that could not be drawn as the fade began, or during it, had no
+            // drawing to be tried again in: the steps of a fade draw the windows only, and the
+            // time set for another try is dropped while one runs (whether it was still being
+            // tried or had been given up for now). It is tried now, as part of this drawing,
+            // which sets a time for the next try if it must.
+            if self.ndi_state != Shown::default() {
+                let frame = self.frame.clone();
+                self.send_ndi(&frame, NdiChange::Any);
+            }
         }
     }
 
