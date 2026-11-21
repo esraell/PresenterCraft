@@ -4900,9 +4900,21 @@ impl App {
         self.songs_theme = self.songs_theme.min(self.themes.len().saturating_sub(1));
         // Bible slides are drawn with the main theme's Bible template.
         self.bible_theme = self.songs_theme;
-        self.theme = Arc::new(self.themes[self.songs_theme].clone());
+        // A theme that is as it was keeps the copy already made of it. Dragging a box in the
+        // Theme Editor comes here on every frame: only the theme being changed is copied, and
+        // a screen drawn with another theme of its own is not sent its theme (and drawn) again.
+        let kept = std::mem::take(&mut self.theme_arcs);
+        self.theme_arcs = self
+            .themes
+            .iter()
+            .enumerate()
+            .map(|(at, theme)| match kept.get(at) {
+                Some(copy) if **copy == *theme => copy.clone(),
+                _ => Arc::new(theme.clone()),
+            })
+            .collect();
+        self.theme = self.theme_arcs[self.songs_theme].clone();
         self.theme_for_bible = self.theme.clone();
-        self.theme_arcs = self.themes.iter().cloned().map(Arc::new).collect();
         self.bible_layout = self.theme.bible_template_index();
         let (layouts, pinned) = (self.theme_layouts(), self.bible_template());
         if let Some(running) = self.running.as_mut() {
