@@ -314,9 +314,23 @@ impl Painter {
     }
 
     /// Sets how long one [`Painter::paint`] waits for the GPU before it gives the picture up
-    /// with [`PaintError::NotNow`]. For tests of what happens when the GPU is too slow.
-    pub fn wait_at_most(&mut self, wait: std::time::Duration) {
+    /// with [`PaintError::NotNow`]; `None` is the usual wait. For tests of what happens when
+    /// the GPU is too slow.
+    pub fn wait_at_most(&mut self, wait: Option<std::time::Duration>) {
         self.renderer.set_longest_wait(wait);
+    }
+
+    /// Sets how many times one [`Painter::paint`] works a picture out before it gives it up;
+    /// `None` is the usual number. For tests of a picture that goes on needing more room.
+    pub fn work_out_at_most(&mut self, times: Option<usize>) {
+        self.renderer.set_most_runs(times);
+    }
+
+    /// Has the next `pictures` pictures dropped as macOS drops the pictures of an app whose
+    /// GPU work faulted: nothing of them reaches the GPU. For tests of what such a picture
+    /// leaves behind.
+    pub fn drop_pictures(&mut self, pictures: u32) {
+        self.renderer.drop_frames(pictures);
     }
 
     /// Keeps the painter's working memory at these sizes whatever is drawn, as the renderer did

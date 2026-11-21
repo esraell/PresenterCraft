@@ -1081,8 +1081,11 @@ impl Easel {
 
 /// Passes when two drawings of one scene are the same picture. The GPU adds up the edges
 /// crossing a pixel in whatever order its threads reach them, so a pixel may come out a step
-/// or so differently from run to run: one step of 255 on up to a hundredth of the pixels, or
-/// three steps on up to a thousandth. Anything missing or misplaced differs by far more.
+/// or so differently from run to run: one step of 255 on up to ten thousand pixels (two
+/// readings half-way through a dissolve on a 1440p screen came out one step apart on about
+/// 4 900 of them, before and after the painter's memory was sized from the picture), or
+/// three steps on up to a thousandth of them. Anything missing or misplaced differs by far
+/// more: a single missing letter of small text is hundreds of pixels of full difference.
 fn assert_same_picture(name: &str, a: &[u8], b: &[u8]) {
     assert_eq!(a.len(), b.len(), "{name}: sizes differ");
     let mut differing = 0usize;
@@ -1095,7 +1098,7 @@ fn assert_same_picture(name: &str, a: &[u8], b: &[u8]) {
     }
     let share = differing as f64 / (a.len() / 4) as f64;
     assert!(
-        (worst <= 1 && share < 0.01) || (worst <= 3 && share < 0.001),
+        (worst <= 1 && differing <= 10_000) || (worst <= 3 && share < 0.001),
         "{name}: {differing} pixels differ ({:.3}%), by up to {worst} of 255",
         share * 100.0
     );
@@ -1501,7 +1504,7 @@ fn a_picture_the_gpu_is_too_slow_with_is_given_up_and_drawn_when_asked_again() {
     let mut easel = Easel::new();
     let texture = target_texture(&easel.device, w, h);
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    easel.painter.wait_at_most(Duration::ZERO);
+    easel.painter.wait_at_most(Some(Duration::ZERO));
     for attempt in 0..3 {
         let given_up = easel.painter.paint(&easel.device, &easel.queue, &reading, &view, w, h);
         let again = given_up.expect_err("no time to wait").worth_trying_again();
@@ -1511,7 +1514,7 @@ fn a_picture_the_gpu_is_too_slow_with_is_given_up_and_drawn_when_asked_again() {
     assert!(untouched.iter().all(|byte| *byte == 0), "nothing of a picture given up is drawn");
     // With time to wait, the picture is drawn; it was not taken for one that fits, or for one
     // too heavy.
-    easel.painter.wait_at_most(Duration::from_secs(5));
+    easel.painter.wait_at_most(Some(Duration::from_secs(5)));
     let runs = easel.painter.runs();
     let drawn = easel.paint(&reading, w, h).expect("paint, with time to wait");
     assert!(easel.painter.runs() > runs, "it was sent to the GPU and waited for");
@@ -1523,7 +1526,7 @@ fn a_picture_the_gpu_is_too_slow_with_is_given_up_and_drawn_when_asked_again() {
     cover_many_times(&mut covered, 300, w, h);
     let expected = Easel::kept_at(ROOM_FOR_COVERS).paint(&covered, w, h).expect("paint with plenty of room");
     let mut easel = Easel::new();
-    easel.painter.wait_at_most(Duration::from_micros(1));
+    easel.painter.wait_at_most(Some(Duration::from_micros(1)));
     let mut tries = 0;
     let drawn = loop {
         tries += 1;
@@ -1532,7 +1535,76 @@ fn a_picture_the_gpu_is_too_slow_with_is_given_up_and_drawn_when_asked_again() {
             Ok(drawn) => break drawn,
             Err(error) => assert_ne!(error, sp_render::PaintError::TooHeavy.to_string(), "try {tries}"),
         }
-        easel.painter.wait_at_most(Duration::from_millis(tries));
+        easel.painter.wait_at_most(Some(Duration::from_millis(tries)));
     };
     assert_same_picture("after being given up between runs", &drawn, &expected);
+}
+
+/// A picture the GPU drops (as macOS drops the pictures of an app whose GPU work faulted) takes
+/// its photograph with it: nothing of that picture reached the GPU. The next picture drawn with
+/// the same photograph sends it again, and shows it.
+#[test]
+fn a_photograph_in_a_picture_the_gpu_dropped_is_sent_again() {
+    let (w, h) = (1920, 1080);
+    let (name, over_photo) = heavy_scenes(w, h, 3).swap_remove(4);
+    assert_eq!(name, "photo");
+    let expected = Easel::new().paint(&over_photo, w, h).expect("paint");
+    // Dropped as the first picture a painter draws, and as a later one.
+    let mut easel = Easel::new();
+    for round in 0..2 {
+        easel.painter.drop_pictures(1);
+        let dropped = easel.paint(&over_photo, w, h);
+        assert!(dropped.is_err(), "round {round}: a dropped picture is not reported as drawn");
+        let drawn = easel.paint(&over_photo, w, h).expect("paint after a dropped picture");
+        assert_same_picture(&format!("after a dropped picture, round {round}"), &drawn, &expected);
+    }
+}
+
+/// A picture that is still asking for more room when the painter has worked it out as often as
+/// it will in one go (here once, where it needs several) is given up as worth asking for again,
+/// not refused as too heavy; and each time it is asked for it goes on from the room found, so
+/// it is drawn within a few tries.
+#[test]
+fn a_picture_not_settled_in_one_go_is_not_refused_and_settles_over_a_few() {
+    let (w, h) = (3840, 2160);
+    let mut covered = sp_render::vello::Scene::new();
+    cover_many_times(&mut covered, 300, w, h);
+    let expected = Easel::kept_at(ROOM_FOR_COVERS).paint(&covered, w, h).expect("paint with plenty of room");
+    let mut easel = Easel::new();
+    easel.painter.work_out_at_most(Some(1));
+    let texture = target_texture(&easel.device, w, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        match easel.painter.paint(&easel.device, &easel.queue, &covered, &view, w, h) {
+            Ok(()) => break,
+            Err(error) => assert!(error.worth_trying_again(), "try {tries}: {error}"),
+        }
+        assert!(tries < 10, "every try gets further than the one before");
+    }
+    assert!(tries > 1, "it needed more than one go");
+    let drawn = read_pixels(&easel.device, &easel.queue, &texture).expect("read back");
+    assert_same_picture("settled over a few tries", &drawn, &expected);
+}
+
+/// A picture worked out again has already given its outgrown memory back by the time it is
+/// drawn. The GPU still holds that memory until the device is looked at after the picture has
+/// left it, so the painter must not say it has rested before then.
+#[test]
+fn a_painter_has_not_rested_while_the_gpu_holds_memory_a_picture_gave_back() {
+    let (w, h) = (3840, 2160);
+    let mut heavy = sp_render::vello::Scene::new();
+    cover_many_times(&mut heavy, 300, w, h);
+    let mut easel = Easel::new();
+    let texture = target_texture(&easel.device, w, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    easel.painter.paint(&easel.device, &easel.queue, &heavy, &view, w, h).expect("paint");
+    assert!(easel.painter.reruns() > 0, "the picture was worked out again, with more room");
+    assert_eq!(easel.painter.spare_bytes(), 0, "and has given back the room it outgrew");
+    // Straight after the call, the GPU is still filling in the pixels of a 4K picture.
+    let rested = easel.painter.rest(&easel.device, &easel.queue);
+    assert!(!rested, "the GPU still holds what the picture gave back");
+    easel.rest();
+    assert!(easel.painter.rest(&easel.device, &easel.queue), "and then it has rested");
 }

@@ -123,6 +123,10 @@ struct BufferProperties {
 pub(crate) struct ResourcePool {
     // SoftPresenter: each spare buffer with the time it was handed back.
     bufs: HashMap<BufferProperties, Vec<(Buffer, Instant)>>,
+    // SoftPresenter: true when a buffer has been destroyed since this was last asked about
+    // (`WgpuEngine::take_destroyed`). The GPU frees a destroyed buffer only once the frames
+    // that used it have left it and the device is looked at.
+    destroyed: bool,
 }
 
 /// The transient bind map contains short-lifetime resources.
@@ -809,6 +813,12 @@ impl WgpuEngine {
         self.pool.release(|_, _| true);
     }
 
+    /// True when a spare buffer was given back to the GPU since this was last called, by any
+    /// of the functions above, whoever called them.
+    pub(crate) fn take_destroyed(&mut self) -> bool {
+        std::mem::take(&mut self.pool.destroyed)
+    }
+
     /// The bytes of GPU memory held in spare buffers.
     pub(crate) fn spare_bytes(&self) -> u64 {
         self.pool
@@ -1088,15 +1098,18 @@ impl ResourcePool {
     /// Destroys the spare buffers `gone` picks, by their size in bytes and when they were
     /// handed back.
     fn release(&mut self, gone: impl Fn(u64, Instant) -> bool) {
+        let mut destroyed = false;
         for (props, spare) in &mut self.bufs {
             spare.retain(|(buffer, since)| {
                 let gone = gone(props.size, *since);
                 if gone {
                     buffer.destroy();
+                    destroyed = true;
                 }
                 !gone
             });
         }
+        self.destroyed |= destroyed;
         self.bufs.retain(|_, spare| !spare.is_empty());
     }
 

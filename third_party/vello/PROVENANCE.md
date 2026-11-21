@@ -54,11 +54,20 @@ Everything is marked `SoftPresenter:` in the source. Removed from the published 
     goes on to the fine stage. An error means nothing was drawn: `Error::SceneTooHeavy` (the
     scene needs more than a frame may have; remembered, so the same scene is refused at once
     the next time without being sent to the GPU), `Error::GpuTooSlow` (see the wait, below) or
-    `Error::FrameDropped` (the GPU never ran the frame: the counters were not written).
+    `Error::FrameDropped` (the GPU never ran the frame: the counters were not written; the
+    picture atlas is then let go and the resolver started again, so that the next frame sends
+    its pictures again, since the resolver had counted them as sent). A frame still asking
+    for more room after sixteen runs is given up with `Error::GpuTooSlow` as well, not
+    refused.
   - `Ok` means the scene was sent to be drawn in full, with one case taken on trust: a scene
     that was drawn before at the same size and fitted (a playing video, frame after frame) is
     not read back again, since the same scene always counts the same. Nothing checks that
     frame; the bounds checks below are what keep a wrong guess there from doing harm.
+  - Not checked at all: the fine stage. A frame the GPU drops after its counters were read
+    (macOS drops the frames of every app when any app's GPU work faults) returns `Ok` and
+    leaves the target as it was. Vello has no way to see that. SoftPresenter's output thread
+    draws screens that stand still again every five seconds, when that is cheap, so that
+    such a picture does not stay wrong.
   - The wait for the counters only ever asks the device how far the GPU has got
     (`PollType::Poll`), again and again; the renderer never waits inside the device. A wait
     with a time limit for one submission, which an earlier version of this change made, trips
@@ -71,9 +80,12 @@ Everything is marked `SoftPresenter:` in the source. Removed from the published 
   - Vello's own single pass is kept as `Renderer::render_to_texture_unchecked`, and is still
     what a renderer with `use_cpu` runs.
   - New: `Renderer::rest` (give back what a heavy frame took, when drawing stops; it never
-    waits, and says whether the GPU still holds some of it), `Renderer::set_fixed_scratch`,
+    waits, and says whether the GPU still holds any buffer given back, by `rest` or by a
+    frame as it was drawn), `Renderer::set_fixed_scratch`,
     `Renderer::spare_bytes`, `Renderer::scratch_wanted`, `Renderer::scratch_reruns`,
-    `Renderer::scratch_runs`, `Renderer::scratch_unwaited`; the errors above and
+    `Renderer::scratch_runs`, `Renderer::scratch_unwaited`; for tests,
+    `Renderer::set_longest_wait`, `Renderer::set_most_runs` and `Renderer::drop_frames`; the
+    errors above and
     `Error::GpuWait`; the types `ScratchSizes`, `ScratchPlan` and `ScratchRoom`.
 - **`src/render.rs`:** `Render::render_encoding_coarse` takes the scratch room for the frame
   and writes it over the constants `RenderConfig::new` starts with, and takes the fingerprint
