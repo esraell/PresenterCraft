@@ -147,11 +147,13 @@ impl NdiStatus {
     }
 }
 
-/// An NDI picture being copied back from the GPU: the sources it is for, the buffer it is
+/// An NDI picture being copied back from the GPU: the sources it is for, its place, the buffer it is
 /// copied into (each row padded as the GPU requires), and whether the copy has come back (and
 /// worked).
 struct NdiReadback {
     ids: Vec<Uuid>,
+    /// Which picture of its drawing it is, from nought.
+    place: usize,
     buffer: wgpu::Buffer,
     padded_row: usize,
     done: Arc<Mutex<Option<bool>>>,
@@ -326,12 +328,6 @@ impl Shown {
         self.waiting = true;
     }
 
-    /// Its picture was painted and then lost before it could be shown (an NDI picture that
-    /// did not come back from the GPU): the operator is told, until one is painted again.
-    fn lost(&mut self) {
-        *self = Shown { undrawn: Some(Undrawn::Failed), waiting: false };
-    }
-
     /// No picture is asked of it any more (the NDI sources, once nobody is watching any of
     /// them): nothing is owed, whatever went wrong before, and nothing is waited for.
     fn not_asked(&mut self) {
@@ -415,15 +411,6 @@ impl NdiChange {
     }
 }
 
-/// Whether, at a step of a fade, the NDI pictures are painted again: when one the GPU was too
-/// slow with still has tries left (each step of the fade that ends too slow uses one), a
-/// moment after the last try, as outside a fade. One given up, or not drawn for another
-/// reason, is left to the fade's end: outside a fade it would be tried every five seconds,
-/// and no fade is longer than that.
-fn ndi_tried_again_in_a_fade(state: Shown, since_tried: Duration) -> bool {
-    state.waiting && since_tried >= DRAW_AGAIN_AFTER
-}
-
 /// One NDI source as a drawing finds it: whether a picture is wanted for it, and whether it
 /// shows the show its own way (a stage screen, one being identified, one with a look or a
 /// theme of its own) and so needs a picture of its own.
@@ -464,22 +451,104 @@ fn ndi_lost_is_owed(ids: &[Uuid], sources: &[NdiSeen]) -> bool {
     sources.iter().any(|source| source.wanted && ids.contains(&source.id))
 }
 
-/// Something done once more after it failed, and not again until there is a new reason to:
-/// drawing an NDI picture that was lost on its way back from the GPU.
-#[derive(Debug, Default)]
-struct OnceMore {
-    done: bool,
+/// How things stand with NDI pictures lost on their way back from the GPU, counted by whole
+/// drawings: every picture of one is back, or lost, before the next is painted. The first
+/// drawing to lose a picture somebody is watching for is drawn once more at once. If that
+/// loses one too, the operator is told, and the pictures are drawn again every five seconds
+/// (as a picture the GPU was too slow with is, once it was given up) until a drawing comes
+/// back whole. One picture coming back says nothing of another that was lost with it: with
+/// two pictures to a drawing and one of them lost every time, that is still one drawing more
+/// and then one every five seconds, not one after another without end.
+#[derive(Debug, Default, PartialEq)]
+struct Lost {
+    /// A picture of the drawing on its way back now was lost.
+    in_this: bool,
+    /// How many drawings one after another lost a picture; nought when the last came back whole.
+    drawings: u32,
+    /// When to draw the NDI pictures again, once more than one drawing has lost a picture.
+    again_at: Option<Instant>,
 }
 
-impl OnceMore {
-    /// It failed. True when it is to be done once more now; false when that was done already.
-    fn now(&mut self) -> bool {
-        !std::mem::replace(&mut self.done, true)
+impl Lost {
+    /// The NDI pictures are being painted: a new drawing, and whatever was to be drawn again
+    /// is being drawn now.
+    fn painting(&mut self) {
+        self.in_this = false;
+        self.again_at = None;
     }
 
-    /// There is a new reason: it worked, something else is asked for, or nobody wants it.
-    fn afresh(&mut self) {
-        self.done = false;
+    /// A picture somebody is watching for was lost on its way back.
+    fn one_lost(&mut self) {
+        self.in_this = true;
+    }
+
+    /// Every picture of the drawing is back, or lost. True when the pictures are to be drawn
+    /// once more now.
+    fn drawing_back(&mut self, now: Instant) -> bool {
+        if !std::mem::take(&mut self.in_this) {
+            *self = Lost::default();
+            return false;
+        }
+        self.drawings = self.drawings.saturating_add(1);
+        if self.drawings == 1 {
+            return true;
+        }
+        self.again_at = Some(now + GIVEN_UP_AGAIN_AFTER);
+        false
+    }
+
+    /// True while a lost picture has not been made good by a drawing that came back whole.
+    fn owed(&self) -> bool {
+        self.in_this || self.drawings > 0
+    }
+
+    /// What the operator is told: nothing of a picture that is being drawn once more; that
+    /// NDI is not showing what it was asked to, from when that one is lost too until a
+    /// drawing has come back whole and been handed over.
+    fn shown(&self) -> Shown {
+        Shown { undrawn: (self.drawings >= 2).then_some(Undrawn::Failed), waiting: false }
+    }
+
+    /// True, once, when it is time to draw the pictures again.
+    fn take_due(&mut self, now: Instant) -> bool {
+        let due = self.again_at.is_some_and(|at| at <= now);
+        if due {
+            self.again_at = None;
+        }
+        due
+    }
+}
+
+/// Testing aid: SOFTPRESENTER_NDI_LOSE=N (or N@P) has the next N NDI pictures that come back
+/// from the GPU for a source somebody is watching count as lost: every such picture, or with
+/// @P only the Pth picture of each drawing (1 for the first: a screen with its own look, or a
+/// stage screen, is drawn before the picture the other sources share). Pictures drawn while
+/// nobody is known to be watching (as a source starts, say) do not use the count up.
+#[derive(Debug, PartialEq)]
+struct PretendLost {
+    left: u32,
+    place: Option<usize>,
+}
+
+impl PretendLost {
+    /// What the switch asks for; `None` for anything but a count, or a count and a place
+    /// from one up.
+    fn parse(asked: &str) -> Option<PretendLost> {
+        let (count, place) = match asked.split_once('@') {
+            Some((count, place)) => (count, Some(place.trim().parse::<usize>().ok()?.checked_sub(1)?)),
+            None => (asked, None),
+        };
+        Some(PretendLost { left: count.trim().parse().ok()?, place })
+    }
+
+    /// Whether the picture in this place of its drawing (from nought) counts as lost, which
+    /// uses one of the count up.
+    fn takes(&mut self, place: usize) -> bool {
+        let takes = self.left > 0 && self.place.is_none_or(|only| only == place);
+        if takes {
+            self.left -= 1;
+        }
+        takes
     }
 }
 
@@ -745,16 +814,12 @@ struct Output {
     /// The sources the NDI pictures were last drawn for, each with how many times receivers
     /// had come to it by then.
     ndi_drawn_for: Vec<(Uuid, u32)>,
-    /// When NDI pictures were last painted: one the GPU was too slow with is not tried again
-    /// sooner than a moment after, in a fade either.
-    ndi_tried_at: Instant,
-    /// True from a picture lost on its way back from the GPU, which is drawn once more, until
-    /// one comes back or another picture is asked for: a GPU that goes on losing them is not
-    /// asked for the same picture again and again.
-    ndi_lost_retried: OnceMore,
-    /// Testing aid: SOFTPRESENTER_NDI_LOSE=N has the next N NDI pictures count as lost on
-    /// their way back from the GPU.
-    pretend_lost: u32,
+    /// NDI pictures lost on their way back from the GPU: whether to draw again, and what the
+    /// operator is told. Said in the log once while it lasts.
+    ndi_lost: Lost,
+    ndi_lost_trouble: crate::applog::Lasting,
+    /// Testing aid: SOFTPRESENTER_NDI_LOSE (see `PretendLost`).
+    pretend_lost: Option<PretendLost>,
     ndi_status: NdiStatuses,
     /// While screens are being identified: the name each one shows instead of the show.
     /// While screens are identified: each screen's name (as a slide), its colour, and when it
@@ -855,10 +920,10 @@ fn run(
         ndi_buffers: Vec::new(),
         ndi_dirty: None,
         ndi_drawn_for: Vec::new(),
-        ndi_tried_at: Instant::now(),
-        ndi_lost_retried: OnceMore::default(),
-        // Testing aid: SOFTPRESENTER_NDI_LOSE (see `Output::pretend_lost`).
-        pretend_lost: std::env::var("SOFTPRESENTER_NDI_LOSE").ok().and_then(|n| n.trim().parse().ok()).unwrap_or(0),
+        ndi_lost: Lost::default(),
+        ndi_lost_trouble: crate::applog::Lasting::default(),
+        // Testing aid: SOFTPRESENTER_NDI_LOSE (see `PretendLost`).
+        pretend_lost: std::env::var("SOFTPRESENTER_NDI_LOSE").ok().as_deref().and_then(PretendLost::parse),
         ndi_status,
         identify: Vec::new(),
         identify_since: Instant::now(),
@@ -1151,7 +1216,7 @@ fn run(
             // Only the NDI pictures are drawn, and only if the change of count asks for it.
             // Drawing the windows too would cut short a fade under way in them, for something
             // the audience in the room has no part in.
-            let owed = output.ndi_state != Shown::default();
+            let owed = output.ndi_state != Shown::default() || output.ndi_lost.owed();
             if ndi_count_needs_drawing(&output.ndi_seen(), &output.ndi_drawn_for, owed) {
                 output.draw_ndi();
             }
@@ -1240,7 +1305,8 @@ impl Output {
             self.ndi_pending.clear();
             self.ndi_buffers.clear();
             self.ndi_dirty = None;
-            self.ndi_lost_retried.afresh();
+            self.ndi_lost = Lost::default();
+            self.ndi_lost_trouble = crate::applog::Lasting::default();
         }
         self.ndi_drawn_for.retain(|(have, _)| *have != id);
         // A new source gets the picture on screen now.
@@ -1412,9 +1478,10 @@ impl Output {
             // undrawn, whatever went wrong while someone watched.
             self.ndi_dirty = None;
             self.ndi_drawn_for.clear();
-            self.ndi_lost_retried.afresh();
             self.ndi_state.not_asked();
             self.ndi_trouble = crate::applog::Lasting::default();
+            self.ndi_lost = Lost::default();
+            self.ndi_lost_trouble = crate::applog::Lasting::default();
             return;
         }
         if !self.ndi_pending.is_empty() {
@@ -1422,16 +1489,12 @@ impl Output {
             return;
         }
         self.ndi_dirty = None;
-        // Another picture: should it be lost on its way back, it is drawn once more.
-        if changed != NdiChange::Nothing {
-            self.ndi_lost_retried.afresh();
-        }
+        self.ndi_lost.painting();
         self.ndi_drawn_for =
             seen.iter().filter(|source| source.wanted).map(|source| (source.id, source.arrivals)).collect();
-        self.ndi_tried_at = Instant::now();
         let (w, h) = NDI_SIZE;
         let mut all_painted = true;
-        for ids in groups {
+        for (place, ids) in groups.into_iter().enumerate() {
             // Not asked for after a picture the GPU was too slow with: it waits for the next
             // try, and so do the pictures after it.
             if self.round.slow {
@@ -1485,7 +1548,7 @@ impl Output {
                     *flag = Some(result.is_ok());
                 }
             });
-            self.ndi_pending.push(NdiReadback { ids, buffer, padded_row, done });
+            self.ndi_pending.push(NdiReadback { ids, place, buffer, padded_row, done });
         }
         if !all_painted {
             return;
@@ -1522,21 +1585,18 @@ impl Output {
     /// A picture for these sources was lost on its way back from the GPU. The sources are told
     /// that what they last sent is out of date: they go on sending it to whoever is watching,
     /// but once those leave, whoever connects next is not given it. If any of them still has
-    /// receivers, those keep the picture before it, so the operator is told that NDI is not
-    /// showing what it was asked to, until a picture is painted for it again; and the pictures
-    /// are drawn once more, now. If that one is lost too, not again until one comes back or
-    /// another picture is asked for (a GPU that goes on losing them would have them drawn
-    /// without end). A picture nobody is watching for any more is owed to nobody.
+    /// receivers, those keep the picture before it, and the loss counts (see `Lost`); a
+    /// picture nobody is watching for any more is owed to nobody. Said in the log once while
+    /// it lasts.
     fn ndi_lost(&mut self, ids: &[Uuid]) {
         for (_, ndi) in self.ndi.iter().filter(|(id, _)| ids.contains(id)) {
             ndi.forget();
         }
-        if !ndi_lost_is_owed(ids, &self.ndi_seen()) {
-            return;
-        }
-        self.ndi_state.lost();
-        if self.ndi_lost_retried.now() {
-            self.ndi_dirty = Some(NdiChange::Nothing.with(self.ndi_dirty));
+        if ndi_lost_is_owed(ids, &self.ndi_seen()) {
+            self.ndi_lost.one_lost();
+            if self.ndi_lost_trouble.is_news("An NDI picture could not be read back.") {
+                crate::applog::problem("output", "An NDI picture could not be read back.");
+            }
         }
     }
 
@@ -1571,18 +1631,18 @@ impl Output {
         let mut lost: Vec<Uuid> = Vec::new();
         for readback in std::mem::take(&mut self.ndi_pending) {
             let mut done = readback.done.lock().ok().and_then(|done| *done);
-            // Testing aid: SOFTPRESENTER_NDI_LOSE (see `pretend_lost`).
-            if done == Some(true) && self.pretend_lost > 0 {
-                self.pretend_lost -= 1;
+            // Testing aid: SOFTPRESENTER_NDI_LOSE (see `PretendLost`).
+            let watched = |id: &Uuid| self.ndi.iter().any(|(have, ndi)| have == id && ndi.receivers() > Some(0));
+            if done == Some(true)
+                && readback.ids.iter().any(watched)
+                && self.pretend_lost.as_mut().is_some_and(|lose| lose.takes(readback.place))
+            {
                 readback.buffer.unmap();
                 done = Some(false);
             }
             match done {
                 None => still.push(readback),
-                Some(false) => {
-                    crate::applog::problem("output", "An NDI picture could not be read back.");
-                    lost.extend(readback.ids);
-                }
+                Some(false) => lost.extend(readback.ids),
                 Some(true) => {
                     // The sources it is for that still want it. One that nobody is watching
                     // any more would only throw it away: it is told that the picture it had
@@ -1601,7 +1661,6 @@ impl Output {
                         let pixels = {
                             let slice = readback.buffer.slice(..);
                             let Ok(mapped) = slice.get_mapped_range() else {
-                                crate::applog::problem("output", "An NDI picture could not be read back.");
                                 lost.extend(readback.ids);
                                 continue;
                             };
@@ -1615,8 +1674,6 @@ impl Output {
                             ndi.show_shared(w, h, pixels.clone());
                         }
                     }
-                    // One came back: the next one lost is drawn once more again.
-                    self.ndi_lost_retried.afresh();
                     readback.buffer.unmap();
                     // Kept for the next picture, two at most.
                     if self.ndi_buffers.len() < 2 {
@@ -1628,6 +1685,18 @@ impl Output {
         self.ndi_pending = still;
         if !lost.is_empty() {
             self.ndi_lost(&lost);
+        }
+        if self.ndi_pending.is_empty() {
+            // The whole drawing is back, or lost: once more at once after the first loss,
+            // every few seconds after that, and all well again once one comes back whole.
+            if self.ndi_lost.drawing_back(Instant::now()) {
+                self.ndi_dirty = Some(NdiChange::Nothing.with(self.ndi_dirty));
+            }
+            if !self.ndi_lost.owed()
+                && let Some(more) = self.ndi_lost_trouble.over()
+            {
+                crate::applog::event("output", &format!("NDI pictures are read back again, after {more} more lost"));
+            }
         }
         if self.ndi_pending.is_empty()
             && let Some(changed) = self.ndi_dirty
@@ -1814,8 +1883,11 @@ impl Output {
             self.ndi_state.given_up();
             self.preview_state.given_up();
         }
-        let worst =
-            worst_undrawn(self.targets.iter().map(|target| target.state).chain([self.ndi_state, self.preview_state]));
+        let worst = worst_undrawn(self.targets.iter().map(|target| target.state).chain([
+            self.ndi_state,
+            self.ndi_lost.shown(),
+            self.preview_state,
+        ]));
         let code = worst.map_or(0, |undrawn| undrawn as u8);
         if self.live_preview.undrawn.swap(code, std::sync::atomic::Ordering::AcqRel) != code {
             let told = worst.map_or("Every screen shows what it was asked to again.", Undrawn::in_words);
@@ -2040,17 +2112,13 @@ impl Output {
                 let frame = self.frame.clone();
                 self.send_ndi(&frame, NdiChange::Any);
             }
-        } else if !self.round.slow && ndi_tried_again_in_a_fade(self.ndi_state, self.ndi_tried_at.elapsed()) {
-            // During the fade, an NDI picture the GPU was too slow with is tried again as it
-            // would be outside one: NDI does not fade, and its receivers should not wait for
-            // the windows' fade to end.
-            let frame = self.frame.clone();
-            self.send_ndi(&frame, NdiChange::Any);
         }
         // NDI pictures that have come back from the GPU are handed over at every step: NDI
         // shows the new slide at once, as the stage screens do, not when the windows' fade
         // ends. After the windows: this may paint an NDI picture that was put off, and one the
-        // GPU is too slow with would keep the windows' step from being asked for.
+        // GPU is too slow with would keep the windows' step from being asked for. (An NDI
+        // picture that could not be drawn is not tried again here: it waits for the end of
+        // the fade, above, so that the room's fade is never held up for NDI.)
         self.finish_ndi();
     }
 
@@ -2062,9 +2130,11 @@ impl Output {
         [for_memory, self.draw_again_in()].into_iter().flatten().min()
     }
 
-    /// How long until a picture the GPU was too slow with is due to be drawn again, if one is.
+    /// How long until a picture the GPU was too slow with, or NDI pictures lost on their way
+    /// back from it, are due to be drawn again, if any are.
     fn draw_again_in(&self) -> Option<Duration> {
-        self.round.again_at.map(|at| at.saturating_duration_since(Instant::now()))
+        let at = [self.round.again_at, self.ndi_lost.again_at].into_iter().flatten().min()?;
+        Some(at.saturating_duration_since(Instant::now()))
     }
 
     /// Draws the screens again if a picture the GPU was too slow with is due another try, and
@@ -2075,11 +2145,18 @@ impl Output {
             self.round.again_at = None;
             return false;
         }
-        let due = self.round.again_at.is_some_and(|at| at <= Instant::now());
-        if due {
+        let now = Instant::now();
+        if self.round.again_at.is_some_and(|at| at <= now) {
             self.draw(false);
+            return true;
         }
-        due
+        // NDI pictures lost on their way back are drawn again alone: the windows are well.
+        // (After a fade, not during one: this waits as the drawing above does.)
+        let lost_due = self.ndi_lost.take_due(now);
+        if lost_due {
+            self.draw_ndi();
+        }
+        lost_due
     }
 
     /// Paints a picture and shows it in one window; true when it was painted. A picture that
@@ -2418,36 +2495,7 @@ mod tests {
     }
 
     #[test]
-    fn during_a_fade_an_ndi_picture_the_gpu_was_too_slow_with_is_tried_again_while_tries_are_left() {
-        let (soon, later) = (DRAW_AGAIN_AFTER / 2, DRAW_AGAIN_AFTER);
-        let mut ndi = Shown::default();
-        assert!(!ndi_tried_again_in_a_fade(ndi, later), "all is well: the fade's steps leave NDI alone");
-        ndi.failed(&slow().unwrap_err());
-        assert!(!ndi_tried_again_in_a_fade(ndi, soon), "not at every step");
-        assert!(ndi_tried_again_in_a_fade(ndi, later));
-        // Given up, too heavy or lost: left to the end of the fade.
-        ndi.given_up();
-        assert!(!ndi_tried_again_in_a_fade(ndi, GIVEN_UP_AGAIN_AFTER));
-        ndi.failed(&sp_render::PaintError::TooHeavy);
-        assert!(!ndi_tried_again_in_a_fade(ndi, later));
-        ndi.lost();
-        assert!(!ndi_tried_again_in_a_fade(ndi, later));
-        // Too slow again after it was said to be too heavy: tries are left.
-        ndi.skipped();
-        assert!(ndi_tried_again_in_a_fade(ndi, later));
-    }
-
-    #[test]
-    fn an_ndi_picture_lost_is_drawn_once_more_and_owed_only_to_sources_still_watched() {
-        let mut again = OnceMore::default();
-        assert!(again.now(), "lost: drawn once more");
-        assert!(!again.now(), "lost again: not a third time");
-        assert!(!again.now());
-        // One comes back, another picture is asked for, or nobody is watching: afresh.
-        again.afresh();
-        assert!(again.now());
-        assert!(!again.now());
-        // Owed only to a source it was for that still wants a picture.
+    fn an_ndi_picture_lost_is_owed_only_to_sources_still_watched() {
         let (watched, left, other) = (seen(true, false), seen(false, false), seen(true, false));
         let all = [watched, left, other];
         assert!(ndi_lost_is_owed(&[watched.id, left.id], &all));
@@ -2456,23 +2504,74 @@ mod tests {
         assert!(!ndi_lost_is_owed(&[], &all));
     }
 
+    /// One drawing of the NDI pictures, of which one was lost or none, as `send_ndi` and
+    /// `finish_ndi` tell it; true when the pictures are to be drawn once more now.
+    fn ndi_drawing(lost: &mut Lost, loses: bool, now: Instant) -> bool {
+        lost.painting();
+        if loses {
+            lost.one_lost();
+        }
+        lost.drawing_back(now)
+    }
+
     #[test]
-    fn an_ndi_picture_lost_on_its_way_back_is_told_until_one_is_painted_again() {
-        let mut ndi = Shown::default();
-        ndi.lost();
-        assert_eq!(worst_undrawn([ndi]), Some(Undrawn::Failed));
-        // Nothing is waited for: giving up the tries of another drawing changes nothing.
-        ndi.given_up();
-        assert_eq!(worst_undrawn([ndi]), Some(Undrawn::Failed));
-        ndi.painted();
-        assert_eq!(worst_undrawn([ndi]), None);
-        // Lost while another picture was being tried again: said at once, as lost.
-        ndi.skipped();
-        ndi.lost();
-        assert_eq!(ndi, Shown { undrawn: Some(Undrawn::Failed), waiting: false });
-        // The last receiver leaving ends it.
-        ndi.not_asked();
-        assert_eq!(worst_undrawn([ndi]), None);
+    fn an_ndi_picture_lost_is_drawn_once_more_then_every_few_seconds_and_told_until_one_comes_back() {
+        let now = Instant::now();
+        let mut lost = Lost::default();
+        // A drawing that comes back whole: nothing to do or tell.
+        assert!(!ndi_drawing(&mut lost, false, now));
+        assert_eq!(lost, Lost::default());
+        // A picture lost: drawn once more at once, and nothing said yet (it is being put right).
+        assert!(ndi_drawing(&mut lost, true, now));
+        assert!(lost.owed());
+        assert_eq!((worst_undrawn([lost.shown()]), lost.again_at), (None, None));
+        // Lost again: the operator is told, and it is drawn again in five seconds, not now.
+        assert!(!ndi_drawing(&mut lost, true, now));
+        assert_eq!(worst_undrawn([lost.shown()]), Some(Undrawn::Failed));
+        assert_eq!(lost.again_at, Some(now + GIVEN_UP_AGAIN_AFTER));
+        assert!(!lost.take_due(now + GIVEN_UP_AGAIN_AFTER / 2));
+        assert!(lost.take_due(now + GIVEN_UP_AGAIN_AFTER));
+        assert!(!lost.take_due(now + GIVEN_UP_AGAIN_AFTER), "due once");
+        // Painting again (that try, or a new slide) does not take the warning away: only a
+        // picture handed over does.
+        lost.painting();
+        assert_eq!(worst_undrawn([lost.shown()]), Some(Undrawn::Failed));
+        // The drawing comes back whole: all is well, and the next loss is drawn once more.
+        assert!(!lost.drawing_back(now));
+        assert_eq!(lost, Lost::default());
+        assert!(ndi_drawing(&mut lost, true, now));
+        // Another drawing that paints while one is to be drawn again takes its place.
+        assert!(!ndi_drawing(&mut lost, true, now));
+        assert!(lost.again_at.is_some());
+        lost.painting();
+        assert_eq!(lost.again_at, None);
+    }
+
+    /// Two pictures to a drawing (a screen with its own look, and the one the others share),
+    /// and one of them is lost every time while the other comes back.
+    #[test]
+    fn one_ndi_picture_lost_every_time_beside_one_that_comes_back_is_not_drawn_without_end() {
+        let now = Instant::now();
+        let mut lost = Lost::default();
+        let at_once = (0..100).filter(|_| ndi_drawing(&mut lost, true, now)).count();
+        assert_eq!(at_once, 1, "drawn once more at once, and never again at once");
+        assert_eq!(worst_undrawn([lost.shown()]), Some(Undrawn::Failed), "the operator is told throughout");
+        assert_eq!(lost.again_at, Some(now + GIVEN_UP_AGAIN_AFTER), "and it is drawn again now and then");
+    }
+
+    #[test]
+    fn the_switch_for_losing_ndi_pictures_takes_a_count_and_a_place() {
+        assert_eq!(PretendLost::parse("3"), Some(PretendLost { left: 3, place: None }));
+        assert_eq!(PretendLost::parse(" 40 @ 2 "), Some(PretendLost { left: 40, place: Some(1) }));
+        for bad in ["", "x", "-1", "3@", "3@0", "3@x", "@2", "1@2@3", "4294967296"] {
+            assert_eq!(PretendLost::parse(bad), None, "{bad:?}");
+        }
+        // Any picture, three times.
+        let mut any = PretendLost::parse("3").unwrap();
+        assert_eq!([0, 1, 0, 1].map(|place| any.takes(place)), [true, true, true, false]);
+        // Only the first picture of each drawing, twice: the second always comes back.
+        let mut first = PretendLost::parse("2@1").unwrap();
+        assert_eq!([0, 1, 0, 1, 0, 1].map(|place| first.takes(place)), [true, false, true, false, false, false]);
     }
 
     #[test]
