@@ -51,6 +51,9 @@ Choose **SoftPresenter › Install Command Line Tool…** (or run the app's prog
 
 - **Numbers** are places in the lists (`sp songs`, `sp slides SONG`, `sp playlist NAME`…), from 1.
   A list changes when things are added or deleted, so list again before using a number.
+- **A song's id**, as `sp song info` and the JSON replies (`playlist`, `status`) give it, names
+  it too, and never changes: `sp slides e6985576-8dfd-44d8-b81c-99a7dc6a9b54`. It tells apart
+  songs that share a title.
 - **Names with spaces** can be quoted, or typed as separate words where nothing else follows:
   `sp go blessed assurance 2`, `sp playlist add open fields to friday`. The words `to`, `from`,
   `in`, `at` and `as` part a name from what follows (at the last of them), so quote a name
@@ -116,6 +119,8 @@ mistake impossible:
 | `sp` or `status` | What is on screen (song, slide, words), the next slide, the media, any message and props, the announcements layer, a media playlist playing, running timers, the audio, the playlist in front, whether the screens, Continuous Playlist and Identify are on, and the main theme |
 | `songs` | Every song in the library, numbered; saved Bible passages and slides made from presentations too. A song whose file changed outside the app is marked |
 | `slides [SONG]` | A song's slides: number, group, words (lines joined with " / ", main language first), which is on screen, and marks for a slide that is off, labelled or has a hot key |
+| `slides item N [in PLAYLIST]` | The slides of a playlist's item N (of the playlist in front if none is named): a song's, or a saved Bible passage's, made as opening it would make them but without opening it, so the Bible page stays as it is |
+| `slides SONG --full`, `slides item N [in PLAYLIST] --full` | Every slide as `slide SONG N` gives it (its own settings, its objects, their words, places and looks), in one reply |
 | `search WORDS` | Songs with those words in their title or slides, and on which slides |
 | `libraries`, `library NAME` | The libraries with how many songs each has (and how many are missing); one library's songs |
 | `playlists`, `playlist [NAME]` | The playlists; one playlist's items (the one in front if none is named) |
@@ -149,6 +154,39 @@ mistake impossible:
       2. [Verse 2] A second verse arrives today / Второй куплет
       3. [Chorus] Sing it again, let the valley reply / Пой снова, пусть долина ответит   (label Instrumental, key Q)
 
+    $ sp playlist friday
+    Friday
+      1. — Worship —
+      2. River Song
+      3. River Song
+      4. Psalms 117:1-2
+      5. media.png (picture)
+      6. Sermon slides (placeholder)
+      7. Harbour Lights
+    $ sp slides "Psalms 117:1-2"
+    No song called “Psalms 117:1-2”.
+    $ sp slides item 4 in friday
+    Psalms 117:1-2
+      1. [Psalms 117:1] O praise the LORD, all ye nations: praise him, all ye people. / Praise the LORD, all you nations! Extol him, all you peoples! / Psalms 117:1 / Psalms 117:1
+      2. [Psalms 117:2] For his merciful kindness is great toward us: and the truth of the LORD endureth for ever. Praise ye the LORD. / For his loving kindness is great toward us. The LORD’s faithfulness endures forever. Praise the LORD! / Psalms 117:2 / Psalms 117:2
+    $ sp slides item 5 in friday
+    media.png is a picture, not slides (sp playlist go 5 1 in Friday shows it).
+    $ sp slides item 6 in friday
+    Sermon slides is a placeholder; it has no slides yet (sp playlist fill Sermon slides with SONG in Friday).
+    $ sp slides "Harbour Lights" --full
+    Harbour Lights, slide 1 of 2 (Verse 1)
+     1. Main: "Lanterns are lit along the shore"
+        at x=120 y=240 w=1680 h=600 (the theme's)
+        font Helvetica Neue, size 96, weight 700, italic off, colour #ffffff, align Center, scaling TextDown
+
+    Harbour Lights, slide 2 of 2 (Verse 2)
+     1. Main: "Harbour lights for evermore"
+        at x=120 y=240 w=1680 h=600 (the theme's)
+        font Helvetica Neue, size 96, weight 700, italic off, colour #ffffff, align Center, scaling TextDown
+
+`item` followed by a number names a playlist item; a song whose title starts with "Item" and a
+number is named by its number, its id, or its title in quotes (`sp slides "Item 3"`).
+
     $ sp search foretaste
       1. Blessed Assurance (slide 1)
     $ sp timers
@@ -173,7 +211,7 @@ An empty list says `(none)`.
 | Command | Does |
 |---|---|
 | `go SONG [SLIDE]` | Puts a slide on screen (the first if SLIDE is left out), opening the song from the library |
-| `playlist go ITEM [SLIDE] [in PLAYLIST]` | Opens a playlist item as a click does: a song (and a slide), or a passage on the Bible page. Continuous Playlist then follows the playlist. A picture or video, or a media playlist, has one thing to show: `1` shows it (or plays the media playlist round and round); without it, it is only opened |
+| `playlist go ITEM [SLIDE] [in PLAYLIST]` | Opens a playlist item as a click does: a song, or a passage on the Bible page, and with SLIDE puts that slide on screen. Continuous Playlist then follows the playlist. A picture or video, or a media playlist, has one thing to show: `1` shows it (or plays the media playlist round and round); without it, it is only opened |
 | `next`, `previous` (or `back`), `first`, `last` | As the arrow keys, Home and End; a switched-off slide is passed over and an arrangement is followed |
 | `group NAME\|LETTER [in SONG]` | A group's first slide on screen: `group chorus`, `group c`, `group "verse 2"` |
 | `hotkey KEY` | The slide with that hot key, in the song on screen (or shown) |
@@ -195,6 +233,8 @@ An empty list says `(none)`.
     River Song has 3 slides; there is no slide 9.
     $ sp playlist go 3 2 in sunday
     On screen: Harbour Lights, slide 2 of 2 (Chorus).
+    $ sp playlist go 4 2 in friday       # a saved Bible passage
+    Psalms 117:1-2: On screen: Psalms 117:1-2, slide 2 of 2 (Psalms 117:2).
     $ sp go "Blessed Assurance"
     On screen: Blessed Assurance, slide 1 of 7 (Verse 1).
     $ sp group chorus
@@ -394,6 +434,7 @@ the background. Anything else is refused, with the list of what is read.
 | Command | Does |
 |---|---|
 | `slide SONG N` | A slide's settings (off, label, hot key, transition, template, actions, notes) and objects: number, name, role, words, place and look, with `*` beside settings that are the slide's own rather than the theme's |
+| `slide item N SLIDE [in PLAYLIST]` | The same for a slide of a playlist's item N, a saved Bible passage included (read only: a passage's slides are made from the Bible, so `slide text` and the rest don't change them) |
 | `slide text SONG N [OBJECT] WORDS` | Sets an object's words (`\n` starts a new line). OBJECT is its number, name or role (`main`, `translation`…), the main text if left out |
 | `slide style SONG N\|all [OBJECT] key=value…` | An object's look on one slide or every slide; `key=reset`, or `reset` alone, goes back to the theme's. `slide style keys` lists the settings |
 | `slide frame SONG N\|all OBJECT x= y= w= h=` | Where an object sits, in the slide's pixels (1920 × 1080); `reset` puts it back. A box partly or wholly off the slide is warned about |
@@ -446,6 +487,20 @@ it in an editor that has it open, and shows at once on a slide that is on screen
         font Helvetica Neue, size 96, weight 700, italic off, colour #ffffff, align Center, scaling TextDown
     $ sp slide web "Blessed Assurance" 1 off
     Blessed Assurance: slide 1 has no web page.
+    $ sp slide item 4 2 in friday
+    Psalms 117:1-2, slide 2 of 2 (Psalms 117:2)
+     1. Main: "For his merciful kindness is great toward us: and the truth of the LORD endureth for ever. Praise ye the LORD."
+        at x=65 y=18 w=1790 h=378 (the theme's)
+        font Linux Biolinum, size 96, weight 400, italic off, colour #ffffff, align Left, scaling TextUpOrDown
+     2. Translation: "For his loving kindness is great toward us. The LORD’s faithfulness endures forever. Praise the LORD!"
+        at x=65 y=540 w=1790 h=378 (the theme's)
+        font Linux Biolinum, size 96, weight 400, italic off, colour #ffffff, align Left, scaling TextUpOrDown
+     3. Reference: "Psalms 117:2"
+        at x=65 y=429 w=1790 h=110 (the theme's)
+        font Linux Biolinum, size 44, weight 700, italic off, colour #ffffff, align Right, scaling TextUpOrDown
+     4. Translation reference: "Psalms 117:2"
+        at x=65 y=951 w=1790 h=110 (the theme's)
+        font Linux Biolinum, size 44, weight 700, italic off, colour #ffffff, align Right, scaling TextUpOrDown
 
 The settings `slide style keys` lists (`theme box` takes the same):
 
@@ -524,7 +579,29 @@ Romans`.
 
 A playlist item or library entry whose song no longer exists is kept and listed as
 "(missing)"; a picture, video or media playlist that has gone is listed as "(missing picture or
-video)" or "(missing media playlist)". The JSON of `playlist` is the list of these lines.
+video)" or "(missing media playlist)". A placeholder, once filled, becomes the song, picture or
+video that fills it, as in the window, so it is listed as that.
+
+The JSON of `playlist` has an object for each item: its number (`item`), `kind` (`song`,
+`passage`, `header`, `media`, `media_playlist`, `placeholder`, or `voxlive`), `title` as the
+playlist shows it, `missing`, and `text`, the line above. A song has its `id` and its `number`
+in `sp songs`; a picture or video its `number` in `sp media` and `media_type` (`picture` or
+`video`); a media playlist its `number` in `sp media-playlist`; a passage the `bibles` it was
+kept with:
+
+```json
+[
+  {"item": 1, "kind": "header", "title": "Worship", "missing": false, "text": "— Worship —"},
+  {"item": 3, "kind": "song", "title": "River Song", "missing": false, "text": "River Song",
+   "id": "e6985576-8dfd-44d8-b81c-99a7dc6a9b54", "number": 3},
+  {"item": 4, "kind": "passage", "title": "Psalms 117:1-2", "missing": false,
+   "text": "Psalms 117:1-2", "bibles": ["kjv", "web"]},
+  {"item": 5, "kind": "media", "title": "media.png", "missing": false,
+   "text": "media.png (picture)", "number": 1, "media_type": "picture"},
+  {"item": 6, "kind": "placeholder", "title": "Sermon slides", "missing": false,
+   "text": "Sermon slides (placeholder)"}
+]
+```
 
 ## Themes
 
@@ -797,6 +874,7 @@ A file in another format (a lyric file, ChordPro, Word) goes straight in with
 ### Checking from a script
 
     $ sp status --json | jq -r '.data.live.song // "nothing"'
+    $ sp status --json | jq '.data.live | {id, playlist, item}'     # which song exactly, and from where
     $ sp slides "River Song" --json | jq '.data[] | select(.on_screen) | .slide'
     $ sp go "River Song" 9 >/dev/null || echo "refused"
 
@@ -813,16 +891,18 @@ the command's facts where it has any:
 
 | Command | `data` |
 |---|---|
-| `status` | `live` (`song`, `slide`, `slides`, `words`, or null), `next_slide`, `media`, `message`, `props`, `announcements`, `media_playlist`, `timers` (each `name`, `kind`, `shows`, `running`), `audio` (`track`, `paused`, `seconds`, `length`, `volume`), `playlist` (`name`, `item_last_opened`, `listed`), `audience_on`, `stage_on`, `continuous`, `identify`, `main_theme`, `selected_song` |
-| `songs`, `playlists`, `media`, `themes`, `timers`, `messages`, `props`, `macros`, `audio`, `playlist [NAME]` | An array of names, in their numbered order |
+| `status` | `live` (null when nothing is on screen): `song`, `slide`, `slides`, `words`, `kind` (`song`, `passage` or `voxlive`), the song's `id` and its `number` in `sp songs` (null for a passage), and the `playlist` and `item` number it was opened from (null when it wasn't); `next_slide`, `media`, `message`, `props`, `announcements`, `media_playlist`, `timers` (each `name`, `kind`, `shows`, `running`), `audio` (`track`, `paused`, `seconds`, `length`, `volume`), `playlist` (`name`, `item_last_opened` and its number `item`, `listed`), `audience_on`, `stage_on`, `continuous`, `identify`, `main_theme`, `selected_song` |
+| `songs`, `playlists`, `media`, `themes`, `timers`, `messages`, `props`, `macros`, `audio` | An array of names, in their numbered order |
+| `playlist [NAME]` | An object for each item: `item`, `kind`, `title`, `missing`, `text`, and `id`, `number`, `media_type` or `bibles` by its kind ([above](#playlists-and-libraries)) |
 | `libraries` | `[{"name": "Hymns", "songs": 3, "missing": 1}]` |
 | `screens` | `[{"name": "Screen 1", "doing": "In a window", "shown": true}]` |
 | `displays` | `[{"name": "Built-in Retina Display", "width": 3024, "height": 1964, "main": true}]` |
 | `stage layouts` | `[{"name": "Words Only", "screens": ["Band"]}]` |
 | `groups` | `[{"key": "C", "group": "Chorus", "names": ["chorus", "chorus 1"], "color": "#cc4eb4"}]` |
 | `menu` | `[{"id": "ClearAll", "label": "Clear All"}]` |
-| `slides [SONG]` | `[{"slide": 1, "group": "Verse 1", "words": "…", "on_screen": false, "enabled": true, "label": null, "hot_key": null}]` |
-| `slide SONG N` | `song`, `slide`, `group`, `enabled`, `label`, `notes`, `hot_key`, `transition`, `template`, `actions`, `advance`, and `objects`: each with `object` (its number), `name`, `role`, `kind`, `text`, `frame` (`x`, `y`, `w`, `h`, and `own`), `style` (the settings the slide sets itself) and `look` (every setting, the theme's filled in) |
+| `slides [SONG]`, `slides item N` | `[{"slide": 1, "group": "Verse 1", "words": "…", "on_screen": false, "enabled": true, "label": null, "hot_key": null}]` |
+| `slides … --full` | The same array, each slide also with what `slide SONG N` gives (`notes`, `transition`, `template`, `actions`, `advance`, `objects`), all but `song` |
+| `slide SONG N`, `slide item N SLIDE` | `song`, `slide`, `group`, `enabled`, `label`, `notes`, `hot_key`, `transition`, `template`, `actions`, `advance`, and `objects`: each with `object` (its number), `name`, `role`, `kind`, `text`, `frame` (`x`, `y`, `w`, `h`, and `own`), `style` (the settings the slide sets itself) and `look` (every setting, the theme's filled in) |
 | `song text SONG` | `{"song": "River Song", "text": "[Verse 1]\n…"}` |
 | `song info SONG` | `id`, `title`, `artist`, `author`, `publisher`, `year`, `ccli`, `slides`, `theme`, `transition`, `loops` |
 | `search WORDS` | `[{"song": "Blessed Assurance", "number": 1, "title": false, "slides": [1]}]` |

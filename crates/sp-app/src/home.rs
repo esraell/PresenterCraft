@@ -712,6 +712,24 @@ impl BiblePage {
     /// Sets the page up as it was saved: translations, boxes and slide options. Returns the
     /// translations that are no longer installed, which are left out.
     pub fn apply_settings(&mut self, saved: &crate::service::SavedPassage) -> Vec<String> {
+        let (rows, options, missing) = self.saved_choices(saved);
+        if !rows.is_empty() {
+            self.rows = rows;
+        }
+        let o = &mut self.options;
+        o.show_verse_numbers = options.show_verse_numbers;
+        o.break_on_new_verse = options.break_on_new_verse;
+        o.display_translation = options.display_translation;
+        o.reference = options.reference;
+        missing
+    }
+
+    /// What a saved passage asks the page for: its translations as rows (each translation no
+    /// longer installed left out, and named), and its slide options.
+    fn saved_choices(
+        &self,
+        saved: &crate::service::SavedPassage,
+    ) -> (Vec<BibleRow>, crate::bible::BibleOptions, Vec<String>) {
         use crate::bible::ReferenceStyle;
         let mut rows = Vec::new();
         let mut missing = Vec::new();
@@ -729,20 +747,30 @@ impl BiblePage {
                 None => missing.push(row.bible.to_uppercase()),
             }
         }
-        if !rows.is_empty() {
-            self.rows = rows;
-        }
-        let o = &mut self.options;
-        o.show_verse_numbers = saved.show_verse_numbers;
-        o.break_on_new_verse = saved.break_on_new_verse;
-        o.display_translation = saved.display_translation;
-        o.reference = match saved.reference_style.as_str() {
-            "passage_each" => ReferenceStyle::PassageEach,
-            "passage_last" => ReferenceStyle::PassageLast,
-            "none" => ReferenceStyle::NoReference,
-            _ => ReferenceStyle::VerseReferences,
+        let options = crate::bible::BibleOptions {
+            show_verse_numbers: saved.show_verse_numbers,
+            break_on_new_verse: saved.break_on_new_verse,
+            display_translation: saved.display_translation,
+            reference: match saved.reference_style.as_str() {
+                "passage_each" => ReferenceStyle::PassageEach,
+                "passage_last" => ReferenceStyle::PassageLast,
+                "none" => ReferenceStyle::NoReference,
+                _ => ReferenceStyle::VerseReferences,
+            },
+            ..crate::bible::BibleOptions::default()
         };
-        missing
+        (rows, options, missing)
+    }
+
+    /// A saved passage's slides, made as opening it would make them, but leaving the page as
+    /// it is: its translations, options, what is typed and the passage shown all stay, so the
+    /// command line can read a playlist's passage while the operator uses the page.
+    pub fn passage_of(&mut self, saved: &crate::service::SavedPassage) -> Result<sp_model::Presentation, String> {
+        let (rows, options, _) = self.saved_choices(saved);
+        // None of its translations installed: the page's own, as opening it would leave them.
+        let rows = if rows.is_empty() { self.rows.clone() } else { rows };
+        let choices = self.choices_for(&rows)?;
+        crate::bible::build_passage(&saved.lookup, &choices, &options, self.template)
     }
 
     /// The choices a passage is made with, as text, so a change to any of them can be noticed.
@@ -776,16 +804,22 @@ impl BiblePage {
     /// The translations a passage is made in, with where each one's words and reference go.
     /// A row set to no Bible is left out. The error is a plain sentence.
     fn row_choices(&mut self) -> Result<Vec<crate::bible::RowChoice>, String> {
-        let mut rows = Vec::new();
-        for row in &self.rows {
+        let rows = self.rows.clone();
+        self.choices_for(&rows)
+    }
+
+    /// The same for rows other than the page's own (a saved passage's).
+    fn choices_for(&mut self, rows: &[BibleRow]) -> Result<Vec<crate::bible::RowChoice>, String> {
+        let mut choices = Vec::new();
+        for row in rows {
             let Some(at) = row.bible else { continue };
             let bible = self.shelf.get(at)?;
-            rows.push(crate::bible::RowChoice { bible, verse: row.verse.clone(), reference: row.reference.clone() });
+            choices.push(crate::bible::RowChoice { bible, verse: row.verse.clone(), reference: row.reference.clone() });
         }
-        if rows.is_empty() {
+        if choices.is_empty() {
             return Err("Choose a Bible for at least one row.".to_owned());
         }
-        Ok(rows)
+        Ok(choices)
     }
 
     /// Two verses made with the choices of the moment, for the Options panel to preview when
@@ -6903,6 +6937,45 @@ mod tests {
         narrow.boxes.retain(|(have, _)| *have != sp_model::Role::translation());
         narrow.apply_settings(&serde_json::from_str(&text).unwrap());
         assert_eq!((&narrow.rows[0].verse, &narrow.rows[0].reference), (&None, &role("reference")));
+    }
+
+    #[test]
+    fn a_saved_passage_is_made_without_changing_the_page() {
+        let role = |name: &str| Some(sp_model::Role(name.to_owned()));
+        let mut page = BiblePage { shelf: crate::bible::Shelf::shipped(), ..BiblePage::default() };
+        page.slots = Some([0, 1]);
+        page.lookup = "Psalm 23".to_owned();
+        page.look_up(None);
+        page.pending = None;
+        let before = (page.choices(), page.lookup.clone(), page.shown.clone(), page.showing);
+        // Kept with the King James Version alone, one slide for the whole passage, the
+        // reference on the last.
+        let saved = crate::service::SavedPassage {
+            lookup: "John 3:16-18".to_owned(),
+            rows: vec![crate::service::SavedRow {
+                bible: "kjv".to_owned(),
+                verse: role("primary").map(|r| r.0),
+                reference: role("reference").map(|r| r.0),
+            }],
+            show_verse_numbers: false,
+            break_on_new_verse: true,
+            display_translation: false,
+            reference_style: "passage_last".to_owned(),
+        };
+        let passage = page.passage_of(&saved).expect("made");
+        assert_eq!(passage.title, "John 3:16-18");
+        assert_eq!(passage.slide_count(), 3, "one slide a verse");
+        let texts = |at: usize| passage.slide(at).map(|(_, slide)| slide.texts().len()).unwrap_or(0);
+        assert_eq!((texts(0), texts(2)), (1, 2), "only the last slide has the reference");
+        assert_eq!((page.choices(), page.lookup.clone(), page.shown.clone(), page.showing), before);
+        assert!(page.pending.is_none(), "nothing goes into the page's slots");
+
+        // A translation that isn't installed: the page's own rows make it, as opening it would.
+        let gone = crate::service::SavedPassage {
+            rows: vec![crate::service::SavedRow { bible: "nosuch".to_owned(), verse: None, reference: None }],
+            ..saved
+        };
+        assert_eq!(page.passage_of(&gone).expect("made").title, "От Иоанна 3:16-18");
     }
 
     fn input(key: Option<Key>) -> RawInput {

@@ -44,7 +44,116 @@ fn transition_words(transition: Option<&Transition>) -> String {
     transition.map_or_else(|| "none (the theme's)".to_owned(), |t| format!("{} {:.1}s", t.kind.name(), t.seconds))
 }
 
+/// What a playlist item was found to be in the library, the media bin or the media playlists.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Found {
+    /// A song: its id, and its number in `sp songs` (none for one deleted while in use).
+    Song { id: sp_model::Uuid, number: Option<usize> },
+    /// The VoxLive item, which isn't among the songs.
+    VoxLive,
+    /// A picture or video in the media bin: its number there.
+    Media { number: usize, video: bool },
+    /// A media playlist: its number in `sp media-playlist`.
+    MediaPlaylist { number: usize },
+    /// Nothing to find (a header, a passage, a placeholder), or the song, picture, video or
+    /// media playlist has gone.
+    Nothing,
+}
+
+/// One playlist item as `playlist [NAME]` lists it: its line, and the same as data, with its
+/// number in the playlist, its kind, its title as the playlist shows it, and what it was found
+/// to be. `text` is the line, as the JSON gave it before it had the rest.
+pub(crate) fn item_entry(number: usize, item: &Item, found: &Found) -> (String, serde_json::Value) {
+    let title = item.title();
+    let (line, kind, missing) = match (item, found) {
+        (Item::Header { name }, _) => (format!("— {name} —"), "header", false),
+        (Item::Song { .. }, Found::VoxLive) => (title.to_owned(), "voxlive", false),
+        (Item::Song { .. }, Found::Song { .. }) => (title.to_owned(), "song", false),
+        (Item::Song { .. }, _) => (format!("{title} (missing)"), "song", true),
+        (Item::Passage(_), _) => (title.to_owned(), "passage", false),
+        (Item::Media { .. }, Found::Media { video: true, .. }) => (format!("{title} (video)"), "media", false),
+        (Item::Media { .. }, Found::Media { .. }) => (format!("{title} (picture)"), "media", false),
+        (Item::Media { .. }, _) => (format!("{title} (missing picture or video)"), "media", true),
+        (Item::MediaPlaylist { .. }, Found::MediaPlaylist { .. }) => {
+            (format!("{title} (media playlist)"), "media_playlist", false)
+        }
+        (Item::MediaPlaylist { .. }, _) => (format!("{title} (missing media playlist)"), "media_playlist", true),
+        (Item::Placeholder { .. }, _) => (format!("{title} (placeholder)"), "placeholder", false),
+    };
+    let mut data = serde_json::json!({
+        "item": number, "kind": kind, "title": title, "missing": missing, "text": line,
+    });
+    match (item, found) {
+        (Item::Song { .. }, Found::Song { id, number }) => {
+            data["id"] = serde_json::json!(id);
+            data["number"] = serde_json::json!(number);
+        }
+        (Item::Song { .. }, Found::VoxLive) => {
+            data["id"] = serde_json::Value::Null;
+            data["number"] = serde_json::Value::Null;
+        }
+        // A song that has gone keeps the id it was named by, where it was named by one.
+        (Item::Song { key, .. }, _) => {
+            data["id"] = serde_json::json!(sp_model::Uuid::parse_str(key).ok());
+            data["number"] = serde_json::Value::Null;
+        }
+        (Item::Passage(saved), _) => {
+            data["bibles"] = serde_json::json!(saved.rows.iter().map(|row| row.bible.clone()).collect::<Vec<_>>());
+        }
+        (Item::Media { .. }, Found::Media { number, video }) => {
+            data["number"] = serde_json::json!(number);
+            data["media_type"] = serde_json::json!(if *video { "video" } else { "picture" });
+        }
+        (Item::MediaPlaylist { .. }, Found::MediaPlaylist { number }) => data["number"] = serde_json::json!(number),
+        (Item::Media { .. } | Item::MediaPlaylist { .. }, _) => data["number"] = serde_json::Value::Null,
+        _ => {}
+    }
+    (line, data)
+}
+
 impl crate::App {
+    /// A presentation's number in `sp songs`, from 1: none for a Bible passage, the VoxLive
+    /// item, or a song deleted while it was in use.
+    pub(crate) fn song_number(&self, at: usize) -> Option<usize> {
+        self.is_listed(at).then(|| (0..at).filter(|index| self.is_listed(*index)).count() + 1)
+    }
+
+    /// Whether `sp songs` lists a presentation: not a Bible passage, the VoxLive item, or a
+    /// song deleted while it was in use.
+    pub(crate) fn is_listed(&self, at: usize) -> bool {
+        let removed = self.running.as_ref().is_some_and(|r| r.home_state.removed_songs.contains(&at));
+        at < self.show.presentations().len() && !self.app_made(at) && !removed
+    }
+
+    /// What a playlist item was found to be: its song, picture, video or media playlist.
+    pub(crate) fn found(&self, item: &Item) -> Found {
+        let Some(state) = self.running.as_ref().map(|r| &r.home_state) else { return Found::Nothing };
+        match item {
+            Item::Song { key, .. } => match crate::studio::playlist_song(&self.show, state, key) {
+                Some(at) if at == self.voxlive_slot => Found::VoxLive,
+                Some(at) => Found::Song { id: self.show.presentations()[at].id, number: self.song_number(at) },
+                None => Found::Nothing,
+            },
+            Item::Media { id, .. } => match self.show.media().iter().position(|media| media.id == *id) {
+                Some(at) => Found::Media { number: at + 1, video: crate::media::is_video(&self.show.media()[at].path) },
+                None => Found::Nothing,
+            },
+            Item::MediaPlaylist { id, .. } => match state.media_playlists.iter().position(|p| p.id == *id) {
+                Some(at) => Found::MediaPlaylist { number: at + 1 },
+                None => Found::Nothing,
+            },
+            Item::Passage(_) | Item::Header { .. } | Item::Placeholder { .. } => Found::Nothing,
+        }
+    }
+
+    /// `playlist [NAME]`: a playlist's items, as lines and as data.
+    pub(crate) fn playlist_listing(&self, list: usize) -> (Vec<String>, Vec<serde_json::Value>) {
+        let Some(playlist) = self.running.as_ref().and_then(|r| r.home_state.services.list.get(list)) else {
+            return (Vec::new(), Vec::new());
+        };
+        playlist.items.iter().enumerate().map(|(at, item)| item_entry(at + 1, item, &self.found(item))).unzip()
+    }
+
     /// The playlist a name stands for, or the one in front (for other command modules).
     pub(crate) fn playlist_at_for_cli(&self, typed: Option<&str>) -> Result<usize, String> {
         self.playlist_at(typed)
@@ -953,6 +1062,67 @@ mod tests {
         assert_eq!(parse_transition(&words("none")).unwrap(), None);
         assert!(parse_transition(&words("sparkle")).unwrap_err().contains("Dissolve"));
         assert!(parse_transition(&words("push 9")).is_err());
+    }
+
+    #[test]
+    fn playlist_items_say_their_kind_and_keep_their_old_line() {
+        let id = sp_model::Uuid::new_v4();
+        let song = Item::Song { key: id.to_string(), title: "River Song".to_owned() };
+        let (line, data) = item_entry(2, &song, &Found::Song { id, number: Some(7) });
+        assert_eq!(line, "River Song");
+        assert_eq!(data["item"], 2);
+        assert_eq!(data["kind"], "song");
+        assert_eq!(data["text"], "River Song");
+        assert_eq!(data["id"], serde_json::json!(id));
+        assert_eq!(data["number"], 7);
+        assert_eq!(data["missing"], false);
+
+        // A song that has gone keeps the id it was named by.
+        let (line, data) = item_entry(3, &song, &Found::Nothing);
+        assert_eq!(line, "River Song (missing)");
+        assert_eq!((data["missing"].clone(), data["id"].clone()), (serde_json::json!(true), serde_json::json!(id)));
+        assert!(data["number"].is_null());
+        let by_title = Item::Song { key: "title:Old Hymn".to_owned(), title: "Old Hymn".to_owned() };
+        assert!(item_entry(1, &by_title, &Found::Nothing).1["id"].is_null(), "a title is not an id");
+
+        let voxlive = Item::Song { key: "title:VoxLive".to_owned(), title: "VoxLive".to_owned() };
+        let (line, data) = item_entry(1, &voxlive, &Found::VoxLive);
+        assert_eq!((line.as_str(), data["kind"].as_str()), ("VoxLive", Some("voxlive")));
+
+        let video = Item::Media { id, name: "Bars.mp4".to_owned() };
+        let (line, data) = item_entry(4, &video, &Found::Media { number: 2, video: true });
+        assert_eq!(line, "Bars.mp4 (video)");
+        assert_eq!((data["kind"].as_str(), data["media_type"].as_str()), (Some("media"), Some("video")));
+        assert_eq!(data["number"], 2);
+        assert_eq!(item_entry(4, &video, &Found::Nothing).0, "Bars.mp4 (missing picture or video)");
+        let picture = Item::Media { id, name: "Blue.png".to_owned() };
+        assert_eq!(item_entry(4, &picture, &Found::Media { number: 1, video: false }).0, "Blue.png (picture)");
+
+        let loop_ = Item::MediaPlaylist { id, name: "Announcements".to_owned() };
+        assert_eq!(item_entry(5, &loop_, &Found::MediaPlaylist { number: 1 }).0, "Announcements (media playlist)");
+        let (line, data) = item_entry(5, &loop_, &Found::Nothing);
+        assert_eq!(
+            (line.as_str(), data["kind"].as_str()),
+            ("Announcements (missing media playlist)", Some("media_playlist"))
+        );
+
+        let header = Item::Header { name: "Worship".to_owned() };
+        assert_eq!(item_entry(6, &header, &Found::Nothing).0, "— Worship —");
+        let place = Item::Placeholder { name: "Sermon slides".to_owned() };
+        let (line, data) = item_entry(7, &place, &Found::Nothing);
+        assert_eq!((line.as_str(), data["title"].as_str()), ("Sermon slides (placeholder)", Some("Sermon slides")));
+
+        let passage = Item::Passage(crate::service::SavedPassage {
+            lookup: "John 3:16-18".to_owned(),
+            rows: vec![crate::service::SavedRow { bible: "kjv".to_owned(), verse: None, reference: None }],
+            show_verse_numbers: false,
+            break_on_new_verse: true,
+            display_translation: false,
+            reference_style: String::new(),
+        });
+        let (line, data) = item_entry(8, &passage, &Found::Nothing);
+        assert_eq!((line.as_str(), data["kind"].as_str()), ("John 3:16-18", Some("passage")));
+        assert_eq!(data["bibles"], serde_json::json!(["kjv"]));
     }
 
     #[test]

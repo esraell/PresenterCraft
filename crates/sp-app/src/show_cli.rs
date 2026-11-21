@@ -66,7 +66,10 @@ impl crate::App {
             let title = chosen.title().to_owned();
             // A picture, video or media playlist has one thing to show: 1 shows it (or plays it).
             return match (&chosen, slide) {
-                (crate::service::Item::Passage(_), _) => Ok(Reply::done(format!("Opened {title} on the Bible page."))),
+                (crate::service::Item::Passage(_), None) => {
+                    Ok(Reply::done(format!("Opened {title} on the Bible page.")))
+                }
+                (crate::service::Item::Passage(_), Some(number)) => self.passage_go(&title, number),
                 (crate::service::Item::Media { id, .. }, Some(1)) => {
                     let at = self
                         .show
@@ -109,6 +112,24 @@ impl crate::App {
             return Ok(Reply::done(self.live_words()));
         }
         Ok(Reply::done(format!("Opened {}.", chosen.title())))
+    }
+
+    /// A slide of the passage just opened on the Bible page, on screen, as a click on it there
+    /// does. The passage takes its place among the show's at once, not when the window next
+    /// draws.
+    fn passage_go(&mut self, title: &str, number: usize) -> Result<Reply, String> {
+        let running = self.running.as_mut().ok_or("The app isn't ready.")?;
+        let Some((slot, passage)) = running.home_state.bible.pending.take() else {
+            let message = running.home_state.bible.message.clone();
+            return Err(message.unwrap_or_else(|| format!("Could not open {title}.")));
+        };
+        let (count, shown) = (passage.slide_count(), passage.title.clone());
+        self.show.replace_presentation(slot, std::sync::Arc::new(passage));
+        if !(1..=count).contains(&number) {
+            return Err(format!("{shown} has {count} slides; there is no slide {number}."));
+        }
+        self.apply(vec![Command::Select(slot), Command::GoTo(SlideRef { presentation: slot, slide: number - 1 })]);
+        Ok(Reply::done(format!("{shown}: {}", self.live_words())))
     }
 
     /// `group NAME|LETTER [in SONG]`: the first slide of a group on screen, in the song on

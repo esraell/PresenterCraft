@@ -466,6 +466,13 @@ feature changes, this page changes in the same commit.
   playlist, Identify and the main theme; `timers`, `messages`, `props` and `macros` list each
   with its state, and `slide SONG N` and `slides` show what a slide sets for itself (off, label,
   hot key, transition, template, actions, notes).
+- Reading a playlist from the command line, for a script or a control page: `slides item N [in
+  PLAYLIST]` lists an item's slides, a saved Bible passage's too (made as opening it would make
+  them, leaving the Bible page as it is), `slide item N SLIDE` shows one of them, and `--full`
+  gives every slide with its objects and looks in one reply; `playlist go N SLIDE` puts a
+  passage's slide on screen. `playlist NAME --json` gives each item's kind, title, and the
+  song's id and number; `status --json` names the song on screen by id and number, and the
+  playlist item it came from. A song can be named by its id wherever a song is named.
 - Making things from the command line: timers (`timer new NAME countdown 5:00 | to 10:30 | up
   [to M:SS]`, `timer set`, `timer delete`), messages (`message new`, `message set NAME text=…
   leaves=…`, `message delete`, and `message show --text WORDS` for words shown once), props

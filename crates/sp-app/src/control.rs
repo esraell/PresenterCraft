@@ -585,13 +585,16 @@ What is going on
   status                       what is on screen, what is next, what is playing
   songs | slides SONG | playlists | playlist [NAME] | media | themes | screens
   timers | messages | props | macros | audio | menu
+  slides item N [in PLAYLIST]  the slides of a playlist's item N: a song, or a saved Bible passage
+  slides SONG --full           every slide with its objects and looks (as slide SONG N), in one go
 
 Running the show
   next | previous (or back) | first | last
   group NAME|LETTER [in SONG]  a group's first slide on screen (C for the chorus…)
   hotkey KEY                   the slide with that hot key on screen
-  playlist go ITEM [SLIDE] [in PLAYLIST]   open a playlist item as a click does (and a slide;
-                               1 shows a picture or video, or plays a media playlist)
+  playlist go ITEM [SLIDE] [in PLAYLIST]   open a playlist item as a click does (and a slide
+                               on screen, a passage's too; 1 shows a picture or video, or
+                               plays a media playlist)
   continuous on|off            after a song's last slide, go on to the playlist's next item
   video play|pause|restart | video seek SECONDS | video loop on|off | video mute on|off
   media next|previous          the next or previous picture or video behind the words
@@ -694,6 +697,7 @@ Themes
 
 Changing a slide (each change is saved, can be undone, and shows on screen at once)
   slide SONG N [--json]        the slide's objects: words, place and look (* = the slide's own)
+  slide item N SLIDE [in PLAYLIST]   the same for a slide of a playlist's item N
   slide text SONG N [OBJECT] WORDS
                                an object's words (\\n starts a new line); OBJECT is a number,
                                name or role, the main text if left out
@@ -741,7 +745,8 @@ Everything on the menu bar
   menu ITEM                    choose one, as a click on it does
 
 Names can be typed in part (\"amazing\" finds \"Amazing Grace\"); a name that fits several
-things lists them instead of guessing. Numbers are as the lists show them, from 1.
+things lists them instead of guessing. Numbers are as the lists show them, from 1. A song can
+also be named by its id, as song info and the JSON replies give it.
 ";
 
 /// A thing found by what was typed: its place in the list.
@@ -827,7 +832,7 @@ impl crate::App {
             "" | "help" => Ok(Reply::done(HELP.trim_end())),
             "status" => Ok(self.ctl_status()),
             "songs" => Ok(self.ctl_songs()),
-            "slides" => self.ctl_slides(&rest(args, 1)),
+            "slides" => self.ctl_slides(args),
             "slide" => self.ctl_slide(args),
             "playlists" => Ok(self.ctl_playlists()),
             "libraries" => Ok(self.ctl_libraries()),
@@ -952,8 +957,15 @@ impl crate::App {
         Ok(at)
     }
 
-    /// The song a name or number stands for, as the app has it.
+    /// The song a name, number or id stands for, as the app has it. Its id (as `song info` and
+    /// the JSON replies give it) tells apart songs that share a title.
     pub(crate) fn find_song_as_is(&self, typed: &str) -> Result<usize, String> {
+        if let Ok(id) = sp_model::Uuid::parse_str(typed.trim())
+            && let Some(at) = (0..self.show.presentations().len())
+                .find(|at| self.show.presentations()[*at].id == id && self.is_listed(*at))
+        {
+            return Ok(at);
+        }
         let songs = self.listed_songs();
         let names: Vec<String> = songs.iter().map(|(_, title)| title.clone()).collect();
         find("song", &names, typed).map(|at| songs[at].0)
@@ -1069,6 +1081,43 @@ impl crate::App {
         }
     }
 
+    /// What a presentation is, in replies: a song, a Bible passage (the Bible page's), or the
+    /// VoxLive item.
+    pub(crate) fn kind_of(&self, at: usize) -> &'static str {
+        if self.bible_slots.contains(&at) {
+            "passage"
+        } else if at == self.voxlive_slot {
+            "voxlive"
+        } else {
+            "song"
+        }
+    }
+
+    /// The playlist item what is on screen was opened from: the playlist in front and the
+    /// item's number, when the item last opened there is on screen. A song Next went on into
+    /// counts as its own item, further down the playlist (or else above), as the window shows
+    /// it chosen. Nothing when no item was opened (a song put on screen from the library).
+    fn live_item(&self) -> Option<(String, usize)> {
+        use crate::service::Item;
+        let live = self.show.live()?.presentation;
+        let state = &self.running.as_ref()?.home_state;
+        let chosen = state.services.chosen?;
+        let list = state.services.front();
+        let title = self.show.presentations().get(live).map(|song| song.title.as_str());
+        let is_live = |item: &Item| match item {
+            Item::Song { key, .. } => crate::studio::playlist_song(&self.show, state, key) == Some(live),
+            Item::Passage(saved) => self.bible_slots.contains(&live) && title == Some(saved.lookup.as_str()),
+            _ => false,
+        };
+        let at = if list.items.get(chosen).is_some_and(is_live) {
+            Some(chosen)
+        } else {
+            let after = list.items.iter().skip(chosen).position(is_live).map(|at| at + chosen);
+            after.or_else(|| list.items.iter().position(is_live))
+        };
+        at.map(|at| (list.name.clone(), at + 1))
+    }
+
     fn ctl_status(&self) -> Reply {
         let live = self.show.live();
         let song = live.and_then(|at| self.show.presentations().get(at.presentation));
@@ -1141,9 +1190,10 @@ impl crate::App {
         let open = state.map(|s| {
             let list = s.services.front();
             let item = s.services.chosen.and_then(|at| list.items.get(at)).map(|item| item.title().to_owned());
-            (list.name.clone(), item, s.playlist_open)
+            let number = s.services.chosen.filter(|at| *at < list.items.len()).map(|at| at + 1);
+            (list.name.clone(), item, s.playlist_open, number)
         });
-        if let Some((list, item, shown)) = &open {
+        if let Some((list, item, shown, _)) = &open {
             lines.push(format!(
                 "Playlist in front: {list}{}{}",
                 if *shown { " (listed in the left column)" } else { "" },
@@ -1162,16 +1212,26 @@ impl crate::App {
             "media_playlist": media_playlist,
             "timers": timers,
             "audio": audio,
-            "playlist": open.as_ref().map(|(list, item, shown)| serde_json::json!({"name": list, "item_last_opened": item, "listed": shown})),
+            "playlist": open.as_ref().map(|(list, item, shown, number)| serde_json::json!({"name": list, "item_last_opened": item, "item": number, "listed": shown})),
             "continuous": state.is_some_and(|s| s.continuous),
             "identify": state.is_some_and(|s| s.identify),
             "main_theme": theme,
-            "live": live.map(|at| serde_json::json!({
-                "song": song.map(|s| s.title.clone()),
-                "slide": at.slide + 1,
-                "slides": song.map(|s| s.slide_count()),
-                "words": words,
-            })),
+            "live": live.map(|at| {
+                // Which song exactly (titles can repeat), and the playlist item it came from.
+                let number = self.song_number(at.presentation);
+                let from = self.live_item();
+                serde_json::json!({
+                    "song": song.map(|s| s.title.clone()),
+                    "slide": at.slide + 1,
+                    "slides": song.map(|s| s.slide_count()),
+                    "words": words,
+                    "kind": self.kind_of(at.presentation),
+                    "id": song.filter(|_| !self.app_made(at.presentation)).map(|s| s.id),
+                    "number": number,
+                    "playlist": from.as_ref().map(|(list, _)| list),
+                    "item": from.as_ref().map(|(_, item)| item),
+                })
+            }),
             "next_slide": next,
             "media": media,
             "message": message,
@@ -1369,43 +1429,6 @@ impl crate::App {
     fn ctl_named_list(&self, _kind: &str, names: impl Fn(&crate::home::HomeState) -> Vec<String>) -> Reply {
         let names = self.running.as_ref().map(|r| names(&r.home_state)).unwrap_or_default();
         Reply::with(numbered(&names), serde_json::json!(names))
-    }
-
-    fn ctl_slides(&mut self, typed: &str) -> Result<Reply, String> {
-        let at = if typed.trim().is_empty() { self.show.selected() } else { self.find_song(typed)? };
-        let song = self.show.presentations().get(at).ok_or("That song is gone.")?;
-        let mut lines = Vec::new();
-        let mut data = Vec::new();
-        for (index, (group, slide)) in song.slides().enumerate() {
-            let words =
-                slide.texts().into_iter().map(|(_, text)| text.replace('\n', " / ")).collect::<Vec<_>>().join(" / ");
-            let live = self.show.live() == Some(SlideRef { presentation: at, slide: index });
-            // Marks for what a slide sets for itself: off, its label, its hot key.
-            let mut marks = Vec::new();
-            if !slide.enabled {
-                marks.push("off".to_owned());
-            }
-            if let Some(label) = &slide.label {
-                marks.push(format!("label {label}"));
-            }
-            if let Some(key) = slide.hot_key {
-                marks.push(format!("key {key}"));
-            }
-            let marked = if marks.is_empty() { String::new() } else { format!("   ({})", marks.join(", ")) };
-            lines.push(format!(
-                "{:>3}. {}{}{}{}",
-                index + 1,
-                if group.name.is_empty() { String::new() } else { format!("[{}] ", group.name) },
-                words,
-                marked,
-                if live { "   ← on screen" } else { "" }
-            ));
-            data.push(serde_json::json!({
-                "slide": index + 1, "group": group.name, "words": words, "on_screen": live,
-                "enabled": slide.enabled, "label": slide.label, "hot_key": slide.hot_key,
-            }));
-        }
-        Ok(Reply::with(format!("{}\n{}", song.title, lines.join("\n")), serde_json::json!(data)))
     }
 
     fn ctl_go(&mut self, args: &[String]) -> Result<Reply, String> {
@@ -1646,39 +1669,11 @@ impl crate::App {
                     }
                     typed => find("playlist", &names, &typed)?,
                 };
-                let playlist = state.services.list.get(at).ok_or("No such playlist.")?;
-                let items: Vec<String> = playlist
-                    .items
-                    .iter()
-                    .map(|item| match item {
-                        crate::service::Item::Header { name } => format!("— {name} —"),
-                        // A song that can't be found is kept, and shown as missing.
-                        crate::service::Item::Song { key, title }
-                            if crate::studio::playlist_song(&self.show, state, key).is_none() =>
-                        {
-                            format!("{title} (missing)")
-                        }
-                        // The other kinds say what they are; one whose picture, video or media
-                        // playlist has gone says so.
-                        crate::service::Item::Media { id, name } => {
-                            match self.show.media().iter().find(|media| media.id == *id) {
-                                Some(media) if crate::media::is_video(&media.path) => format!("{name} (video)"),
-                                Some(_) => format!("{name} (picture)"),
-                                None => format!("{name} (missing picture or video)"),
-                            }
-                        }
-                        crate::service::Item::MediaPlaylist { id, name } => {
-                            if state.media_playlists.iter().any(|playlist| playlist.id == *id) {
-                                format!("{name} (media playlist)")
-                            } else {
-                                format!("{name} (missing media playlist)")
-                            }
-                        }
-                        crate::service::Item::Placeholder { name } => format!("{name} (placeholder)"),
-                        other => other.title().to_owned(),
-                    })
-                    .collect();
-                Ok(Reply::with(format!("{}\n{}", playlist.name, numbered(&items)), serde_json::json!(items)))
+                let name = state.services.list.get(at).ok_or("No such playlist.")?.name.clone();
+                // Each item says what it is; a song, picture, video or media playlist that can't
+                // be found is kept, and shown as missing.
+                let (lines, data) = self.playlist_listing(at);
+                Ok(Reply::with(format!("{name}\n{}", numbered(&lines)), serde_json::json!(data)))
             }
         }
     }

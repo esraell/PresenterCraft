@@ -6,9 +6,48 @@
 
 use std::sync::Arc;
 
+use sp_engine::SlideRef;
 use sp_model::{Object, ObjectKind, Presentation, Rgba, Slide, SlideRect, TextStyle, Theme};
 
 use crate::control::Reply;
+
+/// The slides a command reads: a song's, or a playlist item's.
+struct Read {
+    /// What the reply calls them: the song's title, or the passage's.
+    title: String,
+    presentation: Arc<Presentation>,
+    /// The theme they are drawn with, for each object's look.
+    theme: Arc<Theme>,
+    /// Their place among the show's presentations, to mark the slide on screen: the song's;
+    /// for a saved passage, the Bible page's place, when the same passage is on screen from it.
+    at: Option<usize>,
+}
+
+/// A playlist item named on the command line: its number, a slide's number, and the playlist.
+type ItemWords = (usize, Option<usize>, Option<String>);
+
+/// `item N [SLIDE] [in PLAYLIST]`: a playlist item's number, a slide's number (when one is
+/// wanted), and the playlist named. `None` when the words don't start with `item` and a number
+/// (and, with a slide wanted, another number), so a song called "Item…" is still found by name.
+fn item_words(words: &[String], with_slide: bool) -> Option<Result<ItemWords, String>> {
+    let [first, number, rest @ ..] = words else { return None };
+    if !first.eq_ignore_ascii_case("item") {
+        return None;
+    }
+    let item = number.parse::<usize>().ok()?;
+    let (slide, rest) = match rest {
+        [number, rest @ ..] if with_slide => (Some(number.parse::<usize>().ok()?), rest),
+        _ if with_slide => return None,
+        rest => (None, rest),
+    };
+    let list = match rest {
+        [] => None,
+        [word, name @ ..] if word.eq_ignore_ascii_case("in") && !name.is_empty() => Some(name.join(" ")),
+        _ if slide.is_some() => return Some(Err("slide item N SLIDE [in PLAYLIST]".to_owned())),
+        _ => return Some(Err("slides item N [in PLAYLIST] [--full]".to_owned())),
+    };
+    Some(Ok((item, slide, list)))
+}
 
 impl crate::App {
     /// `slide SONG N`, `slide text …`, `slide style …`, `slide frame …`.
@@ -25,26 +64,176 @@ impl crate::App {
         }
     }
 
-    /// `slide SONG N [--json]`: the slide's objects, and how each looks.
+    /// `slide SONG N [--json]`, or `slide item N SLIDE [in PLAYLIST]`: the slide's objects, and
+    /// how each looks.
     fn ctl_slide_show(&mut self, args: &[String]) -> Result<Reply, String> {
         let json = args.iter().any(|w| w == "--json");
-        let words: Vec<&String> = args.iter().filter(|w| *w != "--json").collect();
-        let [song, number] = words.as_slice() else { return Err(SLIDE_USAGE.to_owned()) };
-        let at = self.find_song(song)?;
+        let words: Vec<String> = args.iter().filter(|w| *w != "--json").cloned().collect();
+        let (read, number) = match item_words(&words, true) {
+            Some(parsed) => {
+                let (item, slide, list) = parsed?;
+                (self.read_item(item, list.as_deref())?, slide.unwrap_or(0).to_string())
+            }
+            None => {
+                let [song, number] = words.as_slice() else { return Err(SLIDE_USAGE.to_owned()) };
+                (self.read_song(song)?, number.clone())
+            }
+        };
+        let index = slide_number(&number, read.presentation.slide_count())?;
+        let (text, mut data) = self.slide_facts(&read, index)?;
+        if json && let Some(slide) = read.presentation.slide(index).map(|(_, slide)| slide) {
+            data["raw"] = serde_json::to_value(slide).unwrap_or_default();
+        }
+        Ok(Reply::with(text, data))
+    }
+
+    /// `slides [SONG | item N [in PLAYLIST]] [--full]`: the slides of a song (the one shown in
+    /// the window if none is named) or of a playlist item, a saved Bible passage included. With
+    /// `--full`, each slide as `slide SONG N` gives it, objects and looks too, in one reply.
+    pub(crate) fn ctl_slides(&mut self, args: &[String]) -> Result<Reply, String> {
+        let full = args.iter().any(|w| w == "--full");
+        let words: Vec<String> = args.iter().skip(1).filter(|w| *w != "--full" && *w != "--json").cloned().collect();
+        let read = match item_words(&words, false) {
+            Some(parsed) => {
+                let (item, _, list) = parsed?;
+                self.read_item(item, list.as_deref())?
+            }
+            None => self.read_song(&words.join(" "))?,
+        };
+        let mut lines = Vec::new();
+        let mut blocks = Vec::new();
+        let mut data = Vec::new();
+        for (index, (group, slide)) in read.presentation.slides().enumerate() {
+            let words =
+                slide.texts().into_iter().map(|(_, text)| text.replace('\n', " / ")).collect::<Vec<_>>().join(" / ");
+            let live = read.at.is_some_and(|at| self.show.live() == Some(SlideRef { presentation: at, slide: index }));
+            // Marks for what a slide sets for itself: off, its label, its hot key.
+            let mut marks = Vec::new();
+            if !slide.enabled {
+                marks.push("off".to_owned());
+            }
+            if let Some(label) = &slide.label {
+                marks.push(format!("label {label}"));
+            }
+            if let Some(key) = slide.hot_key {
+                marks.push(format!("key {key}"));
+            }
+            let marked = if marks.is_empty() { String::new() } else { format!("   ({})", marks.join(", ")) };
+            lines.push(format!(
+                "{:>3}. {}{}{}{}",
+                index + 1,
+                if group.name.is_empty() { String::new() } else { format!("[{}] ", group.name) },
+                words,
+                marked,
+                if live { "   ← on screen" } else { "" }
+            ));
+            let mut entry = serde_json::json!({
+                "slide": index + 1, "group": group.name, "words": words, "on_screen": live,
+                "enabled": slide.enabled, "label": slide.label, "hot_key": slide.hot_key,
+            });
+            if full {
+                let (block, facts) = self.slide_facts(&read, index)?;
+                blocks.push(block);
+                if let (Some(entry), serde_json::Value::Object(facts)) = (entry.as_object_mut(), facts) {
+                    entry.extend(facts.into_iter().filter(|(key, _)| key != "song"));
+                }
+            }
+            data.push(entry);
+        }
+        let text = if full { blocks.join("\n\n") } else { format!("{}\n{}", read.title, lines.join("\n")) };
+        Ok(Reply::with(text, serde_json::json!(data)))
+    }
+
+    /// The slides of the song a name, number or id stands for, or of the song shown in the
+    /// window when nothing is typed.
+    fn read_song(&mut self, typed: &str) -> Result<Read, String> {
+        let at = if typed.trim().is_empty() { self.show.selected() } else { self.find_song(typed)? };
         let presentation = self.show.presentations().get(at).cloned().ok_or("That song is gone.")?;
-        let index = slide_number(number, presentation.slide_count())?;
+        Ok(Read { title: presentation.title.clone(), theme: self.theme_of(at).clone(), presentation, at: Some(at) })
+    }
+
+    /// The slides of a playlist item (of the playlist in front if none is named): a song's, or
+    /// a saved Bible passage's, made as opening it would make them, without opening it.
+    fn read_item(&mut self, number: usize, list: Option<&str>) -> Result<Read, String> {
+        use crate::service::Item;
+        let list = self.playlist_at_for_cli(list)?;
+        let state = &self.running.as_ref().ok_or("The app isn't ready.")?.home_state;
+        let playlist = &state.services.list[list];
+        let item = number.checked_sub(1).and_then(|at| playlist.items.get(at)).cloned().ok_or_else(|| {
+            format!("{} has {} items; there is no item {number}.", playlist.name, playlist.items.len())
+        })?;
+        let title = item.title().to_owned();
+        match &item {
+            Item::Song { key, .. } => {
+                let at = crate::studio::playlist_song(&self.show, state, key)
+                    .ok_or_else(|| format!("{title} can't be found: it is missing from the library."))?;
+                self.freshen(at, false);
+                let presentation = self.show.presentations().get(at).cloned().ok_or("That song is gone.")?;
+                Ok(Read {
+                    title: presentation.title.clone(),
+                    theme: self.theme_of(at).clone(),
+                    presentation,
+                    at: Some(at),
+                })
+            }
+            Item::Passage(saved) => {
+                let passage =
+                    self.running.as_mut().ok_or("The app isn't ready.")?.home_state.bible.passage_of(saved)?;
+                // The same passage on screen from the Bible page, so its slide is marked.
+                let same = |on: &Presentation| {
+                    on.title == passage.title
+                        && on
+                            .slides()
+                            .map(|(_, slide)| slide.texts())
+                            .eq(passage.slides().map(|(_, slide)| slide.texts()))
+                };
+                let at = self.show.live().map(|live| live.presentation).filter(|at| {
+                    self.bible_slots.contains(at) && self.show.presentations().get(*at).is_some_and(|on| same(on))
+                });
+                Ok(Read {
+                    title: passage.title.clone(),
+                    presentation: Arc::new(passage),
+                    theme: self.theme_for_bible.clone(),
+                    at,
+                })
+            }
+            Item::Header { .. } => Err(format!("{title} is a header; it has no slides.")),
+            Item::Media { id, .. } => {
+                let what = match self.show.media().iter().find(|media| media.id == *id) {
+                    Some(media) if crate::media::is_video(&media.path) => "a video",
+                    Some(_) => "a picture",
+                    None => "a picture or video no longer in the media bin",
+                };
+                let name = &playlist.name;
+                Err(format!("{title} is {what}, not slides (sp playlist go {number} 1 in {name} shows it)."))
+            }
+            Item::MediaPlaylist { .. } => {
+                let name = &playlist.name;
+                Err(format!("{title} is a media playlist, not slides (sp playlist go {number} 1 in {name} plays it)."))
+            }
+            Item::Placeholder { .. } => Err(format!(
+                "{title} is a placeholder; it has no slides yet (sp playlist fill {title} with SONG in {}).",
+                playlist.name
+            )),
+        }
+    }
+
+    /// One slide as `slide SONG N` gives it: its own settings and its objects, in words and as
+    /// data.
+    fn slide_facts(&self, read: &Read, index: usize) -> Result<(String, serde_json::Value), String> {
+        let presentation = &read.presentation;
         let (group, slide) = presentation.slide(index).ok_or("No such slide.")?;
-        let theme = self.theme_of(at).clone();
+        let theme = &read.theme;
         let mut lines = vec![format!(
             "{}, slide {} of {}{}",
-            presentation.title,
+            read.title,
             index + 1,
             presentation.slide_count(),
             if group.name.is_empty() { String::new() } else { format!(" ({})", group.name) }
         )];
         let mut objects = Vec::new();
         for (number, object) in slide.objects.iter().enumerate() {
-            let (text, data) = describe(slide, number, object, &theme);
+            let (text, data) = describe(slide, number, object, theme);
             lines.push(text);
             objects.push(data);
         }
@@ -80,15 +269,12 @@ impl crate::App {
         if let Some(notes) = &slide.notes {
             lines.push(format!("    notes: {}", notes.replace('\n', " / ")));
         }
-        let mut data = serde_json::json!({
-            "song": presentation.title, "slide": index + 1, "group": group.name, "objects": objects,
+        let data = serde_json::json!({
+            "song": read.title, "slide": index + 1, "group": group.name, "objects": objects,
             "enabled": slide.enabled, "label": slide.label, "notes": slide.notes, "hot_key": slide.hot_key,
             "transition": slide.transition, "template": template, "actions": actions, "advance": slide.advance,
         });
-        if json {
-            data["raw"] = serde_json::to_value(slide).unwrap_or_default();
-        }
-        Ok(Reply::with(lines.join("\n"), data))
+        Ok((lines.join("\n"), data))
     }
 
     /// `slide text SONG N [OBJECT] WORDS`: one object's words. `\n` in WORDS is a line break.
@@ -641,6 +827,24 @@ mod tests {
         assert!(apply_settings(&mut style, &["font=".into()]).is_err());
         assert!(apply_settings(&mut style, &["weight=5".into()]).is_err());
         assert_eq!(style, TextStyle::default());
+    }
+
+    #[test]
+    fn a_playlist_item_is_named_by_item_and_its_number() {
+        let words = |text: &str| text.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(item_words(&words("item 3"), false), Some(Ok((3, None, None))));
+        assert_eq!(
+            item_words(&words("Item 3 in Friday Evening"), false),
+            Some(Ok((3, None, Some("Friday Evening".into()))))
+        );
+        assert_eq!(item_words(&words("item 3 2 in Friday"), true), Some(Ok((3, Some(2), Some("Friday".into())))));
+        assert_eq!(item_words(&words("item 3 2"), true), Some(Ok((3, Some(2), None))));
+        // A song called "Item…": slides of "Item Song", slide 3 of the song "item".
+        assert_eq!(item_words(&words("item song"), false), None);
+        assert_eq!(item_words(&words("item 3"), true), None);
+        assert_eq!(item_words(&words("River Song"), false), None);
+        assert!(matches!(item_words(&words("item 3 of Friday"), false), Some(Err(_))));
+        assert!(matches!(item_words(&words("item 3 2 in"), true), Some(Err(_))));
     }
 
     #[test]
