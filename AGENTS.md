@@ -72,6 +72,7 @@ person:
 | `SOFTPRESENTER_GPU_TOO_SLOW=<n>` or `<n>@<seconds>` | The screens give up the next n pictures they must wait for the GPU for, as when it is too slow (from that many seconds after the start) |
 | `SOFTPRESENTER_OUTPUT_ROOM=<lines>` | The screens' painter has room for that many lines whatever is drawn, so a fuller slide is too heavy for them |
 | `SOFTPRESENTER_HIDE_NDI=1` | Behave as on a computer without NDI installed |
+| `SOFTPRESENTER_NDI_LOSE=<n>` | The next n NDI pictures count as lost on their way back from the GPU |
 | `SOFTPRESENTER_NDI=<name>` | Also send over NDI under this name, this run only |
 
 There are more, each beside the code that reads it with a `// Testing aid:` comment. List them
