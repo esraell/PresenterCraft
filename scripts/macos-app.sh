@@ -27,6 +27,8 @@ app=target/release/SoftPresenter.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/softpresenter "$app/Contents/MacOS/softpresenter"
+# The app's icon, for the Dock, the Finder and the app switcher.
+cp assets/icons/SoftPresenter.icns "$app/Contents/Resources/SoftPresenter.icns"
 # FFmpeg, which plays the videos macOS's own player can't (MKV, WebM, AVI and others): an LGPL
 # build, made once by scripts/build-ffmpeg.sh, beside the app's program with its licence and a
 # note of its source. Without it (a computer that can't download it, say) the app still builds,
@@ -56,6 +58,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <string>SoftPresenter</string>
     <key>CFBundleIdentifier</key>
     <string>com.softpresenter.app</string>
+    <key>CFBundleIconFile</key>
+    <string>SoftPresenter</string>
     <key>CFBundleExecutable</key>
     <string>softpresenter</string>
     <key>CFBundlePackageType</key>
