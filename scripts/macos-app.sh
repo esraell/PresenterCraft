@@ -9,6 +9,19 @@ set -eu
 cd "$(dirname "$0")/.."
 cargo build --release -p sp-app "$@"
 
+# What the app is signed with. A local build is signed with a code-signing identity of its
+# own, when this Mac's keychain has one by this name (or the name in
+# SOFTPRESENTER_SIGN_IDENTITY): macOS then sees each new build as the same app, so the
+# Keychain's "Always Allow" for the VoxLive key lasts from build to build. Without one, it is
+# signed "ad hoc", and macOS asks again after every build. No key or certificate is ever kept
+# in this repository; CONTRIBUTING.md says how to make one for your own Mac.
+identity="${SOFTPRESENTER_SIGN_IDENTITY:-SoftPresenter Local Signing}"
+if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$identity\""; then
+    sign="$identity"
+else
+    sign="-"
+fi
+
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 app=target/release/SoftPresenter.app
 rm -rf "$app"
@@ -23,7 +36,7 @@ if scripts/build-ffmpeg.sh >/dev/null; then
     mkdir -p "$app/Contents/Resources/FFmpeg"
     cp target/ffmpeg/COPYING.LGPLv2.1 target/ffmpeg/LICENSE.md target/ffmpeg/SOURCE.txt "$app/Contents/Resources/FFmpeg/"
     for program in ffmpeg ffprobe; do
-        codesign --force --sign - "$app/Contents/MacOS/$program" >/dev/null 2>&1 || true
+        codesign --force --sign "$sign" "$app/Contents/MacOS/$program" >/dev/null 2>&1 || true
     done
 else
     echo "note: FFmpeg isn't in this build (scripts/build-ffmpeg.sh failed); MP4 and MOV still play"
@@ -65,5 +78,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 # A local signature, so macOS runs the app as built on this computer.
-codesign --force --deep --sign - "$app" >/dev/null 2>&1 || echo "note: could not sign the app; it may still run"
-echo "built $app"
+codesign --force --deep --sign "$sign" "$app" >/dev/null 2>&1 || echo "note: could not sign the app; it may still run"
+if [ "$sign" = "-" ]; then
+    echo "built $app (signed ad hoc)"
+else
+    echo "built $app (signed as \"$sign\")"
+fi

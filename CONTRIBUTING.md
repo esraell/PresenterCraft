@@ -29,6 +29,29 @@ checks run, with test windows kept out of the way:
 picture tests in `crates/sp-render/tests/golden.rs` compare against pictures made on the
 maintainer's Mac, so they may differ on yours; say so in your pull request if they do.
 
+### Signing the Mac app you build
+
+`scripts/macos-app.sh` signs the app it makes. With no signing identity on your Mac it signs
+"ad hoc", and macOS treats every new build as a different app, so it asks again whether the app
+may read the VoxLive key kept in your Keychain. To make "Always Allow" last from build to build,
+give your Mac a code-signing identity of its own, once; the script uses one named
+`SoftPresenter Local Signing` (or the name in `SOFTPRESENTER_SIGN_IDENTITY`) when it finds it:
+
+    /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+        -keyout key.pem -out cert.pem -subj "/CN=SoftPresenter Local Signing" \
+        -addext "basicConstraints=critical,CA:false" \
+        -addext "keyUsage=critical,digitalSignature" \
+        -addext "extendedKeyUsage=critical,codeSigning"
+    /usr/bin/openssl pkcs12 -export -inkey key.pem -in cert.pem \
+        -name "SoftPresenter Local Signing" -out local.p12 -passout pass:choose-one
+    security import local.p12 -k ~/Library/Keychains/login.keychain-db \
+        -P choose-one -T /usr/bin/codesign
+    rm key.pem cert.pem local.p12
+
+It signs only what you build on that Mac; it isn't trusted anywhere else and needs no Apple
+account. Never commit a key or certificate: `.gitignore` refuses the usual file types. Builds
+for others will be signed with a proper Developer ID when there are any.
+
 ## Sending a change
 
 1. Fork the repository and make a branch for your change.

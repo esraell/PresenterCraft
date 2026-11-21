@@ -7,3 +7,11 @@ docs/research/
 dist/
 # Agents' git worktrees: local working copies, never part of the repo.
 .claude/worktrees/
+# Signing keys and certificates stay on the computer that made them, never in the repo.
+*.p12
+*.pfx
+*.pem
+*.cer
+*.key
+*.keychain
+*.keychain-db
