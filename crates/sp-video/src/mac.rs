@@ -222,8 +222,14 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
-        // SAFETY: a plain call on a live object, on its thread.
-        unsafe { self.player.pause() };
+        // SAFETY: plain calls on live objects, on their thread.
+        unsafe {
+            self.player.pause();
+            // The player lets go of its item, and the item of its output: left joined, the
+            // system keeps some of each video's timing objects for as long as the app runs.
+            self.item.removeOutput(&self.output);
+            self.player.replaceCurrentItemWithPlayerItem(None);
+        }
     }
 }
 
