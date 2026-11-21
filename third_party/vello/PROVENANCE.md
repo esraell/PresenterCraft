@@ -66,7 +66,8 @@ Everything is marked `SoftPresenter:` in the source. Removed from the published 
   - Not checked at all: the fine stage. A frame the GPU drops after its counters were read
     (macOS drops the frames of every app when any app's GPU work faults) returns `Ok` and
     leaves the target as it was. Vello has no way to see that, and SoftPresenter does not
-    make up for it: the screen is put right by the next thing that draws it. Drawing still
+    make up for it: the screen is put right by the next thing that draws it, and nothing tells the operator
+    meanwhile. Drawing still
     screens again every few seconds was tried and taken out: for a slide full of small text
     it took the slide's working memory again each time (footprint 179 MB at rest, 815 to
     852 MB every five seconds).

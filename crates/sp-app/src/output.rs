@@ -150,7 +150,10 @@ const DRAW_AGAIN_TRIES: u8 = 5;
 
 /// After those tries the screens are given up on for now and the operator is told, and they
 /// are drawn again this often for as long as the picture is still wanted: a GPU that was stuck
-/// may answer again, and each try holds the thread for one wait at most.
+/// may answer again. Each such try holds the thread for one wait of four tenths of a second
+/// at most. They are not the only drawings, though: with a stage screen showing the time, the
+/// stage screens are drawn at the start of every second, so behind a GPU that stays stuck the
+/// thread waits four tenths of every second.
 const GIVEN_UP_AGAIN_AFTER: Duration = Duration::from_secs(5);
 
 /// How long the thread waits after a drawing in which a picture could not be painted and
@@ -213,6 +216,8 @@ struct Round {
     failed: bool,
     /// True when a picture of this drawing was shown in a window.
     presented: bool,
+    /// True when this drawing is of some of the screens only, or of the NDI picture alone.
+    part: bool,
     /// How many drawings one after another have been tried again for a slow GPU.
     tries: u8,
     /// When to draw the screens again, if nothing else draws them first.
@@ -225,10 +230,12 @@ impl Round {
         *self = Round { tries: self.tries, ..Round::default() };
     }
 
-    /// A drawing of some of the screens begins (the stage screens, at the start of a second):
-    /// the time set for drawing them all again stands.
+    /// A drawing of some of what is drawn begins (the stage screens at the start of a second,
+    /// an NDI picture that had to wait for the one before it): the time set for drawing
+    /// everything again stands, and so does the count of tries, however this drawing goes
+    /// well. It says nothing of the screens it did not draw.
     fn begin_part(&mut self) {
-        *self = Round { tries: self.tries, again_at: self.again_at, ..Round::default() };
+        *self = Round { part: true, tries: self.tries, again_at: self.again_at, ..Round::default() };
     }
 
     /// The picture on the screens is another one: it gets all its tries.
@@ -249,16 +256,22 @@ impl Round {
     /// a drawing of its own, which takes the place of that one.
     fn end(&mut self, now: Instant) -> Ended {
         if !self.slow {
-            self.tries = 0;
+            if !self.part {
+                self.tries = 0;
+            }
             return Ended::Drawn;
         }
-        if self.tries >= DRAW_AGAIN_TRIES {
-            self.again_at = Some(now + GIVEN_UP_AGAIN_AFTER);
-            return Ended::GivenUp;
-        }
-        self.tries += 1;
-        self.again_at = Some(now + DRAW_AGAIN_AFTER);
-        Ended::TryAgain
+        let (ended, after) = if self.tries >= DRAW_AGAIN_TRIES {
+            (Ended::GivenUp, GIVEN_UP_AGAIN_AFTER)
+        } else {
+            self.tries += 1;
+            (Ended::TryAgain, DRAW_AGAIN_AFTER)
+        };
+        // A drawing of part of the screens never puts off the time already set for all of
+        // them: stage screens drawn every second would put it off for good.
+        let at = now + after;
+        self.again_at = Some(self.again_at.filter(|_| self.part).map_or(at, |set| set.min(at)));
+        ended
     }
 }
 
@@ -697,13 +710,23 @@ fn run(
         // and nothing else asks: without this, each frame drawn left about a kilobyte behind,
         // for good (a few thousand objects for every half minute of video). It never waits.
         let _ = output.device.poll(wgpu::PollType::Poll);
+        // What the operator has asked for meanwhile comes first: it is drawn below, in place
+        // of a picture that was due to be drawn again.
+        let waiting = match rx.try_recv() {
+            Ok(msg) => Some(msg),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => return,
+        };
         // A picture the GPU was too slow with a moment ago is drawn again when its time comes,
         // whatever else the thread is waiting for.
-        output.draw_again_if_due();
+        if waiting.is_none() {
+            output.draw_again_if_due();
+        }
         // While a fade is under way, look for messages without waiting, so it keeps moving;
         // otherwise sleep until there is one.
-        let first = if output.fading.is_some() || output.building() || output.scrolling() || output.identify_breathing()
-        {
+        let first = if waiting.is_some() {
+            waiting
+        } else if output.fading.is_some() || output.building() || output.scrolling() || output.identify_breathing() {
             match rx.try_recv() {
                 Ok(msg) => Some(msg),
                 Err(TryRecvError::Empty) => None,
@@ -715,7 +738,12 @@ fn run(
             match rx.recv_timeout(Duration::from_millis(2)) {
                 Ok(msg) => Some(msg),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // The picture that was waiting may be painted now: a drawing of its own,
+                    // so that one the GPU is too slow with is drawn again, and the operator is
+                    // told of one that cannot be drawn, or that all is well again.
+                    output.round.begin_part();
                     output.finish_ndi();
+                    output.end_round();
                     if output.frame.plays_video() && output.take_video_picture() {
                         output.draw(false);
                     }
@@ -837,8 +865,6 @@ fn run(
                     let same_slide = output.frame.slide.as_deref() == frame.slide.as_deref()
                         && output.frame.enabled == frame.enabled;
                     if !same_slide {
-                        // Another slide: should the GPU be slow with it, it gets all its tries.
-                        output.round.new_picture();
                         // Builds that start with the slide wait for its transition to end.
                         output.slide_on = now + Duration::from_secs_f32(frame.transition.duration());
                         output.step_at = now;
@@ -875,6 +901,12 @@ fn run(
                         (None, None) => true,
                         _ => false,
                     };
+                    // Another slide, video or picture behind it: should the GPU be slow with it,
+                    // it gets all its tries. The same picture sent again does not: that would
+                    // put off for good the telling of the operator.
+                    if !same_slide || !same_media || !same_video {
+                        output.round.new_picture();
+                    }
                     // Only the media changed: it gives way by the media's own transition.
                     output.look = if same_slide && !same_media { frame.media_transition } else { frame.transition };
                     output.frame = frame;
@@ -886,7 +918,8 @@ fn run(
                 OutputMsg::SetNdi { id, name } => output.set_ndi(id, name),
                 OutputMsg::RemoveSurface(id) => output.targets.retain(|target| target.id != id),
                 OutputMsg::Announcement(announcement) => {
-                    // A new announcement dissolves in over what is there.
+                    // A new announcement dissolves in over what is there, and gets all its tries.
+                    output.round.new_picture();
                     output.announcement = announcement;
                     output.look = sp_model::Transition::default();
                     new_picture = true;
@@ -1890,12 +1923,75 @@ mod tests {
         // Any drawing of all the screens begun is that drawing again...
         round.begin();
         assert_eq!(round.again_at, None);
-        // ...but one of the stage screens alone, at the start of a second, is not.
+        // ...but one of the stage screens alone, at the start of a second, is not: the time
+        // set stands, and the tries are not counted afresh for its having gone well.
         assert_eq!(slow_drawing(&mut round, now), Ended::TryAgain);
+        let tries = round.tries;
         round.begin_part();
         round.note(&Ok(()));
-        round.end(now);
+        assert_eq!(round.end(now), Ended::Drawn);
+        assert_eq!((round.again_at, round.tries), (Some(now + DRAW_AGAIN_AFTER), tries));
+        // So stage screens that go on drawing do not keep the operator from being told: five
+        // tries of all the screens with a stage drawing after each, then given up, and then
+        // one try every five seconds, not five quick ones.
+        let mut round = Round::default();
+        for step in 0..8 {
+            let ended = slow_drawing(&mut round, now);
+            assert_eq!(ended == Ended::GivenUp, step >= DRAW_AGAIN_TRIES, "step {step}");
+            round.begin_part();
+            round.note(&Ok(()));
+            assert_eq!(round.end(now), Ended::Drawn);
+        }
+        assert_eq!(round.again_at, Some(now + GIVEN_UP_AGAIN_AFTER));
+        // Nor do stage screens the GPU is too slow with, second after second, put off the
+        // time set for all the screens.
+        let later = now + Duration::from_secs(1);
+        for _ in 0..4 {
+            round.begin_part();
+            round.note(&slow());
+            assert_eq!(round.end(later), Ended::GivenUp);
+            assert_eq!(round.again_at, Some(now + GIVEN_UP_AGAIN_AFTER));
+        }
+    }
+
+    /// An NDI picture painted between two drawings of the screens (it had to wait for the one
+    /// before it to come back from the GPU) is a drawing of its own.
+    #[test]
+    fn an_ndi_picture_painted_between_drawings_is_tried_again_and_told_like_any_other() {
+        let now = Instant::now();
+        // The GPU too slow with it: a time is set to draw again, where nothing else would.
+        let (mut round, mut ndi) = (Round::default(), Shown::default());
+        round.begin_part();
+        let painted = slow();
+        round.note(&painted);
+        ndi.failed(&painted.unwrap_err());
+        assert_eq!(round.end(now), Ended::TryAgain);
         assert_eq!(round.again_at, Some(now + DRAW_AGAIN_AFTER));
+        assert_eq!(worst_undrawn([ndi]), None, "not said while it is being tried");
+        // Too heavy: the operator is told at the end of that drawing, and nothing is set.
+        let (mut round, mut ndi) = (Round::default(), Shown::default());
+        round.begin_part();
+        let too_heavy = sp_render::PaintError::TooHeavy;
+        ndi.failed(&too_heavy);
+        round.note(&Err(too_heavy));
+        assert_eq!(round.end(now), Ended::Drawn);
+        assert_eq!((round.again_at, worst_undrawn([ndi])), (None, Some(Undrawn::TooMuch)));
+        // Painted there after it was given up: nothing is left to tell, and the count of tries
+        // for all the screens is as it was.
+        let mut round = Round::default();
+        for _ in 0..=DRAW_AGAIN_TRIES {
+            slow_drawing(&mut round, now);
+        }
+        ndi = Shown::default();
+        ndi.skipped();
+        ndi.given_up();
+        assert_eq!(worst_undrawn([ndi]), Some(Undrawn::NotInTime));
+        round.begin_part();
+        round.note(&Ok(()));
+        ndi.painted();
+        assert_eq!(round.end(now), Ended::Drawn);
+        assert_eq!(worst_undrawn([ndi]), None);
+        assert_eq!(round.tries, DRAW_AGAIN_TRIES);
     }
 
     #[test]
