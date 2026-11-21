@@ -66,6 +66,7 @@ type Initialize = unsafe extern "C" fn() -> bool;
 type SendCreateFn = unsafe extern "C" fn(*const SendCreate) -> *mut c_void;
 type SendDestroy = unsafe extern "C" fn(*mut c_void);
 type SendVideo = unsafe extern "C" fn(*mut c_void, *const VideoFrame);
+type SendConnections = unsafe extern "C" fn(*mut c_void, u32) -> c_int;
 
 /// The runtime's functions this app uses, with the library they live in kept open for as long
 /// as the app runs.
@@ -74,6 +75,9 @@ pub struct Runtime {
     send_create: SendCreateFn,
     send_destroy: SendDestroy,
     send_video: SendVideo,
+    /// `NDIlib_send_get_no_connections`, if this runtime has it. Without it a source can't tell
+    /// whether anyone is watching, and sends all the time.
+    send_connections: Option<SendConnections>,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -181,12 +185,16 @@ fn open(places: &[PathBuf]) -> Result<Runtime, String> {
                 .map_err(|e| missing("NDIlib_send_send_video_v2", e))?,
         )
     };
+    // SAFETY: as above: a function the runtime exports, read as its signature in
+    // `Processing.NDI.Send.h`. A runtime without it is still used; its sources send all the time.
+    let send_connections =
+        unsafe { library.get::<SendConnections>(b"NDIlib_send_get_no_connections\0") }.ok().map(|function| *function);
     // SAFETY: NDIlib_initialize takes nothing and may be called more than once; the library it
     // lives in is open.
     if !unsafe { initialize() } {
         return Err("NDI can't run on this computer's processor.".to_owned());
     }
-    Ok(Runtime { _library: library, send_create, send_destroy, send_video })
+    Ok(Runtime { _library: library, send_create, send_destroy, send_video, send_connections })
 }
 
 /// An NDI source on the network. Dropping it takes the source away.
@@ -212,10 +220,20 @@ impl Source {
         Ok(Source { runtime, instance, _name: name })
     }
 
+    /// How many receivers are connected to the source now, or `None` when this runtime can't
+    /// say. Never waits.
+    pub fn receivers(&self) -> Option<u32> {
+        let count = self.runtime.send_connections?;
+        // SAFETY: the instance is a live source from NDIlib_send_create, and a zero timeout asks
+        // only for the current count, so the call returns at once.
+        let receivers = unsafe { count(self.instance, 0) };
+        u32::try_from(receivers).ok()
+    }
+
     /// Sends one opaque picture of tightly packed RGBA rows (the fourth byte is ignored). Waits,
     /// when NDI paces the source, until it is time for the next picture: call it only from the
     /// source's own thread.
-    pub fn send(&self, width: u32, height: u32, rgba: &mut [u8]) {
+    pub fn send(&self, width: u32, height: u32, rgba: &[u8]) {
         let (Ok(w), Ok(h)) = (c_int::try_from(width), c_int::try_from(height)) else { return };
         if rgba.len() != width as usize * height as usize * 4 {
             return;
@@ -229,14 +247,18 @@ impl Source {
             picture_aspect_ratio: 0.0,
             frame_format_type: PROGRESSIVE,
             timecode: SYNTHESIZE_TIMECODE,
-            data: rgba.as_mut_ptr(),
+            // NDI's frame holds a mutable pointer, but sending only reads through it.
+            data: rgba.as_ptr().cast_mut(),
             line_stride_in_bytes: w * 4,
             metadata: std::ptr::null(),
             timestamp: 0,
         };
         // SAFETY: the instance is a live source from NDIlib_send_create; `frame` describes
         // `rgba` exactly (its size was checked), and the synchronous send has finished with the
-        // data when it returns.
+        // data when it returns. NDI only reads the picture it is sent (the frame is handed over
+        // as `const`, and sending converts and compresses it into NDI's own buffers), so nothing
+        // is written through a pointer made from a shared slice, and other sources reading the
+        // same picture on their own threads at the same time is sound.
         unsafe { (self.runtime.send_video)(self.instance, &frame) };
     }
 }
