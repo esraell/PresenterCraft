@@ -800,6 +800,10 @@ fn paint_ui(
     for id in &full.textures_delta.free {
         renderer.free_texture(id);
     }
+    // What finished drawings used is let go only when the device is asked to look (see the
+    // screens' thread, which shares this device and asks too); thumbnails and previews are
+    // painted here even while the screens are still.
+    let _ = gpu.device.poll(wgpu::PollType::Poll);
     // The toolkit insists on being told its texture changes were applied.
     full.textures_delta.clear();
     (jobs, screen)

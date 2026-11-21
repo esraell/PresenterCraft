@@ -456,6 +456,11 @@ fn run(
     };
 
     loop {
+        // The GPU library lets go of what a finished drawing used (a bind group and a texture
+        // view for every picture the renderer paints) only when the device is asked to look,
+        // and nothing else asks: without this, each frame drawn left about a kilobyte behind,
+        // for good (a few thousand objects for every half minute of video). It never waits.
+        let _ = output.device.poll(wgpu::PollType::Poll);
         // While a fade is under way, look for messages without waiting, so it keeps moving;
         // otherwise sleep until there is one.
         let first = if output.fading.is_some() || output.building() || output.scrolling() || output.identify_breathing()
