@@ -358,9 +358,34 @@ fn halved_rows(bytes: &[u8], width: usize, height: usize, bytes_per_row: usize, 
     (out_w, out_h)
 }
 
+/// A size divided by the smallest whole number that makes it no wider than `most`; `None` when
+/// it is no wider already, or isn't a size.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn smaller_than_wide(width: f64, height: f64, most: f64) -> Option<(u32, u32)> {
+    if !(width.is_finite() && height.is_finite() && height >= 1.0 && width > most) {
+        return None;
+    }
+    let by = (width / most).ceil();
+    Some((((width / by).round() as u32).max(1), ((height / by).round() as u32).max(1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wide_video_is_asked_for_smaller_in_the_same_shape() {
+        assert_eq!(smaller_than_wide(3840.0, 2160.0, 2048.0), Some((1920, 1080)));
+        assert_eq!(smaller_than_wide(7680.0, 4320.0, 2048.0), Some((1920, 1080)));
+        assert_eq!(smaller_than_wide(4096.0, 1716.0, 2048.0), Some((2048, 858)));
+        assert_eq!(smaller_than_wide(5120.0, 1.0, 2048.0), Some((1707, 1)));
+        // No wider than the most, or not a size at all: as it is.
+        assert_eq!(smaller_than_wide(2048.0, 1152.0, 2048.0), None);
+        assert_eq!(smaller_than_wide(1280.0, 720.0, 2048.0), None);
+        assert_eq!(smaller_than_wide(f64::NAN, 720.0, 2048.0), None);
+        assert_eq!(smaller_than_wide(f64::INFINITY, 720.0, 2048.0), None);
+        assert_eq!(smaller_than_wide(3840.0, 0.0, 2048.0), None);
+    }
 
     #[test]
     fn halved_rows_keep_every_second_pixel_in_the_order_it_came() {

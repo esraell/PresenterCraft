@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AllocAnyThread, MainThreadMarker};
 use objc2_av_foundation::{
-    AVAssetImageGenerator, AVPlayer, AVPlayerActionAtItemEnd, AVPlayerItem, AVPlayerItemStatus,
+    AVAssetImageGenerator, AVMediaTypeVideo, AVPlayer, AVPlayerActionAtItemEnd, AVPlayerItem, AVPlayerItemStatus,
     AVPlayerItemVideoOutput, AVURLAsset,
 };
 use objc2_core_foundation::{CFDictionary, CFString, CFURL, CGPoint, CGRect, CGSize};
@@ -20,8 +20,8 @@ use objc2_core_media::{CMTime, kCMTimeZero};
 use objc2_core_video::{
     CVGetCurrentHostTime, CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
     CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
-    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
-    kCVPixelFormatType_32BGRA,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey,
+    kCVPixelBufferWidthKey, kCVPixelFormatType_32BGRA,
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 use objc2_image_io::{
@@ -63,6 +63,20 @@ fn at_seconds(seconds: f64) -> CMTime {
     unsafe { CMTime::with_seconds(seconds, 600) }
 }
 
+/// The size to ask the system's decoder for when a video is wider than [`MAX_VIDEO_WIDTH`]: its
+/// own divided by a whole number, so its shape stays. `None` for a video no wider than that,
+/// or whose size can't be read (its pictures are then halved as they are taken).
+fn smaller_size(item: &AVPlayerItem) -> Option<(u32, u32)> {
+    // SAFETY: reads a static the framework defines.
+    let video = unsafe { AVMediaTypeVideo }?;
+    // The newer call that replaces this one answers later, on another thread; this one reads
+    // the file's header now, which opening a video on the main thread can wait for.
+    #[allow(deprecated)]
+    // SAFETY: plain getters on live objects.
+    let size = unsafe { item.asset().tracksWithMediaType(video).firstObject()?.naturalSize() };
+    crate::smaller_than_wide(size.width, size.height, MAX_VIDEO_WIDTH as f64)
+}
+
 /// A video playing, with its sound. It lives on the main thread.
 pub struct Player {
     player: Retained<AVPlayer>,
@@ -85,8 +99,17 @@ impl Player {
         let format = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
         // SAFETY: the key is a static string the framework defines.
         let key = ns_key(unsafe { kCVPixelBufferPixelFormatTypeKey });
-        let attributes: Retained<NSDictionary<NSString, AnyObject>> =
-            NSDictionary::from_slices(&[key], &[format.as_ref() as &AnyObject]);
+        // A video wider than the screens need is asked for smaller, which the system's decoder
+        // makes on the GPU as it decodes: far less work than taking pixels out of each full
+        // picture afterwards, and a smoother picture.
+        let smaller = smaller_size(&item).map(|(w, h)| (NSNumber::new_u32(w), NSNumber::new_u32(h)));
+        let (mut keys, mut values) = (vec![key], vec![format.as_ref() as &AnyObject]);
+        if let Some((width, height)) = &smaller {
+            // SAFETY: the keys are static strings the framework defines.
+            keys.extend(unsafe { [ns_key(kCVPixelBufferWidthKey), ns_key(kCVPixelBufferHeightKey)] });
+            values.extend([width.as_ref() as &AnyObject, height.as_ref()]);
+        }
+        let attributes: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::from_slices(&keys, &values);
         // SAFETY: the attributes are a dictionary of the keys and value types the output expects.
         let output = unsafe {
             AVPlayerItemVideoOutput::initWithPixelBufferAttributes(AVPlayerItemVideoOutput::alloc(), Some(&attributes))
