@@ -358,6 +358,67 @@ fn help_for(word: &str) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
+/// The words after `playlist` that change something; any other word names a playlist to list.
+const PLAYLIST_CHANGES: &[&str] = &[
+    "open",
+    "add",
+    "new",
+    "go",
+    "rename",
+    "delete",
+    "remove",
+    "move",
+    "header",
+    "media",
+    "media-playlist",
+    "placeholder",
+    "fill",
+];
+
+/// The words after `slide` that change something, rather than name a song to read.
+const SLIDE_CHANGES: &[&str] = &[
+    "text",
+    "style",
+    "frame",
+    "add",
+    "delete",
+    "duplicate",
+    "move",
+    "group",
+    "label",
+    "notes",
+    "enable",
+    "disable",
+    "hotkey",
+    "transition",
+    "template",
+    "media",
+    "web",
+];
+
+/// Whether a command only reads: it changes nothing, so it isn't written to the log, and a
+/// script or page asking every second or two (`status`) doesn't fill it. Only these shapes
+/// count; any other command, a new one included, is logged.
+pub fn only_reads(args: &[String]) -> bool {
+    let word = |at: usize| args.get(at).map(|w| w.to_lowercase()).unwrap_or_default();
+    let alone = args.len() == 1;
+    match word(0).as_str() {
+        "" | "help" | "status" | "songs" | "slides" | "playlists" | "libraries" | "themes" | "screens" | "timers"
+        | "messages" | "props" | "macros" | "groups" | "displays" | "bibles" | "search" | "job" => true,
+        "media" | "media-playlist" | "settings" | "menu" => alone,
+        "audio" => alone || (args.len() == 2 && word(1) == "playlists"),
+        "voxlive" => alone || (args.len() == 2 && word(1) == "screens"),
+        // `playlist [NAME]`, not `playlist add …`.
+        "playlist" => alone || !PLAYLIST_CHANGES.contains(&word(1).as_str()),
+        // `slide SONG N` and `slide item N SLIDE …`, not `slide text …`.
+        "slide" => {
+            word(1) == "item"
+                || (args.len() == 3 && args[2].parse::<usize>().is_ok() && !SLIDE_CHANGES.contains(&word(1).as_str()))
+        }
+        _ => false,
+    }
+}
+
 /// A command's words as the log shows them: the key given to `voxlive connect` is left out.
 pub fn shown_args(args: &[String]) -> Vec<String> {
     let secret = args.len() > 2 && args[0].eq_ignore_ascii_case("voxlive") && args[1].eq_ignore_ascii_case("connect");
@@ -2519,6 +2580,95 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// The quoted words of a match's arms, from `start` to the next `_ =>` at that indent.
+    fn arms(source: &str, start: &str, end: &str) -> Vec<String> {
+        let from = source.find(start).unwrap_or_else(|| panic!("found {start}"));
+        let to = from + source[from..].find(end).unwrap_or_else(|| panic!("found the end of {start}"));
+        let mut words = Vec::new();
+        for line in source[from..to].lines() {
+            let Some((pattern, _)) = line.trim().split_once("=>") else { continue };
+            if !pattern.trim_start().starts_with('"') {
+                continue;
+            }
+            words.extend(pattern.split('|').map(|w| w.trim().trim_matches('"').to_owned()).filter(|w| !w.is_empty()));
+        }
+        words
+    }
+
+    #[test]
+    fn reads_are_kept_out_of_the_log_and_changes_never() {
+        let words = |text: &str| text.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        for read in [
+            "status",
+            "status --wait 20 --since abc",
+            "songs",
+            "slides River",
+            "slides item 3 in Friday --full",
+            "slide River 2",
+            "slide item 3 2 in Friday",
+            "playlist",
+            "playlist Friday",
+            "playlists",
+            "media",
+            "audio",
+            "audio playlists",
+            "timers",
+            "search river",
+            "job 2",
+            "settings",
+            "menu",
+            "voxlive screens",
+            "help song",
+        ] {
+            assert!(only_reads(&words(read)), "{read} only reads");
+        }
+        for change in [
+            "playlist add River to Friday",
+            "playlist open Friday",
+            "playlist go 2 1",
+            "playlist fill Sermon with River",
+            "slide text River 1 words",
+            "slide delete River 2",
+            "slide media River 2",
+            "media show 1",
+            "media-playlist play Loop",
+            "audio play Welcome",
+            "settings set columns=4",
+            "menu Quit",
+            "voxlive connect",
+            "go River 2",
+            "next",
+            "bible John 3:16",
+            "song text River words.txt",
+            "library add River to Hymns",
+            "something new",
+        ] {
+            assert!(!only_reads(&words(change)), "{change} is logged");
+        }
+        // Every word that changes a playlist or a slide is known as one, so a new one can't be
+        // taken for a playlist's or song's name and left out of the log.
+        let service = include_str!("service_cli.rs");
+        let playlist = arms(service, "fn ctl_playlist_change", "            _ => return None");
+        let slide = arms(service, "fn ctl_slide_change", "            _ => return None");
+        assert!(playlist.len() > 8 && slide.len() > 10, "{playlist:?} {slide:?}");
+        // `playlist open` and `playlist add` are carried out here, in `ctl_playlist`.
+        for word in playlist.iter().map(String::as_str).chain(["open", "add"]) {
+            assert!(PLAYLIST_CHANGES.contains(&word), "playlist {word} changes something");
+        }
+        // `slide text|style|frame` are carried out in slide_cli.rs, as `Some("text") => …`.
+        let slides = include_str!("slide_cli.rs");
+        let from = slides.find("fn ctl_slide(&mut self").expect("ctl_slide");
+        let to = from + slides[from..].find("Some(_) =>").expect("its end");
+        let own: Vec<&str> = slides[from..to]
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("Some(\"")?.split('"').next())
+            .collect();
+        assert_eq!(own, ["text", "style", "frame"]);
+        for word in slide.iter().map(String::as_str).chain(own) {
+            assert!(SLIDE_CHANGES.contains(&word), "slide {word} changes something");
+        }
     }
 
     #[test]

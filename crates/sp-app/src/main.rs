@@ -6836,14 +6836,18 @@ impl ApplicationHandler<AppEvent> for App {
             // A command from `softpresenter ctl`: done now, and its outcome sent back.
             AppEvent::Control(incoming) => {
                 let reply = self.control(el, &incoming.request.args);
-                applog::event(
-                    "control",
-                    &format!(
-                        "{:?} -> {}",
-                        control::shown_args(&incoming.request.args),
-                        if reply.ok { "done" } else { "refused" }
-                    ),
-                );
+                // A command that only reads (status, a list) changes nothing worth a line: a
+                // page asking every second or two would fill the log with them.
+                if !control::only_reads(&incoming.request.args) {
+                    applog::event(
+                        "control",
+                        &format!(
+                            "{:?} -> {}",
+                            control::shown_args(&incoming.request.args),
+                            if reply.ok { "done" } else { "refused" }
+                        ),
+                    );
+                }
                 let _ = incoming.reply.send(reply);
                 self.sync_panels(el);
                 return;

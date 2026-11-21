@@ -81,7 +81,13 @@ Choose **SoftPresenter › Install Command Line Tool…** (or run the app's prog
   with `sp undo`; changes to playlists, libraries, themes and settings can't, as in the window.
   `sp undo` takes back the last change to a song even when a theme or playlist change came
   after it, and says which song it changed.
-- Each command is written to the app's log with its result (`done` or `refused`).
+- Each command that changes something is written to the app's log with its result (`done` or
+  `refused`). Commands that only read are not, so a script or page asking every second or two
+  doesn't fill it: `status`, `songs`, `slides`, `slide SONG N` and `slide item …`, `playlists`,
+  `playlist [NAME]`,
+  `libraries`, `themes`, `screens`, `timers`, `messages`, `props`, `macros`, `groups`,
+  `displays`, `bibles`, `search`, `job`, `help`, and `media`, `media-playlist`, `audio`,
+  `audio playlists`, `settings`, `menu`, `voxlive` and `voxlive screens` with nothing after them.
 
 ## Trying it safely
 
@@ -946,8 +952,10 @@ These need the window for now; some can be reached with `sp menu`.
 - A second copy of the app leaves the first one's socket alone and runs without one, unless it
   is given its own with `SOFTPRESENTER_CONTROL_SOCKET`.
 - The socket is removed when the app quits. With the app not running, `sp` says so.
-- Each command is logged in the app's log (`~/Library/Logs/SoftPresenter/SoftPresenter.log`, or
-  the data folder's `SoftPresenter.log` for a copy run with `SOFTPRESENTER_DATA`).
+- Each command that changes something is logged in the app's log
+  (`~/Library/Logs/SoftPresenter/SoftPresenter.log`, or the data folder's `SoftPresenter.log` for
+  a copy run with `SOFTPRESENTER_DATA`); commands that only read are not ([the basics](#the-basics)
+  lists them).
 
 ## Still to come
 

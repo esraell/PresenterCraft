@@ -185,8 +185,9 @@ The command line's socket, while the app runs, is `~/Library/Caches/SoftPresente
 (outside Documents, so `sp` reaches the app from any terminal or over ssh), or
 `control/ctl.sock` in a folder `SOFTPRESENTER_DATA` names.
 
-The log is `~/Library/Logs/SoftPresenter/SoftPresenter.log`: what went on screen, commands,
-problems, and once a minute how long drawing took.
+The log is `~/Library/Logs/SoftPresenter/SoftPresenter.log`: what went on screen, commands that
+change something (not those that only read, such as `sp status`), problems, and once a minute
+how long drawing took.
 
 ## How the code is laid out
 
