@@ -385,8 +385,11 @@ feature changes, this page changes in the same commit.
   and it has it within about a second, in the middle of a dissolve too. It is never shown a
   slide that has gone: if anything changed while nobody was watching, it sees black until its
   picture comes. That is longer than a second only when the GPU is too slow to draw the
-  picture: it is then tried again like any screen's, and the operator is told if it still
-  cannot be drawn, or if it was drawn and lost on its way to NDI. A new slide goes to NDI at
+  picture: it is then tried again like any screen's (during a dissolve, when the dissolve
+  ends, so that the room's fade is never held up for NDI), and the operator is told if it
+  still cannot be drawn. A picture that was drawn and then lost on its way to NDI is drawn
+  once more; if that is lost too, the operator is told, and it is drawn again every five
+  seconds until one arrives. A new slide goes to NDI at
   once, with no dissolve, as it does to the stage screens. The Screens window and `sp screens`
   say how many receivers each NDI screen has, or that nobody is watching. The number is NDI's
   own (NDI's monitor app, for one, counts as two receivers); with an NDI too old to count
