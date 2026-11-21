@@ -324,6 +324,9 @@ struct Run {
     clock: Arc<Clock>,
     stop: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
+    /// A looping video's pictures ran out: FFmpeg could not start the file again by itself
+    /// (it can't for one it can't seek in, such as many FLV files), so the player does.
+    ran_out: Arc<AtomicBool>,
     problem: Arc<Mutex<Option<String>>>,
     children: Vec<Child>,
     threads: Vec<JoinHandle<()>>,
@@ -399,12 +402,14 @@ impl Player {
         clock.set_paused(self.paused);
         let stop = Arc::new(AtomicBool::new(false));
         let ended = Arc::new(AtomicBool::new(false));
+        let ran_out = Arc::new(AtomicBool::new(false));
         let problem = Arc::new(Mutex::new(None));
         let mut run = Run {
             from,
             clock: clock.clone(),
             stop: stop.clone(),
             ended: ended.clone(),
+            ran_out: ran_out.clone(),
             problem: problem.clone(),
             children: Vec::new(),
             threads: Vec::new(),
@@ -481,6 +486,9 @@ impl Player {
                     }
                     if !looping {
                         ended_v.store(true, Ordering::Relaxed);
+                    } else if shown > 0 && !stop_v.load(Ordering::Relaxed) {
+                        // Meant to go round, and it has stopped after showing pictures.
+                        ran_out.store(true, Ordering::Relaxed);
                     }
                     return;
                 }
@@ -654,6 +662,12 @@ impl Player {
 
     /// FFmpeg loops by itself; nothing to do but say when to look again.
     pub fn tick(&mut self) -> Duration {
+        // A looping video FFmpeg couldn't start again by itself is started again from its
+        // beginning here (one that gave no pictures at all is left with its problem said).
+        if self.looping && self.run.as_ref().is_some_and(|run| run.ran_out.load(Ordering::Relaxed)) {
+            let _ = self.start_at(0.0);
+            return Duration::from_millis(50);
+        }
         Duration::from_millis(200)
     }
 }
