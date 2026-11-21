@@ -5275,6 +5275,11 @@ impl App {
             };
             let attrs = if quiet {
                 attrs.with_active(false).with_window_level(winit::window::WindowLevel::AlwaysOnBottom)
+            } else if std::env::var_os("SOFTPRESENTER_SCREENS_ON_TOP").is_some() {
+                // Testing aid: SOFTPRESENTER_SCREENS_ON_TOP keeps the screens' windows above
+                // every other window, so a timing run on one display draws them for real (a
+                // window covered by the operator's is not drawn, and is paced differently).
+                attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
             } else {
                 attrs
             };
