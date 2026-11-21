@@ -1081,7 +1081,8 @@ impl Easel {
 
 /// Passes when two drawings of one scene are the same picture. The GPU adds up the edges
 /// crossing a pixel in whatever order its threads reach them, so a pixel may come out a step
-/// or so differently from run to run: one step of 255 on up to ten thousand pixels (two
+/// or so differently from run to run: one step of 255 on up to ten thousand pixels and never
+/// more than a hundredth of them, so that a small picture all one step out does not pass (two
 /// readings half-way through a dissolve on a 1440p screen came out one step apart on about
 /// 4 900 of them, before and after the painter's memory was sized from the picture), or
 /// three steps on up to a thousandth of them. Anything missing or misplaced differs by far
@@ -1098,7 +1099,7 @@ fn assert_same_picture(name: &str, a: &[u8], b: &[u8]) {
     }
     let share = differing as f64 / (a.len() / 4) as f64;
     assert!(
-        (worst <= 1 && differing <= 10_000) || (worst <= 3 && share < 0.001),
+        (worst <= 1 && differing <= 10_000 && share < 0.01) || (worst <= 3 && share < 0.001),
         "{name}: {differing} pixels differ ({:.3}%), by up to {worst} of 255",
         share * 100.0
     );
@@ -1602,9 +1603,11 @@ fn a_painter_has_not_rested_while_the_gpu_holds_memory_a_picture_gave_back() {
     easel.painter.paint(&easel.device, &easel.queue, &heavy, &view, w, h).expect("paint");
     assert!(easel.painter.reruns() > 0, "the picture was worked out again, with more room");
     assert_eq!(easel.painter.spare_bytes(), 0, "and has given back the room it outgrew");
-    // Straight after the call, the GPU is still filling in the pixels of a 4K picture.
+    // The painter finds that the picture gave memory back, and asks the device to say when it
+    // has left the GPU. That call never says the painter has rested, however fast the GPU is:
+    // the device is first looked at on the call after.
     let rested = easel.painter.rest(&easel.device, &easel.queue);
-    assert!(!rested, "the GPU still holds what the picture gave back");
+    assert!(!rested, "the GPU may still hold what the picture gave back");
     easel.rest();
     assert!(easel.painter.rest(&easel.device, &easel.queue), "and then it has rested");
 }

@@ -623,12 +623,6 @@ impl Renderer {
                 .expect("a render given scratch sizes has a plan");
             let print = render.scene_print();
             self.scratch.drawing(&plan, now);
-            if self.frames_to_drop > 0 {
-                // A test asked for this: the frame's commands never reach the GPU.
-                self.frames_to_drop -= 1;
-                self.forget_pictures(device, queue);
-                return Err(Error::FrameDropped);
-            }
             // A frame that would take more than one frame may have even in the least room it
             // could be given, or a scene already found too heavy, is not sent to the GPU at
             // all. Only its pictures are: the resolver has counted them as sent.
@@ -655,22 +649,30 @@ impl Renderer {
                 return Err(Error::SceneTooHeavy);
             }
             let bump_buf = render.bump_buf();
-            self.engine.run_recording(
-                device,
-                queue,
-                &coarse,
-                &[],
-                "render_to_texture coarse",
-                #[cfg(feature = "wgpu-profiler")]
-                &mut self.profiler,
-            )?;
-            self.coarse_runs += 1;
+            // A test may ask for the frame to be dropped: its commands are then not sent, and
+            // what follows is what follows a read-back that says the GPU dropped the frame.
+            let dropped = self.frames_to_drop > 0;
+            self.frames_to_drop -= u32::from(dropped);
+            if !dropped {
+                self.engine.run_recording(
+                    device,
+                    queue,
+                    &coarse,
+                    &[],
+                    "render_to_texture coarse",
+                    #[cfg(feature = "wgpu-profiler")]
+                    &mut self.profiler,
+                )?;
+                self.coarse_runs += 1;
+            }
             // A scene that was drawn before and fitted, given no less room now, fits again: its
             // counters need not be waited for. A playing video is this case, frame after frame.
             // Any other frame is judged by its own counters, and only by counters the GPU
             // really wrote: a frame it was too slow with or dropped is an error, never a fit,
             // and is not remembered as either fitting or too heavy.
-            let verdict = if self.scratch.fitted_before(print, &plan, now) {
+            let verdict = if dropped {
+                Err(Error::FrameDropped)
+            } else if self.scratch.fitted_before(print, &plan, now) {
                 self.engine.free_download(bump_buf);
                 Ok(scratch::Verdict::Fits)
             } else {
@@ -857,7 +859,8 @@ impl Renderer {
     /// nothing is being drawn. That goes for buffers given back here and for those a frame
     /// gave back as it was drawn (one that was run again lets its outgrown buffers go at
     /// once). So the call returns `false` while any of that is still to come: call it again
-    /// in a moment (each call looks at the device once), until it returns `true`.
+    /// in a moment, until it returns `true`. The call that finds something was given back
+    /// always returns `false`; each call after it looks at the device once.
     pub fn rest(&mut self, device: &Device, queue: &Queue) -> bool {
         use std::sync::atomic::Ordering;
         if self.scratch.is_heavy(std::time::Instant::now()) {
@@ -875,6 +878,10 @@ impl Renderer {
             let flag = left.clone();
             queue.on_submitted_work_done(move || flag.store(true, Ordering::Release));
             self.giving_back = Some(left);
+            // The call that asks is never the one that hears the answer: the device is looked
+            // at on the next call, so what this one returns does not turn on how fast the GPU
+            // happens to be.
+            return false;
         }
         let Some(left) = &self.giving_back else {
             return true;

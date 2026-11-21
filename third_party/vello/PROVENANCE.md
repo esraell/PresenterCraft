@@ -65,9 +65,11 @@ Everything is marked `SoftPresenter:` in the source. Removed from the published 
     frame; the bounds checks below are what keep a wrong guess there from doing harm.
   - Not checked at all: the fine stage. A frame the GPU drops after its counters were read
     (macOS drops the frames of every app when any app's GPU work faults) returns `Ok` and
-    leaves the target as it was. Vello has no way to see that. SoftPresenter's output thread
-    draws screens that stand still again every five seconds, when that is cheap, so that
-    such a picture does not stay wrong.
+    leaves the target as it was. Vello has no way to see that, and SoftPresenter does not
+    make up for it: the screen is put right by the next thing that draws it. Drawing still
+    screens again every few seconds was tried and taken out: for a slide full of small text
+    it took the slide's working memory again each time (footprint 179 MB at rest, 815 to
+    852 MB every five seconds).
   - The wait for the counters only ever asks the device how far the GPU has got
     (`PollType::Poll`), again and again; the renderer never waits inside the device. A wait
     with a time limit for one submission, which an earlier version of this change made, trips
