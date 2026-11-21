@@ -505,7 +505,9 @@ feature changes, this page changes in the same commit.
   words, look or place; `sp song text` reads or replaces a song's words. Each change is saved,
   can be undone, and shows on screen at once. Commands that change something are written to the
   app's log; those that only read (`status`, the lists) aren't, so a page asking every second
-  doesn't fill it. It reaches the
+  doesn't fill it. Better still, `sp status --wait SECONDS --since TOKEN` answers as soon as
+  something changes (what is on screen, the playlists or the library, and which of them), or
+  when the time is up, so a page needn't keep asking. It reaches the
   app through a socket only the same user can open, and nothing listens on the network. See
   [cli.md](cli.md); [app-map.md](app-map.md) maps every part of the app.
 

@@ -957,6 +957,8 @@ struct App {
     bible_jobs: Vec<(u64, String, String)>,
     /// The socket `softpresenter ctl` reaches the app through, while it listens.
     _control: Option<control::Listening>,
+    /// `status --wait`s held until something changes or their time is up.
+    waiting: Vec<control::Waiter>,
     show: Show,
     /// The file each song came from, in the show's order; `None` for the bundled sample.
     sources: Vec<Option<PathBuf>>,
@@ -6835,6 +6837,9 @@ impl ApplicationHandler<AppEvent> for App {
             AppEvent::Menu(id) => id,
             // A command from `softpresenter ctl`: done now, and its outcome sent back.
             AppEvent::Control(incoming) => {
+                // A wait for a change, with nothing changed yet, is held and answered later
+                // (`answer_waiting`, from `about_to_wait`).
+                let Some(incoming) = self.hold_wait(incoming) else { return };
                 let reply = self.control(el, &incoming.request.args);
                 // A command that only reads (status, a list) changes nothing worth a line: a
                 // page asking every second or two would fill the log with them.
@@ -7231,6 +7236,8 @@ impl ApplicationHandler<AppEvent> for App {
             self.save_unsaved();
         }
         let save_at = self.unsaved_since.map(|since| since + SAVE_AFTER);
+        // `status --wait`s held: answered now if anything changed, or their time is up.
+        let waiting_at = self.answer_waiting();
         let Some(running) = self.running.as_mut() else {
             return;
         };
@@ -7264,6 +7271,7 @@ impl ApplicationHandler<AppEvent> for App {
             announce_at,
             cycle_at,
             folders_at,
+            waiting_at,
         ];
         match wake.into_iter().flatten().min() {
             Some(at) => {
@@ -7519,6 +7527,7 @@ fn main() -> ExitCode {
         last_job: None,
         import_library_override: None,
         bible_jobs: Vec::new(),
+        waiting: Vec::new(),
         // Commands from `softpresenter ctl` come in on the control socket. Without it (another
         // copy has it, say) the app runs as usual.
         _control: {

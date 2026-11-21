@@ -93,7 +93,7 @@ impl Drop for Listening {
 /// Starts listening, on a thread of its own. Each request is handed to `deliver`, which wakes
 /// the app's main thread with it; the reply is written back when the main thread sends it.
 #[cfg(unix)]
-pub fn listen(deliver: impl Fn(Incoming) + Send + 'static) -> Result<Listening, String> {
+pub fn listen(deliver: impl Fn(Incoming) + Send + Sync + 'static) -> Result<Listening, String> {
     use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
 
@@ -131,6 +131,7 @@ pub fn listen(deliver: impl Fn(Incoming) + Send + 'static) -> Result<Listening, 
     }
     let listener = UnixListener::bind(&path).map_err(|e| format!("Could not listen at {}: {e}", path.display()))?;
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    let deliver: Deliver = std::sync::Arc::new(deliver);
     std::thread::Builder::new()
         .name("control".to_owned())
         .spawn(move || {
@@ -144,13 +145,65 @@ pub fn listen(deliver: impl Fn(Incoming) + Send + 'static) -> Result<Listening, 
 }
 
 #[cfg(not(unix))]
-pub fn listen(_deliver: impl Fn(Incoming) + Send + 'static) -> Result<Listening, String> {
+pub fn listen(_deliver: impl Fn(Incoming) + Send + Sync + 'static) -> Result<Listening, String> {
     Err("Controlling SoftPresenter from the command line works on macOS and Linux so far.".to_owned())
 }
 
-/// Reads one request from a connection, hands it to the app and writes back its reply.
+/// What hands a request to the app's main thread; shared with the threads that wait for a
+/// change.
+type Deliver = std::sync::Arc<dyn Fn(Incoming) + Send + Sync>;
+
+/// The longest `status --wait` waits for a change, in seconds.
+pub const MOST_WAIT: f64 = 30.0;
+
+/// The most connections waiting for a change at once; one more is refused at once, without
+/// waking the app, so a page that keeps asking can't pile up threads.
+const MOST_WAITING: usize = 8;
+
+/// How many connections are waiting for a change now.
+static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One connection fewer waiting, when it is dropped: when its thread ends, or when the thread
+/// couldn't be started.
+struct Leaving;
+
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        WAITING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// `status --wait SECONDS [--since TOKEN]`: how long to wait for a change, and the token the
+/// change is from (`None`: from now). `None` for any other command; an error for a wait asked
+/// for wrongly.
+pub fn wait_for(args: &[String]) -> Option<Result<(Duration, Option<String>), String>> {
+    if !args.first().is_some_and(|word| word.eq_ignore_ascii_case("status")) {
+        return None;
+    }
+    let at = args.iter().position(|word| word == "--wait")?;
+    let usage = format!("status --wait SECONDS [--since TOKEN]   (SECONDS from 0 to {MOST_WAIT})");
+    let seconds = match args.get(at + 1).and_then(|word| word.parse::<f64>().ok()) {
+        Some(seconds) if (0.0..=MOST_WAIT).contains(&seconds) => seconds,
+        Some(seconds) if seconds.is_finite() => {
+            return Some(Err(format!("A wait is 0 to {MOST_WAIT} seconds, not {seconds}.")));
+        }
+        _ => return Some(Err(usage)),
+    };
+    let since = match args.iter().position(|word| word == "--since") {
+        Some(at) => match args.get(at + 1).filter(|token| !token.starts_with("--")) {
+            Some(token) => Some(token.clone()),
+            None => return Some(Err(usage)),
+        },
+        None => None,
+    };
+    Some(Ok((Duration::from_secs_f64(seconds), since)))
+}
+
+/// Reads one request from a connection, hands it to the app and writes back its reply. A wait
+/// for a change is answered on a thread of its own, so the commands after it are answered
+/// meanwhile.
 #[cfg(unix)]
-fn answer(stream: std::os::unix::net::UnixStream, deliver: &impl Fn(Incoming)) {
+fn answer(stream: std::os::unix::net::UnixStream, deliver: &Deliver) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let mut line = String::new();
@@ -168,16 +221,102 @@ fn answer(stream: std::os::unix::net::UnixStream, deliver: &impl Fn(Incoming)) {
             "This command line speaks version {} of the protocol, the running app version {PROTOCOL}. Use the same build for both.",
             request.v
         )),
-        Ok(request) => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            deliver(Incoming { request, reply: tx });
-            rx.recv_timeout(Duration::from_secs(15))
-                .unwrap_or_else(|_| Reply::failed("SoftPresenter did not answer in time."))
-        }
+        Ok(request) => match wait_for(&request.args) {
+            Some(Ok((wait, _))) => {
+                let leaving = Leaving;
+                if WAITING.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= MOST_WAITING {
+                    drop(leaving);
+                    Reply::failed(format!(
+                        "{MOST_WAITING} connections are already waiting for a change; ask again in a moment, or without --wait."
+                    ))
+                } else {
+                    let deliver = deliver.clone();
+                    // The app answers at the change or when the wait is up; past that, as for
+                    // any command, it is given 15 seconds more. A thread that can't be started
+                    // drops the connection unanswered, and `leaving` with it.
+                    let _ = std::thread::Builder::new().name("control-wait".to_owned()).spawn(move || {
+                        let _leaving = leaving;
+                        write_reply(&stream, ask(&deliver, request, wait + Duration::from_secs(15)));
+                    });
+                    return;
+                }
+            }
+            _ => ask(deliver, request, Duration::from_secs(15)),
+        },
     };
+    write_reply(&stream, reply);
+}
+
+/// A `status --wait` the app holds: answered when something changes from its token, or when
+/// its time is up.
+pub struct Waiter {
+    reply: Sender<Reply>,
+    since: String,
+    until: std::time::Instant,
+    seconds: f64,
+}
+
+/// The parts of a change token, in its order: what `status` says, the playlists, the library.
+const TOKEN_PARTS: [&str; 3] = ["status", "playlists", "library"];
+
+/// Which parts of the state changed between two tokens. A token that isn't one (from an older
+/// build, say) has changed in every part.
+fn changed_parts(since: &str, now: &str) -> Vec<&'static str> {
+    let since: Vec<&str> = since.split('-').collect();
+    let now: Vec<&str> = now.split('-').collect();
+    if since.len() != TOKEN_PARTS.len() || now.len() != TOKEN_PARTS.len() {
+        return TOKEN_PARTS.to_vec();
+    }
+    TOKEN_PARTS.iter().zip(since.iter().zip(&now)).filter(|(_, (was, is))| was != is).map(|(part, _)| *part).collect()
+}
+
+/// A status reply with the parts that changed since a token, as `status --wait` answers.
+fn with_changes(mut reply: Reply, since: Option<&str>) -> Reply {
+    let token = reply.data["token"].as_str().unwrap_or_default().to_owned();
+    reply.data["changed"] = serde_json::json!(since.map_or_else(Vec::new, |since| changed_parts(since, &token)));
+    reply
+}
+
+/// What `status` says, less what changes every second by itself (the time each timer shows,
+/// how far the audio has played) and the token: what a change token's first part is made of.
+fn without_clocks(status: &serde_json::Value) -> serde_json::Value {
+    let mut said = status.clone();
+    if let Some(timers) = said.get_mut("timers").and_then(serde_json::Value::as_array_mut) {
+        for timer in timers.iter_mut().filter_map(serde_json::Value::as_object_mut) {
+            timer.remove("shows");
+        }
+    }
+    if let Some(audio) = said.get_mut("audio").and_then(serde_json::Value::as_object_mut) {
+        audio.remove("seconds");
+    }
+    if let Some(said) = said.as_object_mut() {
+        said.remove("token");
+    }
+    said
+}
+
+/// The hash of something as text, for a change token.
+fn hash_of(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Hands a request to the app and waits that long for its reply.
+#[cfg(unix)]
+fn ask(deliver: &Deliver, request: Request, within: Duration) -> Reply {
+    let (tx, rx) = std::sync::mpsc::channel();
+    deliver(Incoming { request, reply: tx });
+    rx.recv_timeout(within).unwrap_or_else(|_| Reply::failed("SoftPresenter did not answer in time."))
+}
+
+#[cfg(unix)]
+fn write_reply(stream: &std::os::unix::net::UnixStream, reply: Reply) {
     let mut text = serde_json::to_string(&reply).unwrap_or_default();
     text.push('\n');
-    let _ = (&stream).write_all(text.as_bytes());
+    let mut stream = stream;
+    let _ = stream.write_all(text.as_bytes());
 }
 
 /// The command line: sends the words to the running app and prints its reply. `--json` prints
@@ -201,8 +340,11 @@ macro_rules! say_err {
 
 pub fn run_client(args: Vec<String>) -> std::process::ExitCode {
     let json = args.iter().any(|a| a == "--json");
-    let wait = args.iter().any(|a| a == "--wait");
-    let args = with_full_paths(args.into_iter().filter(|a| a != "--json" && a != "--wait").collect());
+    // `status --wait SECONDS` is the app's to carry out (wait for a change); after any other
+    // command, `--wait` waits here for the job it started.
+    let status = args.first().is_some_and(|word| word.eq_ignore_ascii_case("status"));
+    let wait = !status && args.iter().any(|a| a == "--wait");
+    let args = with_full_paths(args.into_iter().filter(|a| a != "--json" && (status || a != "--wait")).collect());
     // `voxlive connect`: the key is read from the standard input (piped in, or pasted), never
     // taken as an argument, where it would stay in the shell's history and show in the list of
     // processes.
@@ -477,7 +619,9 @@ fn send(args: &[String]) -> Result<Reply, String> {
     let mut stream = std::os::unix::net::UnixStream::connect(&path).map_err(|_| {
         "SoftPresenter isn't running (or isn't listening for commands). Open it, then try again.".to_owned()
     })?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
+    // A wait for a change is answered when it is up at the latest.
+    let waiting = wait_for(args).and_then(Result::ok).map_or(Duration::ZERO, |(wait, _)| wait);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(20) + waiting));
     let mut request =
         serde_json::to_string(&Request { v: PROTOCOL, args: args.to_vec() }).map_err(|e| e.to_string())?;
     request.push('\n');
@@ -644,6 +788,9 @@ sp             what is on screen; starts SoftPresenter first if it isn't running
 
 What is going on
   status                       what is on screen, what is next, what is playing
+  status --wait SECONDS [--since TOKEN]
+                               the same once something changes from TOKEN (status --json gives
+                               one; without it, from now), or when SECONDS (up to 30) are up
   songs | slides SONG | playlists | playlist [NAME] | media | themes | screens
   timers | messages | props | macros | audio | menu
   slides item N [in PLAYLIST]  the slides of a playlist's item N: a song, or a saved Bible passage
@@ -891,7 +1038,13 @@ impl crate::App {
         let word = args.first().map(|w| w.to_lowercase()).unwrap_or_default();
         let result = match word.as_str() {
             "" | "help" => Ok(Reply::done(HELP.trim_end())),
-            "status" => Ok(self.ctl_status()),
+            // `status --wait …` comes here only to be answered at once: something changed since
+            // its token (or it waits 0 seconds). A wait still to come is held by `hold_wait`.
+            "status" => match wait_for(args) {
+                None => Ok(self.ctl_status()),
+                Some(Err(usage)) => Err(usage),
+                Some(Ok((_, since))) => Ok(with_changes(self.ctl_status(), since.as_deref())),
+            },
             "songs" => Ok(self.ctl_songs()),
             "slides" => self.ctl_slides(args),
             "slide" => self.ctl_slide(args),
@@ -1301,7 +1454,76 @@ impl crate::App {
             "stage_on": state.is_some_and(|s| s.stage_on),
             "selected_song": selected,
         });
+        let mut data = data;
+        data["token"] = serde_json::json!(self.change_token(&data));
         Reply::with(lines.join("\n"), data)
+    }
+
+    /// What `status --wait` compares: three parts, each changing when something of its kind
+    /// does. What `status` says, leaving out the time each timer shows and how far the audio has
+    /// played, which change every second; the playlists and their items; and the library (the
+    /// songs and their slides, the libraries, the media bin and the media playlists).
+    fn change_token(&self, status: &serde_json::Value) -> String {
+        let said = without_clocks(status);
+        let state = self.running.as_ref().map(|r| &r.home_state);
+        let playlists = state.map(|s| serde_json::to_string(&s.services.list).unwrap_or_default()).unwrap_or_default();
+        // The songs change only by being added or replaced, which the show counts.
+        let media: Vec<String> = self
+            .show
+            .media()
+            .iter()
+            .map(|item| format!("{} {} {:?} {}", item.id, item.name, item.fit, item.looping))
+            .collect();
+        let library = state.map_or_else(String::new, |s| {
+            format!(
+                "{} {:?} {:?} {} {}",
+                self.show.version(),
+                s.removed_songs,
+                media,
+                serde_json::to_string(&s.libraries).unwrap_or_default(),
+                serde_json::to_string(&s.media_playlists).unwrap_or_default()
+            )
+        });
+        format!("{:016x}-{:016x}-{:016x}", hash_of(&said.to_string()), hash_of(&playlists), hash_of(&library))
+    }
+
+    /// Holds a `status --wait` when nothing has changed since its token (or, with no token,
+    /// to wait for the next change), for `answer_waiting` to answer. Anything else is given
+    /// back, to be carried out now.
+    pub(crate) fn hold_wait(&mut self, incoming: Incoming) -> Option<Incoming> {
+        let Some(Ok((wait, since))) = wait_for(&incoming.request.args) else { return Some(incoming) };
+        let now = self.ctl_status().data["token"].as_str().unwrap_or_default().to_owned();
+        let since = since.unwrap_or_else(|| now.clone());
+        if since != now || wait.is_zero() {
+            return Some(incoming);
+        }
+        let until = std::time::Instant::now() + wait;
+        self.waiting.push(Waiter { reply: incoming.reply, since, until, seconds: wait.as_secs_f64() });
+        None
+    }
+
+    /// Answers each `status --wait` held whose token no longer matches, or whose time is up,
+    /// and says when the next one's time is up, for the event loop to wake then. Done after
+    /// everything else the event loop does, so whatever changed it is seen.
+    pub(crate) fn answer_waiting(&mut self) -> Option<std::time::Instant> {
+        if self.waiting.is_empty() {
+            return None;
+        }
+        let status = self.ctl_status();
+        let token = status.data["token"].as_str().unwrap_or_default().to_owned();
+        let now = std::time::Instant::now();
+        for waiter in std::mem::take(&mut self.waiting) {
+            if waiter.since != token {
+                let _ = waiter.reply.send(with_changes(status.clone(), Some(&waiter.since)));
+            } else if waiter.until <= now {
+                let mut reply = with_changes(status.clone(), Some(&waiter.since));
+                reply.text = format!("Nothing changed in {} s.", waiter.seconds);
+                let _ = waiter.reply.send(reply);
+            } else {
+                self.waiting.push(waiter);
+            }
+        }
+        self.waiting.iter().map(|waiter| waiter.until).min()
     }
 
     /// Whether a `stage` command is one of the newer ones (message, layout).
@@ -2595,6 +2817,51 @@ mod tests {
             words.extend(pattern.split('|').map(|w| w.trim().trim_matches('"').to_owned()).filter(|w| !w.is_empty()));
         }
         words
+    }
+
+    #[test]
+    fn a_wait_for_a_change_is_read_and_bounded() {
+        let words = |text: &str| text.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(wait_for(&words("status")), None);
+        assert_eq!(wait_for(&words("next --wait 5")), None, "only status waits for a change");
+        assert_eq!(wait_for(&words("status --wait 20")), Some(Ok((Duration::from_secs(20), None))));
+        assert_eq!(
+            wait_for(&words("status --wait 2.5 --since abc")),
+            Some(Ok((Duration::from_millis(2500), Some("abc".to_owned()))))
+        );
+        assert_eq!(wait_for(&words("status --since abc --wait 0")), Some(Ok((Duration::ZERO, Some("abc".to_owned())))));
+        assert_eq!(wait_for(&words("status --wait 31")), Some(Err("A wait is 0 to 30 seconds, not 31.".to_owned())));
+        assert!(matches!(wait_for(&words("status --wait -1")), Some(Err(_))));
+        assert!(matches!(wait_for(&words("status --wait")), Some(Err(_))));
+        assert!(matches!(wait_for(&words("status --wait soon")), Some(Err(_))));
+        assert!(matches!(wait_for(&words("status --wait 5 --since")), Some(Err(_))));
+        assert!(matches!(wait_for(&words("status --wait 5 --since --json")), Some(Err(_))));
+    }
+
+    #[test]
+    fn a_token_says_which_parts_changed_and_ignores_the_clocks() {
+        assert_eq!(changed_parts("a-b-c", "a-b-c"), Vec::<&str>::new());
+        assert_eq!(changed_parts("a-b-c", "x-b-c"), ["status"]);
+        assert_eq!(changed_parts("a-b-c", "a-y-z"), ["playlists", "library"]);
+        assert_eq!(changed_parts("old", "a-b-c"), ["status", "playlists", "library"], "not a token: all changed");
+
+        let status = |shows: &str, seconds: u64, running: bool| {
+            serde_json::json!({
+                "live": null,
+                "timers": [{"name": "Sermon", "kind": "counts down from 30:00", "shows": shows, "running": running}],
+                "audio": {"track": "Welcome", "paused": false, "seconds": seconds, "volume": 80},
+                "token": "x-y-z",
+            })
+        };
+        let ticking = without_clocks(&status("00:29:59", 1, true));
+        assert_eq!(ticking, without_clocks(&status("00:29:58", 2, true)), "a second passing is no change");
+        assert_ne!(ticking, without_clocks(&status("00:29:58", 2, false)), "a timer stopping is one");
+        assert!(ticking.get("token").is_none());
+        assert_eq!(ticking["audio"]["track"], "Welcome");
+
+        let reply = Reply::with("On screen.", serde_json::json!({"token": "a-b-c"}));
+        assert_eq!(with_changes(reply.clone(), Some("a-q-c")).data["changed"], serde_json::json!(["playlists"]));
+        assert_eq!(with_changes(reply, None).data["changed"], serde_json::json!([]));
     }
 
     #[test]

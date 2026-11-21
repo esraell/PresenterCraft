@@ -11,7 +11,8 @@ change, as everything else may (see the README).
 
 - [Install](#install) and [the basics](#the-basics): names, numbers, `--json`, exit codes
 - [Trying it safely](#trying-it-safely): a test copy for agents and scripts
-- Commands: [what is going on](#what-is-going-on) · [running the show](#running-the-show) ·
+- Commands: [what is going on](#what-is-going-on) (and [waiting for a change](#waiting-for-a-change)) ·
+  [running the show](#running-the-show) ·
   [media and video](#media-and-video) ·
   [messages, props, timers, macros](#messages-props-timers-and-macros) · [audio](#audio) ·
   [the Bible](#the-bible) · [songs](#songs) · [changing a slide](#changing-a-slide) ·
@@ -63,6 +64,8 @@ Choose **SoftPresenter › Install Command Line Tool…** (or run the app's prog
 - **`--yes`** is needed by every command that deletes something.
 - **`--wait`** makes a command that runs in the background (a pack with videos, a large pack
   import, a Bible download) wait until it is done; see [jobs](#undo-jobs-and-the-menu-bar).
+  `status --wait SECONDS` is something else: it waits for a change
+  ([below](#waiting-for-a-change)).
 - **Files** can be given by full path or relative to the current folder.
 - **Exit codes:** 0 when the command was done; 1 when it was refused or not done (an unknown
   name, a missing argument or `--yes`, a value out of range, a change that couldn't be saved,
@@ -123,6 +126,7 @@ mistake impossible:
 | Command | Gives |
 |---|---|
 | `sp` or `status` | What is on screen (song, slide, words), the next slide, the media, any message and props, the announcements layer, a media playlist playing, running timers, the audio, the playlist in front, whether the screens, Continuous Playlist and Identify are on, and the main theme |
+| `status --wait SECONDS [--since TOKEN]` | The same, once something has changed since TOKEN (or, with no TOKEN, from now), or when SECONDS (0 to 30) are up; see [waiting for a change](#waiting-for-a-change) |
 | `songs` | Every song in the library, numbered; saved Bible passages and slides made from presentations too. A song whose file changed outside the app is marked |
 | `slides [SONG]` | A song's slides: number, group, words (lines joined with " / ", main language first), which is on screen, and marks for a slide that is off, labelled or has a hot key |
 | `slides item N [in PLAYLIST]` | The slides of a playlist's item N (of the playlist in front if none is named): a song's, or a saved Bible passage's, made as opening it would make them but without opening it, so the Bible page stays as it is |
@@ -211,6 +215,40 @@ number is named by its number, its id, or its title in quotes (`sp slides "Item 
       1. Built-in Retina Display (3024x1964), the main display
 
 An empty list says `(none)`.
+
+### Waiting for a change
+
+A page or script that shows what is going on needn't ask `status` every second.
+`status --json` gives a `token` (three parts: what `status` says, the playlists and their
+items, and the library: songs and their slides, libraries, the media bin and media playlists).
+`status --wait SECONDS --since TOKEN` answers at once if anything has changed since that token,
+and otherwise as soon as something does, or when SECONDS are up, with the status and a new
+token. Its JSON says which parts changed, in `changed` (`status`, `playlists`, `library`; none
+when the time was up), so the page knows whether to read the playlist or the songs again too.
+The time a timer shows and how far the audio has played change every second and don't count
+(a timer starting or stopping does).
+
+    $ sp status --json | jq -r .data.token
+    d86eed1f29b6730e-bfa496941899fa4c-b4a26a3cf80db679
+    $ sp status --wait 20 --since d86eed1f29b6730e-bfa496941899fa4c-b4a26a3cf80db679
+    On screen: Harbour Lights, slide 1 of 2 (Verse 1).      # two seconds later, after sp go "Harbour Lights"
+    …
+    $ TOKEN=$(sp status --json | jq -r .data.token)
+    $ sp status --wait 4 --since "$TOKEN"     # a timer running, nothing else
+    Nothing changed in 4 s.
+    $ sp status --wait 31
+    A wait is 0 to 30 seconds, not 31.
+
+- Each wait is answered on a thread of its own, so other commands, from the same page or
+  anyone else, are answered meanwhile; the app does nothing while it waits.
+- At most 8 waits at once: a ninth is refused at once ("8 connections are already waiting for a
+  change; ask again in a moment, or without --wait.").
+- A wait with no `--since` waits for the next change from now; `--wait 0` answers at once.
+- `sp` waits as long as asked. A program talking to the socket itself should allow SECONDS plus
+  a little before giving up on the reply.
+
+A page's loop, then: `status --json` once, then `status --wait 25 --since TOKEN` again and again,
+each time with the token the last reply gave.
 
 ## Running the show
 
@@ -897,7 +935,7 @@ the command's facts where it has any:
 
 | Command | `data` |
 |---|---|
-| `status` | `live` (null when nothing is on screen): `song`, `slide`, `slides`, `words`, `kind` (`song`, `passage` or `voxlive`), the song's `id` and its `number` in `sp songs` (null for a passage), and the `playlist` and `item` number it was opened from (null when it wasn't); `next_slide`, `media`, `message`, `props`, `announcements`, `media_playlist`, `timers` (each `name`, `kind`, `shows`, `running`), `audio` (`track`, `paused`, `seconds`, `length`, `volume`), `playlist` (`name`, `item_last_opened` and its number `item`, `listed`), `audience_on`, `stage_on`, `continuous`, `identify`, `main_theme`, `selected_song` |
+| `status` | `token`, for [`--wait --since`](#waiting-for-a-change) (with `--wait`, also `changed`: the parts that changed since the token); `live` (null when nothing is on screen): `song`, `slide`, `slides`, `words`, `kind` (`song`, `passage` or `voxlive`), the song's `id` and its `number` in `sp songs` (null for a passage), and the `playlist` and `item` number it was opened from (null when it wasn't); `next_slide`, `media`, `message`, `props`, `announcements`, `media_playlist`, `timers` (each `name`, `kind`, `shows`, `running`), `audio` (`track`, `paused`, `seconds`, `length`, `volume`), `playlist` (`name`, `item_last_opened` and its number `item`, `listed`), `audience_on`, `stage_on`, `continuous`, `identify`, `main_theme`, `selected_song` |
 | `songs`, `playlists`, `media`, `themes`, `timers`, `messages`, `props`, `macros`, `audio` | An array of names, in their numbered order |
 | `playlist [NAME]` | An object for each item: `item`, `kind`, `title`, `missing`, `text`, and `id`, `number`, `media_type` or `bibles` by its kind ([above](#playlists-and-libraries)) |
 | `libraries` | `[{"name": "Hymns", "songs": 3, "missing": 1}]` |
@@ -949,6 +987,9 @@ These need the window for now; some can be reached with `sp menu`.
 - A request is one line of JSON, `{"v": 1, "args": ["go", "River Song", "2"]}`, at most 64 KB
   (`sp` refuses a longer one before sending it); the reply is one line of JSON. `v` is the
   protocol's version: a command line from a different build is told so.
+- The app answers one command at a time, each within 15 seconds. A
+  [`status --wait`](#waiting-for-a-change) is the exception: its connection is held on a thread
+  of its own (at most 8 at once, for at most 30 seconds each) while the app carries on.
 - A second copy of the app leaves the first one's socket alone and runs without one, unless it
   is given its own with `SOFTPRESENTER_CONTROL_SOCKET`.
 - The socket is removed when the app quits. With the app not running, `sp` says so.

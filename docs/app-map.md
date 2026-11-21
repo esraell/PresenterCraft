@@ -62,7 +62,7 @@ audience screens; the screens are separate windows (or NDI sources) drawn by the
 
 | Part | Does | Command line |
 |---|---|---|
-| PROGRAM preview | What the audience screens show, drawn by the screens' own renderer (videos move in it); the chooser shows the stage picture instead | `status` |
+| PROGRAM preview | What the audience screens show, drawn by the screens' own renderer (videos move in it); the chooser shows the stage picture instead | `status`, `status --wait SECONDS --since TOKEN` |
 | Clear All, Clear Slide, Clear Media, Props, Messages, Audio | Clear a layer (Escape clears all; F1 to F6 clear one each); Clear Announcements when that layer plays | `clear all\|slide\|media\|props\|messages\|audio\|announcements` |
 | Previous / Next | Step through the slides | `previous`, `next` |
 | Video controls | Under the preview while a video plays: pause, seek, loop, mute | |
