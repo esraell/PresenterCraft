@@ -2007,6 +2007,14 @@ pub fn program_panel(
         }
         let border = if any_live && on { Stroke::new(2.0, TALLY) } else { Stroke::new(1.0, LINE) };
         ui.painter().rect_stroke(picture, RADIUS, border, StrokeKind::Outside);
+        // A screen that could not draw what is live shows the picture before it, whatever the
+        // preview above shows: the operator must know.
+        if let Some(undrawn) = preview.undrawn.filter(|_| on) {
+            Frame::new().fill(TALLY.gamma_multiply(0.22)).corner_radius(RADIUS).inner_margin(8).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new(undrawn.in_words()).size(12.5).color(Color32::WHITE));
+            });
+        }
         if output_stopped {
             ui.label(
                 egui::RichText::new("The output has stopped. Restart SoftPresenter to bring it back.").color(TALLY),

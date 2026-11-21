@@ -948,6 +948,8 @@ pub struct Preview {
     pub now: Option<TextureId>,
     pub before: Option<TextureId>,
     pub amount: f32,
+    /// Why a screen is not showing this picture but the one before it, when one is not.
+    pub undrawn: Option<crate::output::Undrawn>,
 }
 
 /// Which thumbnail the window is asking for.

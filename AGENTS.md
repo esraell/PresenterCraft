@@ -68,6 +68,8 @@ person:
 | `SOFTPRESENTER_STRESS=1` | Redraw continuously, to check memory stays flat |
 | `SOFTPRESENTER_STOP_DRAWING_AFTER=<s>` | Stop drawing the window after a while, as minimising does |
 | `SOFTPRESENTER_TRACE_REPAINT=1` | Log what keeps asking for the window to be redrawn |
+| `SOFTPRESENTER_GPU_TOO_SLOW=<n>` or `<n>@<seconds>` | The screens give up the next n pictures they must wait for the GPU for, as when it is too slow (from that many seconds after the start) |
+| `SOFTPRESENTER_OUTPUT_ROOM=<lines>` | The screens' painter has room for that many lines whatever is drawn, so a fuller slide is too heavy for them |
 | `SOFTPRESENTER_HIDE_NDI=1` | Behave as on a computer without NDI installed |
 | `SOFTPRESENTER_NDI=<name>` | Also send over NDI under this name, this run only |
 

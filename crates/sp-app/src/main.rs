@@ -5529,11 +5529,13 @@ impl App {
         // The Program preview is what the screens show: the live preview the output thread draws,
         // once it has drawn one. (The stage picture, and the start, use the window's own.)
         let live = running.output.as_ref().map(OutputHandle::live_preview).filter(|(_, drawn)| *drawn > 0);
+        // A screen that could not draw what is live still shows the picture before it.
+        let undrawn = running.output.as_ref().and_then(OutputHandle::undrawn);
         let preview = match live.and_then(|(front, _)| running.live_preview_ids.get(front)) {
             Some(texture) if !running.home_state.preview_stage => {
-                home::Preview { now: Some(*texture), before: None, amount: 1.0 }
+                home::Preview { now: Some(*texture), before: None, amount: 1.0, undrawn }
             }
-            _ => home::Preview { now: running.preview, before: running.preview_before, amount },
+            _ => home::Preview { now: running.preview, before: running.preview_before, amount, undrawn },
         };
         let (show, pictures) = (&self.show, &self.bin_pictures);
         let (songs_theme, bible_theme): (&Theme, &Theme) = (&front_theme, &self.theme_for_bible);

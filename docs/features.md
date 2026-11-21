@@ -213,7 +213,10 @@ feature changes, this page changes in the same commit.
   stage, in tabs under the Program panel. A slide can carry the same actions, done when it goes on screen.
 - The Program preview shows what the audience sees, drawn by the screens' own renderer, so a
   playing video, a fade or a build moves in it as on the screens; or (from the chooser beside
-  PROGRAM) what the stage screens show, with the time kept up to date.
+  PROGRAM) what the stage screens show, with the time kept up to date. If a screen cannot draw
+  what is live (a slide with far too much on it, or a GPU that did not answer in time), it
+  keeps showing the picture before, and a warning under the preview says so until it draws
+  again.
 - **Stage layouts**: each stage screen picks a layout in the Stage tab (Words and Next, Words
   Only, Words and Notes, Clock and Timer, or your own). Screens > Edit Stage Layouts… lays them
   out: the current and next slide, the next label, the clock, a timer, the slide's notes, the

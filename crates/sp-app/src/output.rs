@@ -137,17 +137,152 @@ struct NdiReadback {
     done: Arc<Mutex<Option<bool>>>,
 }
 
-/// The size of the picture sent over NDI, whatever size any window is.
 /// How soon the idle output thread looks at the GPU again while it still holds memory the
 /// painter gave back.
 const GPU_LOOK_AGAIN: Duration = Duration::from_millis(20);
 
-/// A picture the GPU was too slow to work out is drawn again this long after, and up to this
-/// many times for one thing the operator asked for: about a second in all, with the picture
-/// before it on the screens meanwhile.
+/// After a drawing of the screens in which the GPU was too slow to work a picture out, they
+/// are drawn again this long after, up to this many times one after another: about a second
+/// in all, with the picture before it on the screens meanwhile.
 const DRAW_AGAIN_AFTER: Duration = Duration::from_millis(150);
 const DRAW_AGAIN_TRIES: u8 = 5;
 
+/// How long the thread waits after a drawing in which a picture could not be painted and
+/// nothing was shown in any window. Showing a picture waits for the screen's next refresh,
+/// which is what paces a fade, a build or scrolling words; without it they would spin. About
+/// one refresh of a 60 Hz screen.
+const UNDRAWN_PAUSE: Duration = Duration::from_millis(16);
+
+/// Screens that stand still are drawn again this often, when that costs next to nothing. The
+/// painter checks that a picture was worked out, not that its pixels were filled in: should
+/// the GPU drop a picture after that check (macOS does, to every app, when any app's GPU work
+/// faults), the screen would keep the picture before it until something changed.
+const STILL_SCREENS_EVERY: Duration = Duration::from_secs(5);
+
+/// A drawing of the screens whose pictures took no longer than this to paint costs next to
+/// nothing to repeat.
+const CHEAP_DRAWING: Duration = Duration::from_millis(30);
+
+/// Why a screen is not showing what it was last asked to show; it shows the picture before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Undrawn {
+    /// The GPU did not work the picture out in time, every time it was tried.
+    NotInTime = 1,
+    /// The renderer could not draw it, for a reason the log has.
+    Failed = 2,
+    /// There is too much on the slide to draw.
+    TooMuch = 3,
+}
+
+impl Undrawn {
+    fn from_code(code: u8) -> Option<Undrawn> {
+        [Undrawn::NotInTime, Undrawn::Failed, Undrawn::TooMuch].into_iter().find(|undrawn| *undrawn as u8 == code)
+    }
+
+    /// What to tell the operator, by the Program preview.
+    pub fn in_words(self) -> &'static str {
+        match self {
+            Undrawn::NotInTime => "A screen could not draw this in time. It still shows the picture before.",
+            Undrawn::Failed => "A screen could not draw this. It still shows the picture before.",
+            Undrawn::TooMuch => "There is too much on this slide to draw. A screen still shows the picture before.",
+        }
+    }
+}
+
+/// How one drawing of the screens (every window, NDI and the live preview) ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ended {
+    /// No picture was given up for a slow GPU. (One may still have been refused as too heavy.)
+    Drawn,
+    /// The GPU was too slow with a picture: the screens are to be drawn again.
+    TryAgain,
+    /// The GPU was too slow again, after every try allowed.
+    GivenUp,
+}
+
+/// What became of the pictures painted in one drawing of the screens, and what follows from
+/// the drawings before it. One drawing paints many pictures, each of which may wait for the
+/// GPU; this is what keeps a GPU that is stuck from holding the thread once for each of them,
+/// and what counts the tries.
+#[derive(Debug, Default)]
+struct Round {
+    /// Why the GPU was too slow with a picture of this drawing, once it has been: the
+    /// pictures after it are not asked for.
+    slow: Option<String>,
+    /// True when any picture of this drawing was not painted.
+    failed: bool,
+    /// True when a picture of this drawing was shown in a window.
+    presented: bool,
+    /// How many drawings one after another have been tried again for a slow GPU.
+    tries: u8,
+    /// When to draw the screens again, if nothing else does first.
+    again_at: Option<Instant>,
+    /// How long this drawing's pictures took to paint, in all.
+    painting: Duration,
+}
+
+impl Round {
+    /// A drawing begins. Whatever was to be drawn again is being drawn now; a new picture the
+    /// operator asked for gets all its tries.
+    fn begin(&mut self, new_picture: bool) {
+        *self = Round { tries: if new_picture { 0 } else { self.tries }, ..Round::default() };
+    }
+
+    /// The error to give for a picture that is not asked for, because the GPU was too slow
+    /// with one earlier in this drawing.
+    fn skipped(&self) -> Option<sp_render::PaintError> {
+        self.slow.as_ref().map(|why| sp_render::PaintError::NotNow(why.clone()))
+    }
+
+    /// Notes how painting one picture went.
+    fn note(&mut self, painted: &Result<(), sp_render::PaintError>) {
+        if let Err(error) = painted {
+            self.failed = true;
+            if error.worth_trying_again() && self.slow.is_none() {
+                self.slow = Some(error.to_string());
+            }
+        }
+    }
+
+    /// The drawing is over. `moving` says that the screens are drawn again at once anyway (a
+    /// fade, a build, scrolling words), so that no time need be set for it.
+    fn end(&mut self, now: Instant, moving: bool) -> Ended {
+        if self.slow.is_none() {
+            self.tries = 0;
+            return Ended::Drawn;
+        }
+        if self.tries >= DRAW_AGAIN_TRIES {
+            return Ended::GivenUp;
+        }
+        self.tries += 1;
+        if !moving {
+            self.again_at = Some(now + DRAW_AGAIN_AFTER);
+        }
+        Ended::TryAgain
+    }
+}
+
+/// Testing aid: SOFTPRESENTER_GPU_TOO_SLOW=N (or N@S) has the output's painter give up the next
+/// N pictures it has to wait for the GPU for (starting S seconds after the start), as it does
+/// when the GPU is too slow; pictures it has drawn before and need not wait for are still
+/// drawn.
+struct PretendSlow {
+    left: u32,
+    after: Duration,
+}
+
+impl PretendSlow {
+    fn from_env() -> Option<PretendSlow> {
+        let asked = std::env::var("SOFTPRESENTER_GPU_TOO_SLOW").ok()?;
+        let (count, after) = asked.split_once('@').unwrap_or((&asked, "0"));
+        Some(PretendSlow {
+            left: count.trim().parse().ok()?,
+            after: Duration::from_secs_f32(after.trim().parse().ok()?),
+        })
+    }
+}
+
+/// The size of the picture sent over NDI, whatever size any window is.
 const NDI_SIZE: (u32, u32) = (1920, 1080);
 
 /// Each screen's NDI source as the window sees it: started (by its name, and how it is doing
@@ -171,6 +306,9 @@ pub struct LivePreview {
     /// True while the window has been woken for a new picture and hasn't shown it yet, so a
     /// burst of pictures wakes it once.
     wake_pending: std::sync::atomic::AtomicBool,
+    /// Why a screen is not showing what it was asked to, as [`Undrawn`]'s number; 0 when every
+    /// screen is.
+    undrawn: std::sync::atomic::AtomicU8,
 }
 
 /// Wakes the operator's window (from the output thread) to show a new live preview.
@@ -230,6 +368,12 @@ impl OutputHandle {
     /// Which live preview texture holds the newest picture, and how many have been drawn.
     pub fn live_preview(&self) -> (usize, u64) {
         self.live_preview.newest()
+    }
+
+    /// Why a screen (a window or an NDI source) is not showing what it was last asked to show,
+    /// if one is not: the operator should know that the audience sees the picture before.
+    pub fn undrawn(&self) -> Option<Undrawn> {
+        Undrawn::from_code(self.live_preview.undrawn.load(std::sync::atomic::Ordering::Acquire))
     }
 
     /// The window has woken for the newest live preview: the next new one wakes it again.
@@ -297,6 +441,10 @@ struct Target {
     /// A picture for this window that could not be drawn: said in the log once while it lasts,
     /// not for every picture.
     trouble: crate::applog::Lasting,
+    /// Why the window is not showing what it was last asked to, if it is not; and whether its
+    /// picture is waiting to be tried again after a slow GPU.
+    undrawn: Option<Undrawn>,
+    waiting: bool,
 }
 
 /// A copy of the picture a video lends, to draw: its pixels as they are, in whichever order
@@ -389,11 +537,21 @@ struct Output {
     /// An NDI picture that could not be drawn: said in the log once while it lasts, not for
     /// every picture. (Each window has its own.)
     ndi_trouble: crate::applog::Lasting,
-    /// When to draw the screens again because the GPU did not work a picture out in time (the
-    /// old picture stays up meanwhile), and how many times that has been tried since the
-    /// operator last asked for anything.
-    draw_again_at: Option<Instant>,
-    tries_again: u8,
+    /// The same for NDI: why its picture is not the one asked for, and whether it is waiting
+    /// to be tried again.
+    ndi_undrawn: Option<Undrawn>,
+    ndi_waiting: bool,
+    /// The drawing of the screens under way or just done: what became of its pictures, and
+    /// when to draw again after a slow GPU (the old picture stays up meanwhile).
+    round: Round,
+    /// When all the screens were last drawn, how that drawing ended and how long its pictures
+    /// took to paint: screens that stand still are drawn again now and then if that is cheap.
+    drawn_at: Instant,
+    last_draw: (Ended, Duration),
+    /// Testing aids: pictures to give up as if the GPU were too slow, and when the thread
+    /// started.
+    pretend_slow: Option<PretendSlow>,
+    started: Instant,
     /// How often and how long the screens are drawn, and how many video pictures came, for the log.
     timing: crate::applog::Timing,
     video_pictures: u64,
@@ -420,10 +578,17 @@ fn run(
     live_preview: Arc<LivePreview>,
     waker: Option<Waker>,
 ) {
-    let painter = match Painter::new(&device) {
+    let mut painter = match Painter::new(&device) {
         Ok(painter) => painter,
         Err(e) => return eprintln!("The output cannot draw on this computer: {e}"),
     };
+    // Testing aid: SOFTPRESENTER_OUTPUT_ROOM=LINES keeps the output painter's working memory at
+    // room for that many lines and segments whatever is drawn, so that a slide with more on it
+    // is too heavy for the screens to draw (a few lines of large text make tens of thousands).
+    if let Some(lines) = std::env::var("SOFTPRESENTER_OUTPUT_ROOM").ok().and_then(|lines| lines.parse::<u32>().ok()) {
+        let resting = vello::ScratchSizes::RESTING;
+        painter.keep_scratch_at(Some(vello::ScratchSizes { lines, seg_counts: lines, segments: lines, ..resting }));
+    }
     let mut output = Output {
         painter,
         fonts: Fonts::new(),
@@ -464,8 +629,13 @@ fn run(
         announcement: None,
         look: sp_model::Transition::of(sp_model::TransitionKind::Cut),
         ndi_trouble: crate::applog::Lasting::default(),
-        draw_again_at: None,
-        tries_again: 0,
+        ndi_undrawn: None,
+        ndi_waiting: false,
+        round: Round::default(),
+        drawn_at: Instant::now(),
+        last_draw: (Ended::Drawn, Duration::ZERO),
+        pretend_slow: PretendSlow::from_env(),
+        started: Instant::now(),
         timing: crate::applog::Timing::new("screen drawings"),
         video_pictures: 0,
         live_preview,
@@ -558,6 +728,7 @@ fn run(
                     }
                     if output.overlay.message.as_ref().is_some_and(|(text, _)| crate::messages::has_tokens(text))
                         || output.links_tick()
+                        || output.still_screens_due()
                     {
                         output.draw(false);
                     } else {
@@ -588,10 +759,15 @@ fn run(
                     Ok(msg) => Some(msg),
                     Err(_) => return,
                 },
-                // The top of the loop looks at the GPU, and draws the picture if it is due.
+                // The top of the loop looks at the GPU, and draws a picture again if it is due.
                 Some(wait) => match rx.recv_timeout(wait) {
                     Ok(msg) => Some(msg),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if output.still_screens_due() {
+                            output.draw(false);
+                        }
+                        continue;
+                    }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
                 },
             }
@@ -611,8 +787,6 @@ fn run(
             continue;
         };
         output.video_moved_at = Instant::now();
-        // Whatever the operator asked for now gets its own tries, should the GPU be slow again.
-        output.tries_again = 0;
         // Take everything that has queued up, so a burst of changes costs one draw.
         let mut next = Some(first);
         let mut new_picture = false;
@@ -741,6 +915,8 @@ impl Output {
             fade: None,
             configured,
             trouble: crate::applog::Lasting::default(),
+            undrawn: None,
+            waiting: false,
         });
     }
 
@@ -944,10 +1120,14 @@ impl Output {
             let scene = self.scene_for(ids[0], frame, w, h);
             let target = self.ndi_target.get_or_insert_with(|| target_texture(&self.device, w, h)).clone();
             let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-            if let Err(e) = self.painter.paint(&self.device, &self.queue, &scene, &view, w, h) {
+            if let Err(e) = self.paint(&scene, &view, w, h) {
                 let message = format!("The NDI picture could not be drawn: {e}");
                 if self.ndi_trouble.is_news(&message) {
                     crate::applog::problem("output", &message);
+                }
+                match undrawn_for(&e) {
+                    Some(why) => (self.ndi_undrawn, self.ndi_waiting) = (Some(why), false),
+                    None => self.ndi_waiting = true,
                 }
                 return;
             }
@@ -987,6 +1167,7 @@ impl Output {
             self.ndi_pending.push(NdiReadback { ids, buffer, padded_row, done });
         }
         // Every picture was drawn: whatever went wrong before is over.
+        (self.ndi_undrawn, self.ndi_waiting) = (None, false);
         if let Some(more) = self.ndi_trouble.over() {
             crate::applog::event("output", &format!("The NDI picture is drawn again, after {more} more not drawn"));
         }
@@ -1047,8 +1228,12 @@ impl Output {
     /// at once.
     fn draw(&mut self, new_picture: bool) {
         let started = Instant::now();
-        self.draw_now(new_picture);
+        let ended = self.draw_now(new_picture);
         self.timing.add(started.elapsed());
+        // Painting only: showing a picture also waits for the screen's refresh, which costs
+        // nothing.
+        self.last_draw = (ended, self.round.painting);
+        self.drawn_at = Instant::now();
         let (videos, screens, ndi) = (self.video_pictures, self.targets.len(), self.ndi.len());
         let extra = || format!("{videos} video pictures, {screens} windows, {ndi} NDI");
         if self.timing.report_each_minute("output", extra) {
@@ -1111,7 +1296,7 @@ impl Output {
         let (w, h) = LIVE_PREVIEW_SIZE;
         let back = 1 - self.live_preview.front.load(Acquire).min(1);
         let view = self.preview_targets[back].create_view(&wgpu::TextureViewDescriptor::default());
-        if self.painter.paint(&self.device, &self.queue, scene, &view, w, h).is_ok() {
+        if self.paint(scene, &view, w, h).is_ok() {
             self.live_preview.front.store(back, Release);
             self.live_preview.drawn.fetch_add(1, Release);
             // Whatever moved (a video, a build, scrolling words, a timer), the window is woken
@@ -1125,7 +1310,8 @@ impl Output {
         self.previewed_at = Instant::now();
     }
 
-    fn draw_now(&mut self, new_picture: bool) {
+    fn draw_now(&mut self, new_picture: bool) -> Ended {
+        self.round.begin(new_picture);
         // Cheap copies: the picture and the slide are shared, not duplicated.
         let frame = self.frame.clone();
         self.send_ndi(&frame);
@@ -1153,9 +1339,11 @@ impl Output {
                     target.fade = Some((from, scene));
                     fading = true;
                 }
-                _ => {
-                    self.present(index, &scene);
-                    self.targets[index].shown = Some(scene);
+                // A picture that could not be painted was never shown: the next fade starts
+                // from the one that was.
+                before => {
+                    let painted = self.present(index, &scene);
+                    self.targets[index].shown = if painted { Some(scene) } else { before };
                 }
             }
         }
@@ -1163,8 +1351,89 @@ impl Output {
         // The preview follows, fading if the screens do.
         self.draw_live_preview(&frame, new_picture);
         if fading {
-            self.step_fade();
+            self.fade_step();
         }
+        self.end_round()
+    }
+
+    /// Paints one picture of the drawing under way. Once the GPU has been too slow with a
+    /// picture, the rest of that drawing's pictures are not asked for: a GPU that is stuck
+    /// holds the thread for one wait, not for one wait for every window.
+    fn paint(
+        &mut self,
+        scene: &vello::Scene,
+        view: &wgpu::TextureView,
+        w: u32,
+        h: u32,
+    ) -> Result<(), sp_render::PaintError> {
+        if let Some(skipped) = self.round.skipped() {
+            return Err(skipped);
+        }
+        // Testing aid: SOFTPRESENTER_GPU_TOO_SLOW (see `PretendSlow`).
+        let pretending =
+            self.pretend_slow.as_ref().is_some_and(|slow| slow.left > 0 && self.started.elapsed() >= slow.after);
+        if self.pretend_slow.is_some() {
+            self.painter.wait_at_most(pretending.then_some(Duration::ZERO));
+        }
+        let started = Instant::now();
+        let painted = self.painter.paint(&self.device, &self.queue, scene, view, w, h);
+        self.round.painting += started.elapsed();
+        // Only a picture that was given up counts: one drawn before is not waited for.
+        if pretending
+            && painted.as_ref().is_err_and(sp_render::PaintError::worth_trying_again)
+            && let Some(slow) = &mut self.pretend_slow
+        {
+            slow.left -= 1;
+        }
+        self.round.note(&painted);
+        painted
+    }
+
+    /// Ends a drawing of the screens: sets them to be drawn again if the GPU was too slow,
+    /// tells the operator's window when a screen is not showing what it should, and keeps a
+    /// drawing in which nothing could be shown from being followed by the next at once.
+    fn end_round(&mut self) -> Ended {
+        let moving = self.fading.is_some() || self.building() || self.scrolling() || self.identify_breathing();
+        let now = Instant::now();
+        let ended = self.round.end(now, moving);
+        // Given up: the pictures that were waiting for another try are not coming.
+        if ended == Ended::GivenUp {
+            for target in &mut self.targets {
+                if std::mem::take(&mut target.waiting) {
+                    target.undrawn = Some(Undrawn::NotInTime);
+                }
+            }
+            if std::mem::take(&mut self.ndi_waiting) {
+                self.ndi_undrawn = Some(Undrawn::NotInTime);
+            }
+        }
+        let worst = self.targets.iter().filter_map(|target| target.undrawn).chain(self.ndi_undrawn).max();
+        let code = worst.map_or(0, |undrawn| undrawn as u8);
+        if self.live_preview.undrawn.swap(code, std::sync::atomic::Ordering::AcqRel) != code {
+            let told = worst.map_or("Every screen shows what it was asked to again.", Undrawn::in_words);
+            crate::applog::event("output", &format!("The operator's window is told: {told}"));
+            if let Some(wake) = &self.waker {
+                wake();
+            }
+        }
+        if self.round.failed && !self.round.presented {
+            std::thread::sleep(UNDRAWN_PAUSE);
+        }
+        ended
+    }
+
+    /// True when screens that stand still are due to be drawn again (see
+    /// [`STILL_SCREENS_EVERY`]): only when the last drawing of them was cheap, or was given up
+    /// for a slow GPU, which may have passed.
+    fn still_screens_due(&self) -> bool {
+        self.still_screens_in().is_some_and(|wait| wait.is_zero())
+    }
+
+    fn still_screens_in(&self) -> Option<Duration> {
+        let (ended, took) = self.last_draw;
+        let worth = took <= CHEAP_DRAWING || ended == Ended::GivenUp;
+        let showing = !self.targets.is_empty() || !self.ndi.is_empty();
+        (worth && showing).then(|| STILL_SCREENS_EVERY.saturating_sub(self.drawn_at.elapsed()))
     }
 
     /// Testing aid: saves what the audience screens show, once, when something is on them a few
@@ -1300,6 +1569,12 @@ impl Output {
 
     /// Draws the stage screens again, for the time, leaving the others as they are.
     fn draw_stage(&mut self) {
+        // With every screen due to be drawn again after a slow GPU, that is done now: drawing
+        // the stage screens alone would put it off.
+        if self.round.again_at.is_some() {
+            return self.draw(false);
+        }
+        self.round.begin(false);
         let frame = self.frame.clone();
         for index in 0..self.targets.len() {
             let (id, w, h) = {
@@ -1310,19 +1585,28 @@ impl Output {
                 continue;
             }
             let scene = self.scene_for(id, &frame, w, h);
-            self.present(index, &scene);
-            self.targets[index].shown = Some(scene);
+            if self.present(index, &scene) {
+                self.targets[index].shown = Some(scene);
+            }
         }
         // A stage screen sent over NDI gets the new time too, the same way as every NDI picture
         // (never waited on).
         if self.ndi.iter().any(|(id, _)| self.is_stage(*id)) {
             self.send_ndi(&frame);
         }
+        self.end_round();
     }
 
     /// Draws the next step of the fade under way in every window, and finishes it when its
     /// time is up.
     fn step_fade(&mut self) {
+        self.round.begin(false);
+        self.fade_step();
+        self.end_round();
+    }
+
+    /// The step itself, as part of the drawing under way.
+    fn fade_step(&mut self) {
         let Some((started, look)) = self.fading else { return };
         let amount = fade_amount(started, look.duration());
         // A video playing behind the new slide keeps moving through the fade: each new picture
@@ -1345,8 +1629,10 @@ impl Output {
         for index in 0..self.targets.len() {
             let Some((from, to)) = self.targets[index].fade.take() else { continue };
             if amount >= 1.0 {
-                self.present(index, &to);
-                self.targets[index].shown = Some(to);
+                // A last picture that could not be painted was never shown: the window keeps
+                // the one the fade started from, for the next fade to start from.
+                let painted = self.present(index, &to);
+                self.targets[index].shown = Some(if painted { to } else { from });
             } else {
                 let (w, h) = (self.targets[index].config.width, self.targets[index].config.height);
                 let scene = sp_render::transition(look.kind, look.direction, &from, &to, amount, w, h);
@@ -1365,45 +1651,52 @@ impl Output {
     /// false), or a picture the GPU was too slow with is waiting to be drawn again.
     fn look_again_in(&self, rested: bool) -> Option<Duration> {
         let for_memory = (!rested).then_some(GPU_LOOK_AGAIN);
-        [for_memory, self.draw_again_in()].into_iter().flatten().min()
+        [for_memory, self.draw_again_in(), self.still_screens_in()].into_iter().flatten().min()
     }
 
     /// How long until a picture the GPU was too slow with is due to be drawn again, if one is.
     fn draw_again_in(&self) -> Option<Duration> {
-        self.draw_again_at.map(|at| at.saturating_duration_since(Instant::now()))
+        self.round.again_at.map(|at| at.saturating_duration_since(Instant::now()))
     }
 
     /// Draws the screens again if a picture the GPU was too slow with is due another try, and
-    /// says whether it did.
+    /// says whether it did. During a fade it does not: the fade's own steps draw the screens,
+    /// and a drawing of the whole picture would cut the fade short.
     fn draw_again_if_due(&mut self) -> bool {
-        let due = self.draw_again_at.is_some_and(|at| at <= Instant::now());
+        if self.fading.is_some() {
+            self.round.again_at = None;
+            return false;
+        }
+        let due = self.round.again_at.is_some_and(|at| at <= Instant::now());
         if due {
-            self.draw_again_at = None;
             self.draw(false);
         }
         due
     }
 
-    /// Paints a picture and shows it in one window. A picture that cannot be painted leaves the
-    /// one before it on the screen, and is said in the log once for as long as that lasts.
-    fn present(&mut self, index: usize, scene: &vello::Scene) {
-        let Output { device, queue, painter, targets, .. } = self;
-        let Some(target) = targets.get_mut(index) else { return };
+    /// Paints a picture and shows it in one window; true when it was painted. A picture that
+    /// cannot be painted leaves the one before it on the screen, and is said in the log once
+    /// for as long as that lasts. (Too heavy stays too heavy; too slow may pass, and the end
+    /// of the drawing sets the screens to be drawn again.)
+    fn present(&mut self, index: usize, scene: &vello::Scene) -> bool {
+        let Some(target) = self.targets.get(index) else { return false };
         let (w, h) = (target.config.width, target.config.height);
         let view = target.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        if let Err(e) = painter.paint(device, queue, scene, &view, w, h) {
+        let painted = self.paint(scene, &view, w, h);
+        let Output { device, queue, targets, round, .. } = self;
+        let target = &mut targets[index];
+        if let Err(e) = painted {
             let message = format!("The output could not draw a frame, and keeps showing the one before: {e}");
             if target.trouble.is_news(&message) {
                 crate::applog::problem("output", &message);
             }
-            // Too heavy stays too heavy. Too slow may pass: when nothing else will draw the
-            // screens soon, they are drawn again shortly, a few times at most.
-            if e.worth_trying_again() && self.tries_again < DRAW_AGAIN_TRIES {
-                self.tries_again += 1;
-                self.draw_again_at = Some(Instant::now() + DRAW_AGAIN_AFTER);
+            match undrawn_for(&e) {
+                Some(why) => (target.undrawn, target.waiting) = (Some(why), false),
+                None => target.waiting = true,
             }
-            return;
+            return false;
         }
+        (target.undrawn, target.waiting) = (None, false);
         if let Some(more) = target.trouble.over() {
             crate::applog::event("output", &format!("The output draws again, after {more} more frames not drawn"));
         }
@@ -1411,7 +1704,8 @@ impl Output {
         if !target.configured {
             target.configured = configure(device, &target.surface, &target.config);
             if !target.configured {
-                return std::thread::sleep(Duration::from_millis(8));
+                std::thread::sleep(Duration::from_millis(8));
+                return true;
             }
         }
         // A lost or outdated surface is set up again and tried once more; anything else
@@ -1419,7 +1713,7 @@ impl Output {
         for attempt in 0..2 {
             let Some(next) = next_texture(&target.surface) else {
                 target.configured = false;
-                return;
+                return true;
             };
             match next {
                 wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -1428,18 +1722,33 @@ impl Output {
                     target.blitter.copy(device, &mut encoder, &view, &surface_view);
                     queue.submit([encoder.finish()]);
                     queue.present(frame);
-                    return;
+                    round.presented = true;
+                    return true;
                 }
                 wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost if attempt == 0 => {
                     target.configured = configure(device, &target.surface, &target.config);
                     if !target.configured {
-                        return;
+                        return true;
                     }
                 }
                 // A hidden window shows nothing; wait a moment so a fade does not spin.
-                _ => return std::thread::sleep(Duration::from_millis(8)),
+                _ => {
+                    std::thread::sleep(Duration::from_millis(8));
+                    return true;
+                }
             }
         }
+        true
+    }
+}
+
+/// Why a picture that could not be painted will not be, for telling the operator; `None` when
+/// the GPU was only too slow with it, and it is to be tried again.
+fn undrawn_for(error: &sp_render::PaintError) -> Option<Undrawn> {
+    match error {
+        sp_render::PaintError::TooHeavy => Some(Undrawn::TooMuch),
+        sp_render::PaintError::NotNow(_) => None,
+        sp_render::PaintError::Failed(_) => Some(Undrawn::Failed),
     }
 }
 
@@ -1496,6 +1805,87 @@ fn capture_wanted() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn slow() -> Result<(), sp_render::PaintError> {
+        Err(sp_render::PaintError::NotNow("too slow".to_owned()))
+    }
+
+    #[test]
+    fn a_slow_gpu_holds_a_drawing_for_one_picture_and_is_tried_again_a_few_times() {
+        let mut round = Round::default();
+        let now = Instant::now();
+        // A drawing in which nothing was slow: every picture is asked for, nothing follows.
+        round.begin(true);
+        round.note(&Ok(()));
+        assert!(round.skipped().is_none());
+        assert_eq!(round.end(now, false), Ended::Drawn);
+        assert_eq!(round.again_at, None);
+        // Too heavy is not too slow: the other pictures are still asked for, and nothing is
+        // tried again.
+        round.begin(false);
+        round.note(&Err(sp_render::PaintError::TooHeavy));
+        assert!(round.skipped().is_none() && round.failed);
+        assert_eq!(round.end(now, false), Ended::Drawn);
+        assert_eq!(round.again_at, None);
+        // The GPU too slow with one picture: the rest of that drawing's are not asked for, and
+        // the drawing counts as one try however many pictures it had.
+        for tried in 1..=DRAW_AGAIN_TRIES {
+            round.begin(false);
+            assert!(round.skipped().is_none(), "a new drawing asks again");
+            round.note(&slow());
+            assert!(matches!(round.skipped(), Some(sp_render::PaintError::NotNow(_))));
+            round.note(&round.skipped().map_or(Ok(()), Err));
+            round.note(&round.skipped().map_or(Ok(()), Err));
+            assert_eq!(round.end(now, false), Ended::TryAgain);
+            assert_eq!(round.tries, tried);
+            assert_eq!(round.again_at, Some(now + DRAW_AGAIN_AFTER));
+        }
+        // Slow again after every try: given up, and not set to be drawn again.
+        round.begin(false);
+        round.note(&slow());
+        assert_eq!(round.end(now, false), Ended::GivenUp);
+        assert_eq!(round.again_at, None);
+        // Something new from the operator gets its own tries.
+        round.begin(true);
+        round.note(&slow());
+        assert_eq!(round.end(now, false), Ended::TryAgain);
+        // And a drawing that went well ends the count.
+        round.begin(false);
+        round.note(&Ok(()));
+        assert_eq!(round.end(now, false), Ended::Drawn);
+        assert_eq!(round.tries, 0);
+    }
+
+    #[test]
+    fn a_drawing_begun_drops_the_one_that_was_due_and_a_fade_sets_none() {
+        let mut round = Round::default();
+        let now = Instant::now();
+        round.begin(true);
+        round.note(&slow());
+        assert_eq!(round.end(now, false), Ended::TryAgain);
+        assert!(round.again_at.is_some());
+        // Any drawing begun (a slide change, a step of a fade) is that drawing again.
+        round.begin(false);
+        assert_eq!(round.again_at, None);
+        // While the screens are moving they are drawn again anyway: no time is set, so that a
+        // whole drawing does not land in the middle of a fade.
+        round.note(&slow());
+        assert_eq!(round.end(now, true), Ended::TryAgain);
+        assert_eq!(round.again_at, None);
+    }
+
+    #[test]
+    fn what_the_operator_is_told_is_the_worst_of_what_the_screens_could_not_draw() {
+        assert_eq!(undrawn_for(&sp_render::PaintError::TooHeavy), Some(Undrawn::TooMuch));
+        assert_eq!(undrawn_for(&slow().unwrap_err()), None, "still to be tried again");
+        let worst = [Undrawn::NotInTime, Undrawn::TooMuch, Undrawn::Failed].into_iter().max();
+        assert_eq!(worst, Some(Undrawn::TooMuch));
+        for undrawn in [Undrawn::NotInTime, Undrawn::Failed, Undrawn::TooMuch] {
+            assert_eq!(Undrawn::from_code(undrawn as u8), Some(undrawn));
+            assert!(undrawn.in_words().contains("picture before"));
+        }
+        assert_eq!(Undrawn::from_code(0), None);
+    }
 
     #[test]
     fn a_screen_with_a_theme_of_its_own_draws_with_it_and_the_rest_with_the_slides() {

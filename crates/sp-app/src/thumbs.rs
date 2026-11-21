@@ -41,7 +41,6 @@ const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 #[derive(Clone, Copy)]
 enum Kind {
     WaitingTile,
-    Thumbnail,
     Canvas,
     Preview,
 }
@@ -50,9 +49,12 @@ pub struct Thumbs {
     painter: Painter,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// Pictures that could not be drawn, by kind (see `note_drawn`): each said once while it
-    /// lasts, not at every drawing.
-    trouble: [crate::applog::Lasting; 4],
+    /// Pictures other than thumbnails that could not be drawn, by kind (see `note_drawn`): each
+    /// said once while it lasts, not at every drawing.
+    trouble: [crate::applog::Lasting; 3],
+    /// The slides whose thumbnail could not be drawn and has been said so: a thumbnail is
+    /// tried again every few seconds, and each slide's is said once, whatever the others do.
+    thumbnails_said: std::collections::HashSet<Uuid>,
     /// How many pictures the painter had drawn when it was last looked at, and when to let it
     /// rest if it draws no more.
     painted: u64,
@@ -76,6 +78,7 @@ impl Thumbs {
             device: device.clone(),
             queue: queue.clone(),
             trouble: Default::default(),
+            thumbnails_said: std::collections::HashSet::new(),
             painted: 0,
             rest_at: None,
             fonts: Fonts::new(),
@@ -123,7 +126,6 @@ impl Thumbs {
             Err(error) => {
                 let what = match kind {
                     Kind::WaitingTile => "a waiting tile",
-                    Kind::Thumbnail => "a thumbnail",
                     Kind::Canvas => "the slide being edited",
                     Kind::Preview => "the preview",
                 };
@@ -244,7 +246,18 @@ impl Thumbs {
         // One that can't be drawn is kept blank (a new texture is clear), so the window doesn't
         // try again, and ask to be drawn again, on every frame.
         let drawn = self.painter.paint(&gpu.device, &gpu.queue, &built.scene, &view, THUMB_W, THUMB_H);
-        self.note_drawn(Kind::Thumbnail, &drawn);
+        match &drawn {
+            Ok(()) => drop(self.thumbnails_said.remove(&key)),
+            Err(error) => {
+                // Not without end: slides come and go.
+                if self.thumbnails_said.len() >= 1000 {
+                    self.thumbnails_said.clear();
+                }
+                if self.thumbnails_said.insert(key) {
+                    crate::applog::problem("window", &format!("Could not draw a thumbnail: {error}"));
+                }
+            }
+        }
         let failed = drawn.is_err().then(std::time::Instant::now);
         let overflow = built.overflow && failed.is_none();
         let id = egui_renderer.register_native_texture(&gpu.device, &view, wgpu::FilterMode::Linear);
