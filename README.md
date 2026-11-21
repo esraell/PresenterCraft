@@ -267,6 +267,8 @@ The code is a Rust workspace:
     crates/sp-video    videos (macOS's AVFoundation, then FFmpeg), system picture formats, and
                        web pages drawn off-screen (macOS's web view)
     crates/sp-app      the app and its windows
+    third_party/vello  the vello renderer's main crate, changed to size its GPU memory from
+                       what is drawn (outside the workspace; its PROVENANCE.md explains)
 
 [AGENTS.md](AGENTS.md#rules) says where `unsafe` code is allowed. Before sending a change:
 

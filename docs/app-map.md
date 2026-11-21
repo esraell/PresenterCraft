@@ -195,6 +195,7 @@ problems, and once a minute how long drawing took.
 | `sp-model` | The data: songs (presentations, groups, slides, objects), themes and layouts, transitions, builds, actions |
 | `sp-engine` | The show's state: what is selected, what is on screen, next and previous, clearing layers |
 | `sp-render` | Drawing slides on the GPU with vello: screens, thumbnails, transitions |
+| `third_party/vello` | Not a workspace crate: vello 0.12.0's main crate with SoftPresenter's change, which sizes the renderer's GPU working memory from what is drawn and checks that every picture fitted (`PROVENANCE.md` there, and `docs/licences/vello.md`) |
 | `sp-video` | Playing videos: macOS's own player, FFmpeg for other formats; web pages drawn off-screen by macOS's web view (`web`, `web_mac`), copied into frames as a video's are |
 | `sp-ndi` | Sending screens over NDI (the runtime is opened when an NDI screen starts) |
 | `sp-bible` | Bibles: references, verse numbering, search |

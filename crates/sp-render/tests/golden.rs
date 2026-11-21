@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use sp_model::{Object, ObjectKind, Role, Slide, Theme};
+use sp_render::vello::ScratchSizes;
 use sp_render::vello::util::RenderContext;
 use sp_render::{Fonts, Painter, build_scene, read_pixels, target_texture, wgpu};
 
@@ -936,4 +937,246 @@ fn a_picture_copied_blue_first_is_drawn_in_its_true_colours() {
         let (left, right) = (pixel(&px, 64, 8, 18), pixel(&px, 64, 56, 18));
         assert!(is_about(left, red) && is_about(right, blue), "{name}: {left:?} {right:?}");
     }
+}
+
+/// A long made-up reading in two languages, set small so the slide is full of letters.
+fn dense_passage(seed: usize, sentences: usize) -> Slide {
+    let english = [
+        "The keeper of the orchard rose before the light and walked the long rows counting what the wind had left.",
+        "He set his ladder by the oldest tree and spoke kindly to it, as his father had done.",
+        "When the carts came up from the valley the baskets were already full and the gate stood open.",
+        "No one who asked for fruit that day was sent away, and what remained was laid by for the winter.",
+        "At evening the children ran between the trees and the keeper sat down, glad of his work.",
+    ];
+    let russian = [
+        "Хранитель сада встал до рассвета и прошёл по длинным рядам, считая то, что оставил ветер.",
+        "Он поставил лестницу у самого старого дерева и ласково говорил с ним, как делал его отец.",
+        "Когда из долины поднялись телеги, корзины были уже полны, а ворота стояли открытыми.",
+        "Никого, кто просил в тот день плодов, не отослали прочь, а остаток сберегли на зиму.",
+        "Вечером дети бегали между деревьями, а хранитель сел отдохнуть, радуясь своему труду.",
+    ];
+    let reading = |lines: &[&str]| -> String {
+        (0..sentences)
+            .map(|i| format!("{} {}", i + 1 + seed, lines[(i + seed) % lines.len()]))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut s = slide(&reading(&english), Some(&reading(&russian)));
+    for object in &mut s.objects {
+        if let Some(style) = object.text_style_mut() {
+            style.size = Some(30.0);
+        }
+    }
+    s
+}
+
+/// A slide of four hundred shapes of every kind, each in its own colour, with words on top.
+fn many_shapes() -> Slide {
+    use sp_model::{Rgba, Shape, SlideRect};
+    let kinds = [
+        Shape::RoundedRect,
+        Shape::Rectangle,
+        Shape::Ellipse,
+        Shape::Triangle,
+        Shape::RightTriangle,
+        Shape::Rhombus,
+        Shape::Polygon,
+        Shape::Star,
+        Shape::DoubleArrow,
+        Shape::Arrow,
+    ];
+    let mut s = slide("Shapes behind the words", None);
+    for i in 0..400u32 {
+        let (col, row) = (i % 25, i / 25);
+        let mut shape = Object::shape(kinds[i as usize % kinds.len()]);
+        shape.frame = Some(SlideRect { x: 10.0 + 76.0 * col as f32, y: 8.0 + 67.0 * row as f32, w: 70.0, h: 60.0 });
+        shape.fill = Some(Rgba::rgb((i * 37 % 256) as u8, (i * 91 % 256) as u8, (i * 53 % 256) as u8));
+        shape.rotation = (i % 7) as f32 * 9.0;
+        s.objects.insert(0, shape);
+    }
+    s
+}
+
+/// A picture that changes from pixel to pixel, so a misplaced or missing part shows.
+fn patterned(width: u32, height: u32) -> sp_render::Picture {
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let check = ((x / 40 + y / 40) % 2 * 120) as u8;
+            rgba.extend_from_slice(&[(x * 255 / width) as u8, (y * 255 / height) as u8, check, 255]);
+        }
+    }
+    sp_render::Picture::from_rgba(width, height, rgba).expect("picture")
+}
+
+/// The heaviest pictures a service draws, by name: a full reading, two of them half-way through
+/// a dissolve and a wipe, a slide of many shapes, and words over a picture.
+fn heavy_scenes(w: u32, h: u32, sentences: usize) -> Vec<(&'static str, sp_render::vello::Scene)> {
+    use sp_model::{Direction, TransitionKind};
+    let theme = Theme::builtin();
+    let mut fonts = Fonts::new();
+    let first = build_scene(&mut fonts, Some(&dense_passage(0, sentences)), &theme, w, h).scene;
+    let second = build_scene(&mut fonts, Some(&dense_passage(3, sentences)), &theme, w, h).scene;
+    let dissolve = sp_render::cross_fade(&first, &second, 0.5, w, h);
+    let wipe = sp_render::transition(TransitionKind::Wipe, Direction::FromLeft, &first, &second, 0.5, w, h);
+    let shapes = build_scene(&mut fonts, Some(&many_shapes()), &theme, w, h).scene;
+    let photo = patterned(1920, 1080);
+    let layers = sp_render::Layers {
+        media_fit: sp_model::ImageFit::Fill,
+        media: Some(&photo),
+        slide: Some(&dense_passage(1, sentences)),
+        ..Default::default()
+    };
+    let over_photo = sp_render::build_layers(&mut fonts, &layers, &theme, w, h).scene;
+    vec![("reading", first), ("dissolve", dissolve), ("wipe", wipe), ("shapes", shapes), ("photo", over_photo)]
+}
+
+/// A painter on a GPU of its own, as each drawing thread of the app has.
+struct Easel {
+    cx: RenderContext,
+    id: usize,
+    painter: Painter,
+}
+
+impl Easel {
+    fn new() -> Easel {
+        let mut cx = RenderContext::new();
+        let id = pollster::block_on(cx.device(None)).expect("these tests need a GPU");
+        let painter = Painter::new(&cx.devices[id].device).expect("painter");
+        Easel { cx, id, painter }
+    }
+
+    /// A painter whose working memory stays at these sizes, as the renderer's did before it
+    /// was sized from the picture.
+    fn kept_at(sizes: ScratchSizes) -> Easel {
+        let mut easel = Easel::new();
+        easel.painter.keep_scratch_at(Some(sizes));
+        easel
+    }
+
+    fn paint(&mut self, scene: &sp_render::vello::Scene, w: u32, h: u32) -> Result<Vec<u8>, String> {
+        let (device, queue) = (&self.cx.devices[self.id].device, &self.cx.devices[self.id].queue);
+        let texture = target_texture(device, w, h);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.painter.paint(device, queue, scene, &view, w, h)?;
+        read_pixels(device, queue, &texture)
+    }
+
+    fn rest(&mut self) {
+        self.painter.rest(&self.cx.devices[self.id].device);
+    }
+}
+
+/// Passes when two drawings of one scene are the same picture: the GPU may round a pixel's
+/// edge one step differently from run to run, and nothing more.
+fn assert_same_picture(name: &str, a: &[u8], b: &[u8]) {
+    assert_eq!(a.len(), b.len(), "{name}: sizes differ");
+    let mut differing = 0usize;
+    let mut worst = 0u8;
+    for (x, y) in a.chunks(4).zip(b.chunks(4)) {
+        if x != y {
+            differing += 1;
+            worst = worst.max(x.iter().zip(y).map(|(p, q)| p.abs_diff(*q)).max().unwrap_or(0));
+        }
+    }
+    let share = differing as f64 / (a.len() / 4) as f64;
+    assert!(
+        worst <= 3 && share < 0.001,
+        "{name}: {differing} pixels differ ({:.3}%), by up to {worst} of 255",
+        share * 100.0
+    );
+}
+
+/// Room for the heaviest pictures in these tests, kept whatever is drawn: four times the lines
+/// and segments the renderer's old fixed sizes had.
+const ROOMY: ScratchSizes = ScratchSizes {
+    lines: 1 << 23,
+    bin_data: 1 << 18,
+    tiles: 1 << 21,
+    seg_counts: 1 << 23,
+    segments: 1 << 23,
+    blend_spill: 1 << 20,
+    ptcl: 1 << 24,
+};
+
+/// Slides of a few hundred letters, shapes, and words over a picture, on a 4K screen and as
+/// thumbnails: sizing the working memory from the picture draws exactly what the renderer's
+/// own fixed sizes drew.
+#[test]
+fn pictures_are_the_same_with_working_memory_sized_from_them() {
+    let mut sized = Easel::new();
+    let mut fixed = Easel::kept_at(ScratchSizes::UPSTREAM);
+    for (w, h) in [(3840, 2160), (480, 270)] {
+        for (name, scene) in heavy_scenes(w, h, 3) {
+            let ours = sized.paint(&scene, w, h).expect("paint");
+            let theirs = fixed.paint(&scene, w, h).expect("paint with fixed sizes");
+            assert!(count_lit(&ours) > 300, "{name} at {w}: something bright is drawn");
+            assert_same_picture(&format!("{name} at {w}"), &ours, &theirs);
+        }
+    }
+}
+
+/// A slide full of small outlined letters makes more lines than the renderer's fixed sizes had
+/// room for, and it then drew nothing, without saying so. Now the painter finds the room: the
+/// reading, two of them in a dissolve and a wipe, and one over a picture are all drawn, the
+/// same as by a painter given plenty of room from the start, on a 4K screen and as thumbnails.
+#[test]
+fn a_slide_too_heavy_for_the_old_fixed_sizes_is_drawn_in_full() {
+    let mut sized = Easel::new();
+    let mut roomy = Easel::kept_at(ROOMY);
+    for (w, h) in [(3840, 2160), (480, 270)] {
+        for (name, scene) in heavy_scenes(w, h, 14) {
+            let name = format!("{name} at {w}");
+            let first = sized.paint(&scene, w, h).expect("paint");
+            assert!(count_lit(&first) > 1_000, "{name}: the letters are drawn");
+            let reruns = sized.painter.reruns();
+            let again = sized.paint(&scene, w, h).expect("paint again");
+            assert_eq!(sized.painter.reruns(), reruns, "{name}: the second drawing knows the room it needs");
+            assert_same_picture(&name, &first, &again);
+            let reference = roomy.paint(&scene, w, h).expect("paint with plenty of room");
+            assert_same_picture(&name, &first, &reference);
+        }
+    }
+    assert!(sized.painter.reruns() > 0, "the heavy slides needed more than the resting room");
+
+    // The old sizes cannot hold the 4K reading: that is now an error, not an empty picture.
+    let mut fixed = Easel::kept_at(ScratchSizes::UPSTREAM);
+    let (name, reading) = heavy_scenes(3840, 2160, 14).swap_remove(0);
+    assert_eq!(name, "reading");
+    assert!(fixed.paint(&reading, 3840, 2160).is_err(), "the fixed sizes are too small, and say so");
+}
+
+/// One painter draws a heavy 4K slide, then a thumbnail of a light one, then the heavy slide
+/// again: each picture is right, the heavy one the same both times. When drawing stops, the
+/// memory the heavy slide took is given back, and the light slide still draws after that.
+#[test]
+fn a_painter_goes_from_heavy_to_light_and_back_and_gives_memory_back() {
+    let mut easel = Easel::new();
+    let heavy = heavy_scenes(3840, 2160, 14).swap_remove(0).1;
+    let light = heavy_scenes(480, 270, 3).swap_remove(4).1;
+    let light_alone = Easel::new().paint(&light, 480, 270).expect("paint");
+
+    let heavy_first = easel.paint(&heavy, 3840, 2160).expect("paint");
+    assert!(count_lit(&heavy_first) > 100_000, "the 4K reading is drawn");
+    let light_after_heavy = easel.paint(&light, 480, 270).expect("paint");
+    assert_same_picture("light after heavy", &light_after_heavy, &light_alone);
+    let heavy_again = easel.paint(&heavy, 3840, 2160).expect("paint");
+    assert_same_picture("heavy again", &heavy_again, &heavy_first);
+
+    let kept = easel.painter.spare_bytes();
+    assert!(kept > 100 << 20, "the heavy slide's memory is kept while it is being drawn: {kept} bytes");
+    easel.rest();
+    assert_eq!(easel.painter.spare_bytes(), 0, "and given back when drawing stops");
+    let reruns = easel.painter.reruns();
+    let heavy_after_rest = easel.paint(&heavy, 3840, 2160).expect("paint");
+    assert_eq!(easel.painter.reruns(), reruns, "the room it needs is still remembered");
+    assert_same_picture("heavy after a rest", &heavy_after_rest, &heavy_first);
+
+    // A painter that only ever drew light slides keeps well under the old fixed 165 MB.
+    let mut small = Easel::new();
+    small.paint(&light, 480, 270).expect("paint");
+    small.rest();
+    let resting = small.painter.spare_bytes();
+    assert!(resting > 0 && resting < 48 << 20, "a light slide's memory stays ready, and is small: {resting} bytes");
+    assert_eq!(small.painter.reruns(), 0, "a light slide fits the resting room");
 }

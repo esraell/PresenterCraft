@@ -142,6 +142,14 @@ with SoftPresenter; [`docs/licences/song-documents.md`](docs/licences/song-docum
 > DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+### Vello
+
+SoftPresenter draws with Vello (<https://github.com/linebender/vello>), copyright the Vello
+Authors, licensed under Apache-2.0 OR MIT. Its `vello` crate, version 0.12.0, is built from the
+copy in `third_party/vello`, which SoftPresenter has changed: the copy keeps Vello's licence
+files, marks each change, and says what was changed and why in its `PROVENANCE.md`.
+[`docs/licences/vello.md`](docs/licences/vello.md) explains.
+
 ### Other libraries
 
 SoftPresenter is built from many open-source Rust libraries, each under its own licence (MIT,

@@ -1,6 +1,7 @@
 //! Small pictures of slides for the home window, drawn by the same renderer as the output.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use sp_model::{Slide, Theme, Uuid};
 use sp_render::{Fonts, Layers, Painter, Picture, build_layers, target_texture, wgpu};
@@ -38,6 +39,11 @@ const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct Thumbs {
     painter: Painter,
+    device: wgpu::Device,
+    /// How many pictures the painter had drawn when it was last looked at, and when to let it
+    /// rest if it draws no more.
+    painted: u64,
+    rest_at: Option<Instant>,
     fonts: Fonts,
     cache: HashMap<Uuid, Thumb>,
     drawn_this_frame: usize,
@@ -54,6 +60,9 @@ impl Thumbs {
     pub fn new(device: &wgpu::Device) -> Result<Thumbs, String> {
         Ok(Thumbs {
             painter: Painter::new(device)?,
+            device: device.clone(),
+            painted: 0,
+            rest_at: None,
             fonts: Fonts::new(),
             cache: HashMap::new(),
             drawn_this_frame: 0,
@@ -69,6 +78,23 @@ impl Thumbs {
     pub fn begin_frame(&mut self) {
         self.drawn_this_frame = 0;
         self.frame += 1;
+    }
+
+    /// Call whenever the app is about to wait. A second after the last thumbnail, preview or
+    /// canvas was drawn, GPU memory that a heavy slide made the painter take is given back
+    /// (ordinary slides take none worth giving back). Returns when to call again, if that is
+    /// still to come.
+    pub fn rest_when_settled(&mut self, now: Instant) -> Option<Instant> {
+        const SETTLED_AFTER: Duration = Duration::from_secs(1);
+        if self.painter.paints() != self.painted {
+            self.painted = self.painter.paints();
+            self.rest_at = Some(now + SETTLED_AFTER);
+        }
+        if self.rest_at.is_some_and(|at| at <= now) {
+            self.rest_at = None;
+            self.painter.rest(&self.device);
+        }
+        self.rest_at
     }
 
     /// The thumbnail for a slide and whether its text overflows. `None` means it will be

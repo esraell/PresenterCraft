@@ -12,6 +12,8 @@ pub struct Painter {
     renderer: Renderer,
     /// The moving pictures made here that something may still draw (see [`MovingPicture`]).
     moving: Vec<KeptMoving>,
+    /// How many pictures have been painted (see [`Painter::paints`]).
+    paints: u64,
 }
 
 /// A picture that changes many times a second (a playing video), kept in a GPU texture of its
@@ -61,7 +63,7 @@ impl Painter {
             pipeline_cache: None,
         };
         Renderer::new(device, options)
-            .map(|renderer| Painter { renderer, moving: Vec::new() })
+            .map(|renderer| Painter { renderer, moving: Vec::new(), paints: 0 })
             .map_err(|e| e.to_string())
     }
 
@@ -182,7 +184,10 @@ impl Painter {
         });
     }
 
-    /// Paints into a view of a texture made by [`target_texture`] with the same size.
+    /// Paints into a view of a texture made by [`target_texture`] with the same size. `Ok` means
+    /// the whole picture was drawn: the painter's working memory on the GPU is sized from what
+    /// it draws, and a picture that needs more than the one before is worked out again with
+    /// more. The call waits for the GPU to work the picture out (not to fill in its pixels).
     pub fn paint(
         &mut self,
         device: &wgpu::Device,
@@ -192,6 +197,7 @@ impl Painter {
         w: u32,
         h: u32,
     ) -> Result<(), String> {
+        self.paints += 1;
         let params =
             RenderParams { base_color: Color::BLACK, width: w, height: h, antialiasing_method: AaConfig::Area };
         // A scene of plain colour fills only (no text, gradient or picture) makes vello 0.12 take
@@ -216,6 +222,35 @@ impl Painter {
         let done = self.renderer.render_to_texture(device, queue, scene, target, &params);
         self.forget_unused_moving_pictures(scene);
         done.map_err(|e| e.to_string())
+    }
+
+    /// Call when nothing more will be drawn for a while: GPU memory that a heavy picture made
+    /// the painter take is given back. Costs nothing after ordinary slides.
+    pub fn rest(&mut self, device: &wgpu::Device) {
+        self.renderer.rest(device);
+    }
+
+    /// How many pictures the painter has been asked for.
+    pub fn paints(&self) -> u64 {
+        self.paints
+    }
+
+    /// The bytes of GPU memory the painter keeps ready between pictures.
+    pub fn spare_bytes(&self) -> u64 {
+        self.renderer.spare_bytes()
+    }
+
+    /// How many times a picture had to be worked out again because it needed more room than the
+    /// pictures before it.
+    pub fn reruns(&self) -> u64 {
+        self.renderer.scratch_reruns()
+    }
+
+    /// Keeps the painter's working memory at these sizes whatever is drawn, as the renderer did
+    /// before it sized it from the picture; a picture that needs more is then an error. For
+    /// tests that compare the two ways.
+    pub fn keep_scratch_at(&mut self, sizes: Option<vello::ScratchSizes>) {
+        self.renderer.set_fixed_scratch(sizes);
     }
 }
 

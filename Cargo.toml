@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = ["spikes"]
+exclude = ["spikes", "third_party"]
 
 [workspace.package]
 version = "0.1.0"
@@ -49,6 +49,11 @@ pollster = "1"
 png = "0.18"
 # Decoding pictures dropped into the media bin.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
+
+# Vello 0.12.0 with SoftPresenter's change to how it sizes its GPU scratch buffers:
+# third_party/vello/PROVENANCE.md says what was changed and why.
+[patch.crates-io]
+vello = { path = "third_party/vello" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

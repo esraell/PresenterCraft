@@ -7235,9 +7235,13 @@ impl ApplicationHandler<AppEvent> for App {
             }
             panel_at = [panel_at, panel.next_repaint].into_iter().flatten().min();
         }
+        // Once thumbnails and previews have stopped being drawn, their painter gives back the
+        // GPU memory a heavy slide made it take.
+        let thumbs_rest_at = running.thumbs.rest_when_settled(Instant::now());
         let wake = [
             running.next_repaint,
             panel_at,
+            thumbs_rest_at,
             save_at,
             video_at,
             box_video_at,

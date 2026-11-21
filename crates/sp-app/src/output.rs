@@ -546,6 +546,8 @@ fn run(
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
         } else {
+            // Nothing moves until the next message: memory a heavy picture took is given back.
+            output.painter.rest(&output.device);
             match rx.recv() {
                 Ok(msg) => Some(msg),
                 Err(_) => return,
